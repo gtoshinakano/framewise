@@ -1,0 +1,3 @@
+services:
+  video-analyzer:
+    gpus: all

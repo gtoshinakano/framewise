@@ -1,0 +1,10 @@
+services:
+  video-analyzer:
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-991}"
+    security_opt:
+      - seccomp:unconfined

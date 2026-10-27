@@ -1,0 +1,29 @@
+services:
+  video-analyzer:
+    build: .
+    image: video-analyzer:local
+    restart: unless-stopped
+    ports:
+      - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-8080}:8000"
+    environment:
+      DATA_DIR: /data
+      TMPDIR: /data/tmp
+      HF_HOME: /models/huggingface
+      TORCH_HOME: /models/torch
+      XDG_CACHE_HOME: /models/cache
+      MAX_UPLOAD_GB: ${MAX_UPLOAD_GB:-40}
+    volumes:
+      - video_data:/data
+      - model_cache:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  video_data:
+    name: ${DATA_VOLUME:-framewise_data}
+  model_cache:
+    name: ${MODEL_VOLUME:-framewise_models}
