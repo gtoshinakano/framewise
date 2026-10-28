@@ -49,7 +49,7 @@ def extract_frames(proxy: Path, frames_dir: Path, interval: float):
     for old in frames_dir.glob("frame_*.jpg"):
         old.unlink()
     run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-nostdin", "-y", "-i", str(proxy),
-         "-vf", f"fps=1/{interval},scale=w='min(iw,480)':h=-2", "-q:v", "4",
+         "-vf", f"fps=1/{interval},scale=w='min(iw,480)':h=-2", "-pix_fmt", "yuvj420p", "-threads", "1", "-q:v", "4",
          str(frames_dir / "frame_%06d.jpg")])
     frames = [{"name": frame.name, "time": round(index * interval, 3)}
               for index, frame in enumerate(sorted(frames_dir.glob("frame_*.jpg")))]
@@ -108,18 +108,52 @@ def detect_cuts(proxy: Path, duration: float, threshold: float):
     return [(start, end) for start, end in zip(starts, starts[1:] + [duration])]
 
 
-def cut_thumbnail(proxy: Path, output: Path, time: float):
+def extract_cut_frame(source: Path, output: Path, sample_time: float, start: float, end: float, width: int = 480, last: bool = False):
+    """Extract a real frame inside the cut, returning its presentation timestamp."""
     temp = output.with_name(f"{output.stem}.partial.jpg")
     try:
-        run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-nostdin", "-y", "-ss", str(time), "-i", str(proxy),
-             "-frames:v", "1", "-vf", "scale=w='min(iw,480)':h=-2", str(temp)])
-        if not temp.is_file() or temp.stat().st_size == 0:
-            raise RuntimeError(f"Could not extract frame at {time:.3f}s")
-        temp.replace(output)
+        if last:
+            # Find the final presentation timestamp, including the last frame at
+            # EOF. The bounded probe avoids scanning a long cut in normal cases.
+            start_info = run(["ffprobe", "-v", "error", "-show_entries", "format=start_time", "-of", "default=noprint_wrappers=1:nokey=1", str(source)]).stdout.strip()
+            try:
+                origin = float(start_info)
+                if not math.isfinite(origin):
+                    origin = 0.0
+            except ValueError:
+                origin = 0.0
+            for probe_start in (max(start, end - 5), start):
+                result = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-read_intervals", f"{probe_start + origin}%{end + origin}", "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", str(source)])
+                values = []
+                for line in result.stdout.splitlines():
+                    try:
+                        value = float(line.split(",", 1)[0]) - origin
+                    except ValueError:
+                        continue
+                    if start <= value < end:
+                        values.append(value)
+                if values:
+                    sample_time = max(values)
+                    break
+                if probe_start == start:
+                    break
+        for back in (0, .1, .25, .5, 1, 2, end - start):
+            seek = max(start, sample_time - back)
+            temp.unlink(missing_ok=True)
+            result = run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-nostats", "-nostdin", "-y", "-ss", str(seek), "-i", str(source),
+                          "-t", str(end - seek), "-frames:v", "1", "-vf", f"showinfo,scale=w='min(iw,{width})':h=-2",
+                          "-pix_fmt", "yuvj420p", "-threads", "1", str(temp)])
+            if temp.is_file() and temp.stat().st_size:
+                match = re.search(r"Parsed_showinfo[^\n]*\bn:\s*0\s+pts:.*?pts_time:\s*([-+0-9.eE]+)", result.stderr)
+                actual = seek + float(match.group(1)) if match else seek
+                temp.replace(output)
+                return round(actual, 6)
+            if seek == start:
+                break
+        raise RuntimeError(f"Could not extract a frame inside cut {start:.3f}–{end:.3f}s")
     finally:
         temp.unlink(missing_ok=True)
 
 
 def cut_frame_times(start: float, end: float) -> tuple[float, float]:
-    offset = min(0.05, (end - start) / 4)
-    return round(start + offset, 3), round(end - offset, 3)
+    return start, max(start, end - min(0.000001, (end - start) / 4))

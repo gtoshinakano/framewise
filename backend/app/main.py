@@ -5,9 +5,10 @@ import os
 import re
 import shutil
 import uuid
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -54,6 +55,15 @@ class SettingsInput(BaseModel):
 
 class PipelineInput(BaseModel):
     pipeline: Literal["prepare", "hardcuts"]
+
+
+class AnalysisConfig(BaseModel):
+    frame_mode: Literal["endpoints", "uniform"] = "endpoints"
+    frame_count: int = Field(default=4, ge=2, le=32)
+    context_ids: list[str] = Field(default_factory=list, max_length=200)
+    detection_queries: list[Annotated[str, Field(min_length=1, max_length=100, pattern=r".*\S.*")]] = Field(default_factory=lambda: ["person", "clothing", "animal", "vehicle", "chair", "table"], min_length=1, max_length=20)
+    additional_context: str = Field(default="", max_length=20000)
+    openrouter_model: str = Field(default="openrouter/free", min_length=1, max_length=200, pattern=r"^[a-zA-Z0-9_./:-]+$")
 
 
 class CutInput(BaseModel):
@@ -129,14 +139,18 @@ def episode_response(episode_id: str):
     episode["cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index", (episode_id,))]
     episode["archived_cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=0 ORDER BY start_time,cut_index", (episode_id,))]
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
-    episode["jobs"] = db.all_rows("SELECT * FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
+    # The queued payload can contain every cut's context and may be very large.
+    # Keep it in SQLite for the worker and return only job metadata to the UI.
+    episode["jobs"] = db.all_rows("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
     return episode
 
 
 def serialize_cut(cut: dict):
     cut["results"] = json.loads(cut.pop("results_json"))
     cut["active"] = bool(cut["active"])
-    cut["first_frame_time"], cut["last_frame_time"] = media.cut_frame_times(cut["start_time"], cut["end_time"])
+    fallback_first, fallback_last = media.cut_frame_times(cut["start_time"], cut["end_time"])
+    cut["first_frame_time"] = cut.get("first_frame_time") if cut.get("first_frame_time") is not None else fallback_first
+    cut["last_frame_time"] = cut.get("last_frame_time") if cut.get("last_frame_time") is not None else fallback_last
     return cut
 
 
@@ -411,6 +425,7 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
             for item in cuts:
                 if item["cut_index"] > removed["cut_index"]:
                     conn.execute("UPDATE cuts SET cut_index=? WHERE id=?", (item["cut_index"] - 1, item["id"]))
+        conn.execute("UPDATE cuts SET first_frame_time=NULL,last_frame_time=NULL WHERE episode_id=? AND active=1", (cut["episode_id"],))
         job_id = str(uuid.uuid4())
         conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "cutframes", json.dumps({"settings": json.loads(episode["settings_json"])})))
         conn.execute("UPDATE episodes SET status='queued',stage='Updating cut frames',error=NULL WHERE id=?", (cut["episode_id"],))
@@ -443,11 +458,12 @@ def update_chunk(chunk_id: str, body: ChunkInput):
 
 
 @app.get("/api/cuts/{cut_id}/analysis-results")
-def list_analysis_results(cut_id: str, history: bool = False):
+def list_analysis_results(cut_id: str, history: bool = False, include_context: bool = True):
     if not db.one("SELECT id FROM cuts WHERE id=?", (cut_id,)):
         raise HTTPException(404, "Cut not found")
     where = "cut_id=?" if history else "cut_id=? AND superseded_by IS NULL"
-    return [serialize_result(row) for row in db.all_rows(f"SELECT * FROM analysis_results WHERE {where} ORDER BY rowid DESC", (cut_id,))]
+    columns = "*" if include_context else "id,cut_id,kind,title,content,status,origin,model_id,job_id,prompt,settings_json,'{}' AS context_json,parent_id,superseded_by,created_at"
+    return [serialize_result(row) for row in db.all_rows(f"SELECT {columns} FROM analysis_results WHERE {where} ORDER BY rowid DESC", (cut_id,))]
 
 
 @app.post("/api/cuts/{cut_id}/analysis-results")
@@ -551,6 +567,129 @@ def get_analysis_context(cut_id: str):
         "context_items": db.all_rows("SELECT * FROM context_items WHERE project_id=? AND (episode_id IS NULL OR episode_id=?) ORDER BY kind,title", (project["id"], episode["id"])),
         "transcript_segments": db.all_rows("SELECT * FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND status='approved' AND start_time<? AND end_time>? ORDER BY start_time", (episode["id"], cut["end_time"], cut["start_time"])),
     }
+
+
+def analysis_config_for_cut(cut_id: str):
+    cut = db.one("SELECT * FROM cuts WHERE id=?", (cut_id,))
+    if not cut:
+        raise HTTPException(404, "Cut not found")
+    saved = db.one("SELECT config_json FROM cut_analysis_configs WHERE cut_id=?", (cut_id,))
+    return cut, AnalysisConfig.model_validate_json(saved["config_json"]) if saved else AnalysisConfig()
+
+
+def selected_analysis_context(cut_id: str, config: AnalysisConfig):
+    context = get_analysis_context(cut_id)
+    valid = {item["id"] for item in context["context_items"]}
+    if not set(config.context_ids).issubset(valid):
+        raise HTTPException(400, "One or more selected context items no longer apply to this cut")
+    context["context_items"] = [item for item in context["context_items"] if item["id"] in config.context_ids]
+    context["additional_context"] = config.additional_context
+    return context
+
+
+@app.get("/api/cuts/{cut_id}/analysis-config")
+def get_cut_analysis_config(cut_id: str):
+    _, config = analysis_config_for_cut(cut_id)
+    return config
+
+
+@app.put("/api/cuts/{cut_id}/analysis-config")
+def put_cut_analysis_config(cut_id: str, config: AnalysisConfig):
+    analysis_config_for_cut(cut_id)
+    selected_analysis_context(cut_id, config)
+    with db.connect() as conn:
+        conn.execute("INSERT INTO cut_analysis_configs (cut_id,config_json) VALUES (?,?) ON CONFLICT(cut_id) DO UPDATE SET config_json=excluded.config_json,updated_at=CURRENT_TIMESTAMP", (cut_id, config.model_dump_json()))
+    return config
+
+
+def enqueue_analysis(episode_id: str, cut_id: str | None = None):
+    job_id = str(uuid.uuid4())
+    try:
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not conn.execute("SELECT 1 FROM episodes WHERE id=?", (episode_id,)).fetchone():
+                raise HTTPException(404, "Episode not found")
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (episode_id,)).fetchone():
+                raise HTTPException(409, "An analysis job is already running for this episode")
+            if cut_id is None:
+                cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index", (episode_id,)).fetchall()
+                if not cuts:
+                    raise HTTPException(400, "Detect cuts before running analysis")
+            else:
+                cut = conn.execute("SELECT id FROM cuts WHERE id=? AND episode_id=? AND active=1", (cut_id, episode_id)).fetchone()
+                if not cut:
+                    raise HTTPException(409, "The cut is no longer active")
+                cuts = [cut]
+            # The write lock keeps cut boundaries, presets and context stable until
+            # the complete job payload is committed. The helpers use read-only
+            # connections so the UI never sees a partial queue snapshot.
+            inputs = []
+            for cut in cuts:
+                _, config = analysis_config_for_cut(cut["id"])
+                inputs.append({"cut_id": cut["id"], "config": config.model_dump(), "context": selected_analysis_context(cut["id"], config)})
+            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs})))
+            conn.execute("UPDATE episodes SET status='queued',stage='Waiting for analysis worker',error=NULL WHERE id=?", (episode_id,))
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "An analysis job is already running for this episode") from exc
+    return {"job_id": job_id}
+
+
+@app.post("/api/cuts/{cut_id}/analyze")
+def analyze_cut(cut_id: str):
+    cut, _ = analysis_config_for_cut(cut_id)
+    if not cut["active"]:
+        raise HTTPException(400, "Only active cuts can be analyzed")
+    return enqueue_analysis(cut["episode_id"], cut_id)
+
+
+@app.post("/api/episodes/{episode_id}/analyze")
+def analyze_episode(episode_id: str):
+    require_episode(episode_id)
+    return enqueue_analysis(episode_id)
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_queued_analysis(job_id: str):
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if job["pipeline"] != "analyze" or job["status"] != "queued":
+            raise HTTPException(409, "Only queued analysis jobs can be cancelled")
+        conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled before processing',updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+        conn.execute("UPDATE episodes SET status='ready',stage='Ready',error=NULL WHERE id=?", (job["episode_id"],))
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_analysis(job_id: str):
+    try:
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not job:
+                raise HTTPException(404, "Job not found")
+            if job["pipeline"] != "analyze" or job["status"] != "failed":
+                raise HTTPException(409, "Only failed analysis jobs can be retried")
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (job["episode_id"],)).fetchone():
+                raise HTTPException(409, "An analysis job is already running for this episode")
+            latest = conn.execute("SELECT id FROM jobs WHERE episode_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (job["episode_id"],)).fetchone()
+            if not latest or latest["id"] != job_id:
+                raise HTTPException(409, "A newer job exists; start a new analysis")
+            for item in json.loads(job["payload_json"])["cuts"]:
+                done = conn.execute("SELECT completed FROM analysis_job_cuts WHERE job_id=? AND cut_id=?", (job_id, item["cut_id"])).fetchone()
+                if done and done["completed"]:
+                    continue
+                cut = conn.execute("SELECT active,start_time,end_time FROM cuts WHERE id=? AND episode_id=?", (item["cut_id"], job["episode_id"])).fetchone()
+                saved = item["context"]["cut"]
+                if not cut or not cut["active"] or cut["start_time"] != saved["start_time"] or cut["end_time"] != saved["end_time"]:
+                    raise HTTPException(409, "An unfinished cut changed since this run; start a new analysis")
+            conn.execute("UPDATE jobs SET status='queued',stage='Waiting for analysis worker',error=NULL,lease_owner=NULL,lease_until=NULL,attempt_count=0,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+            conn.execute("UPDATE episodes SET status='queued',stage='Waiting for analysis worker',error=NULL WHERE id=?", (job["episode_id"],))
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "An analysis job is already running for this episode") from exc
+    return {"job_id": job_id}
 
 
 @app.get("/api/episodes/{episode_id}/waveform")

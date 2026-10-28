@@ -1,3 +1,4 @@
+export type AnalysisConfig = { frame_mode: 'endpoints' | 'uniform'; frame_count: number; context_ids: string[]; detection_queries: string[]; additional_context: string; openrouter_model: string }
 export type Settings = { proxy_width: number; proxy_crf: number; proxy_preset: 'ultrafast' | 'superfast' | 'veryfast' | 'faster' | 'fast' | 'medium'; frame_interval: number; scene_threshold: number; chunk_duration: number }
 export type Cut = { id: string; cut_index: number; active: boolean; start_time: number; end_time: number; first_frame_time: number; last_frame_time: number; title: string; description: string; notes: string; results: Record<string, unknown> }
 export type ResultKind = 'first_frame' | 'camera_movement' | 'composition' | 'last_frame' | 'cut_description' | 'audio_visual_match' | 'generation_prompt' | 'other'

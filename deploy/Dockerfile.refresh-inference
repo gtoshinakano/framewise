@@ -1,0 +1,7 @@
+FROM framewise-inference-rocm:local
+USER root
+RUN if ! getent group 10001 >/dev/null; then groupadd --gid 10001 appuser; fi && \
+    if ! getent passwd 10001 >/dev/null; then useradd --system --uid 10001 --gid 10001 --create-home appuser; fi
+ENV HOME=/home/appuser
+COPY backend/app /app/app
+USER 10001:10001

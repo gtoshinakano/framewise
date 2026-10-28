@@ -72,17 +72,18 @@ def enqueue(episode_id: str, pipeline: str):
     return job_id
 
 
-def claim_job():
+def claim_job(pipelines=("prepare", "hardcuts", "cutframes")):
     now = time.time()
+    placeholders = ",".join("?" for _ in pipelines)
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        exhausted = conn.execute("SELECT id,episode_id FROM jobs WHERE pipeline IN ('prepare','hardcuts','cutframes') AND status='running' AND (lease_until IS NULL OR lease_until<=?) AND attempt_count>=?", (now, MAX_ATTEMPTS)).fetchall()
+        exhausted = conn.execute(f"SELECT id,episode_id FROM jobs WHERE pipeline IN ({placeholders}) AND status='running' AND (lease_until IS NULL OR lease_until<=?) AND attempt_count>=?", (*pipelines, now, MAX_ATTEMPTS)).fetchall()
         for job in exhausted:
             conn.execute("UPDATE jobs SET status='failed',stage='Failed',error='Interrupted too many times; run the pipeline again',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
             conn.execute("UPDATE episodes SET status='failed',stage='Failed',error='Interrupted too many times; run the pipeline again' WHERE id=?", (job["episode_id"],))
-        job = conn.execute("""SELECT * FROM jobs WHERE pipeline IN ('prepare','hardcuts','cutframes') AND
+        job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND
             (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
-            ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, rowid LIMIT 1""", (now,)).fetchone()
+            ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, rowid LIMIT 1""", (*pipelines, now)).fetchone()
         if not job:
             return None
         owner = str(uuid.uuid4())
@@ -196,7 +197,7 @@ def process(job_id: str, owner: str):
                         next_archive_index -= 1
                 for cut_id, index, start, end in replacement:
                     if cut_id:
-                        conn.execute("UPDATE cuts SET active=1,cut_index=?,start_time=?,end_time=? WHERE id=?", (index, start, end, cut_id))
+                        conn.execute("UPDATE cuts SET active=1,cut_index=?,start_time=?,end_time=?,first_frame_time=NULL,last_frame_time=NULL WHERE id=?", (index, start, end, cut_id))
                     else:
                         conn.execute("INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time) VALUES (?,?,?,?,?)",
                                      (str(uuid.uuid4()), episode_id, index, start, end))
@@ -206,8 +207,11 @@ def process(job_id: str, owner: str):
             for index, (start, end) in enumerate(segments):
                 first, last = media.cut_frame_times(start, end)
                 cut_id = cut_ids[index]
-                media.cut_thumbnail(proxy, thumbs / f"{cut_id}_first.jpg", first)
-                media.cut_thumbnail(proxy, thumbs / f"{cut_id}_last.jpg", last)
+                first = media.extract_cut_frame(proxy, thumbs / f"{cut_id}_first.jpg", first, start, end)
+                last = media.extract_cut_frame(proxy, thumbs / f"{cut_id}_last.jpg", last, start, end, last=True)
+                with db.connect() as conn:
+                    require_lease(conn, job_id, owner)
+                    conn.execute("UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?", (first, last, cut_id))
                 gallery = thumbs / f"cut_{index:06d}.jpg"
                 gallery_temp = thumbs / f"cut_{index:06d}.partial.jpg"
                 shutil.copyfile(thumbs / f"{cut_id}_first.jpg", gallery_temp)
@@ -217,7 +221,11 @@ def process(job_id: str, owner: str):
                 for position, sample_time in (("first", first), ("last", last)):
                     target = thumbs / f"{archived['id']}_{position}.jpg"
                     if not target.is_file():
-                        media.cut_thumbnail(proxy, target, sample_time)
+                        actual = media.extract_cut_frame(proxy, target, sample_time, archived["start_time"], archived["end_time"], last=(position == "last"))
+                        with db.connect() as conn:
+                            require_lease(conn, job_id, owner)
+                            column = "first_frame_time" if position == "first" else "last_frame_time"
+                            conn.execute(f"UPDATE cuts SET {column}=? WHERE id=?", (actual, archived["id"]))
             expected = {f"cut_{index:06d}.jpg" for index in cut_ids}
             all_cut_ids = [cut["id"] for cut in db.all_rows("SELECT id FROM cuts WHERE episode_id=?", (episode_id,))]
             expected.update(f"{cut_id}_{position}.jpg" for cut_id in all_cut_ids for position in ("first", "last"))
@@ -230,8 +238,11 @@ def process(job_id: str, owner: str):
             thumbs.mkdir(exist_ok=True)
             for cut in db.all_rows("SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index", (episode_id,)):
                 first, last = media.cut_frame_times(cut["start_time"], cut["end_time"])
-                media.cut_thumbnail(proxy, thumbs / f"{cut['id']}_first.jpg", first)
-                media.cut_thumbnail(proxy, thumbs / f"{cut['id']}_last.jpg", last)
+                first = media.extract_cut_frame(proxy, thumbs / f"{cut['id']}_first.jpg", first, cut["start_time"], cut["end_time"])
+                last = media.extract_cut_frame(proxy, thumbs / f"{cut['id']}_last.jpg", last, cut["start_time"], cut["end_time"], last=True)
+                with db.connect() as conn:
+                    require_lease(conn, job_id, owner)
+                    conn.execute("UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?", (first, last, cut["id"]))
         with db.connect() as conn:
             require_lease(conn, job_id, owner)
             conn.execute("UPDATE jobs SET status='done', stage='Complete', error=NULL, lease_owner=NULL, lease_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))

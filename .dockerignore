@@ -5,3 +5,4 @@
 frontend/dist
 data
 .env
+.models

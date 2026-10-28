@@ -27,6 +27,59 @@ def sample_video(path: Path):
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_low_frame_rate_cut_end_uses_decoded_frame(self):
+        from app import media
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            video = path / "low-fps.mp4"
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=320x180:r=10:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)], check=True)
+            frame = path / "last.jpg"
+            timestamp = media.extract_cut_frame(video, frame, 1.999999, 1.0, 2.0, last=True)
+            self.assertTrue(frame.is_file())
+            self.assertGreaterEqual(timestamp, 1.0)
+            self.assertLess(timestamp, 2.0)
+            self.assertAlmostEqual(timestamp, 1.9, places=2)
+            offset_video = path / "offset.mp4"
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=320x180:r=25:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-output_ts_offset", "5", str(offset_video)], check=True)
+            timestamp = media.extract_cut_frame(offset_video, frame, 1.999999, 1.0, 2.0, last=True)
+            self.assertAlmostEqual(timestamp, 1.96, places=2)
+
+    def test_low_frame_rate_no_audio_workflow(self):
+        from app.main import app
+        from app import db, media
+        with tempfile.TemporaryDirectory() as temp:
+            old = db.DATA_DIR, db.DB_PATH, media.DATA_DIR
+            db.DATA_DIR = media.DATA_DIR = Path(temp)
+            db.DB_PATH = Path(temp) / "app.sqlite3"
+            try:
+                video = Path(temp) / "sample.mp4"
+                subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=320x180:r=10:d=1", "-f", "lavfi", "-i", "color=c=blue:s=320x180:r=10:d=1", "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)], check=True)
+                with TestClient(app) as client:
+                    response = client.post("/api/import", data={"project_title": "Low FPS"}, files={"file": ("sample.mp4", video.read_bytes(), "video/mp4")})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    episode_id = response.json()["episode"]["id"]
+                    def wait_ready():
+                        for _ in range(150):
+                            episode = client.get(f"/api/episodes/{episode_id}").json()
+                            if episode["status"] == "ready":
+                                return episode
+                            if episode["status"] == "failed":
+                                self.fail(episode["error"])
+                            time.sleep(.1)
+                        self.fail("Media worker timed out")
+                    episode = wait_ready()
+                    self.assertFalse(episode["has_audio"])
+                    self.assertEqual(client.post(f"/api/episodes/{episode_id}/run", json={"pipeline": "hardcuts"}).status_code, 200)
+                    episode = wait_ready()
+                    self.assertEqual(len(episode["cuts"]), 2)
+                    self.assertAlmostEqual(episode["cuts"][0]["last_frame_time"], .9, places=2)
+                    last = episode["cuts"][-1]
+                    self.assertAlmostEqual(last["first_frame_time"], 1.0, places=2)
+                    self.assertAlmostEqual(last["last_frame_time"], 1.9, places=2)
+                    self.assertEqual(client.get(f"/api/cuts/{last['id']}/frame/last").status_code, 200)
+            finally:
+                db.DATA_DIR, db.DB_PATH, media.DATA_DIR = old
+
     def test_existing_job_table_migrates(self):
         from app import db
         old_data_dir, old_db_path = db.DATA_DIR, db.DB_PATH
@@ -146,7 +199,7 @@ class WorkflowTest(unittest.TestCase):
                 self.assertEqual(first_frame.status_code, 200)
                 self.assertEqual(last_frame.status_code, 200)
                 self.assertEqual(first_frame.headers["content-type"], "image/jpeg")
-                self.assertLess(cut["start_time"], cut["first_frame_time"])
+                self.assertLessEqual(cut["start_time"], cut["first_frame_time"])
                 self.assertLess(cut["last_frame_time"], cut["end_time"])
                 self.assertNotEqual(first_frame.content, client.get(f"/api/cuts/{episode['cuts'][1]['id']}/frame/first").content)
                 response = client.put(f"/api/cuts/{cut['id']}", json={"title": "Opening red shot", "description": "Red field", "notes": "Keep", "results": {"manual": True}})

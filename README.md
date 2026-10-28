@@ -19,7 +19,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now framewise.service
 ```
 
-Then use `framewise.service` in Cockpit's Services page. The unit runs `docker compose up -d --build` on start and `docker compose down` on stop; both keep the named volumes. To change the bind address, port, or upload limit, edit `.env` and restart the service. The server has no built-in login: expose it only on a trusted network or behind an authenticated reverse proxy.
+Then use `framewise.service` in Cockpit's Services page. The unit runs `docker compose up -d --no-build` on start and `docker compose down` on stop; both keep the named volumes. Build updated images explicitly with `docker compose --profile inference build` before restarting the service after code changes. This keeps normal service restarts from recreating large GPU build layers. To change the bind address, port, or upload limit, edit `.env` and restart the service. The server has no built-in login: expose it only on a trusted network or behind an authenticated reverse proxy.
 The named volumes default to `framewise_data` and `framewise_models`, so they are reused even if the checkout directory is renamed. Set `DATA_VOLUME` and `MODEL_VOLUME` in `.env` only when you intentionally want a different storage set.
 
 To stop without removing data:
@@ -38,10 +38,11 @@ Do not use `docker compose down -v` unless you intend to delete the project and 
 4. Change processing settings in the sidebar, save, then rerun **Prepare** or **Redetect cuts**. Preview width, CRF quality, encoding speed, frame interval, chunk duration, and scene threshold are configurable. Cut edits and result revisions follow boundaries that remain within 0.25 seconds of their previous positions. Boundaries that disappear move to **Archived cuts** with their notes and result history intact; a later matching redetection restores the same cut. Chunk titles and notes are retained when their start times remain the same.
 5. Add characters, worlds, scenarios, or chapter notes in the project's **Context library**. Items can apply to the entire project or a specific episode.
 6. Use the editor's **Audio** tab to add timed speech notes, speaker labels, and optional character links. Approved segments appear in overlapping cuts' input context. Editing or deleting a segment preserves earlier revisions under **Show history**.
+7. Once the inference worker is set up, select a cut, choose first/last or evenly spaced frames, specify visual categories to detect, select relevant context, add cut-specific notes, and save the preset. **Analyze cut** queues that cut; **Analyze all cuts** queues all active cuts using each one's saved preset. Review and revise the resulting draft fields. Results include frame observations, character and outfit prompts, a first-still prompt, a MiniMax H3 animation prompt, and voice-over notes.
 
 For long uploads, keep the browser tab open until the upload reaches 100%. Media preparation then runs in the background. The project and editor show current stage and any FFmpeg error. One media job runs at a time. Jobs are claimed from SQLite with a renewable 60-second lease; queued jobs start after a restart, and interrupted jobs resume when their lease expires. After three interrupted attempts, the job is marked failed and can be run again from the editor. Each job keeps the processing settings that were active when it was queued.
 
-The editor checks a small episode status endpoint every 2.5 seconds. It reloads the full cut and transcript data while processing or after edits, and every 30 seconds while idle. Waveform data reloads only after a completed Prepare job.
+The editor checks a small episode status endpoint every 2.5 seconds. It reloads the full cut and transcript data while processing or after edits, and every 30 seconds while idle. Waveform data reloads only after a completed Prepare job. Job summaries omit queued context snapshots; the results panel requests compact records while the complete frozen context remains available from the analysis-results API.
 
 ## Storage and architecture
 
@@ -65,16 +66,38 @@ model_cache:/models/
   cache/
 ```
 
-The `projects`, `episodes`, `jobs`, `chunks`, `cuts`, `analysis_results`, `context_items`, and `transcript_segments` SQLite tables hold metadata. Chunks are timed working segments; cut boundaries are detected independently and may span chunk boundaries. Per-cut analysis results and transcript segments keep origin, approval status, optional model/job provenance, and revision links. Manual transcript segments can be edited in the browser; automated transcription is not present yet. `/api/cuts/{id}/analysis-context` collects the project synopsis, applicable context items, adjacent cuts and approved results, overlapping chunks, and approved transcript segments for that cut. No model weights or AI services are installed or downloaded in this version. FFmpeg processing works on CPU. ROCm and CUDA device overrides are supplied for later model pipelines:
+The SQLite database holds metadata, per-cut presets, job checkpoints, context and revisioned results. Analysis samples the original without modifying it. Each queued run freezes its settings, selected library context, synopsis, neighboring cuts, chunk notes and approved transcript; completed results retain the snapshot, sampled frame descriptions, prompts and model provenance. Inference uses a separate worker and the same renewable lease discipline as media jobs. A resumed batch skips completed cuts and reuses saved frame descriptions for an interrupted cut. If a provider or worker error stops a run, the editor offers **Retry analysis** with the original snapshot. If an unfinished cut was archived or its timing changed, start a new analysis instead.
+
+## WeVisOne and OpenRouter setup (ROCm)
+
+The inference image must be validated on the target machine. Its pinned ROCm wheels target the Radeon AI PRO R9700 (`gfx1201`); another GPU architecture needs matching AMD wheels. The media API remains CPU-only. It sends the chosen context and visual descriptions to OpenRouter. Provider pricing and availability depend on the model you select; `openrouter/free` is the default, but its availability and rate limits can vary.
+
+1. Download the pinned WeVisOne-VL 4B detection model (about 9.7 GB) and Qwen3-VL 2B frame-caption model (about 4.3 GB). They are stored in `.models`, which is ignored by Git and persists across image rebuilds. The scripts resume partial files and verify the large model files. Set `WEVISONE_MODEL_DIR` and `CAPTION_MODEL_DIR` to use other persistent directories; use absolute paths when sharing them with Compose.
+
+   ```bash
+   ./scripts/download-wevisone.sh
+   ./scripts/download-caption-model.sh
+   ```
+
+2. In the ignored `.env`, set `OPENROUTER_API_KEY` to your key. The key is used only by the inference worker and is not stored in job snapshots or results. Ensure `.env` is readable only by trusted users. Set `VIDEO_GID` and `RENDER_GID` to the host's device group IDs if they differ from the defaults.
+3. From a Docker-privileged terminal, build and start the app and worker:
+
+   ```bash
+   docker compose -f compose.yml -f compose.inference.rocm.yml --profile inference up -d --build
+   docker compose -f compose.yml -f compose.inference.rocm.yml --profile inference logs -f inference-worker
+   ```
+
+   To include the worker when the existing systemd unit starts Compose, add `COMPOSE_FILE=compose.yml:compose.inference.rocm.yml` and `COMPOSE_PROFILES=inference` to `.env` and restart the service from Cockpit or a privileged terminal. Both containers share the existing data volume. The model bind mount and named data/model cache volumes survive rebuilds.
+
+For code-only changes after both images already exist, these lightweight rebuilds reuse the installed GPU runtime. Use the full Compose build above when changing runtime dependencies or the base images.
 
 ```bash
-docker compose -f compose.yml -f compose.rocm.yml up -d --build
-# or, on a CUDA host with NVIDIA Container Toolkit:
-docker compose -f compose.yml -f compose.cuda.yml up -d --build
+docker build -f deploy/Dockerfile.refresh-api -t video-analyzer:local .
+docker build -f deploy/Dockerfile.refresh-inference -t framewise-inference-rocm:local .
+sudo systemctl restart framewise.service
 ```
 
-The base image is not a ROCm or CUDA PyTorch image yet. When an inference pipeline is added, pin a compatible runtime and model version in its own worker image. Keep the current `/models` volume for weights so rebuilds do not redownload them.
-The ROCm override maps `/dev/kfd` and `/dev/dri` and adds the host's `video` and `render` group IDs. The supplied defaults match this Ubuntu host; on another machine, set `VIDEO_GID` and `RENDER_GID` in `.env` from `getent group video` and `getent group render`.
+WeVisOne supplies spatial detections, while the separate Qwen model supplies frame descriptions. Both can make mistakes; character matching, motion, and camera movement can also be inaccurate. A sequence of stills does not establish the true action between samples. Review each generated draft and approved transcript before using it. The app does not transcribe audio or generate images, speech, or video. MiniMax H3 prompts are drafts for its first-frame workflow; its supported output duration is 4–15 seconds, so longer or shorter source cuts may need splitting or holding. See [the integration notes](docs/model-integration.md) and [MiniMax H3 guidance](https://www.minimax.io/news/minimax-h3-open-source).
 
 ## Development
 
@@ -93,4 +116,4 @@ With local Python, FFmpeg, and FFprobe installed, install `backend/requirements-
 
 ## Next pipelines
 
-The current hard-cut pass is visual scene-score detection, so fades and motion may yield false boundaries or missed cuts. Future work should add model-driven first/last frame analysis, camera motion and composition, audio transcription, voice and character grouping, and prompt generation. Model runs should append records to `analysis_results`, preserve the model ID, job ID, prompt, settings, and frozen context snapshot, and leave manual revisions intact. Keep inference on proxy or extracted frames and reference the original for final quality checks. The requested [WeVisOne-VL paper](https://huggingface.co/papers/2610.31329) is planned for frame-level visual perception; its weights are intentionally not downloaded. See [the integration plan](docs/model-integration.md).
+Hard-cut detection may miss fades or split on rapid motion. Automated transcription, voice identification, temporal motion analysis, and production of images, audio, or video remain separate future work.

@@ -1,0 +1,30 @@
+services:
+  inference-worker:
+    profiles: ["inference"]
+    build:
+      context: .
+      dockerfile: Dockerfile.inference.rocm
+    image: framewise-inference-rocm:local
+    restart: unless-stopped
+    depends_on:
+      video-analyzer:
+        condition: service_healthy
+    environment:
+      DATA_DIR: /data
+      TMPDIR: /data/tmp
+      WEVISONE_MODEL_PATH: /models/wevisone-4b
+      CAPTION_MODEL_PATH: /models/qwen3-vl-2b
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - video_data:/data
+      - model_cache:/models/cache
+      - ${WEVISONE_MODEL_DIR:-./.models/wevisone-4b}:/models/wevisone-4b:ro
+      - ${CAPTION_MODEL_DIR:-./.models/qwen3-vl-2b}:/models/qwen3-vl-2b:ro
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-991}"
+    security_opt:
+      - seccomp:unconfined

@@ -53,12 +53,17 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cuts (
             id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
             cut_index INTEGER NOT NULL, start_time REAL NOT NULL, end_time REAL NOT NULL,
+            first_frame_time REAL, last_frame_time REAL,
             active INTEGER NOT NULL DEFAULT 1,
             title TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
             notes TEXT NOT NULL DEFAULT '', results_json TEXT NOT NULL DEFAULT '{}',
             UNIQUE(episode_id, cut_index)
         );
         CREATE INDEX IF NOT EXISTS cuts_episode_idx ON cuts(episode_id);
+        CREATE TABLE IF NOT EXISTS cut_analysis_configs (
+            cut_id TEXT PRIMARY KEY REFERENCES cuts(id) ON DELETE CASCADE,
+            config_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS chunks (
             id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
             chunk_index INTEGER NOT NULL, start_time REAL NOT NULL, end_time REAL NOT NULL,
@@ -77,6 +82,12 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS analysis_results_cut_idx ON analysis_results(cut_id);
+        CREATE TABLE IF NOT EXISTS analysis_job_cuts (
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE,
+            evidence_json TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(job_id,cut_id)
+        );
         CREATE TABLE IF NOT EXISTS transcript_segments (
             id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
             start_time REAL NOT NULL, end_time REAL NOT NULL, text TEXT NOT NULL,
@@ -115,6 +126,9 @@ def init_db():
         cut_columns = {row["name"] for row in db.execute("PRAGMA table_info(cuts)")}
         if "active" not in cut_columns:
             db.execute("ALTER TABLE cuts ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        for column in ("first_frame_time", "last_frame_time"):
+            if column not in cut_columns:
+                db.execute(f"ALTER TABLE cuts ADD COLUMN {column} REAL")
         active = db.execute("SELECT id,episode_id FROM jobs WHERE status IN ('queued','running') ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, id").fetchall()
         kept = set()
         for job in active:

@@ -15,7 +15,7 @@ const kinds: { value: ResultKind; label: string }[] = [
 
 type Draft = Pick<AnalysisResult, 'kind' | 'title' | 'content' | 'status'> & { id?: string; superseded_by?: string | null; origin?: string; model_id?: string | null }
 
-export default function ResultEditor({ cutId }: { cutId: string }) {
+export default function ResultEditor({ cutId, refreshKey }: { cutId: string; refreshKey: string }) {
   const [results, setResults] = useState<AnalysisResult[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
   const [history, setHistory] = useState(false)
@@ -24,10 +24,11 @@ export default function ResultEditor({ cutId }: { cutId: string }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const load = useCallback(async (showHistory: boolean) => {
-    try { setResults(await api<AnalysisResult[]>(`/cuts/${cutId}/analysis-results${showHistory ? '?history=true' : ''}`)); setError('') }
+    try { setResults(await api<AnalysisResult[]>(`/cuts/${cutId}/analysis-results?include_context=false${showHistory ? '&history=true' : ''}`)); setError('') }
     catch (err) { setError((err as Error).message) }
   }, [cutId])
   useEffect(() => { setDraft(null); setHistory(false); setContextOpen(false); setContext(null); void load(false) }, [cutId, load])
+  useEffect(() => { void load(history) }, [refreshKey])
   async function toggleHistory() { const next = !history; setHistory(next); await load(next) }
   async function toggleContext() {
     if (contextOpen) { setContextOpen(false); return }
@@ -47,7 +48,7 @@ export default function ResultEditor({ cutId }: { cutId: string }) {
   }
   return <div className="rounded-xl border hairline bg-[#1b202a] p-4">
     <div className="flex items-center justify-between gap-2"><p className="flex items-center gap-2 text-xs font-semibold"><WandSparkles size={14} className="text-[#bca7ff]" /> Analysis fields</p><button onClick={() => setDraft({ kind: 'first_frame', title: '', content: '', status: 'draft' })} className="rounded-md p-1 text-[#c3aeff] hover:bg-[#343047]" title="Add analysis field" aria-label="Add analysis field"><Plus size={16} /></button></div>
-    <p className="muted mt-2 text-[11px] leading-5">Write findings now. Later model runs can add their own versions without replacing yours.</p>
+    <p className="muted mt-2 text-[11px] leading-5">Review and edit findings. Model runs add drafts without replacing your existing work.</p>
     {error && <p className="mt-3 text-xs text-[#ff9fa7]">{error}</p>}
     {results.length > 0 ? <div className="mt-4 space-y-1">{results.map(result => <button key={result.id} onClick={() => setDraft(result)} className={`w-full rounded-lg border px-3 py-2 text-left ${draft?.id === result.id ? 'border-[#a58ae8] bg-[#322a48]' : 'border-[#333a45] bg-[#232a35] hover:border-[#716585]'}`}><span className="flex items-center justify-between gap-2"><strong className="truncate text-[11px]">{result.title || kinds.find(kind => kind.value === result.kind)?.label}</strong><span className={`text-[10px] ${result.status === 'approved' ? 'text-[#7bdcb2]' : 'text-[#aeb5c1]'}`}>{result.status}</span></span><span className="muted mt-1 block truncate text-[10px]">{result.content}</span></button>)}</div> : <p className="muted mt-4 text-[11px]">No analysis fields yet.</p>}
     <button onClick={toggleHistory} className="muted mt-3 flex items-center gap-1 text-[11px] hover:text-white"><History size={12} /> {history ? 'Hide history' : 'Show history'}</button>
