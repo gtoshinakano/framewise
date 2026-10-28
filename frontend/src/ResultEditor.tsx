@@ -15,7 +15,7 @@ const kinds: { value: ResultKind; label: string }[] = [
 
 type Draft = Pick<AnalysisResult, 'kind' | 'title' | 'content' | 'status'> & { id?: string; superseded_by?: string | null; origin?: string; model_id?: string | null }
 
-export default function ResultEditor({ cutId, refreshKey }: { cutId: string; refreshKey: string }) {
+export default function ResultEditor({ cutId, refreshKey, onLoaded }: { cutId: string; refreshKey: string; onLoaded?: (results: AnalysisResult[]) => void }) {
   const [results, setResults] = useState<AnalysisResult[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
   const [history, setHistory] = useState(false)
@@ -24,7 +24,7 @@ export default function ResultEditor({ cutId, refreshKey }: { cutId: string; ref
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const load = useCallback(async (showHistory: boolean) => {
-    try { setResults(await api<AnalysisResult[]>(`/cuts/${cutId}/analysis-results?include_context=false${showHistory ? '&history=true' : ''}`)); setError('') }
+    try { const value = await api<AnalysisResult[]>(`/cuts/${cutId}/analysis-results?include_context=false${showHistory ? '&history=true' : ''}`); setResults(value); onLoaded?.(value); setError('') }
     catch (err) { setError((err as Error).message) }
   }, [cutId])
   useEffect(() => { setDraft(null); setHistory(false); setContextOpen(false); setContext(null); void load(false) }, [cutId, load])

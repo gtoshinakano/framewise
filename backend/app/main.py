@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db, media, worker
+from .inference_worker import ANIMATION_TITLE
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_GB", "40")) * 1024 ** 3
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
@@ -61,7 +62,7 @@ class AnalysisConfig(BaseModel):
     frame_mode: Literal["endpoints", "uniform"] = "endpoints"
     frame_count: int = Field(default=4, ge=2, le=32)
     context_ids: list[str] = Field(default_factory=list, max_length=200)
-    detection_queries: list[Annotated[str, Field(min_length=1, max_length=100, pattern=r".*\S.*")]] = Field(default_factory=lambda: ["person", "clothing", "animal", "vehicle", "chair", "table"], min_length=1, max_length=20)
+    detection_queries: list[Annotated[str, Field(min_length=1, max_length=100, pattern=r".*\S.*")]] = Field(default_factory=lambda: ["person", "clothing", "animal", "vehicle", "chair", "table", "subtitles"], min_length=1, max_length=20)
     additional_context: str = Field(default="", max_length=20000)
     openrouter_model: str = Field(default="openrouter/free", min_length=1, max_length=200, pattern=r"^[a-zA-Z0-9_./:-]+$")
 
@@ -92,6 +93,12 @@ class ResultCreate(BaseModel):
     title: str = Field(default="", max_length=200)
     content: str = Field(min_length=1, max_length=50000)
     status: ResultStatus = "draft"
+
+
+class PromptRegenInput(BaseModel):
+    mode: Literal["edit", "regenerate"]
+    instruction: str = Field(default="", max_length=5000)
+    current_prompt: str | None = Field(default=None, max_length=50000)
 
 
 class ResultUpdate(BaseModel):
@@ -632,6 +639,51 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc
     return {"job_id": job_id}
+
+
+@app.post("/api/cuts/{cut_id}/regenerate-prompt")
+def regenerate_animation_prompt(cut_id: str, body: PromptRegenInput):
+    cut, config = analysis_config_for_cut(cut_id)
+    if not cut["active"]:
+        raise HTTPException(400, "Only active cuts can be analyzed")
+    if body.mode == "edit" and not body.instruction.strip():
+        raise HTTPException(400, "Describe the change you want to make")
+    job_id = str(uuid.uuid4())
+    try:
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (cut["episode_id"],)).fetchone():
+                raise HTTPException(409, "An analysis job is already running for this episode")
+            rows = conn.execute("SELECT id,kind,title,content FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL AND status!='rejected' ORDER BY rowid", (cut_id,)).fetchall()
+            animation = next((row for row in reversed(rows) if row["title"] == ANIMATION_TITLE), None)
+            if body.mode == "edit" and not animation and not (body.current_prompt or "").strip():
+                raise HTTPException(400, "There is no animation prompt to edit; regenerate one instead")
+            current = body.current_prompt if body.current_prompt is not None else (animation["content"] if animation else "")
+            results = [{"title": row["title"], "kind": row["kind"], "content": row["content"][:8000]} for row in rows if not animation or row["id"] != animation["id"]]
+            payload = {"cut_id": cut_id, "mode": body.mode, "instruction": body.instruction.strip(), "current_prompt": current if body.mode == "edit" else "",
+                       "model": config.openrouter_model, "base_id": animation["id"] if animation else None, "results": results, "context": selected_analysis_context(cut_id, config)}
+            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "regen", json.dumps(payload)))
+            conn.execute("UPDATE episodes SET status='queued',stage='Waiting for analysis worker',error=NULL WHERE id=?", (cut["episode_id"],))
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "An analysis job is already running for this episode") from exc
+    return {"job_id": job_id}
+
+
+@app.get("/api/analysis-results/{result_id}/frame")
+def get_analysis_result_frame(result_id: str):
+    """Serve the sampled image for a detection result, following its revision chain."""
+    seen = set()
+    while result_id and result_id not in seen:
+        seen.add(result_id)
+        row = db.one("SELECT a.parent_id,c.episode_id FROM analysis_results a JOIN cuts c ON c.id=a.cut_id WHERE a.id=?", (result_id,))
+        if not row:
+            break
+        episode = require_episode(row["episode_id"])
+        target = media.episode_dir(episode["project_id"], episode["id"]) / "analysis" / f"{result_id}.jpg"
+        if target.is_file():
+            return FileResponse(target, media_type="image/jpeg")
+        result_id = row["parent_id"]
+    raise HTTPException(404, "No analyzed frame is stored for this result; rerun analysis")
 
 
 @app.post("/api/cuts/{cut_id}/analyze")

@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Framewise Docker cleanup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

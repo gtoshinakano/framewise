@@ -1,0 +1,6 @@
+[Unit]
+Description=Prune old Framewise Docker build cache and images
+
+[Service]
+Type=oneshot
+ExecStart=/home/bytoshi/app-projects/video-analyzer/scripts/docker-cleanup.sh

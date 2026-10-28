@@ -220,5 +220,54 @@ class AnalysisTest(unittest.TestCase):
         self.assertIn('character_sheets', repair_payload['messages'][-1]['content'])
         self.assertEqual(call.call_count, 2)
 
+    def test_subtitles_default_and_prompt_rule(self):
+        config = self.client.get('/api/cuts/c1/analysis-config').json()
+        self.assertIn('subtitles', config['detection_queries'])
+        self.assertIn('Subtitle rule', inference_worker.SYSTEM_PROMPT)
+        self.assertIn('Subtitle rule', inference_worker.ANIMATION_SYSTEM)
+
+    def test_animation_prompt_regeneration_creates_revision(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,status,origin) VALUES ('anim','c1','generation_prompt','MiniMax animation prompt','Old prompt','approved','model'),('shot','c1','cut_description','Shot description','A figure','draft','model')")
+        self.assertEqual(self.client.post('/api/cuts/c1/regenerate-prompt', json={'mode': 'edit', 'instruction': ' '}).status_code, 400)
+        queued = self.client.post('/api/cuts/c1/regenerate-prompt', json={'mode': 'edit', 'instruction': 'Slower camera', 'current_prompt': 'Unsaved prompt'})
+        self.assertEqual(queued.status_code, 200)
+        self.assertEqual(self.client.post('/api/cuts/c2/regenerate-prompt', json={'mode': 'regenerate'}).status_code, 409)
+        job_id = queued.json()['job_id']
+        payload = json.loads(db.one("SELECT payload_json FROM jobs WHERE id=?", (job_id,))['payload_json'])
+        self.assertEqual((payload['base_id'], payload['current_prompt']), ('anim', 'Unsaved prompt'))
+        self.assertEqual([item['title'] for item in payload['results']], ['Shot description'])
+        claimed = worker.claim_job(('regen',))
+        response = {'model': 'provider/x', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({'minimax_animation_prompt': 'New prompt'})}}]}
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'k'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps(response).encode())):
+            inference_worker.process_regen(*claimed)
+        results = self.client.get('/api/cuts/c1/analysis-results?include_context=false').json()
+        current = next(item for item in results if item['title'] == 'MiniMax animation prompt')
+        self.assertEqual((current['content'], current['parent_id'], current['origin']), ('New prompt', 'anim', 'model'))
+        self.assertEqual(db.one("SELECT superseded_by FROM analysis_results WHERE id='anim'")['superseded_by'], current['id'])
+        self.assertEqual(db.one("SELECT status FROM jobs WHERE id=?", (job_id,))['status'], 'done')
+
+    def test_regeneration_fails_when_prompt_changed_meanwhile(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,status,origin) VALUES ('anim','c1','generation_prompt','MiniMax animation prompt','Old','draft','model')")
+        job_id = self.client.post('/api/cuts/c1/regenerate-prompt', json={'mode': 'regenerate'}).json()['job_id']
+        claimed = worker.claim_job(('regen',))
+        self.client.put('/api/analysis-results/anim', json={'title': 'MiniMax animation prompt', 'content': 'Edited by hand', 'status': 'draft'})
+        response = {'model': 'm', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({'minimax_animation_prompt': 'New'})}}]}
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'k'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps(response).encode())):
+            inference_worker.process_regen(*claimed)
+        self.assertEqual(db.one("SELECT status FROM jobs WHERE id=?", (job_id,))['status'], 'failed')
+
+    def test_result_frame_follows_revision_chain(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,status,origin) VALUES ('det','c1','other','Object detections at 0.000s','{}','draft','model')")
+        self.assertEqual(self.client.get('/api/analysis-results/det/frame').status_code, 404)
+        folder = media.episode_dir('p', 'e') / 'analysis'
+        folder.mkdir()
+        (folder / 'det.jpg').write_bytes(b'jpeg')
+        revised = self.client.put('/api/analysis-results/det', json={'title': 'x', 'content': '{}', 'status': 'draft'}).json()
+        self.assertEqual(self.client.get(f"/api/analysis-results/{revised['id']}/frame").content, b'jpeg')
+
+
 if __name__ == '__main__':
     unittest.main()
