@@ -1,0 +1,21 @@
+# Development override: edit code on the host and see it without rebuilding images.
+#   COMPOSE_FILE=compose.yml:compose.inference.rocm.yml:compose.dev.yml docker compose up -d
+# Rebuild only when Python or npm dependencies change.
+services:
+  video-analyzer:
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--reload", "--reload-dir", "/app/app"]
+    volumes:
+      - ./backend/app:/app/app:ro
+      - ./frontend/dist:/app/static:ro
+  inference-worker:
+    volumes:
+      - ./backend/app:/app/app:ro
+  frontend-watch:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["sh", "-c", "npm ci && npm run build -- --watch"]
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+volumes:
+  frontend_node_modules:

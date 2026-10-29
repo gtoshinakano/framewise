@@ -669,6 +669,43 @@ def regenerate_animation_prompt(cut_id: str, body: PromptRegenInput):
     return {"job_id": job_id}
 
 
+def delete_current_results(conn, ids: list[str]):
+    """Hard-delete current revisions; a deleted revision's parent becomes current again."""
+    for result_id in ids:
+        row = conn.execute("SELECT a.parent_id,c.episode_id FROM analysis_results a JOIN cuts c ON c.id=a.cut_id WHERE a.id=?", (result_id,)).fetchone()
+        if not row:
+            continue
+        if row["parent_id"]:
+            conn.execute("UPDATE analysis_results SET superseded_by=NULL WHERE id=? AND superseded_by=?", (row["parent_id"], result_id))
+        conn.execute("DELETE FROM analysis_results WHERE id=?", (result_id,))
+        episode = conn.execute("SELECT project_id FROM episodes WHERE id=?", (row["episode_id"],)).fetchone()
+        (media.episode_dir(episode["project_id"], row["episode_id"]) / "analysis" / f"{result_id}.jpg").unlink(missing_ok=True)
+
+
+@app.delete("/api/analysis-results/{result_id}")
+def delete_analysis_result(result_id: str):
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT superseded_by FROM analysis_results WHERE id=?", (result_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Analysis result not found")
+        if row["superseded_by"]:
+            raise HTTPException(409, "Only the current revision can be deleted")
+        delete_current_results(conn, [result_id])
+    return {"ok": True}
+
+
+@app.delete("/api/cuts/{cut_id}/analysis-results")
+def discard_draft_results(cut_id: str):
+    """Delete every current draft of a cut; approved and rejected results stay."""
+    analysis_config_for_cut(cut_id)
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ids = [row["id"] for row in conn.execute("SELECT id FROM analysis_results WHERE cut_id=? AND status='draft' AND superseded_by IS NULL", (cut_id,))]
+        delete_current_results(conn, ids)
+    return {"deleted": len(ids)}
+
+
 @app.get("/api/analysis-results/{result_id}/frame")
 def get_analysis_result_frame(result_id: str):
     """Serve the sampled image for a detection result, following its revision chain."""

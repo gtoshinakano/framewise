@@ -268,6 +268,18 @@ class AnalysisTest(unittest.TestCase):
         revised = self.client.put('/api/analysis-results/det', json={'title': 'x', 'content': '{}', 'status': 'draft'}).json()
         self.assertEqual(self.client.get(f"/api/analysis-results/{revised['id']}/frame").content, b'jpeg')
 
+    def test_delete_results_reverts_revision_and_discards_drafts(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,status,origin) VALUES ('a','c1','other','A','one','approved','model'),('d1','c1','other','D1','x','draft','model'),('d2','c1','other','D2','y','draft','model')")
+        revised = self.client.put('/api/analysis-results/a', json={'title': 'A', 'content': 'two', 'status': 'draft'}).json()
+        self.assertEqual(self.client.delete('/api/analysis-results/a').status_code, 409)
+        self.assertEqual(self.client.delete(f"/api/analysis-results/{revised['id']}").status_code, 200)
+        self.assertIsNone(db.one("SELECT superseded_by FROM analysis_results WHERE id='a'")['superseded_by'])
+        self.assertEqual(self.client.delete('/api/cuts/c1/analysis-results').json(), {'deleted': 2})
+        remaining = [item['id'] for item in self.client.get('/api/cuts/c1/analysis-results?include_context=false').json()]
+        self.assertEqual(remaining, ['a'])
+        self.assertEqual(self.client.delete('/api/analysis-results/missing').status_code, 404)
+
 
 if __name__ == '__main__':
     unittest.main()
