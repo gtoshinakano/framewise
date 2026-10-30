@@ -11,6 +11,11 @@ services:
   inference-worker:
     volumes:
       - ./backend/app:/app/app:ro
+  audio-worker:
+    image: framewise-audio-rocm:local
+    profiles: ["audio"]
+    volumes:
+      - ./backend/app:/app/app:ro
   frontend-watch:
     image: node:22-alpine
     working_dir: /app

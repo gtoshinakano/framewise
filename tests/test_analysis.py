@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 import io
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -92,7 +93,7 @@ class AnalysisTest(unittest.TestCase):
         def descriptions(job, owner, episode, cut, config):
             calls.append(cut['id'])
             return [{'time': cut['start_time'] + .05, 'description': 'Visible figure'}]
-        def summary(config, context, observations):
+        def summary(config, context, observations, progress=None):
             return ({key: f'{key} draft' for _, _, key in inference_worker.FIELDS}, 'test/model')
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', side_effect=descriptions), patch.object(inference_worker, 'synthesize', side_effect=summary):
             inference_worker.process(*claimed)
@@ -106,19 +107,100 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(len(compact), len(results))
         self.assertEqual(compact[0]['id'], results[0]['id'])
         self.assertEqual(compact[0]['context'], {})
-        saved = self.client.put('/api/analysis-results/' + results[0]['id'], json={'title': 'Edited', 'content': 'Human revision', 'status': 'approved'})
+        saved = self.client.put('/api/analysis-results/' + results[0]['id'], json={'title': 'Edited', 'content': 'Human revision'})
         self.assertEqual(saved.status_code, 200)
         self.assertEqual(len(self.client.get('/api/cuts/c1/analysis-results?history=true').json()), 5)
 
-    def test_invalid_context_and_episode_exclusivity(self):
+    def test_legacy_status_migration_preserves_results_and_cleans_snapshots(self):
+        snapshot = {'current_results': [{'kind': 'other', 'content': 'Previously rejected', 'status': 'rejected'}],
+                    'transcript_segments': [{'text': 'Speech', 'start_time': 0, 'end_time': 1, 'status': 'approved'}]}
+        with db.connect() as conn:
+            conn.execute("ALTER TABLE analysis_results ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'")
+            conn.execute("ALTER TABLE transcript_segments ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,content,status,context_json) VALUES ('old','c1','other','Old revision','draft',?),('keep','c1','other','Previously rejected','rejected',?),('neighbor','c2','other','Neighbor','approved',?)", (json.dumps(snapshot),)*3)
+            conn.execute("UPDATE analysis_results SET superseded_by='keep' WHERE id='old'")
+            conn.execute("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,status) VALUES ('speech','e',0,1,'Speech','rejected'),('tombstone','e',1,2,'Deleted speech','deleted')")
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status,payload_json) VALUES ('oldjob','e','analyze','failed',?)", (json.dumps({'cuts': [{'cut_id': 'c1', 'context': snapshot}]}),))
+        db.init_db()
+        db.init_db()  # The migration must be safe to repeat.
+        self.assertNotIn('status', {r['name'] for r in db.all_rows('PRAGMA table_info(analysis_results)')})
+        self.assertNotIn('status', {r['name'] for r in db.all_rows('PRAGMA table_info(transcript_segments)')})
+        self.assertEqual({r['id'] for r in db.all_rows('SELECT id FROM analysis_results')}, {'old', 'keep', 'neighbor'})
+        history = self.client.get('/api/cuts/c1/analysis-results?history=true').json()
+        self.assertEqual(len(history), 2)
+        self.assertTrue(all('status' not in row and 'status' not in row['context']['current_results'][0] for row in history))
+        self.assertEqual(db.one("SELECT superseded_by FROM analysis_results WHERE id='old'")['superseded_by'], 'keep')
+        transcript = self.client.get('/api/episodes/e/transcript?history=true').json()
+        self.assertTrue(all('status' not in row for row in transcript))
+        self.assertTrue(next(row for row in transcript if row['id'] == 'tombstone')['deleted'])
+        self.assertEqual([row['id'] for row in self.client.get('/api/episodes/e/transcript').json()], ['speech'])
+        context = self.client.get('/api/cuts/c1/analysis-context').json()
+        self.assertEqual([r['content'] for r in context['neighbor_results']['next']], ['Neighbor'])
+        self.assertEqual([r['id'] for r in context['transcript_segments']], ['speech'])
+        stored = self.client.get('/api/v1/jobs/oldjob').json()['payload']['cuts'][0]['context']
+        self.assertNotIn('status', stored['current_results'][0])
+        self.assertNotIn('status', stored['transcript_segments'][0])
+        queued = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        captured = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (queued,))['payload_json'])['cuts'][0]['context']
+        self.assertEqual([r['content'] for r in captured['current_results']], ['Previously rejected'])
+        self.assertNotIn('status', captured['current_results'][0])
+        self.assertEqual(self.client.post('/api/cuts/c1/analysis-results', json={'kind': 'other', 'content': 'x', 'status': 'draft'}).status_code, 422)
+
+    def test_invalid_context_and_analysis_queue(self):
         response = self.client.put('/api/cuts/c1/analysis-config', json={'context_ids': ['missing']})
         self.assertEqual(response.status_code, 400)
         queued = self.client.post('/api/cuts/c1/analyze')
         self.assertEqual(queued.status_code, 200)
-        self.assertEqual(self.client.post('/api/cuts/c2/analyze').status_code, 409)
+        second = self.client.post('/api/cuts/c2/analyze')
+        self.assertEqual(second.status_code, 200)
         self.assertEqual(self.client.post(f"/api/jobs/{queued.json()['job_id']}/cancel").status_code, 200)
-        self.assertEqual(db.one("SELECT status FROM episodes WHERE id='e'")["status"], 'ready')
-        self.assertEqual(self.client.post('/api/cuts/c2/analyze').status_code, 200)
+        self.assertEqual(db.one("SELECT status FROM episodes WHERE id='e'")["status"], 'queued')
+        self.assertEqual(worker.claim_job(('analyze',))[0], second.json()['job_id'])
+
+    def test_upgrade_replaces_single_active_job_constraint(self):
+        with db.connect() as conn:
+            conn.execute("CREATE UNIQUE INDEX jobs_active_episode_idx ON jobs(episode_id) WHERE status IN ('queued','running')")
+        first = self.client.post('/api/cuts/c1/analyze')
+        self.assertEqual(first.status_code, 200)
+        db.init_db()
+        second = self.client.post('/api/cuts/c2/analyze')
+        self.assertEqual(second.status_code, 200)
+        db.init_db()
+        self.assertEqual(len(db.all_rows("SELECT id FROM jobs WHERE episode_id='e' AND status='queued'")), 2)
+
+    def test_queue_exclusions_editing_and_run_history(self):
+        with db.connect() as conn:
+            conn.execute("UPDATE episodes SET duration=4 WHERE id='e'")
+        self.assertEqual(self.client.put('/api/cuts/c2/analysis-enabled', json={'analysis_enabled': False}).status_code, 200)
+        self.assertEqual(self.client.post('/api/cuts/c2/analyze').status_code, 409)
+        self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json={'additional_context': 'First preset'}).status_code, 200)
+        first = self.client.post('/api/episodes/e/analyze').json()['job_id']
+        self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json={'additional_context': 'Second preset'}).status_code, 200)
+        self.assertEqual(self.client.put('/api/cuts/c2/analysis-enabled', json={'analysis_enabled': True}).status_code, 200)
+        second = self.client.post('/api/episodes/e/analyze').json()['job_id']
+        snapshots = [json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job,))['payload_json'])['cuts'] for job in (first, second)]
+        self.assertEqual([item['cut_id'] for item in snapshots[0]], ['c1'])
+        self.assertEqual([item['cut_id'] for item in snapshots[1]], ['c1', 'c2'])
+        self.assertEqual([items[0]['config']['additional_context'] for items in snapshots], ['First preset', 'Second preset'])
+        db.init_db()
+        claimed = worker.claim_job(('analyze',))
+        self.assertEqual(claimed[0], first)
+        self.assertIsNone(worker.claim_job(('analyze',)))
+        self.assertEqual(self.client.put('/api/cuts/c1', json={'notes': 'Editing during analysis'}).status_code, 200)
+        self.assertEqual(self.client.put('/api/cuts/c1/timing', json={'start_time': 0, 'end_time': 1.5}).status_code, 200)
+        frames = worker.claim_job(('cutframes',))
+        self.assertIsNotNone(frames)
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': ''}):
+            inference_worker.process(*claimed)
+        history = self.client.get('/api/episodes/e').json()['jobs']
+        failed = next(job for job in history if job['id'] == first)
+        self.assertEqual(failed['status'], 'failed')
+        self.assertIn('OPENROUTER_API_KEY', failed['error'])
+        self.assertIsNotNone(failed['started_at'])
+        self.assertIsNotNone(failed['finished_at'])
+        self.assertEqual(snapshots[0][0]['context']['cut']['end_time'], 2)
+        self.assertEqual(self.client.post(f'/api/jobs/{first}/retry').status_code, 409)
+        self.assertEqual(self.client.get('/api/cuts/c2/analysis-config').status_code, 200)
 
     def test_queue_snapshot_excludes_concurrent_context_edits(self):
         from app import main
@@ -160,11 +242,14 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(json.loads(db.one('SELECT evidence_json FROM analysis_job_cuts WHERE job_id=?', (job_id,))['evidence_json']), observations)
         retry = self.client.post(f'/api/jobs/{job_id}/retry')
         self.assertEqual(retry.status_code, 200, retry.text)
-        self.assertEqual(retry.json()['job_id'], job_id)
+        retry_id = retry.json()['job_id']
+        self.assertNotEqual(retry_id, job_id)
+        self.assertEqual(db.one('SELECT retry_of FROM jobs WHERE id=?', (retry_id,))['retry_of'], job_id)
         claimed = worker.claim_job(('analyze',))
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', side_effect=AssertionError('should reuse checkpoint')), patch.object(inference_worker, 'synthesize', return_value=({key: 'draft' for _, _, key in inference_worker.FIELDS}, 'test/model')):
             inference_worker.process(*claimed)
-        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'failed')
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (retry_id,))['status'], 'done')
         results = self.client.get('/api/cuts/c1/analysis-results').json()
         self.assertEqual(len(results), 5)
         raw = next(item for item in results if item['title'].startswith('Raw OCR'))
@@ -204,7 +289,7 @@ class AnalysisTest(unittest.TestCase):
         def describe(job, owner, episode, cut, config):
             described.append(cut['id'])
             return [{'time': cut['start_time'], 'description': 'A figure', 'ocr_response': '', 'ocr_prompt': 'detect words'}]
-        def summary(config, context, observations):
+        def summary(config, context, observations, progress=None):
             summarized.append(context['cut']['id'])
             if context['cut']['id'] == 'c2' and summarized.count('c2') == 1:
                 raise RuntimeError('Temporary provider error')
@@ -246,10 +331,12 @@ class AnalysisTest(unittest.TestCase):
         response = {'model': 'provider/concrete', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({**fields, **sections})}}]}
         config = {'openrouter_model': 'openrouter/free'}
         observations = [{'time': .05, 'description': 'Visible figure'}]
+        progress = []
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'secret'}), patch('urllib.request.urlopen', side_effect=lambda *args, **kwargs: io.BytesIO(json.dumps(response).encode())) as call:
-            result, model = inference_worker.synthesize(config, {'additional_context': 'night'}, observations)
+            result, model = inference_worker.synthesize(config, {'additional_context': 'night'}, observations, progress=lambda phase, attempt, total: progress.append((phase, attempt, total)))
         self.assertEqual({key: result[key] for key in fields}, fields)
         self.assertEqual(model, 'provider/concrete')
+        self.assertEqual(progress, [('evidence', 1, 3), ('summary', 1, 3)])
         request = call.call_args_list[0].args[0]
         self.assertEqual(request.full_url, 'https://openrouter.ai/api/v1/chat/completions')
         payload = json.loads(request.data)
@@ -275,7 +362,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(rendered, '\n\n'.join(f'{title} · Confidence: Medium\nBody for {key}' for key, title in inference_worker.SUMMARY_TOPICS))
         repair = json.loads(call.call_args_list[1].args[0].data)
         self.assertIn('camera_movement', repair['messages'][-1]['content'])
-        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', side_effect=[reply(incomplete), reply(incomplete)]):
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', side_effect=[reply(incomplete), reply(incomplete), reply(incomplete)]):
             with self.assertRaisesRegex(RuntimeError, 'camera_movement'):
                 inference_worker.chat_json('test/model', inference_worker.SUMMARY_SYSTEM, '{}', [key for key, _ in inference_worker.SUMMARY_TOPICS], summary_topics=True)
 
@@ -289,7 +376,7 @@ class AnalysisTest(unittest.TestCase):
             output, _ = inference_worker.chat_json('test/model', inference_worker.SUMMARY_SYSTEM, '{}', keys, summary_topics=True)
         self.assertIn('lighting confidence must be', json.loads(call.call_args_list[1].args[0].data)['messages'][-1]['content'])
         self.assertEqual(inference_worker.render_summary(output).count('Confidence: Unknown'), len(keys))
-        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', side_effect=[reply(invalid), reply(invalid)]):
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', side_effect=[reply(invalid), reply(invalid), reply(invalid)]):
             with self.assertRaisesRegex(RuntimeError, 'lighting confidence'):
                 inference_worker.chat_json('test/model', inference_worker.SUMMARY_SYSTEM, '{}', keys, summary_topics=True)
 
@@ -300,6 +387,34 @@ class AnalysisTest(unittest.TestCase):
             result, _ = inference_worker.chat_json('test', 'system', 'evidence', ['visual_evidence', 'text_evidence'])
         self.assertEqual(json.loads(result['visual_evidence'])[0]['confidence'], 'low')
         self.assertEqual(json.loads(result['text_evidence'])[0]['reading'], 'OPEN')
+
+    def test_openrouter_retries_truncation_without_echoing_partial_output(self):
+        def reply(content, reason='stop'):
+            return io.BytesIO(json.dumps({'model': 'provider/free', 'choices': [{'finish_reason': reason, 'message': {'content': content}}]}).encode())
+        for content, reason in ((None, 'length'), (None, 'stop'), ('partial output', 'length')):
+            with self.subTest(reason=reason, content=content), patch.dict(os.environ, {'OPENROUTER_API_KEY': 'secret'}), patch('urllib.request.urlopen', side_effect=[reply(content, reason), reply('{"visual_evidence":"visible"}')]) as call:
+                progress = []
+                output, model = inference_worker.chat_json('openrouter/free', 'system', 'evidence', ['visual_evidence'], progress=lambda a, n: progress.append((a, n)))
+            self.assertEqual((output['visual_evidence'], model), ('visible', 'provider/free'))
+            retry = json.loads(call.call_args_list[1].args[0].data)
+            self.assertEqual(retry['max_tokens'], 12288)
+            self.assertEqual(retry['messages'][1]['content'], 'evidence')
+            self.assertNotIn('partial output', json.dumps(retry))
+            self.assertEqual(progress, [(1, 3), (2, 3)])
+
+    def test_openrouter_retries_transient_failures_but_not_authentication(self):
+        good = io.BytesIO(json.dumps({'model': 'provider/free', 'choices': [{'finish_reason': 'stop', 'message': {'content': '{"text_evidence":"none"}'}}]}).encode())
+        rate_limited = urllib.error.HTTPError('https://example.invalid', 429, 'rate limit', {}, None)
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'secret'}), patch('urllib.request.urlopen', side_effect=[rate_limited, TimeoutError(), good]) as call, patch.object(inference_worker.time, 'sleep') as sleep:
+            result, _ = inference_worker.chat_json('openrouter/free', 'system', 'evidence', ['text_evidence'])
+        self.assertEqual(result['text_evidence'], 'none')
+        self.assertEqual(call.call_count, 3)
+        self.assertEqual([item.args[0] for item in sleep.call_args_list], [2, 4])
+        unauthorized = urllib.error.HTTPError('https://example.invalid', 401, 'auth', {}, None)
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'secret'}), patch('urllib.request.urlopen', side_effect=unauthorized) as call:
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 401'):
+                inference_worker.chat_json('openrouter/free', 'system', 'evidence', ['text_evidence'])
+        self.assertEqual(call.call_count, 1)
 
     def test_openrouter_repairs_missing_fields_once(self):
         fields = {key: f'{key} draft' for _, _, key in inference_worker.FIELDS}
@@ -326,11 +441,11 @@ class AnalysisTest(unittest.TestCase):
 
     def test_cut_summary_regeneration_creates_revision(self):
         with db.connect() as conn:
-            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,status,origin) VALUES ('anim','c1','generation_prompt','Cut summary','Old prompt','approved','model'),('shot','c1','cut_description','Shot description','A figure','draft','model')")
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin) VALUES ('anim','c1','generation_prompt','Cut summary','Old prompt','model'),('shot','c1','cut_description','Shot description','A figure','model')")
         self.assertEqual(self.client.post('/api/cuts/c1/regenerate-summary', json={'mode': 'edit', 'instruction': ' '}).status_code, 400)
         queued = self.client.post('/api/cuts/c1/regenerate-summary', json={'mode': 'edit', 'instruction': 'Slower camera', 'current_prompt': 'Unsaved prompt'})
         self.assertEqual(queued.status_code, 200)
-        self.assertEqual(self.client.post('/api/cuts/c2/regenerate-summary', json={'mode': 'regenerate'}).status_code, 409)
+        self.assertEqual(self.client.post('/api/cuts/c2/regenerate-summary', json={'mode': 'regenerate'}).status_code, 200)
         job_id = queued.json()['job_id']
         payload = json.loads(db.one("SELECT payload_json FROM jobs WHERE id=?", (job_id,))['payload_json'])
         self.assertEqual((payload['base_id'], payload['current_prompt']), ('anim', 'Unsaved prompt'))
@@ -347,10 +462,10 @@ class AnalysisTest(unittest.TestCase):
 
     def test_summary_regeneration_fails_when_changed_meanwhile(self):
         with db.connect() as conn:
-            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,status,origin) VALUES ('anim','c1','generation_prompt','Cut summary','Old','draft','model')")
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin) VALUES ('anim','c1','generation_prompt','Cut summary','Old','model')")
         job_id = self.client.post('/api/cuts/c1/regenerate-summary', json={'mode': 'regenerate'}).json()['job_id']
         claimed = worker.claim_job(('regen',))
-        self.client.put('/api/analysis-results/anim', json={'title': 'Cut summary', 'content': 'Edited by hand', 'status': 'draft'})
+        self.client.put('/api/analysis-results/anim', json={'title': 'Cut summary', 'content': 'Edited by hand'})
         response = {'model': 'm', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({key: {'content': 'New', 'confidence': 'unknown'} for key, _ in inference_worker.SUMMARY_TOPICS})}}]}
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'k'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps(response).encode())):
             inference_worker.process_regen(*claimed)
@@ -358,24 +473,24 @@ class AnalysisTest(unittest.TestCase):
 
     def test_result_frame_follows_revision_chain(self):
         with db.connect() as conn:
-            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,status,origin) VALUES ('det','c1','other','Object detections at 0.000s','{}','draft','model')")
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin) VALUES ('det','c1','other','Object detections at 0.000s','{}','model')")
         self.assertEqual(self.client.get('/api/analysis-results/det/frame').status_code, 404)
         folder = media.episode_dir('p', 'e') / 'analysis'
         folder.mkdir()
         (folder / 'det.jpg').write_bytes(b'jpeg')
-        revised = self.client.put('/api/analysis-results/det', json={'title': 'x', 'content': '{}', 'status': 'draft'}).json()
+        revised = self.client.put('/api/analysis-results/det', json={'title': 'x', 'content': '{}'}).json()
         self.assertEqual(self.client.get(f"/api/analysis-results/{revised['id']}/frame").content, b'jpeg')
 
-    def test_delete_results_reverts_revision_and_discards_drafts(self):
+    def test_delete_result_reverts_revision_without_bulk_deletion(self):
         with db.connect() as conn:
-            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,status,origin) VALUES ('a','c1','other','A','one','approved','model'),('d1','c1','other','D1','x','draft','model'),('d2','c1','other','D2','y','draft','model')")
-        revised = self.client.put('/api/analysis-results/a', json={'title': 'A', 'content': 'two', 'status': 'draft'}).json()
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin) VALUES ('a','c1','other','A','one','model'),('d1','c1','other','D1','x','model'),('d2','c1','other','D2','y','model')")
+        revised = self.client.put('/api/analysis-results/a', json={'title': 'A', 'content': 'two'}).json()
         self.assertEqual(self.client.delete('/api/analysis-results/a').status_code, 409)
         self.assertEqual(self.client.delete(f"/api/analysis-results/{revised['id']}").status_code, 200)
         self.assertIsNone(db.one("SELECT superseded_by FROM analysis_results WHERE id='a'")['superseded_by'])
-        self.assertEqual(self.client.delete('/api/cuts/c1/analysis-results').json(), {'deleted': 2})
+        self.assertEqual(self.client.delete('/api/cuts/c1/analysis-results').status_code, 405)
         remaining = [item['id'] for item in self.client.get('/api/cuts/c1/analysis-results?include_context=false').json()]
-        self.assertEqual(remaining, ['a'])
+        self.assertEqual(set(remaining), {'a', 'd1', 'd2'})
         self.assertEqual(self.client.delete('/api/analysis-results/missing').status_code, 404)
 
 

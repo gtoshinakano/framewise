@@ -1,4 +1,5 @@
 import json
+import io
 import math
 import mimetypes
 import os
@@ -6,16 +7,19 @@ import re
 import shutil
 import uuid
 import sqlite3
+import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import db, media, worker
+from .external_api import AnalysisContext, AnalysisResult, ContextItem, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_GB", "40")) * 1024 ** 3
@@ -33,7 +37,24 @@ async def lifespan(_app: FastAPI):
         worker.stop_worker()
 
 
-app = FastAPI(title="Video Analyzer", lifespan=lifespan)
+INTEGRATION_GUIDE = (Path(__file__).parent / "integration-guide.md").read_text(encoding="utf-8")
+app = FastAPI(title="Framewise API", version="1.0.0", description=INTEGRATION_GUIDE, lifespan=lifespan,
+              docs_url=None, redoc_url=None)
+app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
+
+
+@app.get("/docs", include_in_schema=False)
+def swagger_docs():
+    return get_swagger_ui_html(openapi_url=app.openapi_url, title="Framewise API documentation",
+                               swagger_js_url="/api/swagger-assets/swagger-ui-bundle.js",
+                               swagger_css_url="/api/swagger-assets/swagger-ui.css",
+                               swagger_favicon_url="data:,", swagger_ui_parameters={"validatorUrl": None})
+
+
+@app.get("/api/integration-guide", response_class=PlainTextResponse, tags=["External integration v1"],
+         summary="Read the external integration guide as Markdown")
+def integration_guide():
+    return INTEGRATION_GUIDE
 
 
 class ProjectInput(BaseModel):
@@ -74,6 +95,10 @@ class CutInput(BaseModel):
     results: dict = Field(default_factory=dict)
 
 
+class CutAnalysisEnabledInput(BaseModel):
+    analysis_enabled: bool
+
+
 class CutTimingInput(BaseModel):
     start_time: float
     end_time: float
@@ -85,14 +110,13 @@ class ChunkInput(BaseModel):
 
 
 ResultKind = Literal["first_frame", "camera_movement", "composition", "last_frame", "cut_description", "audio_visual_match", "generation_prompt", "other"]
-ResultStatus = Literal["draft", "approved", "rejected"]
 
 
 class ResultCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     kind: ResultKind
     title: str = Field(default="", max_length=200)
     content: str = Field(min_length=1, max_length=50000)
-    status: ResultStatus = "draft"
 
 
 class PromptRegenInput(BaseModel):
@@ -102,24 +126,35 @@ class PromptRegenInput(BaseModel):
 
 
 class ResultUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     title: str = Field(default="", max_length=200)
     content: str = Field(min_length=1, max_length=50000)
-    status: ResultStatus
 
 
 class TranscriptInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     start_time: float = Field(ge=0)
     end_time: float = Field(gt=0)
     text: str = Field(min_length=1, max_length=20000)
     speaker_label: str = Field(default="", max_length=200)
     character_context_id: str | None = None
-    status: ResultStatus = "draft"
+
+
+class VoiceRange(BaseModel):
+    start_time: float = Field(ge=0, allow_inf_nan=False)
+    end_time: float = Field(gt=0, allow_inf_nan=False)
 
 
 class VoiceSampleInput(BaseModel):
     character_context_id: str
-    start_time: float = Field(ge=0, allow_inf_nan=False)
-    end_time: float = Field(gt=0, allow_inf_nan=False)
+    ranges: list[VoiceRange] | None = Field(default=None, min_length=1, max_length=50)
+    # Preserve requests from clients using the original single-range API.
+    start_time: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    end_time: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+class VoicePreviewInput(BaseModel):
+    ranges: list[VoiceRange] = Field(min_length=1, max_length=50)
 
 
 class ContextInput(BaseModel):
@@ -154,13 +189,14 @@ def episode_response(episode_id: str):
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
     # The queued payload can contain every cut's context and may be very large.
     # Keep it in SQLite for the worker and return only job metadata to the UI.
-    episode["jobs"] = db.all_rows("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
+    episode["jobs"] = db.all_rows("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
     return episode
 
 
 def serialize_cut(cut: dict):
     cut["results"] = json.loads(cut.pop("results_json"))
     cut["active"] = bool(cut["active"])
+    cut["analysis_enabled"] = bool(cut["analysis_enabled"])
     fallback_first, fallback_last = media.cut_frame_times(cut["start_time"], cut["end_time"])
     cut["first_frame_time"] = cut.get("first_frame_time") if cut.get("first_frame_time") is not None else fallback_first
     cut["last_frame_time"] = cut.get("last_frame_time") if cut.get("last_frame_time") is not None else fallback_last
@@ -171,6 +207,11 @@ def serialize_result(result: dict):
     result["settings"] = json.loads(result.pop("settings_json"))
     result["context"] = json.loads(result.pop("context_json"))
     return result
+
+
+def serialize_transcript(segment: dict):
+    segment["deleted"] = bool(segment["deleted"])
+    return segment
 
 
 def validate_transcript(episode: dict, body: TranscriptInput):
@@ -220,8 +261,9 @@ def update_project(project_id: str, body: ProjectInput):
     return require_project(project_id)
 
 
-@app.get("/api/projects/{project_id}/context")
+@app.get("/api/projects/{project_id}/context", responses={200: {"model": list[ContextItem]}})
 def list_context(project_id: str):
+    """List project-wide and all episode-specific context items for this project."""
     require_project(project_id)
     return db.all_rows("SELECT * FROM context_items WHERE project_id=? ORDER BY kind,title", (project_id,))
 
@@ -254,9 +296,13 @@ def update_context(context_id: str, body: ContextInput):
 @app.delete("/api/context/{context_id}")
 def delete_context(context_id: str):
     with db.connect() as conn:
-        if not conn.execute("SELECT 1 FROM context_items WHERE id=?", (context_id,)).fetchone():
+        item = conn.execute("SELECT project_id FROM context_items WHERE id=?", (context_id,)).fetchone()
+        if not item:
             raise HTTPException(404, "Context item not found")
+        samples = conn.execute("SELECT id FROM character_voice_samples WHERE character_context_id=?", (context_id,)).fetchall()
         conn.execute("DELETE FROM context_items WHERE id=?", (context_id,))
+    for sample in samples:
+        media.voice_reference_path(item['project_id'], sample['id']).unlink(missing_ok=True)
     return {"ok": True}
 
 
@@ -374,7 +420,10 @@ def delete_episode(episode_id: str):
         active = conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (episode_id,)).fetchone()
         if active:
             raise HTTPException(409, "Wait for analysis jobs to finish before deleting this episode")
+        samples = conn.execute("SELECT v.id FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id WHERE c.episode_id=?", (episode_id,)).fetchall()
         conn.execute("DELETE FROM episodes WHERE id=?", (episode_id,))
+    for sample in samples:
+        media.voice_reference_path(episode['project_id'], sample['id']).unlink(missing_ok=True)
     shutil.rmtree(db.DATA_DIR / "projects" / episode["project_id"] / "episodes" / episode_id, ignore_errors=True)
     return {"ok": True}
 
@@ -389,6 +438,14 @@ def update_cut(cut_id: str, body: CutInput):
     return serialize_cut(db.one("SELECT * FROM cuts WHERE id=?", (cut_id,)))
 
 
+@app.put("/api/cuts/{cut_id}/analysis-enabled")
+def set_cut_analysis_enabled(cut_id: str, body: CutAnalysisEnabledInput):
+    with db.connect() as conn:
+        if not conn.execute("UPDATE cuts SET analysis_enabled=? WHERE id=? AND active=1", (int(body.analysis_enabled), cut_id)).rowcount:
+            raise HTTPException(404, "Active cut not found")
+    return serialize_cut(db.one("SELECT * FROM cuts WHERE id=?", (cut_id,)))
+
+
 def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = None):
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -396,7 +453,7 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
         if not cut:
             raise HTTPException(404, "Active cut not found")
         episode = conn.execute("SELECT * FROM episodes WHERE id=?", (cut["episode_id"],)).fetchone()
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (cut["episode_id"],)).fetchone():
+        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','cutframes') AND status IN ('queued','running')", (cut["episode_id"],)).fetchone():
             raise HTTPException(409, "Wait for the current media job to finish")
         cuts = conn.execute("SELECT * FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index", (cut["episode_id"],)).fetchall()
         index = next(i for i, item in enumerate(cuts) if item["id"] == cut_id)
@@ -449,7 +506,7 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
                 conn.execute("UPDATE cuts SET first_frame_time=NULL,last_frame_time=NULL WHERE id=?", (affected_id,))
             job_id = str(uuid.uuid4())
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "cutframes", json.dumps({"settings": json.loads(episode["settings_json"]), "cut_ids": sorted(affected_ids)})))
-            conn.execute("UPDATE episodes SET status='queued',stage='Updating cut frames',error=NULL WHERE id=?", (cut["episode_id"],))
+            worker.sync_episode_status(conn, cut["episode_id"])
     worker.wake_event.set()
     return {"selected_id": cut_id if action != "delete" else kept["id"]}
 
@@ -478,28 +535,34 @@ def update_chunk(chunk_id: str, body: ChunkInput):
     return db.one("SELECT * FROM chunks WHERE id=?", (chunk_id,))
 
 
-@app.get("/api/cuts/{cut_id}/analysis-results")
+@app.get("/api/cuts/{cut_id}/analysis-results", responses={200: {"model": list[AnalysisResult]}})
 def list_analysis_results(cut_id: str, history: bool = False, include_context: bool = True):
+    """Return current result revisions, or all revisions when history is true.
+
+    Set include_context=false to omit captured input evidence from each result.
+    """
     if not db.one("SELECT id FROM cuts WHERE id=?", (cut_id,)):
         raise HTTPException(404, "Cut not found")
     where = "cut_id=?" if history else "cut_id=? AND superseded_by IS NULL"
-    columns = "*" if include_context else "id,cut_id,kind,title,content,status,origin,model_id,job_id,prompt,settings_json,'{}' AS context_json,parent_id,superseded_by,created_at"
+    columns = "*" if include_context else "id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,'{}' AS context_json,parent_id,superseded_by,created_at"
     return [serialize_result(row) for row in db.all_rows(f"SELECT {columns} FROM analysis_results WHERE {where} ORDER BY rowid DESC", (cut_id,))]
 
 
-@app.post("/api/cuts/{cut_id}/analysis-results")
+@app.post("/api/cuts/{cut_id}/analysis-results", responses={200: {"model": AnalysisResult}})
 def create_analysis_result(cut_id: str, body: ResultCreate):
+    """Create an analysis result available to analysis context."""
     if not db.one("SELECT id FROM cuts WHERE id=?", (cut_id,)):
         raise HTTPException(404, "Cut not found")
     result_id = str(uuid.uuid4())
     with db.connect() as conn:
-        conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,status) VALUES (?,?,?,?,?,?)",
-                     (result_id, cut_id, body.kind, body.title, body.content, body.status))
+        conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content) VALUES (?,?,?,?,?)",
+                     (result_id, cut_id, body.kind, body.title, body.content))
     return serialize_result(db.one("SELECT * FROM analysis_results WHERE id=?", (result_id,)))
 
 
-@app.put("/api/analysis-results/{result_id}")
+@app.put("/api/analysis-results/{result_id}", responses={200: {"model": AnalysisResult}, 409: {"description": "This result already has a newer revision."}})
 def revise_analysis_result(result_id: str, body: ResultUpdate):
+    """Append a human revision."""
     new_id = str(uuid.uuid4())
     with db.connect() as conn:
         old = conn.execute("SELECT * FROM analysis_results WHERE id=?", (result_id,)).fetchone()
@@ -507,31 +570,19 @@ def revise_analysis_result(result_id: str, body: ResultUpdate):
             raise HTTPException(404, "Analysis result not found")
         if old["superseded_by"]:
             raise HTTPException(409, "This result already has a newer revision")
-        conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,status,origin,parent_id) VALUES (?,?,?,?,?,?,?,?)",
-                     (new_id, old["cut_id"], old["kind"], body.title, body.content, body.status, "manual_edit", result_id))
+        conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,parent_id) VALUES (?,?,?,?,?,?,?)",
+                     (new_id, old["cut_id"], old["kind"], body.title, body.content, "manual_edit", result_id))
         conn.execute("UPDATE analysis_results SET superseded_by=? WHERE id=?", (new_id, result_id))
     return serialize_result(db.one("SELECT * FROM analysis_results WHERE id=?", (new_id,)))
 
 
-@app.get("/api/episodes/{episode_id}/transcript")
+@app.get("/api/episodes/{episode_id}/transcript", responses={200: {"model": list[Transcript]}})
 def list_transcript(episode_id: str, history: bool = False):
+    """Return current non-deleted transcript segments; history includes every revision."""
     require_episode(episode_id)
-    where = "episode_id=?" if history else "episode_id=? AND superseded_by IS NULL AND status!='deleted'"
+    where = "episode_id=?" if history else "episode_id=? AND superseded_by IS NULL AND deleted=0"
     order = "rowid DESC" if history else "start_time,id"
-    return db.all_rows(f"SELECT * FROM transcript_segments WHERE {where} ORDER BY {order}", (episode_id,))
-
-
-@app.post("/api/episodes/{episode_id}/transcript/approve-drafts")
-def approve_transcript_drafts(episode_id: str):
-    require_episode(episode_id)
-    with db.connect() as conn:
-        rows = conn.execute("SELECT * FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND status='draft'", (episode_id,)).fetchall()
-        for row in rows:
-            new_id = str(uuid.uuid4())
-            conn.execute("""INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id,parent_id)
-                VALUES (?,?,?,?,?,?,?,'approved','manual_edit',?,?,?)""", (new_id, episode_id, row['start_time'], row['end_time'], row['text'], row['speaker_label'], row['character_context_id'], row['model_id'], row['job_id'], row['id']))
-            conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, row['id']))
-    return {"approved": len(rows)}
+    return [serialize_transcript(segment) for segment in db.all_rows(f"SELECT * FROM transcript_segments WHERE {where} ORDER BY {order}", (episode_id,))]
 
 
 @app.post("/api/episodes/{episode_id}/transcribe")
@@ -545,12 +596,60 @@ def transcribe_episode(episode_id: str):
         raise HTTPException(409, str(exc)) from exc
 
 
-@app.get("/api/projects/{project_id}/voice-samples")
+@app.get("/api/projects/{project_id}/voice-samples", responses={200: {"model": list[VoiceSample]}})
 def list_voice_samples(project_id: str):
+    """List character voice references in the project and whether their audio is available."""
     require_project(project_id)
-    return db.all_rows("""SELECT v.id,v.character_context_id,v.episode_id,v.start_time,v.end_time,v.model_id,v.created_at,
+    samples = db.all_rows("""SELECT v.id,v.character_context_id,v.episode_id,v.start_time,v.end_time,v.ranges_json,v.source_filename,v.model_id,v.created_at,
         e.title AS episode_title FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id
         LEFT JOIN episodes e ON e.id=v.episode_id WHERE c.project_id=? ORDER BY v.created_at DESC""", (project_id,))
+    for sample in samples:
+        sample['ranges'] = json.loads(sample.pop('ranges_json')) if sample['ranges_json'] else ([] if sample['source_filename'] else [{'start_time': sample['start_time'], 'end_time': sample['end_time']}])
+        sample['preview_available'] = media.voice_reference_path(project_id, sample['id']).is_file() or bool(sample['episode_id'] and sample['ranges'] and (media.episode_dir(project_id, sample['episode_id']) / 'audio.wav').is_file())
+    return samples
+
+
+def validate_voice_character(episode, character_id):
+    character = db.one("SELECT id FROM context_items WHERE id=? AND project_id=? AND kind='character'", (character_id, episode["project_id"]))
+    if not character:
+        raise HTTPException(400, "Choose a character from this project")
+
+
+def validate_voice_ranges(episode, ranges, minimum=2):
+    ordered = sorted(ranges, key=lambda r: r['start_time'])
+    if (any(r['end_time'] <= r['start_time'] or r['end_time'] > episode['duration'] for r in ranges)
+            or any(a['end_time'] > b['start_time'] for a, b in zip(ordered, ordered[1:]))
+            or not minimum <= sum(r['end_time'] - r['start_time'] for r in ranges) <= 60):
+        raise HTTPException(400, "Choose non-overlapping ranges within the video totaling at most 60 seconds" if minimum == 0 else "Choose non-overlapping ranges within the video totaling 2 to 60 seconds")
+
+
+def preview_voice_ranges(audio, ranges):
+    if not audio.is_file():
+        raise HTTPException(404, 'Episode audio is not ready')
+    output = io.BytesIO()
+    try:
+        with wave.open(str(audio), 'rb') as source, wave.open(output, 'wb') as target:
+            target.setparams(source.getparams())
+            for item in ranges:
+                start = round(item['start_time'] * source.getframerate())
+                end = min(source.getnframes(), round(item['end_time'] * source.getframerate()))
+                if start >= source.getnframes() or end <= start:
+                    raise HTTPException(400, 'Excerpt is outside the available audio')
+                source.setpos(start)
+                target.writeframes(source.readframes(end - start))
+    except (wave.Error, EOFError) as exc:
+        raise HTTPException(400, 'Episode audio could not be previewed') from exc
+    return Response(content=output.getvalue(), media_type='audio/wav')
+
+
+@app.post('/api/episodes/{episode_id}/voice-samples/preview')
+def preview_voice_sample(episode_id: str, body: VoicePreviewInput):
+    episode = require_episode(episode_id)
+    if not episode['has_audio'] or not episode['duration']:
+        raise HTTPException(400, 'Prepare a video with audio first')
+    ranges = [r.model_dump() for r in body.ranges]
+    validate_voice_ranges(episode, ranges, minimum=0)
+    return preview_voice_ranges(media.episode_dir(episode['project_id'], episode_id) / 'audio.wav', ranges)
 
 
 @app.post("/api/episodes/{episode_id}/voice-samples")
@@ -558,23 +657,76 @@ def create_voice_sample(episode_id: str, body: VoiceSampleInput):
     episode = require_episode(episode_id)
     if not episode["has_audio"] or not episode["duration"]:
         raise HTTPException(400, "Prepare a video with audio first")
-    if body.end_time > episode["duration"] or not 2 <= body.end_time - body.start_time <= 60:
-        raise HTTPException(400, "Choose a range of 2 to 60 seconds within the video")
-    character = db.one("SELECT id FROM context_items WHERE id=? AND project_id=? AND kind='character'", (body.character_context_id, episode["project_id"]))
-    if not character:
-        raise HTTPException(400, "Choose a character from this project")
+    if body.ranges is not None:
+        ranges = [r.model_dump() for r in body.ranges]
+    elif body.start_time is not None and body.end_time is not None:
+        ranges = [{'start_time': body.start_time, 'end_time': body.end_time}]
+    else:
+        raise HTTPException(400, "Choose at least one audio range")
+    validate_voice_ranges(episode, ranges)
+    validate_voice_character(episode, body.character_context_id)
     try:
-        return {"job_id": worker.enqueue(episode_id, "voice_sample", body.model_dump())}
+        return {"job_id": worker.enqueue(episode_id, "voice_sample", {'character_context_id': body.character_context_id, 'ranges': ranges})}
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/episodes/{episode_id}/voice-samples/upload")
+async def upload_voice_sample(episode_id: str, character_context_id: str = Form(...), file: UploadFile = File(...)):
+    episode = require_episode(episode_id)
+    validate_voice_character(episode, character_context_id)
+    upload_id = str(uuid.uuid4())
+    directory = media.episode_dir(episode['project_id'], episode_id) / 'voice-uploads'
+    directory.mkdir(exist_ok=True)
+    target = directory / upload_id
+    try:
+        total = 0
+        with target.open('wb') as output:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > 25 * 1024 * 1024:
+                    raise HTTPException(413, 'Voice audio must be 25 MB or smaller')
+                output.write(chunk)
+        if not total:
+            raise HTTPException(400, 'Voice audio file is empty')
+        try:
+            job_id = worker.enqueue(episode_id, 'voice_sample', {'character_context_id': character_context_id,
+                'upload_id': upload_id, 'source_filename': Path(file.filename or 'Audio upload').name[:200]})
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {'job_id': job_id}
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
 
 
 @app.delete("/api/voice-samples/{sample_id}")
 def delete_voice_sample(sample_id: str):
     with db.connect() as conn:
+        sample = conn.execute('SELECT c.project_id FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id WHERE v.id=?', (sample_id,)).fetchone()
         if not conn.execute("DELETE FROM character_voice_samples WHERE id=?", (sample_id,)).rowcount:
             raise HTTPException(404, "Voice sample not found")
+    media.voice_reference_path(sample['project_id'], sample_id).unlink(missing_ok=True)
     return {"ok": True}
+
+
+@app.get('/api/voice-samples/{sample_id}/audio', response_class=Response,
+         responses={200: {"content": {"audio/wav": {"schema": {"type": "string", "format": "binary"}}}, "description": "Reference voice WAV"},
+                    404: {"description": "Reference or audio is unavailable"}})
+def get_voice_sample_audio(sample_id: str):
+    """Download the saved reference WAV or a reconstructed legacy reference, when available."""
+    sample = db.one('SELECT v.*,c.project_id FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id WHERE v.id=?', (sample_id,))
+    if not sample:
+        raise HTTPException(404, 'Voice sample not found')
+    target = media.voice_reference_path(sample['project_id'], sample['id'])
+    if target.is_file():
+        return FileResponse(target, media_type='audio/wav')
+    if not sample['episode_id'] or sample['source_filename']:
+        raise HTTPException(404, 'Audio preview is not available for this reference')
+    ranges = json.loads(sample['ranges_json']) if sample['ranges_json'] else [{'start_time': sample['start_time'], 'end_time': sample['end_time']}]
+    return preview_voice_ranges(media.episode_dir(sample['project_id'], sample['episode_id']) / 'audio.wav', ranges)
 
 
 @app.post("/api/episodes/{episode_id}/transcript")
@@ -583,9 +735,9 @@ def create_transcript_segment(episode_id: str, body: TranscriptInput):
     validate_transcript(episode, body)
     segment_id = str(uuid.uuid4())
     with db.connect() as conn:
-        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status) VALUES (?,?,?,?,?,?,?,?)",
-                     (segment_id, episode_id, body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, body.status))
-    return db.one("SELECT * FROM transcript_segments WHERE id=?", (segment_id,))
+        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id) VALUES (?,?,?,?,?,?,?)",
+                     (segment_id, episode_id, body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id))
+    return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (segment_id,)))
 
 
 @app.put("/api/transcript-segments/{segment_id}")
@@ -597,13 +749,13 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
     validate_transcript(episode, body)
     new_id = str(uuid.uuid4())
     with db.connect() as conn:
-        current = conn.execute("SELECT superseded_by FROM transcript_segments WHERE id=?", (segment_id,)).fetchone()
-        if current["superseded_by"]:
-            raise HTTPException(409, "This transcript segment has a newer revision")
-        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                     (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, body.status, "manual_edit", segment["model_id"], segment["job_id"], segment_id))
+        current = conn.execute("SELECT superseded_by,deleted FROM transcript_segments WHERE id=?", (segment_id,)).fetchone()
+        if current["superseded_by"] or current["deleted"]:
+            raise HTTPException(409, "This transcript segment is deleted or has a newer revision")
+        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, "manual_edit", segment["model_id"], segment["job_id"], segment_id))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
-    return db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,))
+    return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
 
 
 @app.delete("/api/transcript-segments/{segment_id}")
@@ -613,16 +765,17 @@ def delete_transcript_segment(segment_id: str):
         old = conn.execute("SELECT * FROM transcript_segments WHERE id=?", (segment_id,)).fetchone()
         if not old:
             raise HTTPException(404, "Transcript segment not found")
-        if old["superseded_by"]:
-            raise HTTPException(409, "This transcript segment has a newer revision")
-        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                     (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], "deleted", "manual_edit", old["model_id"], old["job_id"], segment_id))
+        if old["superseded_by"] or old["deleted"]:
+            raise HTTPException(409, "This transcript segment is deleted or has a newer revision")
+        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,deleted,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], 1, "manual_edit", old["model_id"], old["job_id"], segment_id))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
     return {"ok": True}
 
 
-@app.get("/api/cuts/{cut_id}/analysis-context")
+@app.get("/api/cuts/{cut_id}/analysis-context", responses={200: {"model": AnalysisContext}})
 def get_analysis_context(cut_id: str):
+    """Return cut context with current neighboring results and overlapping transcript segments."""
     cut = db.one("SELECT * FROM cuts WHERE id=?", (cut_id,))
     if not cut:
         raise HTTPException(404, "Cut not found")
@@ -632,7 +785,7 @@ def get_analysis_context(cut_id: str):
     following = db.one("SELECT * FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?", (episode["id"], cut["cut_index"] + 1)) if cut["active"] else None
     neighbors = {}
     for label, neighbor in (("previous", previous), ("next", following)):
-        neighbors[label] = db.all_rows("SELECT kind,title,content,origin,model_id FROM analysis_results WHERE cut_id=? AND status='approved' AND superseded_by IS NULL ORDER BY rowid DESC", (neighbor["id"],)) if neighbor else []
+        neighbors[label] = db.all_rows("SELECT kind,title,content,origin,model_id FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid DESC", (neighbor["id"],)) if neighbor else []
     return {
         "project": {"id": project["id"], "title": project["title"], "synopsis": project["synopsis"]},
         "episode": {"id": episode["id"], "title": episode["title"], "duration": episode["duration"]},
@@ -642,7 +795,7 @@ def get_analysis_context(cut_id: str):
         "neighbor_results": neighbors,
         "chunks": db.all_rows("SELECT * FROM chunks WHERE episode_id=? AND start_time<? AND end_time>? ORDER BY chunk_index", (episode["id"], cut["end_time"], cut["start_time"])),
         "context_items": db.all_rows("SELECT * FROM context_items WHERE project_id=? AND (episode_id IS NULL OR episode_id=?) ORDER BY kind,title", (project["id"], episode["id"])),
-        "transcript_segments": db.all_rows("SELECT t.*,c.title AS character_name FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.status='approved' AND t.start_time<? AND t.end_time>? ORDER BY t.start_time", (episode["id"], cut["end_time"], cut["start_time"])),
+        "transcript_segments": [serialize_transcript(segment) for segment in db.all_rows("SELECT t.*,c.title AS character_name FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>? ORDER BY t.start_time,t.id", (episode["id"], cut["end_time"], cut["start_time"]))],
     }
 
 
@@ -686,16 +839,16 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
             conn.execute("BEGIN IMMEDIATE")
             if not conn.execute("SELECT 1 FROM episodes WHERE id=?", (episode_id,)).fetchone():
                 raise HTTPException(404, "Episode not found")
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (episode_id,)).fetchone():
-                raise HTTPException(409, "An analysis job is already running for this episode")
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (episode_id,)).fetchone():
+                raise HTTPException(409, "Wait for media preparation or cut detection to finish")
             if cut_id is None:
-                cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index", (episode_id,)).fetchall()
+                cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 ORDER BY cut_index", (episode_id,)).fetchall()
                 if not cuts:
-                    raise HTTPException(400, "Detect cuts before running analysis")
+                    raise HTTPException(400, "Detect and enable cuts before running analysis")
             else:
-                cut = conn.execute("SELECT id FROM cuts WHERE id=? AND episode_id=? AND active=1", (cut_id, episode_id)).fetchone()
+                cut = conn.execute("SELECT id FROM cuts WHERE id=? AND episode_id=? AND active=1 AND analysis_enabled=1", (cut_id, episode_id)).fetchone()
                 if not cut:
-                    raise HTTPException(409, "The cut is no longer active")
+                    raise HTTPException(409, "The cut is archived or disabled for analysis")
                 cuts = [cut]
             # The write lock keeps cut boundaries, presets and context stable until
             # the complete job payload is committed. The helpers use read-only
@@ -704,10 +857,10 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
             for cut in cuts:
                 _, config = analysis_config_for_cut(cut["id"])
                 context = selected_analysis_context(cut["id"], config)
-                context["current_results"] = [dict(row) for row in conn.execute("SELECT kind,title,content,status,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL AND status='approved' ORDER BY rowid", (cut["id"],))]
+                context["current_results"] = [dict(row) for row in conn.execute("SELECT kind,title,content,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut["id"],))]
                 inputs.append({"cut_id": cut["id"], "config": config.model_dump(), "context": context})
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs})))
-            conn.execute("UPDATE episodes SET status='queued',stage='Waiting for analysis worker',error=NULL WHERE id=?", (episode_id,))
+            worker.sync_episode_status(conn, episode_id)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc
     return {"job_id": job_id}
@@ -724,18 +877,20 @@ def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
     try:
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (cut["episode_id"],)).fetchone():
-                raise HTTPException(409, "An analysis job is already running for this episode")
-            rows = conn.execute("SELECT id,kind,title,content,status FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL AND status!='rejected' ORDER BY rowid", (cut_id,)).fetchall()
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (cut["episode_id"],)).fetchone():
+                raise HTTPException(409, "Wait for media preparation or cut detection to finish")
+            if not conn.execute("SELECT 1 FROM cuts WHERE id=? AND active=1 AND analysis_enabled=1", (cut_id,)).fetchone():
+                raise HTTPException(409, "The cut is archived or disabled for analysis")
+            rows = conn.execute("SELECT id,kind,title,content FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut_id,)).fetchall()
             summary = next((row for row in reversed(rows) if row["title"] == SUMMARY_TITLE), None)
             if body.mode == "edit" and not summary and not (body.current_prompt or "").strip():
                 raise HTTPException(400, "There is no cut summary to edit; regenerate one instead")
             current = body.current_prompt if body.current_prompt is not None else (summary["content"] if summary else "")
-            results = [{"title": row["title"], "kind": row["kind"], "content": row["content"], "status": row["status"]} for row in rows if row["title"] != SUMMARY_TITLE]
+            results = [{"title": row["title"], "kind": row["kind"], "content": row["content"]} for row in rows if row["title"] != SUMMARY_TITLE]
             payload = {"result_type": "summary", "cut_id": cut_id, "mode": body.mode, "instruction": body.instruction.strip(), "current_prompt": current if body.mode == "edit" else "",
                        "model": config.openrouter_model, "base_id": summary["id"] if summary else None, "results": results, "context": selected_analysis_context(cut_id, config)}
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "regen", json.dumps(payload)))
-            conn.execute("UPDATE episodes SET status='queued',stage='Waiting for analysis worker',error=NULL WHERE id=?", (cut["episode_id"],))
+            worker.sync_episode_status(conn, cut["episode_id"])
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc
     return {"job_id": job_id}
@@ -767,18 +922,9 @@ def delete_analysis_result(result_id: str):
     return {"ok": True}
 
 
-@app.delete("/api/cuts/{cut_id}/analysis-results")
-def discard_draft_results(cut_id: str):
-    """Delete every current draft of a cut; approved and rejected results stay."""
-    analysis_config_for_cut(cut_id)
-    with db.connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        ids = [row["id"] for row in conn.execute("SELECT id FROM analysis_results WHERE cut_id=? AND status='draft' AND superseded_by IS NULL", (cut_id,))]
-        delete_current_results(conn, ids)
-    return {"deleted": len(ids)}
-
-
-@app.get("/api/analysis-results/{result_id}/frame")
+@app.get("/api/analysis-results/{result_id}/frame", response_class=Response,
+         responses={200: {"content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}}, "description": "Analyzed frame"},
+                    404: {"description": "No frame is stored for this result or its ancestors"}})
 def get_analysis_result_frame(result_id: str):
     """Serve the sampled image for a detection result, following its revision chain."""
     seen = set()
@@ -816,10 +962,11 @@ def cancel_queued_analysis(job_id: str):
         job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job:
             raise HTTPException(404, "Job not found")
-        if job["pipeline"] not in ("analyze", "transcribe", "voice_sample") or job["status"] != "queued":
+        if job["pipeline"] not in ("analyze", "regen", "transcribe", "voice_sample") or job["status"] != "queued":
             raise HTTPException(409, "Only queued inference jobs can be cancelled")
         conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled before processing',updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-        conn.execute("UPDATE episodes SET status='ready',stage='Ready',error=NULL WHERE id=?", (job["episode_id"],))
+        worker.sync_episode_status(conn, job["episode_id"])
+    worker.cleanup_voice_upload(job)
     return {"ok": True}
 
 
@@ -833,24 +980,23 @@ def retry_analysis(job_id: str):
                 raise HTTPException(404, "Job not found")
             if job["pipeline"] != "analyze" or job["status"] != "failed":
                 raise HTTPException(409, "Only failed analysis jobs can be retried")
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (job["episode_id"],)).fetchone():
-                raise HTTPException(409, "An analysis job is already running for this episode")
-            latest = conn.execute("SELECT id FROM jobs WHERE episode_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (job["episode_id"],)).fetchone()
-            if not latest or latest["id"] != job_id:
-                raise HTTPException(409, "A newer job exists; start a new analysis")
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (job["episode_id"],)).fetchone():
+                raise HTTPException(409, "Wait for media preparation or cut detection to finish")
             for item in json.loads(job["payload_json"])["cuts"]:
                 done = conn.execute("SELECT completed FROM analysis_job_cuts WHERE job_id=? AND cut_id=?", (job_id, item["cut_id"])).fetchone()
                 if done and done["completed"]:
                     continue
-                cut = conn.execute("SELECT active,start_time,end_time FROM cuts WHERE id=? AND episode_id=?", (item["cut_id"], job["episode_id"])).fetchone()
+                cut = conn.execute("SELECT active,analysis_enabled,start_time,end_time FROM cuts WHERE id=? AND episode_id=?", (item["cut_id"], job["episode_id"])).fetchone()
                 saved = item["context"]["cut"]
-                if not cut or not cut["active"] or cut["start_time"] != saved["start_time"] or cut["end_time"] != saved["end_time"]:
+                if not cut or not cut["active"] or not cut["analysis_enabled"] or cut["start_time"] != saved["start_time"] or cut["end_time"] != saved["end_time"]:
                     raise HTTPException(409, "An unfinished cut changed since this run; start a new analysis")
-            conn.execute("UPDATE jobs SET status='queued',stage='Waiting for analysis worker',error=NULL,lease_owner=NULL,lease_until=NULL,attempt_count=0,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-            conn.execute("UPDATE episodes SET status='queued',stage='Waiting for analysis worker',error=NULL WHERE id=?", (job["episode_id"],))
+            retry_id = str(uuid.uuid4())
+            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job["episode_id"], 'analyze', job["payload_json"], job_id))
+            conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json,completed) SELECT ?,cut_id,evidence_json,completed FROM analysis_job_cuts WHERE job_id=?", (retry_id, job_id))
+            worker.sync_episode_status(conn, job["episode_id"])
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc
-    return {"job_id": job_id}
+    return {"job_id": retry_id}
 
 
 @app.get("/api/episodes/{episode_id}/waveform")
@@ -893,8 +1039,11 @@ def get_media(episode_id: str, name: str):
     return FileResponse(target, media_type=mime)
 
 
-@app.get("/api/cuts/{cut_id}/frame/{position}")
+@app.get("/api/cuts/{cut_id}/frame/{position}", response_class=Response,
+         responses={200: {"content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}}, "description": "Cut boundary frame"},
+                    404: {"description": "Cut or frame not found"}})
 def get_cut_frame(cut_id: str, position: Literal["first", "last"]):
+    """Download the cut's first or last sampled JPEG frame."""
     cut = db.one("SELECT episode_id FROM cuts WHERE id=?", (cut_id,))
     if not cut:
         raise HTTPException(404, "Cut not found")
@@ -904,6 +1053,8 @@ def get_cut_frame(cut_id: str, position: Literal["first", "last"]):
         raise HTTPException(404, "Cut frame not ready; rerun hard-cut detection")
     return FileResponse(target, media_type="image/jpeg")
 
+
+app.include_router(external_router)
 
 static_dir = Path(os.environ.get("STATIC_DIR", Path(__file__).resolve().parent.parent / "static"))
 if static_dir.is_dir():

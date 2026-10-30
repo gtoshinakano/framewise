@@ -15,6 +15,10 @@ def episode_dir(project_id: str, episode_id: str) -> Path:
     return path
 
 
+def voice_reference_path(project_id: str, sample_id: str) -> Path:
+    return DATA_DIR / 'projects' / project_id / 'voice-references' / f'{sample_id}.wav'
+
+
 def run(args: list[str]):
     result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode:

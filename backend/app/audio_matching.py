@@ -1,7 +1,7 @@
 """Reconcile aligned words, diarization turns, and project voice embeddings.
 
-All times are in seconds on the original episode timeline. Model output remains
-unapproved until a person reviews it; speaker assignments are suggestions.
+All times are in seconds on the original episode timeline. Model output can be
+edited by a person; speaker assignments are suggestions.
 """
 import math
 from bisect import bisect_right

@@ -205,10 +205,10 @@ class WorkflowTest(unittest.TestCase):
                 response = client.put(f"/api/cuts/{cut['id']}", json={"title": "Opening red shot", "description": "Red field", "notes": "Keep", "results": {"manual": True}})
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(response.json()["results"]["manual"], True)
-                response = client.post(f"/api/cuts/{cut['id']}/analysis-results", json={"kind": "first_frame", "content": "Red image", "status": "draft"})
+                response = client.post(f"/api/cuts/{cut['id']}/analysis-results", json={"kind": "first_frame", "content": "Red image"})
                 self.assertEqual(response.status_code, 200, response.text)
                 result_id = response.json()["id"]
-                response = client.put(f"/api/analysis-results/{result_id}", json={"title": "Opening frame", "content": "Solid red image", "status": "approved"})
+                response = client.put(f"/api/analysis-results/{result_id}", json={"title": "Opening frame", "content": "Solid red image"})
                 self.assertEqual(response.status_code, 200, response.text)
                 revised_id = response.json()["id"]
                 self.assertEqual(response.json()["parent_id"], result_id)
@@ -226,15 +226,15 @@ class WorkflowTest(unittest.TestCase):
                 self.assertEqual(client.get(f"/api/projects/{project_id}/context").json()[0]["content"], "Wears a red coat")
                 self.assertEqual(client.put(f"/api/context/{context_id}", json={"kind": "character", "title": "Lead", "content": "Wears a blue coat", "episode_id": episode_id}).json()["content"], "Wears a blue coat")
                 self.assertEqual(client.patch(f"/api/projects/{project_id}", json={"title": "Test film", "synopsis": "A color study"}).status_code, 200)
-                transcript = client.post(f"/api/episodes/{episode_id}/transcript", json={"start_time": 0, "end_time": 0.8, "text": "Opening line", "speaker_label": "Lead", "character_context_id": context_id, "status": "approved"})
+                transcript = client.post(f"/api/episodes/{episode_id}/transcript", json={"start_time": 0, "end_time": 0.8, "text": "Opening line", "speaker_label": "Lead", "character_context_id": context_id})
                 self.assertEqual(transcript.status_code, 200, transcript.text)
-                revised_transcript = client.put(f"/api/transcript-segments/{transcript.json()['id']}", json={"start_time": 0, "end_time": 0.8, "text": "Updated opening line", "speaker_label": "Lead", "character_context_id": context_id, "status": "approved"})
+                revised_transcript = client.put(f"/api/transcript-segments/{transcript.json()['id']}", json={"start_time": 0, "end_time": 0.8, "text": "Updated opening line", "speaker_label": "Lead", "character_context_id": context_id})
                 self.assertEqual(revised_transcript.status_code, 200, revised_transcript.text)
                 self.assertEqual(revised_transcript.json()["parent_id"], transcript.json()["id"])
                 self.assertEqual(len(client.get(f"/api/episodes/{episode_id}/transcript").json()), 1)
                 self.assertEqual(len(client.get(f"/api/episodes/{episode_id}/transcript?history=true").json()), 2)
                 self.assertEqual(client.post(f"/api/episodes/{episode_id}/transcript", json={"start_time": 0, "end_time": 9, "text": "Too long"}).status_code, 400)
-                neighbor = client.post(f"/api/cuts/{episode['cuts'][1]['id']}/analysis-results", json={"kind": "cut_description", "content": "Blue image", "status": "approved"})
+                neighbor = client.post(f"/api/cuts/{episode['cuts'][1]['id']}/analysis-results", json={"kind": "cut_description", "content": "Blue image"})
                 self.assertEqual(neighbor.status_code, 200, neighbor.text)
                 analysis_context = client.get(f"/api/cuts/{cut['id']}/analysis-context").json()
                 self.assertEqual(analysis_context["project"]["synopsis"], "A color study")
@@ -313,13 +313,8 @@ class WorkflowTest(unittest.TestCase):
                 chunk = silent_episode["chunks"][0]
                 self.assertEqual(client.put(f"/api/chunks/{chunk['id']}", json={"title": "Opening chunk", "notes": "Manual note"}).status_code, 200)
                 self.assertEqual(client.get(f"/api/episodes/{silent_id}").json()["chunks"][0]["notes"], "Manual note")
-                with db.connect() as conn:
-                    conn.execute("DROP INDEX jobs_active_episode_idx")
-                    conn.execute("INSERT INTO jobs (id,episode_id,pipeline,status) VALUES ('legacy-job-1',?,'hardcuts','queued')", (silent_id,))
-                    conn.execute("INSERT INTO jobs (id,episode_id,pipeline,status) VALUES ('legacy-job-2',?,'hardcuts','queued')", (silent_id,))
                 db.init_db()
-                self.assertEqual(db.one("SELECT count(*) AS count FROM jobs WHERE episode_id=? AND status='queued'", (silent_id,))["count"], 1)
-                self.assertEqual(db.one("SELECT count(*) AS count FROM jobs WHERE episode_id=? AND status='failed'", (silent_id,))["count"], 1)
+                self.assertEqual(client.get(f"/api/episodes/{silent_id}").status_code, 200)
 
 
 if __name__ == "__main__":

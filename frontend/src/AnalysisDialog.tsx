@@ -6,7 +6,7 @@ import ResultEditor from './ResultEditor'
 import { CutSummaryPanel, SUMMARY_TITLE } from './AnimationPromptPanel'
 import { DetectionPreview } from './DetectionPreview'
 
-export default function AnalysisDialog({ cut, episodeId, busy, job, frameVersion, onStarted, onClose }: { cut: Cut; episodeId: string; busy: boolean; job?: Job; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }) {
+export default function AnalysisDialog({ cut, episodeId, busy, job, jobsKey, frameVersion, onStarted, onClose }: { cut: Cut; episodeId: string; busy: boolean; job?: Job; jobsKey: string; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }) {
   const [tab, setTab] = useState<'results' | 'run'>('results')
   const [results, setResults] = useState<AnalysisResult[]>([])
   const panel = useRef<HTMLDivElement>(null)
@@ -20,7 +20,6 @@ export default function AnalysisDialog({ cut, episodeId, busy, job, frameVersion
     return () => { window.removeEventListener('keydown', onKey); opener?.focus() }
   }, [onClose])
   const current = results.find(result => result.title === SUMMARY_TITLE && !result.superseded_by)
-  const jobKey = `${job?.id || ''}-${job?.status || ''}-${job?.stage || ''}`
   const title = cut.title || `Cut ${cut.cut_index + 1}`
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Analysis for ${title}`} className="flex h-[94vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden rounded-2xl border hairline bg-[#131720] shadow-2xl outline-none">
@@ -30,13 +29,13 @@ export default function AnalysisDialog({ cut, episodeId, busy, job, frameVersion
           <div className="flex gap-1 rounded-lg border hairline p-1" role="tablist">{([['results', 'Results'], ['run', 'Run settings']] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={`flex-1 rounded-md py-1.5 text-xs font-semibold ${tab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}</button>)}</div>
           {/* Both stay mounted so unsaved settings and drafts survive a tab switch. */}
           <div className={tab === 'results' ? 'flex min-h-[30rem] flex-1 flex-col lg:min-h-[26rem]' : 'hidden'}>
-            <CutSummaryPanel cutId={cut.id} current={current} job={job} disabled={busy || !cut.active} onStarted={onStarted} />
+            <CutSummaryPanel cutId={cut.id} current={current} job={job} disabled={busy || !cut.active || !cut.analysis_enabled} onStarted={onStarted} />
           </div>
-          <div hidden={tab !== 'run'}>{cut.active ? <AnalysisControls cutId={cut.id} episodeId={episodeId} busy={busy} actionsTarget={actions} onStarted={async () => { await onStarted(); setTab('results') }} /> : <p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p>}</div>
+          <div hidden={tab !== 'run'}>{cut.active ? <AnalysisControls cutId={cut.id} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} actionsTarget={actions} onStarted={onStarted} /> : <p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p>}</div>
         </div>
         <div className="scrollbar flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1">
           <div className="shrink-0"><DetectionPreview cut={cut} results={results} frameVersion={frameVersion} /></div>
-          <div hidden={tab !== 'results'} className="scrollbar max-h-56 shrink-0 overflow-y-auto"><ResultEditor cutId={cut.id} refreshKey={jobKey} onLoaded={setResults} editorTarget={editorTarget} /></div>
+          <div hidden={tab !== 'results'} className="scrollbar max-h-56 shrink-0 overflow-y-auto"><ResultEditor cutId={cut.id} refreshKey={jobsKey} onLoaded={setResults} editorTarget={editorTarget} /></div>
           <div ref={setEditorTarget} className={tab === 'results' ? 'flex flex-1 flex-col' : 'hidden'} />
         </div>
       </div>

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import uuid
+import wave
 from pathlib import Path
 
 from . import db, media, worker
@@ -37,6 +38,18 @@ def clip_audio(source, target, start, end):
                '-i', str(source), '-t', str(end - start), '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', str(target)])
 
 
+def join_clips(source, target, ranges, temp):
+    with wave.open(str(target), 'wb') as combined:
+        combined.setnchannels(1)
+        combined.setsampwidth(2)
+        combined.setframerate(16000)
+        for index, item in enumerate(ranges):
+            clip = temp / f'clip-{index}.wav'
+            clip_audio(source, clip, item['start_time'], item['end_time'])
+            with wave.open(str(clip), 'rb') as part:
+                combined.writeframes(part.readframes(part.getnframes()))
+
+
 def process(job_id, owner):
     job = db.one('SELECT * FROM jobs WHERE id=? AND status=\'running\' AND lease_owner=?', (job_id, owner))
     if not job:
@@ -46,16 +59,30 @@ def process(job_id, owner):
         return
     payload = json.loads(job['payload_json'])
     path = media.episode_dir(episode['project_id'], episode['id'])
+    uploaded = path / 'voice-uploads' / str(uuid.UUID(payload['upload_id'])) if payload.get('upload_id') else None
+    terminal = False
     try:
         audio = path / 'audio.wav'
-        if not audio.is_file():
+        if not uploaded and not audio.is_file():
             worker.stage(job_id, owner, episode['id'], 'Extracting audio')
             media.extract_audio(path / f"original{episode['original_ext']}", audio)
         worker.stage(job_id, owner, episode['id'], 'Identifying voices')
         with tempfile.TemporaryDirectory(dir=path) as temp:
             sample = Path(temp) / 'sample.wav'
             if job['pipeline'] == 'voice_sample':
-                clip_audio(audio, sample, payload['start_time'], payload['end_time'])
+                ranges = payload.get('ranges') or ([{'start_time': payload['start_time'], 'end_time': payload['end_time']}] if not uploaded else [])
+                if uploaded:
+                    worker.stage(job_id, owner, episode['id'], 'Preparing uploaded voice')
+                    media.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', str(uploaded),
+                               '-map', '0:a:0', '-vn', '-t', '61', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', str(sample)])
+                    with wave.open(str(sample), 'rb') as wav:
+                        duration = wav.getnframes() / wav.getframerate()
+                    if not 2 <= duration <= 60:
+                        raise RuntimeError('Uploaded voice audio must be 2 to 60 seconds long.')
+                elif len(ranges) == 1:
+                    clip_audio(audio, sample, ranges[0]['start_time'], ranges[0]['end_time'])
+                else:
+                    join_clips(audio, sample, ranges, Path(temp))
                 output = diarize(sample)
                 labels = output.speaker_diarization.labels()
                 if len(labels) != 1 or output.speaker_embeddings is None:
@@ -63,14 +90,25 @@ def process(job_id, owner):
                 vector = output.speaker_embeddings[0].tolist()
                 if not vector or any(not math.isfinite(x) for x in vector) or not any(vector):
                     raise RuntimeError('Could not extract a usable voice embedding from this sample.')
-                with db.connect() as conn:
-                    worker.require_lease(conn, job_id, owner)
-                    character = conn.execute("SELECT id FROM context_items WHERE id=? AND project_id=? AND kind='character'", (payload['character_context_id'], episode['project_id'])).fetchone()
-                    if not character:
-                        raise RuntimeError('Character no longer exists in this project')
-                    conn.execute('INSERT INTO character_voice_samples (id,character_context_id,episode_id,start_time,end_time,embedding_json,model_id) VALUES (?,?,?,?,?,?,?)',
-                                 (str(uuid.uuid4()), character['id'], episode['id'], payload['start_time'], payload['end_time'], json.dumps(vector), DIARIZATION))
-                    finish(conn, job_id, episode['id'])
+                reference = media.voice_reference_path(episode['project_id'], job_id)
+                saved = False
+                try:
+                    with db.connect() as conn:
+                        worker.require_lease(conn, job_id, owner)
+                        character = conn.execute("SELECT id FROM context_items WHERE id=? AND project_id=? AND kind='character'", (payload['character_context_id'], episode['project_id'])).fetchone()
+                        if not character:
+                            raise RuntimeError('Character no longer exists in this project')
+                        conn.execute('INSERT INTO character_voice_samples (id,character_context_id,episode_id,start_time,end_time,embedding_json,model_id,ranges_json,source_filename) VALUES (?,?,?,?,?,?,?,?,?)',
+                                     (job_id, character['id'], episode['id'], min((r['start_time'] for r in ranges), default=0), max((r['end_time'] for r in ranges), default=duration if uploaded else 0), json.dumps(vector), DIARIZATION, json.dumps(ranges), payload.get('source_filename')))
+                        reference.parent.mkdir(parents=True, exist_ok=True)
+                        sample.replace(reference)
+                        saved = True
+                        finish(conn, job_id, episode['id'])
+                except Exception:
+                    if saved:
+                        reference.unlink(missing_ok=True)
+                    raise
+                terminal = True
                 return
             output = diarize(audio)
             labels = output.speaker_diarization.labels()
@@ -122,15 +160,15 @@ def process(job_id, owner):
                 segments.extend(assign_words(restored, turns))
             with db.connect() as conn:
                 worker.require_lease(conn, job_id, owner)
-                # Replace only unreviewed output from this pipeline. Preserve
-                # human revisions and avoid duplicating their covered speech.
-                current = conn.execute("SELECT * FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND status!='deleted'", (episode['id'],)).fetchall()
+                # Replace untouched output from this pipeline. Preserve human
+                # revisions and other human-created segments.
+                current = conn.execute("SELECT * FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND deleted=0", (episode['id'],)).fetchall()
                 protected = []
                 for old in current:
-                    if old['origin'] == 'model' and old['status'] == 'draft' and (old['model_id'] or '').startswith(ASR):
+                    if old['origin'] == 'model' and (old['model_id'] or '').startswith(ASR):
                         tombstone = str(uuid.uuid4())
-                        conn.execute("""INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id,parent_id)
-                            VALUES (?,?,?,?,?,?,?,'deleted','model',?,?,?)""", (tombstone, episode['id'], old['start_time'], old['end_time'], old['text'], old['speaker_label'], old['character_context_id'], old['model_id'], old['job_id'], old['id']))
+                        conn.execute("""INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,deleted,origin,model_id,job_id,parent_id)
+                            VALUES (?,?,?,?,?,?,?,1,'model',?,?,?)""", (tombstone, episode['id'], old['start_time'], old['end_time'], old['text'], old['speaker_label'], old['character_context_id'], old['model_id'], old['job_id'], old['id']))
                         conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (tombstone, old['id']))
                     else:
                         protected.append((old['start_time'], old['end_time']))
@@ -140,7 +178,7 @@ def process(job_id, owner):
                         continue
                     speaker = word['speaker'] or ''
                     character_id = matches.get(speaker, {}).get('character_id')
-                    conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id) VALUES (?,?,?,?,?,?,?,'draft','model',?,?)",
+                    conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id) VALUES (?,?,?,?,?,?,?,'model',?,?)",
                         (str(uuid.uuid4()), episode['id'], word['start_time'], word['end_time'], word['text'], speaker, character_id, ASR + ' + ' + ALIGNER + ' + ' + DIARIZATION, job_id))
                 finish(conn, job_id, episode['id'])
     except Exception as exc:
@@ -148,12 +186,16 @@ def process(job_id, owner):
         with db.connect() as conn:
             changed = conn.execute("UPDATE jobs SET status='failed',stage='Failed',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND lease_owner=?", (str(exc)[-1800:], job_id, owner)).rowcount
             if changed:
-                conn.execute("UPDATE episodes SET status='failed',stage='Failed',error=? WHERE id=?", (str(exc)[-1800:], episode['id']))
+                worker.sync_episode_status(conn, episode['id'], str(exc)[-1800:])
+                terminal = True
+    finally:
+        if uploaded and terminal:
+            uploaded.unlink(missing_ok=True)
 
 
 def finish(conn, job_id, episode_id):
     conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-    conn.execute("UPDATE episodes SET status='ready',stage='Ready',error=NULL WHERE id=?", (episode_id,))
+    worker.sync_episode_status(conn, episode_id)
 
 
 def main():

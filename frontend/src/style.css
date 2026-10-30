@@ -25,6 +25,7 @@ input, textarea, select { outline: none; }
 .status-processing, .status-queued { background: #e8bd72; box-shadow: 0 0 12px #e8bd7280; }
 .status-failed { background: #ff898c; box-shadow: 0 0 12px #ff898c80; }
 .timeline-grid { background-image: linear-gradient(to right, #30374550 1px, transparent 1px); background-size: 10% 100%; }
+.timeline-panning, .timeline-panning * { cursor: grabbing !important; user-select: none; }
 .cut-block:hover { background: #ba9ff840; }
 .scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
 .scrollbar::-webkit-scrollbar-thumb { background: #37404c; border-radius: 8px; }

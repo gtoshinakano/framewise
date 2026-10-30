@@ -72,26 +72,58 @@ def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
     return job_id
 
 
+def cleanup_voice_upload(job):
+    if job['pipeline'] != 'voice_sample':
+        return
+    try:
+        upload_id = json.loads(job['payload_json']).get('upload_id')
+        if upload_id:
+            episode = db.one('SELECT project_id FROM episodes WHERE id=?', (job['episode_id'],))
+            if episode:
+                (media.episode_dir(episode['project_id'], job['episode_id']) / 'voice-uploads' / str(uuid.UUID(upload_id))).unlink(missing_ok=True)
+        episode = db.one('SELECT project_id FROM episodes WHERE id=?', (job['episode_id'],))
+        if episode and not db.one('SELECT id FROM character_voice_samples WHERE id=?', (job['id'],)):
+            media.voice_reference_path(episode['project_id'], str(uuid.UUID(job['id']))).unlink(missing_ok=True)
+    except (OSError, ValueError):
+        log.exception('Could not clean up voice upload for job %s', job['id'])
+
+
 def claim_job(pipelines=("prepare", "hardcuts", "cutframes")):
     now = time.time()
     placeholders = ",".join("?" for _ in pipelines)
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        exhausted = conn.execute(f"SELECT id,episode_id FROM jobs WHERE pipeline IN ({placeholders}) AND status='running' AND (lease_until IS NULL OR lease_until<=?) AND attempt_count>=?", (*pipelines, now, MAX_ATTEMPTS)).fetchall()
+        exhausted = conn.execute(f"SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND status='running' AND (lease_until IS NULL OR lease_until<=?) AND attempt_count>=?", (*pipelines, now, MAX_ATTEMPTS)).fetchall()
         for job in exhausted:
             conn.execute("UPDATE jobs SET status='failed',stage='Failed',error='Interrupted too many times; run the pipeline again',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
-            conn.execute("UPDATE episodes SET status='failed',stage='Failed',error='Interrupted too many times; run the pipeline again' WHERE id=?", (job["episode_id"],))
+            sync_episode_status(conn, job["episode_id"], "Interrupted too many times; run the pipeline again")
         job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND
             (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
+            AND NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status='running' AND other.id!=jobs.id
+                AND NOT ((jobs.pipeline='cutframes' AND other.pipeline IN ('analyze','regen')) OR (other.pipeline='cutframes' AND jobs.pipeline IN ('analyze','regen'))))
             ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, rowid LIMIT 1""", (*pipelines, now)).fetchone()
-        if not job:
-            return None
-        owner = str(uuid.uuid4())
-        conn.execute("UPDATE jobs SET status='running',stage=?,error=NULL,lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                     ("Resuming" if job["status"] == "running" else "Starting", owner, now + LEASE_SECONDS, job["id"]))
-        conn.execute("UPDATE episodes SET status='processing',stage=?,error=NULL WHERE id=?",
-                     ("Resuming" if job["status"] == "running" else "Starting", job["episode_id"]))
-        return job["id"], owner
+        claimed = None
+        if job:
+            owner = str(uuid.uuid4())
+            conn.execute("UPDATE jobs SET status='running',stage=?,error=NULL,lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                         ("Resuming" if job["status"] == "running" else "Starting", owner, now + LEASE_SECONDS, job["id"]))
+            conn.execute("UPDATE episodes SET status='processing',stage=?,error=NULL WHERE id=?",
+                         ("Resuming" if job["status"] == "running" else "Starting", job["episode_id"]))
+            claimed = job["id"], owner
+    for old_job in exhausted:
+        cleanup_voice_upload(old_job)
+    return claimed
+
+
+def sync_episode_status(conn, episode_id: str, error: str | None = None):
+    """Reflect remaining work after a job finishes without hiding its history."""
+    pending = conn.execute("SELECT status,stage FROM jobs WHERE episode_id=? AND status IN ('queued','running') ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,created_at,rowid LIMIT 1", (episode_id,)).fetchone()
+    if pending:
+        conn.execute("UPDATE episodes SET status=?,stage=?,error=NULL WHERE id=?", ('processing' if pending['status'] == 'running' else 'queued', pending['stage'], episode_id))
+    elif error:
+        conn.execute("UPDATE episodes SET status='failed',stage='Failed',error=? WHERE id=?", (error, episode_id))
+    else:
+        conn.execute("UPDATE episodes SET status='ready',stage='Ready',error=NULL WHERE id=?", (episode_id,))
 
 
 def require_lease(conn, job_id: str, owner: str):
@@ -251,12 +283,12 @@ def process(job_id: str, owner: str):
         with db.connect() as conn:
             require_lease(conn, job_id, owner)
             conn.execute("UPDATE jobs SET status='done', stage='Complete', error=NULL, lease_owner=NULL, lease_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-            conn.execute("UPDATE episodes SET status='ready', stage='Ready', error=NULL WHERE id=?", (episode_id,))
+            sync_episode_status(conn, episode_id)
     except Exception as exc:
         message = str(exc)[-1800:]
         with db.connect() as conn:
             changed = conn.execute("UPDATE jobs SET status='failed', stage='Failed', error=?, lease_owner=NULL, lease_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND lease_owner=?",
                                    (message, job_id, owner)).rowcount
             if changed:
-                conn.execute("UPDATE episodes SET status='failed', stage='Failed', error=? WHERE id=?", (message, episode_id))
+                sync_episode_status(conn, episode_id, message)
         log.exception("Failed processing episode %s", episode_id)

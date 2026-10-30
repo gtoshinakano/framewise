@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +23,17 @@ def connect():
         raise
     finally:
         db.close()
+
+
+def remove_legacy_content_status(value):
+    """Remove obsolete review metadata from stored result/transcript snapshots."""
+    if isinstance(value, list):
+        return [remove_legacy_content_status(item) for item in value]
+    if isinstance(value, dict):
+        content_record = ("kind" in value and "content" in value) or ("text" in value and "start_time" in value and "end_time" in value)
+        return {key: remove_legacy_content_status(item) for key, item in value.items()
+                if not (content_record and key == "status" and item in ("draft", "approved", "rejected", "active", "deleted"))}
+    return value
 
 
 def init_db():
@@ -74,7 +86,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS analysis_results (
             id TEXT PRIMARY KEY, cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE,
             kind TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'draft', origin TEXT NOT NULL DEFAULT 'manual',
+            origin TEXT NOT NULL DEFAULT 'manual',
             model_id TEXT, job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
             prompt TEXT, settings_json TEXT NOT NULL DEFAULT '{}',
             context_json TEXT NOT NULL DEFAULT '{}',
@@ -93,7 +105,7 @@ def init_db():
             start_time REAL NOT NULL, end_time REAL NOT NULL, text TEXT NOT NULL,
             speaker_label TEXT NOT NULL DEFAULT '',
             character_context_id TEXT REFERENCES context_items(id) ON DELETE SET NULL,
-            status TEXT NOT NULL DEFAULT 'draft', origin TEXT NOT NULL DEFAULT 'manual',
+            deleted INTEGER NOT NULL DEFAULT 0, origin TEXT NOT NULL DEFAULT 'manual',
             model_id TEXT, job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
             parent_id TEXT, superseded_by TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -118,34 +130,67 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS character_voice_samples_character_idx ON character_voice_samples(character_context_id);
         """)
+        voice_columns = {row["name"] for row in db.execute("PRAGMA table_info(character_voice_samples)")}
+        if "ranges_json" not in voice_columns:
+            db.execute("ALTER TABLE character_voice_samples ADD COLUMN ranges_json TEXT")
+        if "source_filename" not in voice_columns:
+            db.execute("ALTER TABLE character_voice_samples ADD COLUMN source_filename TEXT")
         columns = {row["name"] for row in db.execute("PRAGMA table_info(transcript_segments)")}
         if "parent_id" not in columns:
             db.execute("ALTER TABLE transcript_segments ADD COLUMN parent_id TEXT")
         if "superseded_by" not in columns:
             db.execute("ALTER TABLE transcript_segments ADD COLUMN superseded_by TEXT")
+        # Preserve every result and revision while removing obsolete approval
+        # metadata. The migration and snapshot cleanup commit as one unit.
+        db.commit()
+        db.execute("BEGIN IMMEDIATE")
+        result_columns = {row["name"] for row in db.execute("PRAGMA table_info(analysis_results)")}
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(transcript_segments)")}
+        migrating = "status" in result_columns or "status" in columns
+        if "deleted" not in columns:
+            db.execute("ALTER TABLE transcript_segments ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+        if "status" in columns:
+            db.execute("UPDATE transcript_segments SET deleted=1 WHERE status='deleted'")
+            db.execute("ALTER TABLE transcript_segments DROP COLUMN status")
+        if "status" in result_columns:
+            db.execute("ALTER TABLE analysis_results DROP COLUMN status")
+        if migrating:
+            for table, column in (("analysis_results", "context_json"), ("jobs", "payload_json")):
+                for row in db.execute(f"SELECT id,{column} FROM {table}").fetchall():
+                    original = json.loads(row[column])
+                    cleaned = remove_legacy_content_status(original)
+                    if cleaned != original:
+                        db.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (json.dumps(cleaned, ensure_ascii=False), row["id"]))
         job_columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
         for column, definition in (
             ("payload_json", "TEXT NOT NULL DEFAULT '{}'"),
             ("lease_owner", "TEXT"),
             ("lease_until", "REAL"),
             ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("started_at", "TEXT"),
+            ("finished_at", "TEXT"),
+            ("retry_of", "TEXT REFERENCES jobs(id) ON DELETE SET NULL"),
         ):
             if column not in job_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
         cut_columns = {row["name"] for row in db.execute("PRAGMA table_info(cuts)")}
         if "active" not in cut_columns:
             db.execute("ALTER TABLE cuts ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        if "analysis_enabled" not in cut_columns:
+            db.execute("ALTER TABLE cuts ADD COLUMN analysis_enabled INTEGER NOT NULL DEFAULT 1")
         for column in ("first_frame_time", "last_frame_time"):
             if column not in cut_columns:
                 db.execute(f"ALTER TABLE cuts ADD COLUMN {column} REAL")
-        active = db.execute("SELECT id,episode_id FROM jobs WHERE status IN ('queued','running') ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, id").fetchall()
-        kept = set()
-        for job in active:
-            if job["episode_id"] in kept:
-                db.execute("UPDATE jobs SET status='failed',stage='Failed',error='Duplicate active job superseded during migration',updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
-            else:
-                kept.add(job["episode_id"])
-        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_episode_idx ON jobs(episode_id) WHERE status IN ('queued','running')")
+        db.execute("DROP INDEX IF EXISTS jobs_active_episode_idx")
+        db.execute("DROP INDEX IF EXISTS jobs_running_episode_idx")
+        db.executescript("""
+        CREATE TRIGGER IF NOT EXISTS jobs_started AFTER UPDATE OF status ON jobs
+        WHEN NEW.status='running' AND OLD.status='queued'
+        BEGIN UPDATE jobs SET started_at=CURRENT_TIMESTAMP WHERE id=NEW.id; END;
+        CREATE TRIGGER IF NOT EXISTS jobs_finished AFTER UPDATE OF status ON jobs
+        WHEN NEW.status IN ('done','failed') AND OLD.status IN ('queued','running')
+        BEGIN UPDATE jobs SET finished_at=CURRENT_TIMESTAMP WHERE id=NEW.id; END;
+        """)
         db.execute("CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status,lease_until,created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS transcript_active_idx ON transcript_segments(episode_id,start_time) WHERE superseded_by IS NULL")
 
