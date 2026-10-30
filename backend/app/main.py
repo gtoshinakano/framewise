@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db, media, worker
-from .inference_worker import ANIMATION_TITLE
+from .inference_worker import SUMMARY_TITLE
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_GB", "40")) * 1024 ** 3
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
@@ -114,6 +114,12 @@ class TranscriptInput(BaseModel):
     speaker_label: str = Field(default="", max_length=200)
     character_context_id: str | None = None
     status: ResultStatus = "draft"
+
+
+class VoiceSampleInput(BaseModel):
+    character_context_id: str
+    start_time: float = Field(ge=0, allow_inf_nan=False)
+    end_time: float = Field(gt=0, allow_inf_nan=False)
 
 
 class ContextInput(BaseModel):
@@ -394,6 +400,7 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
             raise HTTPException(409, "Wait for the current media job to finish")
         cuts = conn.execute("SELECT * FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index", (cut["episode_id"],)).fetchall()
         index = next(i for i, item in enumerate(cuts) if item["id"] == cut_id)
+        affected_ids = set()
         if action == "timing":
             assert timing is not None
             start, end = timing.start_time, timing.end_time
@@ -407,11 +414,15 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
                 end = episode["duration"]
             if start >= end or (index > 0 and start <= cuts[index - 1]["start_time"]) or (index + 1 < len(cuts) and end >= cuts[index + 1]["end_time"]):
                 raise HTTPException(400, "Times must leave every neighboring cut with a positive duration")
-            if index > 0:
+            if index > 0 and start != cut["start_time"]:
                 conn.execute("UPDATE cuts SET end_time=? WHERE id=?", (start, cuts[index - 1]["id"]))
-            if index + 1 < len(cuts):
+                affected_ids.add(cuts[index - 1]["id"])
+            if index + 1 < len(cuts) and end != cut["end_time"]:
                 conn.execute("UPDATE cuts SET start_time=? WHERE id=?", (end, cuts[index + 1]["id"]))
-            conn.execute("UPDATE cuts SET start_time=?,end_time=? WHERE id=?", (start, end, cut_id))
+                affected_ids.add(cuts[index + 1]["id"])
+            if start != cut["start_time"] or end != cut["end_time"]:
+                conn.execute("UPDATE cuts SET start_time=?,end_time=? WHERE id=?", (start, end, cut_id))
+                affected_ids.add(cut_id)
         else:
             if len(cuts) < 2:
                 raise HTTPException(400, "The last cut must cover the video")
@@ -427,15 +438,18 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
                     conn.execute("UPDATE cuts SET end_time=? WHERE id=?", (cut["end_time"], kept["id"]))
                 else:
                     conn.execute("UPDATE cuts SET start_time=? WHERE id=?", (cut["start_time"], kept["id"]))
+            affected_ids.add(kept["id"])
             archive_index = conn.execute("SELECT MIN(cut_index) FROM cuts WHERE episode_id=?", (cut["episode_id"],)).fetchone()[0]
             conn.execute("UPDATE cuts SET active=0,cut_index=? WHERE id=?", (min(-1, archive_index - 1), removed["id"]))
             for item in cuts:
                 if item["cut_index"] > removed["cut_index"]:
                     conn.execute("UPDATE cuts SET cut_index=? WHERE id=?", (item["cut_index"] - 1, item["id"]))
-        conn.execute("UPDATE cuts SET first_frame_time=NULL,last_frame_time=NULL WHERE episode_id=? AND active=1", (cut["episode_id"],))
-        job_id = str(uuid.uuid4())
-        conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "cutframes", json.dumps({"settings": json.loads(episode["settings_json"])})))
-        conn.execute("UPDATE episodes SET status='queued',stage='Updating cut frames',error=NULL WHERE id=?", (cut["episode_id"],))
+        if affected_ids:
+            for affected_id in affected_ids:
+                conn.execute("UPDATE cuts SET first_frame_time=NULL,last_frame_time=NULL WHERE id=?", (affected_id,))
+            job_id = str(uuid.uuid4())
+            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "cutframes", json.dumps({"settings": json.loads(episode["settings_json"]), "cut_ids": sorted(affected_ids)})))
+            conn.execute("UPDATE episodes SET status='queued',stage='Updating cut frames',error=NULL WHERE id=?", (cut["episode_id"],))
     worker.wake_event.set()
     return {"selected_id": cut_id if action != "delete" else kept["id"]}
 
@@ -507,6 +521,62 @@ def list_transcript(episode_id: str, history: bool = False):
     return db.all_rows(f"SELECT * FROM transcript_segments WHERE {where} ORDER BY {order}", (episode_id,))
 
 
+@app.post("/api/episodes/{episode_id}/transcript/approve-drafts")
+def approve_transcript_drafts(episode_id: str):
+    require_episode(episode_id)
+    with db.connect() as conn:
+        rows = conn.execute("SELECT * FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND status='draft'", (episode_id,)).fetchall()
+        for row in rows:
+            new_id = str(uuid.uuid4())
+            conn.execute("""INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id,parent_id)
+                VALUES (?,?,?,?,?,?,?,'approved','manual_edit',?,?,?)""", (new_id, episode_id, row['start_time'], row['end_time'], row['text'], row['speaker_label'], row['character_context_id'], row['model_id'], row['job_id'], row['id']))
+            conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, row['id']))
+    return {"approved": len(rows)}
+
+
+@app.post("/api/episodes/{episode_id}/transcribe")
+def transcribe_episode(episode_id: str):
+    episode = require_episode(episode_id)
+    if not episode["has_audio"] or not episode["duration"]:
+        raise HTTPException(400, "Prepare a video with audio first")
+    try:
+        return {"job_id": worker.enqueue(episode_id, "transcribe")}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/voice-samples")
+def list_voice_samples(project_id: str):
+    require_project(project_id)
+    return db.all_rows("""SELECT v.id,v.character_context_id,v.episode_id,v.start_time,v.end_time,v.model_id,v.created_at,
+        e.title AS episode_title FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id
+        LEFT JOIN episodes e ON e.id=v.episode_id WHERE c.project_id=? ORDER BY v.created_at DESC""", (project_id,))
+
+
+@app.post("/api/episodes/{episode_id}/voice-samples")
+def create_voice_sample(episode_id: str, body: VoiceSampleInput):
+    episode = require_episode(episode_id)
+    if not episode["has_audio"] or not episode["duration"]:
+        raise HTTPException(400, "Prepare a video with audio first")
+    if body.end_time > episode["duration"] or not 2 <= body.end_time - body.start_time <= 60:
+        raise HTTPException(400, "Choose a range of 2 to 60 seconds within the video")
+    character = db.one("SELECT id FROM context_items WHERE id=? AND project_id=? AND kind='character'", (body.character_context_id, episode["project_id"]))
+    if not character:
+        raise HTTPException(400, "Choose a character from this project")
+    try:
+        return {"job_id": worker.enqueue(episode_id, "voice_sample", body.model_dump())}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.delete("/api/voice-samples/{sample_id}")
+def delete_voice_sample(sample_id: str):
+    with db.connect() as conn:
+        if not conn.execute("DELETE FROM character_voice_samples WHERE id=?", (sample_id,)).rowcount:
+            raise HTTPException(404, "Voice sample not found")
+    return {"ok": True}
+
+
 @app.post("/api/episodes/{episode_id}/transcript")
 def create_transcript_segment(episode_id: str, body: TranscriptInput):
     episode = require_episode(episode_id)
@@ -530,8 +600,8 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
         current = conn.execute("SELECT superseded_by FROM transcript_segments WHERE id=?", (segment_id,)).fetchone()
         if current["superseded_by"]:
             raise HTTPException(409, "This transcript segment has a newer revision")
-        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                     (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, body.status, "manual_edit", segment_id))
+        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, body.status, "manual_edit", segment["model_id"], segment["job_id"], segment_id))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
     return db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,))
 
@@ -545,8 +615,8 @@ def delete_transcript_segment(segment_id: str):
             raise HTTPException(404, "Transcript segment not found")
         if old["superseded_by"]:
             raise HTTPException(409, "This transcript segment has a newer revision")
-        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                     (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], "deleted", "manual_edit", segment_id))
+        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], "deleted", "manual_edit", old["model_id"], old["job_id"], segment_id))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
     return {"ok": True}
 
@@ -572,7 +642,7 @@ def get_analysis_context(cut_id: str):
         "neighbor_results": neighbors,
         "chunks": db.all_rows("SELECT * FROM chunks WHERE episode_id=? AND start_time<? AND end_time>? ORDER BY chunk_index", (episode["id"], cut["end_time"], cut["start_time"])),
         "context_items": db.all_rows("SELECT * FROM context_items WHERE project_id=? AND (episode_id IS NULL OR episode_id=?) ORDER BY kind,title", (project["id"], episode["id"])),
-        "transcript_segments": db.all_rows("SELECT * FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND status='approved' AND start_time<? AND end_time>? ORDER BY start_time", (episode["id"], cut["end_time"], cut["start_time"])),
+        "transcript_segments": db.all_rows("SELECT t.*,c.title AS character_name FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.status='approved' AND t.start_time<? AND t.end_time>? ORDER BY t.start_time", (episode["id"], cut["end_time"], cut["start_time"])),
     }
 
 
@@ -633,7 +703,9 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
             inputs = []
             for cut in cuts:
                 _, config = analysis_config_for_cut(cut["id"])
-                inputs.append({"cut_id": cut["id"], "config": config.model_dump(), "context": selected_analysis_context(cut["id"], config)})
+                context = selected_analysis_context(cut["id"], config)
+                context["current_results"] = [dict(row) for row in conn.execute("SELECT kind,title,content,status,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL AND status='approved' ORDER BY rowid", (cut["id"],))]
+                inputs.append({"cut_id": cut["id"], "config": config.model_dump(), "context": context})
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs})))
             conn.execute("UPDATE episodes SET status='queued',stage='Waiting for analysis worker',error=NULL WHERE id=?", (episode_id,))
     except sqlite3.IntegrityError as exc:
@@ -641,8 +713,8 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
     return {"job_id": job_id}
 
 
-@app.post("/api/cuts/{cut_id}/regenerate-prompt")
-def regenerate_animation_prompt(cut_id: str, body: PromptRegenInput):
+@app.post("/api/cuts/{cut_id}/regenerate-summary")
+def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
     cut, config = analysis_config_for_cut(cut_id)
     if not cut["active"]:
         raise HTTPException(400, "Only active cuts can be analyzed")
@@ -654,14 +726,14 @@ def regenerate_animation_prompt(cut_id: str, body: PromptRegenInput):
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (cut["episode_id"],)).fetchone():
                 raise HTTPException(409, "An analysis job is already running for this episode")
-            rows = conn.execute("SELECT id,kind,title,content FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL AND status!='rejected' ORDER BY rowid", (cut_id,)).fetchall()
-            animation = next((row for row in reversed(rows) if row["title"] == ANIMATION_TITLE), None)
-            if body.mode == "edit" and not animation and not (body.current_prompt or "").strip():
-                raise HTTPException(400, "There is no animation prompt to edit; regenerate one instead")
-            current = body.current_prompt if body.current_prompt is not None else (animation["content"] if animation else "")
-            results = [{"title": row["title"], "kind": row["kind"], "content": row["content"][:8000]} for row in rows if not animation or row["id"] != animation["id"]]
-            payload = {"cut_id": cut_id, "mode": body.mode, "instruction": body.instruction.strip(), "current_prompt": current if body.mode == "edit" else "",
-                       "model": config.openrouter_model, "base_id": animation["id"] if animation else None, "results": results, "context": selected_analysis_context(cut_id, config)}
+            rows = conn.execute("SELECT id,kind,title,content,status FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL AND status!='rejected' ORDER BY rowid", (cut_id,)).fetchall()
+            summary = next((row for row in reversed(rows) if row["title"] == SUMMARY_TITLE), None)
+            if body.mode == "edit" and not summary and not (body.current_prompt or "").strip():
+                raise HTTPException(400, "There is no cut summary to edit; regenerate one instead")
+            current = body.current_prompt if body.current_prompt is not None else (summary["content"] if summary else "")
+            results = [{"title": row["title"], "kind": row["kind"], "content": row["content"], "status": row["status"]} for row in rows if row["title"] != SUMMARY_TITLE]
+            payload = {"result_type": "summary", "cut_id": cut_id, "mode": body.mode, "instruction": body.instruction.strip(), "current_prompt": current if body.mode == "edit" else "",
+                       "model": config.openrouter_model, "base_id": summary["id"] if summary else None, "results": results, "context": selected_analysis_context(cut_id, config)}
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "regen", json.dumps(payload)))
             conn.execute("UPDATE episodes SET status='queued',stage='Waiting for analysis worker',error=NULL WHERE id=?", (cut["episode_id"],))
     except sqlite3.IntegrityError as exc:
@@ -744,8 +816,8 @@ def cancel_queued_analysis(job_id: str):
         job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job:
             raise HTTPException(404, "Job not found")
-        if job["pipeline"] != "analyze" or job["status"] != "queued":
-            raise HTTPException(409, "Only queued analysis jobs can be cancelled")
+        if job["pipeline"] not in ("analyze", "transcribe", "voice_sample") or job["status"] != "queued":
+            raise HTTPException(409, "Only queued inference jobs can be cancelled")
         conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled before processing',updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
         conn.execute("UPDATE episodes SET status='ready',stage='Ready',error=NULL WHERE id=?", (job["episode_id"],))
     return {"ok": True}

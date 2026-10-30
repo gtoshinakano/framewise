@@ -14,6 +14,7 @@ type Props = {
   selectedTranscriptId: string | null
   onSeek: (time: number) => void
   onSelectCut: (cut: Cut) => void
+  onOpenCutAnalysis: (cut: Cut) => void
   onSelectChunk: (chunk: Chunk) => void
   onSelectTranscript: (segment: TranscriptSegment) => void
 }
@@ -69,7 +70,7 @@ function blockStyle(item: { start_time: number; end_time: number }, start: numbe
 }
 
 export function Timeline(props: Props) {
-  const { duration, waveform, chunks, cuts, transcript, currentTime, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onSelectChunk, onSelectTranscript } = props
+  const { duration, waveform, chunks, cuts, transcript, currentTime, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript } = props
   const [windowSeconds, setWindowSeconds] = useState<number | null>(() => duration > 1800 ? 600 : null)
   const [requestedStart, setRequestedStart] = useState(0)
   const span = Math.min(windowSeconds || duration || 1, duration || 1)
@@ -85,26 +86,20 @@ export function Timeline(props: Props) {
   useEffect(() => {
     if (currentTime < start || currentTime > end) center(currentTime)
   }, [currentTime])
-  function zoom(factor: number) {
-    const nextSpan = Math.max(Math.min(duration, 1), Math.min(duration, span * factor))
-    setWindowSeconds(nextSpan >= duration ? null : nextSpan)
+  const minSpan = Math.min(duration || 1, 1)
+  const zoomValue = duration > minSpan ? Math.log(duration / span) / Math.log(duration / minSpan) * 100 : 0
+  function setZoom(value: number) {
+    const nextSpan = duration / Math.pow(duration / minSpan, value / 100)
+    setWindowSeconds(value === 0 ? null : nextSpan)
     setRequestedStart(Math.max(0, Math.min(duration - nextSpan, currentTime - nextSpan / 2)))
-  }
-  function setWindow(value: string) {
-    const next = value === 'full' ? null : Number(value)
-    const nextSpan = Math.min(next || duration || 1, duration || 1)
-    const middle = start + span / 2
-    setWindowSeconds(next)
-    setRequestedStart(Math.max(0, Math.min(duration - nextSpan, middle - nextSpan / 2)))
   }
   const playhead = (currentTime - start) / span * 100
   return <section className="border-t hairline bg-[#11151d] px-4 py-3">
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-semibold">Timeline</h2><p className="muted mt-1 text-xs">Drag the waveform playhead or select a cut to seek</p></div><span className="muted text-xs">{cuts.length} {cuts.length === 1 ? 'cut' : 'cuts'}</span></div>
     <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-      <button type="button" onClick={() => zoom(0.5)} disabled={!duration || span <= 1} className="btn btn-quiet px-2 py-1.5 text-xs" aria-label="Zoom in timeline">+ Zoom in</button><button type="button" onClick={() => zoom(2)} disabled={!duration || span >= duration} className="btn btn-quiet px-2 py-1.5 text-xs" aria-label="Zoom out timeline">− Zoom out</button><label className="muted" htmlFor="timeline-window">Window</label>
-      <select id="timeline-window" className="rounded-md border border-[#353c48] bg-[#1b202a] px-2 py-1.5 text-white" value={windowSeconds ?? 'full'} onChange={event => setWindow(event.target.value)}>
-        {windowSeconds !== null && ![1800, 600, 120, 30].includes(windowSeconds) && <option value={windowSeconds}>{windowSeconds.toFixed(1)} seconds</option>}<option value="full">Full video</option><option value="1800">30 minutes</option><option value="600">10 minutes</option><option value="120">2 minutes</option><option value="30">30 seconds</option>
-      </select>
+      <label htmlFor="timeline-zoom" className="muted">Zoom</label>
+      <span className="muted" aria-hidden="true">−</span><input id="timeline-zoom" type="range" min="0" max="100" step="1" value={zoomValue} disabled={duration <= 1} onChange={event => setZoom(Number(event.target.value))} aria-valuetext={`${span.toFixed(1)} seconds visible`} className="w-32 accent-[#a58ae8]" /><span className="muted" aria-hidden="true">+</span>
+      <span className="muted">{span >= duration ? 'Full video' : `${span.toFixed(1)}s visible`}</span>
       <button type="button" disabled={start <= 0} onClick={() => setRequestedStart(Math.max(0, start - span * 0.75))} className="btn btn-quiet px-2 py-1.5 text-xs">← Earlier</button>
       <button type="button" disabled={start >= maxStart} onClick={() => setRequestedStart(Math.min(maxStart, start + span * 0.75))} className="btn btn-quiet px-2 py-1.5 text-xs">Later →</button>
       <button type="button" onClick={() => center(currentTime)} className="btn btn-quiet px-2 py-1.5 text-xs">Center playhead</button>
@@ -114,7 +109,7 @@ export function Timeline(props: Props) {
     <div className="timeline-grid relative mb-2 flex justify-between border-b hairline pb-2 font-mono text-[10px] text-[#7e8797]">{Array.from({ length: 6 }, (_, index) => <span key={index}>{stamp(start + span * index / 5)}</span>)}</div>
     <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
       <div className="flex h-15 items-center gap-2 text-xs text-[#98a1af]"><Scissors size={16} /> Cuts</div>
-      <div className="relative h-15 overflow-hidden rounded-md bg-[#1b202b]">{cuts.filter(visible).map(cut => <button key={cut.id} title={`Cut ${cut.cut_index + 1} · ${stamp(cut.start_time)}–${stamp(cut.end_time)}`} onClick={() => onSelectCut(cut)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedCutId === cut.id ? 'bg-[#9476d555] text-white' : 'bg-[#5c497d66] text-[#d4c4ed]'}`} style={blockStyle(cut, start, span)}><span className="block truncate">{cut.title || `Cut ${cut.cut_index + 1}`}</span><span className="block truncate text-[9px] opacity-70">{stamp(cut.start_time)}</span></button>)}{!cuts.length && <div className="muted flex h-full items-center justify-center text-xs">Run hard-cut detection to create timeline segments</div>}{playhead >= 0 && playhead <= 100 && <div className="pointer-events-none absolute inset-y-0 w-px bg-[#eee7ff]" style={{ left: `${playhead}%` }} />}</div>
+      <div className="relative h-15 overflow-hidden rounded-md bg-[#1b202b]">{cuts.filter(visible).map(cut => <button key={cut.id} title={`Cut ${cut.cut_index + 1} · ${stamp(cut.start_time)}–${stamp(cut.end_time)}`} onClick={() => onSelectCut(cut)} onDoubleClick={() => onOpenCutAnalysis(cut)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedCutId === cut.id ? 'bg-[#9476d555] text-white' : 'bg-[#5c497d66] text-[#d4c4ed]'}`} style={blockStyle(cut, start, span)}><span className="block truncate">{cut.title || `Cut ${cut.cut_index + 1}`}</span><span className="block truncate text-[9px] opacity-70">{stamp(cut.start_time)}</span></button>)}{!cuts.length && <div className="muted flex h-full items-center justify-center text-xs">Run hard-cut detection to create timeline segments</div>}{playhead >= 0 && playhead <= 100 && <div className="pointer-events-none absolute inset-y-0 w-px bg-[#eee7ff]" style={{ left: `${playhead}%` }} />}</div>
       <div className="flex h-16 items-center gap-2 text-xs text-[#98a1af]"><AudioLines size={16} /> Audio</div>
       <WaveformCanvas waveform={waveform} duration={duration} start={start} span={span} currentTime={currentTime} onSeek={onSeek} />
       <div className="flex h-12 items-center gap-2 text-xs text-[#98a1af]"><AudioLines size={16} /> Speech</div>

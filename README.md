@@ -38,7 +38,7 @@ Do not use `docker compose down -v` unless you intend to delete the project and 
 4. Change processing settings in the sidebar, save, then rerun **Prepare** or **Redetect cuts**. Preview width, CRF quality, encoding speed, frame interval, chunk duration, and scene threshold are configurable. Cut edits and result revisions follow boundaries that remain within 0.25 seconds of their previous positions. Boundaries that disappear move to **Archived cuts** with their notes and result history intact; a later matching redetection restores the same cut. Chunk titles and notes are retained when their start times remain the same.
 5. Add characters, worlds, scenarios, or chapter notes in the project's **Context library**. Items can apply to the entire project or a specific episode.
 6. Use the editor's **Audio** tab to add timed speech notes, speaker labels, and optional character links. Approved segments appear in overlapping cuts' input context. Editing or deleting a segment preserves earlier revisions under **Show history**.
-7. Once the inference worker is set up, select a cut, choose first/last or evenly spaced frames, specify visual categories to detect, select relevant context, add cut-specific notes, and save the preset. **Analyze cut** queues that cut; **Analyze all cuts** queues all active cuts using each one's saved preset. Review and revise the resulting draft fields. Results include frame observations, character and outfit prompts, a first-still prompt, a MiniMax H3 animation prompt, and voice-over notes.
+7. Once the inference worker is set up, select a cut, choose first/last or evenly spaced frames, specify visual categories to detect, select relevant context, add cut-specific notes, and save the preset. **Analyze cut** queues that cut; **Analyze all cuts** queues all active cuts using each one's saved preset. Review and revise the resulting draft fields. Results include frame observations, raw OCR, evidence assessments with qualitative confidence, and a cut summary for still-image and animation planning. Each summary follows the same ordered topics, including characters, camera, setting, lighting, on-screen text, audio context, animation direction, and uncertainties. Each topic has a qualitative confidence label.
 
 For long uploads, keep the browser tab open until the upload reaches 100%. Media preparation then runs in the background. The project and editor show current stage and any FFmpeg error. One media job runs at a time. Jobs are claimed from SQLite with a renewable 60-second lease; queued jobs start after a restart, and interrupted jobs resume when their lease expires. After three interrupted attempts, the job is marked failed and can be run again from the editor. Each job keeps the processing settings that were active when it was queued.
 
@@ -97,9 +97,11 @@ docker build -f deploy/Dockerfile.refresh-inference -t framewise-inference-rocm:
 sudo systemctl restart framewise.service
 ```
 
-WeVisOne supplies spatial detections, while the separate Qwen model supplies frame descriptions. Both can make mistakes; character matching, motion, and camera movement can also be inaccurate. A sequence of stills does not establish the true action between samples. Review each generated draft and approved transcript before using it. The app does not transcribe audio or generate images, speech, or video. MiniMax H3 prompts are drafts for its first-frame workflow; its supported output duration is 4–15 seconds, so longer or shorter source cuts may need splitting or holding. See [the integration notes](docs/model-integration.md) and [MiniMax H3 guidance](https://www.minimax.io/news/minimax-h3-open-source).
+WeVisOne supplies spatial detections, while the separate Qwen model supplies frame descriptions. Both can make mistakes; character matching, motion, and camera movement can also be inaccurate. A sequence of stills does not establish the true action between samples. Review each generated draft and approved transcript before using it. The app does not transcribe audio or generate images, speech, or video. OCR and confidence assessments are uncalibrated model outputs and need review. See [the integration notes](docs/model-integration.md).
 
 ## Development
+
+For Docker development with frontend hot reload and automatic API reload, run `COMPOSE_FILE=compose.yml:compose.inference.rocm.yml:compose.dev.yml docker compose up -d` (omit the inference override if you do not use it). Open `http://<APP_BIND_IP>:8080` for Vite hot reload (or use `APP_PORT` if set). Set `APP_BIND_IP` to a LAN-accessible address in `.env` to access Vite from another device. Restart the inference worker after backend changes with `docker compose restart inference-worker`.
 
 The Docker image builds the frontend and serves it from FastAPI. For local development with Node and FFmpeg installed, start the API on port 8000 (`uvicorn app.main:app --reload` from `backend`, with `DATA_DIR` set to a writable directory) and run `npm install && npm run dev` from `frontend`. Vite proxies `/api` to the API. The API schema is at `/docs`.
 
@@ -117,3 +119,13 @@ With local Python, FFmpeg, and FFprobe installed, install `backend/requirements-
 ## Next pipelines
 
 Hard-cut detection may miss fades or split on rapid motion. Automated transcription, voice identification, temporal motion analysis, and production of images, audio, or video remain separate future work.
+
+### Local audio transcription (ROCm)
+
+The optional audio worker uses Qwen3-ASR 1.7B, Qwen3-ForcedAligner 0.6B, and pyannote Community-1. It runs separately from visual inference and keeps the downloaded checkpoints in the persistent model cache. Accept the conditions at https://huggingface.co/pyannote/speaker-diarization-community-1 and add a Hugging Face read token as `HF_TOKEN` in the ignored `.env` file. Do not commit the token. Then include `compose.audio.rocm.yml` alongside the usual Compose files and start the `audio` profile, for example:
+
+```sh
+COMPOSE_FILE=compose.yml:compose.inference.rocm.yml:compose.audio.rocm.yml:compose.dev.yml docker compose --profile audio up -d --build audio-worker
+```
+
+The `audio-worker` image uses a separate ROCm environment to isolate audio dependencies from the visual worker. The episode's Audio workspace can create project-wide voice references from a 2–60 second excerpt containing one clear speaker, and can queue transcription independently of hard-cut detection. Review the resulting draft text, timings, and suggested character links before approval; only approved speech overlaps are sent to the cut summarizer. Transcription reruns replace untouched generated drafts through revision history; reviewed or manually created speech is retained and overlapping new output is omitted. The forced aligner supports fewer languages than the ASR model; a job fails rather than inventing timestamps when alignment is unavailable. Queued inference jobs can be cancelled from the episode editor.

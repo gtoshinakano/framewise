@@ -53,7 +53,7 @@ def sync_chunks(episode_id: str, duration: float, chunk_duration: int):
         conn.executemany("INSERT INTO chunks (id,episode_id,chunk_index,start_time,end_time,title,notes) VALUES (?,?,?,?,?,?,?)", values)
 
 
-def enqueue(episode_id: str, pipeline: str):
+def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
     try:
         with db.connect() as conn:
             episode = conn.execute("SELECT settings_json FROM episodes WHERE id=?", (episode_id,)).fetchone()
@@ -63,7 +63,7 @@ def enqueue(episode_id: str, pipeline: str):
             if existing:
                 raise ValueError("An analysis job is already running for this episode")
             job_id = str(uuid.uuid4())
-            payload = json.dumps({"settings": json.loads(episode["settings_json"])})
+            payload = json.dumps({"settings": json.loads(episode["settings_json"]), **(extra or {})})
             conn.execute("INSERT INTO jobs (id, episode_id, pipeline, payload_json) VALUES (?,?,?,?)", (job_id, episode_id, pipeline, payload))
             conn.execute("UPDATE episodes SET status='queued', stage=? , error=NULL WHERE id=?", (pipeline, episode_id))
     except sqlite3.IntegrityError as exc:
@@ -151,7 +151,8 @@ def process(job_id: str, owner: str):
     path = media.episode_dir(episode["project_id"], episode_id)
     original = path / f"original{episode['original_ext']}"
     proxy = path / "proxy.mp4"
-    settings = json.loads(job["payload_json"]).get("settings") or json.loads(episode["settings_json"])
+    payload = json.loads(job["payload_json"])
+    settings = payload.get("settings") or json.loads(episode["settings_json"])
     try:
         if job["pipeline"] != "cutframes":
             stage(job_id, owner, episode_id, "Probing video")
@@ -236,7 +237,11 @@ def process(job_id: str, owner: str):
             stage(job_id, owner, episode_id, "Updating cut frames")
             thumbs = path / "thumbnails"
             thumbs.mkdir(exist_ok=True)
-            for cut in db.all_rows("SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index", (episode_id,)):
+            # Older queued jobs invalidated every active cut. Resume only cuts
+            # still missing frame timestamps; completed cuts survive restarts.
+            for cut in db.all_rows("SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 AND (first_frame_time IS NULL OR last_frame_time IS NULL) ORDER BY cut_index", (episode_id,)):
+                if "cut_ids" in payload and cut["id"] not in payload["cut_ids"]:
+                    continue
                 first, last = media.cut_frame_times(cut["start_time"], cut["end_time"])
                 first = media.extract_cut_frame(proxy, thumbs / f"{cut['id']}_first.jpg", first, cut["start_time"], cut["end_time"])
                 last = media.extract_cut_frame(proxy, thumbs / f"{cut['id']}_last.jpg", last, cut["start_time"], cut["end_time"], last=True)

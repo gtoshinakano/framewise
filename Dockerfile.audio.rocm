@@ -1,0 +1,12 @@
+# Separate image prevents audio packages from changing visual inference.
+FROM framewise-inference-rocm:local
+USER root
+# pyannote.audio 4.0.5 supports the existing ROCm PyTorch; audio decoding
+# uses CPU TorchCodec while all neural inference runs on the GPU.
+RUN python -m pip uninstall -y wevisone-vl && python -m pip install --no-cache-dir --timeout 120 --retries 10 --extra-index-url https://repo.amd.com/rocm/whl-multi-arch/ --extra-index-url https://download.pytorch.org/whl/cpu \
+    'torchaudio==2.11.0+rocm7.14.1' 'torchcodec==0.11.0+cpu' 'gradio==6.17.3' 'qwen-asr==0.0.6' 'pyannote.audio==4.0.5' && \
+    python -m pip check && python -c 'import torch; assert torch.version.hip; from qwen_asr import Qwen3ASRModel; from pyannote.audio import Pipeline; from torchcodec.decoders import AudioDecoder'
+COPY backend/app ./app
+RUN mkdir -p /home/appuser/.config && chown -R 10001:10001 /home/appuser/.config
+USER appuser
+CMD ["python", "-m", "app.audio_worker"]

@@ -3,6 +3,7 @@
 # Rebuild only when Python or npm dependencies change.
 services:
   video-analyzer:
+    ports: !reset []
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--reload", "--reload-dir", "/app/app"]
     volumes:
       - ./backend/app:/app/app:ro
@@ -13,7 +14,11 @@ services:
   frontend-watch:
     image: node:22-alpine
     working_dir: /app
-    command: ["sh", "-c", "npm ci && npm run build -- --watch"]
+    command: ["sh", "-c", "npm ci && npm run dev"]
+    environment:
+      VITE_API_PROXY: http://video-analyzer:8000
+    ports:
+      - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-8080}:5173"
     volumes:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules

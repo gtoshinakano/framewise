@@ -1,0 +1,183 @@
+"""Dedicated local audio inference worker; all jobs use the shared lease discipline."""
+import json
+import logging
+import math
+import os
+import tempfile
+import threading
+import time
+import uuid
+from pathlib import Path
+
+from . import db, media, worker
+from .audio_matching import assign_words, match_voices, overlap_index, restore_aligned_text
+
+log = logging.getLogger(__name__)
+DIARIZATION = 'pyannote/speaker-diarization-community-1'
+ASR = 'Qwen/Qwen3-ASR-1.7B'
+ALIGNER = 'Qwen/Qwen3-ForcedAligner-0.6B'
+
+
+def diarize(audio):
+    import torch
+    from pyannote.audio import Pipeline
+    pipeline = Pipeline.from_pretrained(DIARIZATION, token=os.environ.get('HF_TOKEN') or None)
+    if pipeline is None:
+        raise RuntimeError('Community-1 could not be loaded. Accept its Hugging Face conditions and configure HF_TOKEN.')
+    if torch.cuda.is_available():
+        pipeline.to(torch.device('cuda'))
+    # Some ROCm/MIOpen builds fail to compile PyanNet's instance-normalization
+    # kernel on gfx1201. PyTorch's native path keeps inference on the GPU.
+    with torch.backends.cudnn.flags(enabled=False):
+        return pipeline(str(audio))
+
+
+def clip_audio(source, target, start, end):
+    media.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', str(start),
+               '-i', str(source), '-t', str(end - start), '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', str(target)])
+
+
+def process(job_id, owner):
+    job = db.one('SELECT * FROM jobs WHERE id=? AND status=\'running\' AND lease_owner=?', (job_id, owner))
+    if not job:
+        return
+    episode = db.one('SELECT * FROM episodes WHERE id=?', (job['episode_id'],))
+    if not episode:
+        return
+    payload = json.loads(job['payload_json'])
+    path = media.episode_dir(episode['project_id'], episode['id'])
+    try:
+        audio = path / 'audio.wav'
+        if not audio.is_file():
+            worker.stage(job_id, owner, episode['id'], 'Extracting audio')
+            media.extract_audio(path / f"original{episode['original_ext']}", audio)
+        worker.stage(job_id, owner, episode['id'], 'Identifying voices')
+        with tempfile.TemporaryDirectory(dir=path) as temp:
+            sample = Path(temp) / 'sample.wav'
+            if job['pipeline'] == 'voice_sample':
+                clip_audio(audio, sample, payload['start_time'], payload['end_time'])
+                output = diarize(sample)
+                labels = output.speaker_diarization.labels()
+                if len(labels) != 1 or output.speaker_embeddings is None:
+                    raise RuntimeError('Select a sample containing one clear speaker; none or multiple speakers were detected.')
+                vector = output.speaker_embeddings[0].tolist()
+                if not vector or any(not math.isfinite(x) for x in vector) or not any(vector):
+                    raise RuntimeError('Could not extract a usable voice embedding from this sample.')
+                with db.connect() as conn:
+                    worker.require_lease(conn, job_id, owner)
+                    character = conn.execute("SELECT id FROM context_items WHERE id=? AND project_id=? AND kind='character'", (payload['character_context_id'], episode['project_id'])).fetchone()
+                    if not character:
+                        raise RuntimeError('Character no longer exists in this project')
+                    conn.execute('INSERT INTO character_voice_samples (id,character_context_id,episode_id,start_time,end_time,embedding_json,model_id) VALUES (?,?,?,?,?,?,?)',
+                                 (str(uuid.uuid4()), character['id'], episode['id'], payload['start_time'], payload['end_time'], json.dumps(vector), DIARIZATION))
+                    finish(conn, job_id, episode['id'])
+                return
+            output = diarize(audio)
+            labels = output.speaker_diarization.labels()
+            embeddings = output.speaker_embeddings
+            speakers = {label: embeddings[i].tolist() for i, label in enumerate(labels)} if embeddings is not None else {}
+            refs = db.all_rows('SELECT v.character_context_id AS character_id,v.embedding_json FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id WHERE c.project_id=? AND v.model_id=?', (episode['project_id'], DIARIZATION))
+            matches = match_voices(speakers, [{'character_id': r['character_id'], 'embedding': json.loads(r['embedding_json'])} for r in refs])
+            turns = [{'start_time': turn.start, 'end_time': turn.end, 'speaker': speaker} for turn, speaker in output.exclusive_speaker_diarization]
+            worker.stage(job_id, owner, episode['id'], 'Loading transcription and alignment models')
+            import torch
+            from qwen_asr import Qwen3ASRModel
+            device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+            dtype = torch.bfloat16 if device != 'cpu' else torch.float32
+            model = Qwen3ASRModel.from_pretrained(ASR, dtype=dtype, device_map=device, max_inference_batch_size=1,
+                max_new_tokens=512, forced_aligner=ALIGNER, forced_aligner_kwargs={'dtype': dtype, 'device_map': device})
+            segments = []
+            # Cover the entire recording even where diarization missed speech.
+            # Short bounded windows also keep forced-alignment inference manageable.
+            windows = []
+            start = 0.
+            while start < episode['duration']:
+                end = min(start + 25., episode['duration'])
+                windows.append((start, end))
+                start = end
+            for index, (start, end) in enumerate(windows):
+                worker.stage(job_id, owner, episode['id'], f'Transcribing speech {index + 1}/{len(windows)}')
+                clip_audio(audio, sample, start, end)
+                result = model.transcribe(audio=str(sample), language=None, return_time_stamps=True)[0]
+                words = []
+                for item in result.time_stamps or []:
+                    word_start = max(start, start + float(item.start_time))
+                    word_end = min(end, start + float(item.end_time))
+                    if item.text.strip():
+                        if not (math.isfinite(word_start) and math.isfinite(word_end) and word_end >= word_start):
+                            raise RuntimeError(f'Invalid aligned timestamp for speech at {start:.2f}s')
+                        # Aligner quantization may give a word zero duration. Keep
+                        # it editable using a minimal span inside the window.
+                        if word_end == word_start:
+                            word_start = max(start, min(word_start, end - .01))
+                            word_end = min(end, word_start + .01)
+                        words.append({'start_time': word_start, 'end_time': word_end, 'text': item.text.strip()})
+                if result.text.strip() and not words:
+                    raise RuntimeError(f'No aligned timestamps for speech at {start:.2f}s ({result.language}); alignment may not support this language.')
+                restored = restore_aligned_text(result.text, words)
+                if restored is None:
+                    # Do not silently discard ASR text if aligner normalization
+                    # cannot be mapped back to its original spelling.
+                    restored = [{'start_time': words[0]['start_time'], 'end_time': words[-1]['end_time'], 'text': result.text}]
+                segments.extend(assign_words(restored, turns))
+            with db.connect() as conn:
+                worker.require_lease(conn, job_id, owner)
+                # Replace only unreviewed output from this pipeline. Preserve
+                # human revisions and avoid duplicating their covered speech.
+                current = conn.execute("SELECT * FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND status!='deleted'", (episode['id'],)).fetchall()
+                protected = []
+                for old in current:
+                    if old['origin'] == 'model' and old['status'] == 'draft' and (old['model_id'] or '').startswith(ASR):
+                        tombstone = str(uuid.uuid4())
+                        conn.execute("""INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id,parent_id)
+                            VALUES (?,?,?,?,?,?,?,'deleted','model',?,?,?)""", (tombstone, episode['id'], old['start_time'], old['end_time'], old['text'], old['speaker_label'], old['character_context_id'], old['model_id'], old['job_id'], old['id']))
+                        conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (tombstone, old['id']))
+                    else:
+                        protected.append((old['start_time'], old['end_time']))
+                overlaps_reviewed = overlap_index(protected)
+                for word in segments:
+                    if overlaps_reviewed(word['start_time'], word['end_time']):
+                        continue
+                    speaker = word['speaker'] or ''
+                    character_id = matches.get(speaker, {}).get('character_id')
+                    conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,status,origin,model_id,job_id) VALUES (?,?,?,?,?,?,?,'draft','model',?,?)",
+                        (str(uuid.uuid4()), episode['id'], word['start_time'], word['end_time'], word['text'], speaker, character_id, ASR + ' + ' + ALIGNER + ' + ' + DIARIZATION, job_id))
+                finish(conn, job_id, episode['id'])
+    except Exception as exc:
+        log.exception('Audio job failed: %s', job_id)
+        with db.connect() as conn:
+            changed = conn.execute("UPDATE jobs SET status='failed',stage='Failed',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND lease_owner=?", (str(exc)[-1800:], job_id, owner)).rowcount
+            if changed:
+                conn.execute("UPDATE episodes SET status='failed',stage='Failed',error=? WHERE id=?", (str(exc)[-1800:], episode['id']))
+
+
+def finish(conn, job_id, episode_id):
+    conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+    conn.execute("UPDATE episodes SET status='ready',stage='Ready',error=NULL WHERE id=?", (episode_id,))
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    db.init_db()
+    while True:
+        try:
+            claimed = worker.claim_job(('transcribe', 'voice_sample'))
+            if not claimed:
+                time.sleep(2)
+                continue
+            job_id, owner = claimed
+            done = threading.Event()
+            beat = threading.Thread(target=worker.heartbeat, args=(job_id, owner, done), daemon=True)
+            beat.start()
+            try:
+                process(job_id, owner)
+            finally:
+                done.set()
+                beat.join(timeout=1)
+        except Exception:
+            log.exception('Audio worker error')
+            time.sleep(2)
+
+
+if __name__ == '__main__':
+    main()

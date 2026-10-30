@@ -1,0 +1,40 @@
+services:
+  audio-cache-init:
+    profiles: ["audio"]
+    image: video-analyzer:local
+    user: "0:0"
+    entrypoint: ["sh", "-c", "mkdir -p /models/cache/huggingface /models/cache/audio-config /models/cache/audio-cache && chown 10001:10001 /models/cache/huggingface /models/cache/audio-config /models/cache/audio-cache"]
+    restart: "no"
+    volumes:
+      - model_cache:/models/cache
+  audio-worker:
+    profiles: ["audio"]
+    build:
+      context: .
+      dockerfile: Dockerfile.audio.rocm
+    image: framewise-audio-rocm:local
+    restart: unless-stopped
+    depends_on:
+      video-analyzer:
+        condition: service_healthy
+      audio-cache-init:
+        condition: service_completed_successfully
+    environment:
+      DATA_DIR: /data
+      TMPDIR: /data/tmp
+      HF_HOME: /models/cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      PYANNOTE_METRICS_ENABLED: "0"
+      XDG_CONFIG_HOME: /models/cache/audio-config
+      XDG_CACHE_HOME: /models/cache/audio-cache
+    volumes:
+      - video_data:/data
+      - model_cache:/models/cache
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-991}"
+    security_opt:
+      - seccomp:unconfined

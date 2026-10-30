@@ -108,6 +108,15 @@ def init_db():
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS context_project_idx ON context_items(project_id);
+        CREATE TABLE IF NOT EXISTS character_voice_samples (
+            id TEXT PRIMARY KEY,
+            character_context_id TEXT NOT NULL REFERENCES context_items(id) ON DELETE CASCADE,
+            episode_id TEXT REFERENCES episodes(id) ON DELETE SET NULL,
+            start_time REAL NOT NULL, end_time REAL NOT NULL,
+            embedding_json TEXT NOT NULL, model_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS character_voice_samples_character_idx ON character_voice_samples(character_context_id);
         """)
         columns = {row["name"] for row in db.execute("PRAGMA table_info(transcript_segments)")}
         if "parent_id" not in columns:
