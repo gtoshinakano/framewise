@@ -1,11 +1,14 @@
 import json
 import logging
 import math
-import shutil
+import re
 import sqlite3
 import threading
+import tempfile
 import time
 import uuid
+
+from pathlib import Path
 
 from . import db, media
 
@@ -172,6 +175,16 @@ def work_loop():
         wake_event.clear()
 
 
+
+def discard_obsolete_previews(path):
+    """Proxy-derived previews are stale after the proxy is rebuilt."""
+    for folder, pattern in ((path / 'frames', r'frame_\d{6}\.jpg'),
+                            (path / 'thumbnails', r'(?:cut_\d{6}|[0-9a-f-]{36}_(?:first|last))\.jpg')):
+        if folder.is_dir():
+            for image in folder.iterdir():
+                if image.is_file() and re.fullmatch(pattern, image.name):
+                    image.unlink(missing_ok=True)
+
 def process(job_id: str, owner: str):
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
@@ -200,8 +213,11 @@ def process(job_id: str, owner: str):
         if job["pipeline"] == "prepare" or not proxy.exists():
             stage(job_id, owner, episode_id, "Creating preview video")
             media.make_proxy(original, proxy, settings["proxy_width"], settings.get("proxy_crf", 28), settings.get("proxy_preset", "veryfast"))
-            stage(job_id, owner, episode_id, "Extracting frames")
-            media.extract_frames(proxy, path / "frames", settings["frame_interval"])
+            with db.connect() as conn:
+                require_lease(conn, job_id, owner)
+                discard_obsolete_previews(path)
+            stage(job_id, owner, episode_id, "Indexing frames")
+            media.write_frame_manifest(path / "frames", settings["frame_interval"], info["duration"])
             if info["has_audio"]:
                 stage(job_id, owner, episode_id, "Extracting audio")
                 media.extract_audio(original, path / "audio.wav")
@@ -234,52 +250,32 @@ def process(job_id: str, owner: str):
                     else:
                         conn.execute("INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time) VALUES (?,?,?,?,?)",
                                      (str(uuid.uuid4()), episode_id, index, start, end))
-            thumbs = path / "thumbnails"
-            thumbs.mkdir(exist_ok=True)
             cut_ids = {cut["cut_index"]: cut["id"] for cut in db.all_rows("SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1", (episode_id,))}
-            for index, (start, end) in enumerate(segments):
-                first, last = media.cut_frame_times(start, end)
-                cut_id = cut_ids[index]
-                first = media.extract_cut_frame(proxy, thumbs / f"{cut_id}_first.jpg", first, start, end)
-                last = media.extract_cut_frame(proxy, thumbs / f"{cut_id}_last.jpg", last, start, end, last=True)
-                with db.connect() as conn:
-                    require_lease(conn, job_id, owner)
-                    conn.execute("UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?", (first, last, cut_id))
-                gallery = thumbs / f"cut_{index:06d}.jpg"
-                gallery_temp = thumbs / f"cut_{index:06d}.partial.jpg"
-                shutil.copyfile(thumbs / f"{cut_id}_first.jpg", gallery_temp)
-                gallery_temp.replace(gallery)
-            for archived in db.all_rows("SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=0", (episode_id,)):
-                first, last = media.cut_frame_times(archived["start_time"], archived["end_time"])
-                for position, sample_time in (("first", first), ("last", last)):
-                    target = thumbs / f"{archived['id']}_{position}.jpg"
-                    if not target.is_file():
-                        actual = media.extract_cut_frame(proxy, target, sample_time, archived["start_time"], archived["end_time"], last=(position == "last"))
-                        with db.connect() as conn:
-                            require_lease(conn, job_id, owner)
-                            column = "first_frame_time" if position == "first" else "last_frame_time"
-                            conn.execute(f"UPDATE cuts SET {column}=? WHERE id=?", (actual, archived["id"]))
-            expected = {f"cut_{index:06d}.jpg" for index in cut_ids}
-            all_cut_ids = [cut["id"] for cut in db.all_rows("SELECT id FROM cuts WHERE episode_id=?", (episode_id,))]
-            expected.update(f"{cut_id}_{position}.jpg" for cut_id in all_cut_ids for position in ("first", "last"))
-            for image in thumbs.glob("*.jpg"):
-                if image.name not in expected:
-                    image.unlink()
+            with tempfile.TemporaryDirectory(prefix='framewise-boundaries-') as scratch:
+                for index, (start, end) in enumerate(segments):
+                    first, last = media.cut_frame_times(start, end)
+                    cut_id = cut_ids[index]
+                    first = media.extract_cut_frame(proxy, Path(scratch) / 'first.jpg', first, start, end)
+                    last = media.extract_cut_frame(proxy, Path(scratch) / 'last.jpg', last, start, end, last=True, probe_padding=1)
+                    with db.connect() as conn:
+                        require_lease(conn, job_id, owner)
+                        conn.execute("UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?", (first, last, cut_id))
+                        for position in ('first', 'last'):
+                            (path / 'thumbnails' / f"{cut_id}_{position}.jpg").unlink(missing_ok=True)
         if job["pipeline"] == "cutframes":
             stage(job_id, owner, episode_id, "Updating cut frames")
-            thumbs = path / "thumbnails"
-            thumbs.mkdir(exist_ok=True)
-            # Older queued jobs invalidated every active cut. Resume only cuts
-            # still missing frame timestamps; completed cuts survive restarts.
-            for cut in db.all_rows("SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 AND (first_frame_time IS NULL OR last_frame_time IS NULL) ORDER BY cut_index", (episode_id,)):
-                if "cut_ids" in payload and cut["id"] not in payload["cut_ids"]:
-                    continue
-                first, last = media.cut_frame_times(cut["start_time"], cut["end_time"])
-                first = media.extract_cut_frame(proxy, thumbs / f"{cut['id']}_first.jpg", first, cut["start_time"], cut["end_time"])
-                last = media.extract_cut_frame(proxy, thumbs / f"{cut['id']}_last.jpg", last, cut["start_time"], cut["end_time"], last=True)
-                with db.connect() as conn:
-                    require_lease(conn, job_id, owner)
-                    conn.execute("UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?", (first, last, cut["id"]))
+            with tempfile.TemporaryDirectory(prefix='framewise-boundaries-') as scratch:
+                for cut in db.all_rows("SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 AND (first_frame_time IS NULL OR last_frame_time IS NULL) ORDER BY cut_index", (episode_id,)):
+                    if "cut_ids" in payload and cut["id"] not in payload["cut_ids"]:
+                        continue
+                    first, last = media.cut_frame_times(cut["start_time"], cut["end_time"])
+                    first = media.extract_cut_frame(proxy, Path(scratch) / 'first.jpg', first, cut["start_time"], cut["end_time"])
+                    last = media.extract_cut_frame(proxy, Path(scratch) / 'last.jpg', last, cut["start_time"], cut["end_time"], last=True, probe_padding=1)
+                    with db.connect() as conn:
+                        require_lease(conn, job_id, owner)
+                        conn.execute("UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?", (first, last, cut["id"]))
+                        for position in ('first', 'last'):
+                            (path / 'thumbnails' / f"{cut['id']}_{position}.jpg").unlink(missing_ok=True)
         with db.connect() as conn:
             require_lease(conn, job_id, owner)
             conn.execute("UPDATE jobs SET status='done', stage='Complete', error=NULL, lease_owner=NULL, lease_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))

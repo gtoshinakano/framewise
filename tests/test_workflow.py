@@ -71,6 +71,8 @@ class WorkflowTest(unittest.TestCase):
                     self.assertFalse(episode["has_audio"])
                     self.assertEqual(client.post(f"/api/episodes/{episode_id}/run", json={"pipeline": "hardcuts"}).status_code, 200)
                     episode = wait_ready()
+                    episode_path = media.episode_dir(episode['project_id'], episode_id)
+                    self.assertEqual(list(episode_path.rglob('*.jpg')), [])
                     self.assertEqual(len(episode["cuts"]), 2)
                     self.assertAlmostEqual(episode["cuts"][0]["last_frame_time"], .9, places=2)
                     last = episode["cuts"][-1]

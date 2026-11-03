@@ -19,8 +19,11 @@ def voice_reference_path(project_id: str, sample_id: str) -> Path:
     return DATA_DIR / 'projects' / project_id / 'voice-references' / f'{sample_id}.wav'
 
 
-def run(args: list[str]):
-    result = subprocess.run(args, capture_output=True, text=True)
+def run(args: list[str], timeout: float | None = None):
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError('Media command timed out') from exc
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout)[-1800:])
     return result
@@ -59,6 +62,18 @@ def extract_frames(proxy: Path, frames_dir: Path, interval: float):
               for index, frame in enumerate(sorted(frames_dir.glob("frame_*.jpg")))]
     (frames_dir / "manifest.json").write_text(json.dumps({"source": "proxy", "interval": interval, "frames": frames}))
 
+
+
+def frame_manifest(interval: float, duration: float):
+    count = max(1, int(duration / interval + .5)) if duration > 0 else 0
+    frames = [{'name': f'frame_{index + 1:06d}.jpg', 'time': round(index * interval, 3)} for index in range(count)]
+    return {'source': 'proxy', 'interval': interval, 'frames': frames}
+
+
+def write_frame_manifest(frames_dir: Path, interval: float, duration: float):
+    """Record sample times without retaining a JPEG for every interval."""
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    (frames_dir / 'manifest.json').write_text(json.dumps(frame_manifest(interval, duration)))
 
 def extract_audio(original: Path, output: Path):
     temp = output.with_suffix(".partial.wav")
@@ -112,14 +127,14 @@ def detect_cuts(proxy: Path, duration: float, threshold: float):
     return [(start, end) for start, end in zip(starts, starts[1:] + [duration])]
 
 
-def extract_cut_frame(source: Path, output: Path, sample_time: float, start: float, end: float, width: int = 480, last: bool = False):
+def extract_cut_frame(source: Path, output: Path, sample_time: float, start: float, end: float, width: int = 480, last: bool = False, quality: int | None = None, seek_tolerance: float = 0, probe_padding: float = 0, timeout: float | None = None):
     """Extract a real frame inside the cut, returning its presentation timestamp."""
     temp = output.with_name(f"{output.stem}.partial.jpg")
     try:
         if last:
             # Find the final presentation timestamp, including the last frame at
             # EOF. The bounded probe avoids scanning a long cut in normal cases.
-            start_info = run(["ffprobe", "-v", "error", "-show_entries", "format=start_time", "-of", "default=noprint_wrappers=1:nokey=1", str(source)]).stdout.strip()
+            start_info = run(["ffprobe", "-v", "error", "-show_entries", "format=start_time", "-of", "default=noprint_wrappers=1:nokey=1", str(source)], timeout=timeout).stdout.strip()
             try:
                 origin = float(start_info)
                 if not math.isfinite(origin):
@@ -127,7 +142,7 @@ def extract_cut_frame(source: Path, output: Path, sample_time: float, start: flo
             except ValueError:
                 origin = 0.0
             for probe_start in (max(start, end - 5), start):
-                result = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-read_intervals", f"{probe_start + origin}%{end + origin}", "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", str(source)])
+                result = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-read_intervals", f"{probe_start + origin}%{end + origin + probe_padding}", "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", str(source)], timeout=timeout)
                 values = []
                 for line in result.stdout.splitlines():
                     try:
@@ -142,11 +157,11 @@ def extract_cut_frame(source: Path, output: Path, sample_time: float, start: flo
                 if probe_start == start:
                     break
         for back in (0, .1, .25, .5, 1, 2, end - start):
-            seek = max(start, sample_time - back)
+            seek = max(start, sample_time - back - seek_tolerance)
             temp.unlink(missing_ok=True)
             result = run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-nostats", "-nostdin", "-y", "-ss", str(seek), "-i", str(source),
                           "-t", str(end - seek), "-frames:v", "1", "-vf", f"showinfo,scale=w='min(iw,{width})':h=-2",
-                          "-pix_fmt", "yuvj420p", "-threads", "1", str(temp)])
+                          "-pix_fmt", "yuvj420p", "-threads", "1", *(["-q:v", str(quality)] if quality is not None else []), str(temp)], timeout=timeout)
             if temp.is_file() and temp.stat().st_size:
                 match = re.search(r"Parsed_showinfo[^\n]*\bn:\s*0\s+pts:.*?pts_time:\s*([-+0-9.eE]+)", result.stderr)
                 actual = seek + float(match.group(1)) if match else seek

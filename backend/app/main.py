@@ -1,4 +1,5 @@
 import json
+import asyncio
 import io
 import math
 import mimetypes
@@ -16,9 +17,10 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import db, media, worker
+from . import db, media, worker, storage, frame_source, frame_cache
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE
 
@@ -31,15 +33,23 @@ DEFAULT_SETTINGS = {"proxy_width": 960, "proxy_crf": 28, "proxy_preset": "veryfa
 async def lifespan(_app: FastAPI):
     db.init_db()
     worker.start_worker()
+    frame_cache.clear_abandoned_temporary_files()
+    async def clear_cache_periodically():
+        while True:
+            await asyncio.sleep(30)
+            frame_cache.clear_expired()
+    cleaner = asyncio.create_task(clear_cache_periodically())
     try:
         yield
     finally:
+        cleaner.cancel()
         worker.stop_worker()
 
 
 INTEGRATION_GUIDE = (Path(__file__).parent / "integration-guide.md").read_text(encoding="utf-8")
 app = FastAPI(title="Framewise API", version="1.0.0", description=INTEGRATION_GUIDE, lifespan=lifespan,
               docs_url=None, redoc_url=None)
+app.include_router(storage.router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
 
@@ -164,6 +174,15 @@ class ContextInput(BaseModel):
     episode_id: str | None = None
 
 
+def json_object_or_empty(value):
+    """Keep damaged optional metadata from making the episode editor inaccessible."""
+    try:
+        result = json.loads(value)
+        return result if isinstance(result, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
 def require_project(project_id: str):
     project = db.one("SELECT * FROM projects WHERE id=?", (project_id,))
     if not project:
@@ -175,7 +194,7 @@ def require_episode(episode_id: str):
     episode = db.one("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not episode:
         raise HTTPException(404, "Episode not found")
-    episode["settings"] = {**DEFAULT_SETTINGS, **json.loads(episode.pop("settings_json"))}
+    episode["settings"] = {**DEFAULT_SETTINGS, **json_object_or_empty(episode.pop("settings_json"))}
     episode["has_audio"] = bool(episode["has_audio"])
     return episode
 
@@ -184,19 +203,51 @@ def episode_response(episode_id: str):
     episode = require_episode(episode_id)
     path = media.episode_dir(episode["project_id"], episode_id)
     episode["proxy_ready"] = (path / "proxy.mp4").is_file()
-    episode["cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index", (episode_id,))]
+    episode["cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT c.*, EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL) AS has_analysis_results FROM cuts c WHERE c.episode_id=? AND c.active=1 ORDER BY c.cut_index", (episode_id,))]
     episode["archived_cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=0 ORDER BY start_time,cut_index", (episode_id,))]
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
     # The queued payload can contain every cut's context and may be very large.
     # Keep it in SQLite for the worker and return only job metadata to the UI.
-    episode["jobs"] = db.all_rows("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
+    episode["jobs"] = db.all_rows("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,payload_json FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
+    completed = {(row["job_id"], row["cut_id"]) for row in db.all_rows(
+        "SELECT a.job_id,a.cut_id FROM analysis_job_cuts a JOIN jobs j ON j.id=a.job_id WHERE j.episode_id=? AND a.completed=1", (episode_id,))}
+    for job in episode["jobs"]:
+        payload = json_object_or_empty(job.pop("payload_json"))
+        if job["pipeline"] == "analyze":
+            items = payload.get("cuts", [])
+        elif job["pipeline"] == "regen":
+            items = [{"cut_id": payload.get("cut_id"), "context": payload.get("context", {})}]
+        else:
+            items = []
+        job["cuts"] = []
+        if not isinstance(items, list):
+            items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            context = item.get("context")
+            cut = context.get("cut") if isinstance(context, dict) else {}
+            if not isinstance(cut, dict):
+                cut = {}
+            cut_id = item.get("cut_id")
+            if isinstance(cut_id, str) and cut_id:
+                index = cut.get("cut_index")
+                title = cut.get("title")
+                def time_value(value):
+                    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+                job["cuts"].append({"id": cut_id, "cut_index": index if isinstance(index, int) and not isinstance(index, bool) else None,
+                                    "title": title if isinstance(title, str) else "", "start_time": time_value(cut.get("start_time")),
+                                    "end_time": time_value(cut.get("end_time")),
+                                    "completed": (job["id"], cut_id) in completed if job["pipeline"] == "analyze" else job["status"] == "done"})
     return episode
 
 
 def serialize_cut(cut: dict):
-    cut["results"] = json.loads(cut.pop("results_json"))
+    cut["results"] = json_object_or_empty(cut.pop("results_json"))
     cut["active"] = bool(cut["active"])
     cut["analysis_enabled"] = bool(cut["analysis_enabled"])
+    if "has_analysis_results" in cut:
+        cut["has_analysis_results"] = bool(cut["has_analysis_results"])
     fallback_first, fallback_last = media.cut_frame_times(cut["start_time"], cut["end_time"])
     cut["first_frame_time"] = cut.get("first_frame_time") if cut.get("first_frame_time") is not None else fallback_first
     cut["last_frame_time"] = cut.get("last_frame_time") if cut.get("last_frame_time") is not None else fallback_last
@@ -204,8 +255,8 @@ def serialize_cut(cut: dict):
 
 
 def serialize_result(result: dict):
-    result["settings"] = json.loads(result.pop("settings_json"))
-    result["context"] = json.loads(result.pop("context_json"))
+    result["settings"] = json_object_or_empty(result.pop("settings_json"))
+    result["context"] = json_object_or_empty(result.pop("context_json"))
     return result
 
 
@@ -881,14 +932,33 @@ def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
                 raise HTTPException(409, "Wait for media preparation or cut detection to finish")
             if not conn.execute("SELECT 1 FROM cuts WHERE id=? AND active=1 AND analysis_enabled=1", (cut_id,)).fetchone():
                 raise HTTPException(409, "The cut is archived or disabled for analysis")
-            rows = conn.execute("SELECT id,kind,title,content FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut_id,)).fetchall()
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='regen' AND status IN ('queued','running') AND json_extract(payload_json, '$.result_type')='summary' AND json_extract(payload_json, '$.cut_id')=?", (cut["episode_id"], cut_id)).fetchone():
+                raise HTTPException(409, "A summary for this cut is already queued or running")
+            rows = conn.execute("SELECT id,kind,title,content,origin,context_json FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut_id,)).fetchall()
             summary = next((row for row in reversed(rows) if row["title"] == SUMMARY_TITLE), None)
             if body.mode == "edit" and not summary and not (body.current_prompt or "").strip():
                 raise HTTPException(400, "There is no cut summary to edit; regenerate one instead")
             current = body.current_prompt if body.current_prompt is not None else (summary["content"] if summary else "")
-            results = [{"title": row["title"], "kind": row["kind"], "content": row["content"]} for row in rows if row["title"] != SUMMARY_TITLE]
+            results = [{"title": row["title"], "kind": row["kind"], "content": row["content"], "origin": row["origin"]} for row in rows if row["title"] != SUMMARY_TITLE]
+            episode = require_episode(cut["episode_id"])
+            sampled_frames = []
+            for row in rows:
+                match = re.fullmatch(r"(?:Frame|Object detections) at (\d+(?:\.\d+)?)s", row["title"] or "")
+                if match and frame_source.result_frame_spec(row['id'], conn):
+                    timestamp = float(match.group(1))
+                    try:
+                        snapshot = json.loads(row["context_json"] or "{}")
+                        if isinstance(snapshot.get('frame_time'), (int, float)):
+                            timestamp = float(snapshot['frame_time'])
+                        observation = next((item for item in snapshot.get("sampled_frames", []) if item.get("frame_id") == row["id"]), None)
+                        if observation:
+                            timestamp = float(observation["time"])
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+                    if cut["start_time"] <= timestamp < cut["end_time"]:
+                        sampled_frames.append({"frame_id": row["id"], "time": timestamp, "description": row["content"]})
             payload = {"result_type": "summary", "cut_id": cut_id, "mode": body.mode, "instruction": body.instruction.strip(), "current_prompt": current if body.mode == "edit" else "",
-                       "model": config.openrouter_model, "base_id": summary["id"] if summary else None, "results": results, "context": selected_analysis_context(cut_id, config)}
+                       "model": config.openrouter_model, "base_id": summary["id"] if summary else None, "results": results, "sampled_frames": sampled_frames, "context": selected_analysis_context(cut_id, config)}
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "regen", json.dumps(payload)))
             worker.sync_episode_status(conn, cut["episode_id"])
     except sqlite3.IntegrityError as exc:
@@ -922,23 +992,52 @@ def delete_analysis_result(result_id: str):
     return {"ok": True}
 
 
+def remove_regenerated_legacy(path, episode_id, fingerprint):
+    # Do not remove a file if a job could still be using it or it changed while
+    # the replacement was generated. SQLite serializes this with job creation.
+    try:
+        with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (episode_id,)).fetchone():
+                return
+            stat = path.stat()
+            if (stat.st_ino, stat.st_size, stat.st_mtime_ns) == fingerprint:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+async def rendered_frame(spec, legacy=None, episode_id=None):
+    fingerprint = None
+    if legacy and legacy.is_file():
+        stat = legacy.stat()
+        fingerprint = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    try:
+        data = await frame_cache.get(spec)
+        # Preserve legacy evidence if timestamp reconstruction is not byte-for-byte
+        # identical; overlays must continue to match the image that produced them.
+        if fingerprint and legacy.read_bytes() != data:
+            return FileResponse(legacy, media_type='image/jpeg')
+        task = BackgroundTask(remove_regenerated_legacy, legacy, episode_id, fingerprint) if fingerprint and episode_id else None
+        return Response(data, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=120'}, background=task)
+    except (OSError, RuntimeError, ValueError) as exc:
+        if fingerprint:
+            return FileResponse(legacy, media_type='image/jpeg')
+        raise HTTPException(503, f'Frame could not be recreated: {exc}') from exc
+
+
 @app.get("/api/analysis-results/{result_id}/frame", response_class=Response,
-         responses={200: {"content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}}, "description": "Analyzed frame"},
-                    404: {"description": "No frame is stored for this result or its ancestors"}})
-def get_analysis_result_frame(result_id: str):
-    """Serve the sampled image for a detection result, following its revision chain."""
-    seen = set()
-    while result_id and result_id not in seen:
-        seen.add(result_id)
-        row = db.one("SELECT a.parent_id,c.episode_id FROM analysis_results a JOIN cuts c ON c.id=a.cut_id WHERE a.id=?", (result_id,))
-        if not row:
-            break
-        episode = require_episode(row["episode_id"])
-        target = media.episode_dir(episode["project_id"], episode["id"]) / "analysis" / f"{result_id}.jpg"
-        if target.is_file():
-            return FileResponse(target, media_type="image/jpeg")
-        result_id = row["parent_id"]
-    raise HTTPException(404, "No analyzed frame is stored for this result; rerun analysis")
+         summary="Download a sampled analysis frame",
+         responses={200: {"content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}}, "description": "Sampled JPEG for the result or an ancestor"},
+                    404: {"description": "No frame can be reconstructed for this result or its ancestors"}})
+async def get_analysis_result_frame(result_id: str):
+    """Retrieve a stored legacy frame or recreate it from its recorded source and time."""
+    spec = frame_source.result_frame_spec(result_id)
+    if not spec:
+        raise HTTPException(404, "No source frame is available for this result")
+    if 'source' not in spec:
+        return FileResponse(spec['legacy'], media_type='image/jpeg')
+    return await rendered_frame(spec, spec['legacy'], spec['episode_id'])
 
 
 @app.post("/api/cuts/{cut_id}/analyze")
@@ -956,15 +1055,18 @@ def analyze_episode(episode_id: str):
 
 
 @app.post("/api/jobs/{job_id}/cancel")
-def cancel_queued_analysis(job_id: str):
+def cancel_inference_job(job_id: str):
+    """Cancel a queued inference job or a running summary job."""
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job:
             raise HTTPException(404, "Job not found")
-        if job["pipeline"] not in ("analyze", "regen", "transcribe", "voice_sample") or job["status"] != "queued":
-            raise HTTPException(409, "Only queued inference jobs can be cancelled")
-        conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled before processing',updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "transcribe", "voice_sample")) or (job["status"] == "running" and job["pipeline"] == "regen")
+        if not cancellable:
+            raise HTTPException(409, "Only queued inference jobs or running summary jobs can be cancelled")
+        message = "Cancelled before processing" if job["status"] == "queued" else "Cancelled during processing"
+        conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (message, job_id))
         worker.sync_episode_status(conn, job["episode_id"])
     worker.cleanup_voice_upload(job)
     return {"ok": True}
@@ -1005,20 +1107,35 @@ def get_waveform(episode_id: str):
     path = media.episode_dir(episode["project_id"], episode_id) / "waveform.json"
     if not path.exists():
         return {"peaks": [], "duration": episode["duration"] or 0}
-    return json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict) and isinstance(data.get("peaks"), list):
+            return data
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return {"peaks": [], "duration": episode["duration"] or 0}
 
 
 @app.get("/api/episodes/{episode_id}/frames")
 def get_frames(episode_id: str):
     episode = require_episode(episode_id)
     path = media.episode_dir(episode["project_id"], episode_id) / "frames" / "manifest.json"
-    if not path.exists():
-        return {"source": "proxy", "interval": episode["settings"]["frame_interval"], "frames": []}
-    return json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict) and isinstance(data.get("frames"), list) and isinstance(data.get('interval'), (float, int)) and data['interval'] > 0:
+            return data
+    except (OSError, ValueError, UnicodeError):
+        pass
+    job = db.one("SELECT payload_json FROM jobs WHERE episode_id=? AND pipeline='prepare' AND status='done' ORDER BY created_at DESC,rowid DESC LIMIT 1", (episode_id,))
+    settings = json_object_or_empty(job['payload_json']).get('settings', {}) if job else {}
+    interval = settings.get('frame_interval') if isinstance(settings, dict) else None
+    if not isinstance(interval, (float, int)) or not math.isfinite(interval) or interval <= 0:
+        interval = episode['settings']['frame_interval']
+    return media.frame_manifest(interval, episode['duration'] or 0)
 
 
 @app.get("/api/episodes/{episode_id}/media/{name}")
-def get_media(episode_id: str, name: str):
+async def get_media(episode_id: str, name: str):
     episode = require_episode(episode_id)
     path = media.episode_dir(episode["project_id"], episode_id)
     if name == "proxy":
@@ -1030,8 +1147,22 @@ def get_media(episode_id: str, name: str):
         target, mime = path / "audio.wav", "audio/wav"
     elif re.fullmatch(r"frame_\d{6}\.jpg", name):
         target, mime = path / "frames" / name, "image/jpeg"
+        manifest = get_frames(episode_id)
+        frame = next((item for item in manifest['frames'] if item.get('name') == name), None)
+        proxy = path / 'proxy.mp4'
+        if frame and proxy.is_file() and episode['duration']:
+            # The historic fps filter selects the last decoded frame before
+            # the midpoint of each sampling interval.
+            index = int(name[6:12]) - 1
+            boundary = min(episode['duration'], (index + .5) * manifest['interval'])
+            if boundary > 0:
+                return await rendered_frame({'source': proxy, 'time': boundary, 'start': max(0, boundary - 5), 'end': boundary, 'width': 480, 'last': True, 'quality': 4, 'seek_tolerance': .000002, 'probe_padding': 1}, target, episode['id'])
     elif re.fullmatch(r"cut_\d{6}\.jpg", name):
         target, mime = path / "thumbnails" / name, "image/jpeg"
+        index = int(name[4:10])
+        cut = db.one('SELECT id FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?', (episode_id, index))
+        if cut:
+            return await get_cut_frame(cut['id'], 'first')
     else:
         raise HTTPException(404, "Media not found")
     if not target.is_file():
@@ -1041,17 +1172,26 @@ def get_media(episode_id: str, name: str):
 
 @app.get("/api/cuts/{cut_id}/frame/{position}", response_class=Response,
          responses={200: {"content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}}, "description": "Cut boundary frame"},
-                    404: {"description": "Cut or frame not found"}})
-def get_cut_frame(cut_id: str, position: Literal["first", "last"]):
-    """Download the cut's first or last sampled JPEG frame."""
-    cut = db.one("SELECT episode_id FROM cuts WHERE id=?", (cut_id,))
+                    404: {"description": "Cut or source video not found"}})
+async def get_cut_frame(cut_id: str, position: Literal["first", "last"]):
+    """Download a cut boundary, recreating it from video when necessary."""
+    cut = db.one("SELECT * FROM cuts WHERE id=?", (cut_id,))
     if not cut:
         raise HTTPException(404, "Cut not found")
     episode = require_episode(cut["episode_id"])
-    target = media.episode_dir(episode["project_id"], episode["id"]) / "thumbnails" / f"{cut_id}_{position}.jpg"
-    if not target.is_file():
-        raise HTTPException(404, "Cut frame not ready; rerun hard-cut detection")
-    return FileResponse(target, media_type="image/jpeg")
+    path = media.episode_dir(episode["project_id"], episode["id"])
+    target = path / "thumbnails" / f"{cut_id}_{position}.jpg"
+    source = path / 'proxy.mp4'
+    if not source.is_file():
+        source = path / f"original{episode['original_ext']}"
+    if not source.is_file():
+        if target.is_file():
+            return FileResponse(target, media_type='image/jpeg')
+        raise HTTPException(404, "The source video is unavailable")
+    saved = cut['first_frame_time'] if position == 'first' else cut['last_frame_time']
+    first, last = media.cut_frame_times(cut['start_time'], cut['end_time'])
+    timestamp = saved if saved is not None else first if position == 'first' else last
+    return await rendered_frame({'source': source, 'time': timestamp, 'start': cut['start_time'], 'end': cut['end_time'], 'width': 480, 'last': position == 'last' and saved is None, 'seek_tolerance': .000002, 'probe_padding': 1 if position == 'last' and saved is None else 0}, target, episode['id'])
 
 
 app.include_router(external_router)

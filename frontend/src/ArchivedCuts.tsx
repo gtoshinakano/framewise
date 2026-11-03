@@ -1,3 +1,4 @@
+import { FrameImage } from './FrameImage'
 import { useState } from 'react'
 import type { Cut } from './api'
 
@@ -19,7 +20,7 @@ export function ArchivedCuts({ cuts, selectedId, onSelect, onOpenAnalysis }: { c
     </button>
     {expanded && <><p className="muted mt-2 text-xs">Earlier boundaries and their notes stay here. Redetection can restore a matching boundary.</p><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {cuts.slice(0, limit).map(cut => <button key={cut.id} type="button" onClick={() => onSelect(cut)} onDoubleClick={() => onOpenAnalysis(cut)} className={`overflow-hidden rounded-xl border text-left transition ${selectedId === cut.id ? 'border-[#ab8df2] bg-[#211e2d]' : 'border-[#303641] bg-[#171c24] hover:border-[#6e6388]'}`}>
-        <img src={`/api/cuts/${cut.id}/frame/first`} className="aspect-video w-full bg-[#222938] object-cover" alt={`${cut.title || 'Archived cut'} preview`} loading="lazy" />
+        <FrameImage src={`/api/cuts/${cut.id}/frame/first`} className="aspect-video w-full bg-[#222938] object-cover" alt={`${cut.title || 'Archived cut'} preview`} loading="lazy" />
         <span className="block p-3"><strong className="block truncate text-xs">{cut.title || 'Archived cut'}</strong><span className="muted mt-1 block truncate text-[11px]">{stamp(cut.start_time)} → {stamp(cut.end_time)}</span></span>
       </button>)}
     </div>{cuts.length > limit && <button type="button" onClick={() => setLimit(value => value + 24)} className="btn btn-quiet mt-4">Show more</button>}</>}

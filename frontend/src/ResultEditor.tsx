@@ -16,7 +16,7 @@ const kinds: { value: ResultKind; label: string }[] = [
 
 type Draft = Pick<AnalysisResult, 'kind' | 'title' | 'content'> & { id?: string; superseded_by?: string | null; origin?: string; model_id?: string | null }
 
-export default function ResultEditor({ cutId, refreshKey, onLoaded, editorTarget }: { cutId: string; refreshKey: string; onLoaded?: (results: AnalysisResult[]) => void; editorTarget: HTMLElement | null }) {
+export default function ResultEditor({ cutId, refreshKey, onLoaded, onChanged, editorTarget }: { cutId: string; refreshKey: string; onLoaded?: (results: AnalysisResult[]) => void; onChanged?: () => Promise<void>; editorTarget: HTMLElement | null }) {
   const [results, setResults] = useState<AnalysisResult[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
   const [history, setHistory] = useState(false)
@@ -43,7 +43,7 @@ export default function ResultEditor({ cutId, refreshKey, onLoaded, editorTarget
     try {
       await api(`/analysis-results/${result.id}`, { method: 'DELETE' })
       if (draft?.id === result.id) setDraft(null)
-      await load(history)
+      await load(history); await onChanged?.()
     } catch (err) { setError((err as Error).message) } finally { setBusy(false) }
   }
   async function save() {
@@ -53,7 +53,7 @@ export default function ResultEditor({ cutId, refreshKey, onLoaded, editorTarget
       const value = draft.id
         ? await api<AnalysisResult>(`/analysis-results/${draft.id}`, { method: 'PUT', body: JSON.stringify({ title: draft.title, content: draft.content }) })
         : await api<AnalysisResult>(`/cuts/${cutId}/analysis-results`, { method: 'POST', body: JSON.stringify({ kind: draft.kind, title: draft.title, content: draft.content }) })
-      setDraft(value); await load(history)
+      setDraft(value); await load(history); await onChanged?.()
     } catch (err) { setError((err as Error).message) } finally { setBusy(false) }
   }
   return <div className="rounded-xl border hairline bg-[#1b202a] p-4">

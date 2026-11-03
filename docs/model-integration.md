@@ -5,7 +5,7 @@ The requested [WeVisOne-VL paper](https://huggingface.co/papers/2610.31329) and 
 ## Intended place in the pipeline
 
 1. Keep import, proxy creation, audio, waveform, chunks, and hard cuts in the small CPU app.
-2. Hard-cut detection now saves first and last preview frames per cut and records their sample timestamps in the cut API. Use these as initial visual inputs, retain the original as the quality reference, and sample additional frames per chunk as needed.
+2. Hard-cut detection records first and last frame timestamps per cut; previews are recreated from the video on demand. Use these as initial visual inputs, retain the original as the quality reference, and sample additional frames per chunk as needed.
 3. Run WeVisOne-VL detection and OCR and Qwen3-VL captioning on selected original-video frames. Store descriptions and parsed detection boxes with timestamps in SQLite. Masks are not generated. Both pinned checkpoints are mounted from persistent host directories.
 4. A text model assesses individual visual and OCR claims with qualitative confidence before synthesizing a cut summary; its motion, action, and continuity suggestions are estimates, not measured temporal analysis. The documented WeVisOne-VL tasks alone do not establish motion or audio meaning.
 5. Assemble the cut's input with `/api/cuts/{id}/analysis-context`: project synopsis, applicable character/world/scenario notes, overlapping chunk notes, current transcript overlap, and previous/next cut context. Freeze that input into `analysis_results.context_json` for reproducible retries.

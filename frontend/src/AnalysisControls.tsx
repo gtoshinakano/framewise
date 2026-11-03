@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { Minus, Plus } from 'lucide-react'
 import { api, type AnalysisContext, type AnalysisConfig } from './api'
 
-export default function AnalysisControls({ cutId, episodeId, busy, enabled, actionsTarget, onStarted }: { cutId: string; episodeId: string; busy: boolean; enabled: boolean; actionsTarget: HTMLElement | null; onStarted: () => Promise<void> }) {
+export default function AnalysisControls({ cutId, episodeId, busy, enabled, actionsTarget, onStarted, onConfigChange }: { cutId: string; episodeId: string; busy: boolean; enabled: boolean; actionsTarget: HTMLElement | null; onStarted: () => Promise<void>; onConfigChange: (config: AnalysisConfig | null) => void }) {
   const [config, setConfig] = useState<AnalysisConfig | null>(null)
   const [queries, setQueries] = useState('')
   const [context, setContext] = useState<AnalysisContext | null>(null)
@@ -17,6 +18,14 @@ export default function AnalysisControls({ cutId, episodeId, busy, enabled, acti
       .catch(err => { if (active) setError((err as Error).message) })
     return () => { active = false }
   }, [cutId])
+  useEffect(() => { onConfigChange(config) }, [config, onConfigChange])
+  function changeFrameCount(delta: number) {
+    setConfig(current => {
+      if (!current) return current
+      const count = Math.max(2, Math.min(32, (current.frame_mode === 'endpoints' ? 2 : current.frame_count) + delta))
+      return { ...current, frame_count: count, frame_mode: count === 2 ? 'endpoints' : 'uniform' }
+    })
+  }
   async function save(run: 'none' | 'cut' | 'batch') {
     if (!config) return
     setWorking(true); setError(''); setMessage('')
@@ -32,11 +41,23 @@ export default function AnalysisControls({ cutId, episodeId, busy, enabled, acti
   return <div className="rounded-xl border hairline bg-[#1b202a] p-4 space-y-3">
     <div><h3 className="text-xs font-semibold">Analyze this cut</h3><p className="muted mt-2 text-[11px] leading-5">Choose the frames and context for this cut. Each run adds editable results.</p></div>
     {config && context && <>
-      <label className="block"><span className="label">Frames to analyze</span><select className="field" value={config.frame_mode} onChange={event => setConfig({ ...config, frame_mode: event.target.value as AnalysisConfig['frame_mode'] })}><option value="endpoints">First and last frames</option><option value="uniform">Evenly spaced frames</option></select></label>
-      {config.frame_mode === 'uniform' && <label className="block"><span className="label">Number of frames · 2–32</span><input className="field" type="number" min="2" max="32" value={config.frame_count} onChange={event => setConfig({ ...config, frame_count: Number(event.target.value) })} /></label>}
+      <div>
+        <span className="label" id="frame-count-label">Frames to analyze</span>
+        <div className="flex items-center gap-3" aria-labelledby="frame-count-label">
+          <button type="button" className="btn btn-quiet px-3 py-2" aria-label="Remove one frame" disabled={(config.frame_mode === 'endpoints' ? 2 : config.frame_count) <= 2} onClick={() => changeFrameCount(-1)}><Minus size={15} /></button>
+          <output className="min-w-12 text-center text-sm font-semibold tabular-nums" aria-live="polite">{config.frame_mode === 'endpoints' ? 2 : config.frame_count}</output>
+          <button type="button" className="btn btn-quiet px-3 py-2" aria-label="Add one frame" disabled={(config.frame_mode === 'endpoints' ? 2 : config.frame_count) >= 32} onClick={() => changeFrameCount(1)}><Plus size={15} /></button>
+          <span className="muted text-[11px]">2–32 frames</span>
+        </div>
+        <p className="muted mt-2 text-[11px]">{config.frame_mode === 'endpoints' || config.frame_count === 2 ? 'First and last frames.' : 'First and last frames, with evenly spaced frames between them.'}</p>
+      </div>
       <label className="block"><span className="label">Objects to detect</span><textarea className="field min-h-16 resize-y" value={queries} onChange={event => setQueries(event.target.value)} /><span className="muted mt-1 block text-[11px]">Comma-separated visual categories, such as person, coat, or bicycle.</span></label>
       <fieldset><legend className="label">Registered context</legend><div className="max-h-40 space-y-2 overflow-y-auto">{context.context_items.length ? context.context_items.map(item => <label key={item.id} className="flex items-start gap-2 text-xs"><input type="checkbox" checked={config.context_ids.includes(item.id)} onChange={event => setConfig({ ...config, context_ids: event.target.checked ? [...config.context_ids, item.id] : config.context_ids.filter(id => id !== item.id) })} /><span>{item.title} <span className="muted">· {item.kind.replaceAll('_', ' ')}</span></span></label>) : <p className="muted text-xs">No registered context for this episode.</p>}</div></fieldset>
-      <label className="block"><span className="label">Additional context for this cut</span><textarea className="field min-h-24 resize-y" maxLength={20000} value={config.additional_context} onChange={event => setConfig({ ...config, additional_context: event.target.value })} /></label>
+      <label className="block"><span className="label">Additional context for this cut</span><textarea className="field min-h-24 resize-y" maxLength={20000} value={config.additional_context} onChange={event => setConfig({ ...config, additional_context: event.target.value })} onKeyDown={event => {
+        if (event.key !== 'Enter' || !event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return
+        event.preventDefault()
+        if (!event.repeat && !working && !busy && enabled) void save('cut')
+      }} /><span className="muted mt-1 block text-[11px]">Press Ctrl+Enter to queue this cut.</span></label>
       <label className="block"><span className="label">OpenRouter model</span><input className="field" maxLength={200} value={config.openrouter_model} onChange={event => setConfig({ ...config, openrouter_model: event.target.value })} /><span className="muted mt-1 block text-[11px]">The selected model may charge your OpenRouter account. Project synopsis, selected context, cut and adjacent notes, transcript and current analysis results, chunk notes, frame descriptions, detections, and OCR text are sent to OpenRouter.</span></label>
     </>}
     {/* The actions live in the dialog footer so they stay visible on every tab. */}
