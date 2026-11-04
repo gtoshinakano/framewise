@@ -27,6 +27,74 @@ def sample_video(path: Path):
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_detect_inside_selected_cut_preserves_neighbors_and_archives(self):
+        from app.main import app
+        from app import db, media
+        with tempfile.TemporaryDirectory() as temp:
+            old = db.DATA_DIR, db.DB_PATH, media.DATA_DIR
+            db.DATA_DIR = media.DATA_DIR = Path(temp)
+            db.DB_PATH = Path(temp) / 'app.sqlite3'
+            try:
+                video = Path(temp) / 'sample.mp4'
+                sample_video(video)
+                with TestClient(app) as client:
+                    imported = client.post('/api/import', data={'project_title': 'Targeted'}, files={'file': ('sample.mp4', video.read_bytes(), 'video/mp4')})
+                    self.assertEqual(imported.status_code, 200, imported.text)
+                    episode_id = imported.json()['episode']['id']
+                    def ready():
+                        for _ in range(200):
+                            episode = client.get(f'/api/episodes/{episode_id}').json()
+                            if episode['status'] == 'ready':
+                                return episode
+                            if episode['status'] == 'failed':
+                                self.fail(episode['error'])
+                            time.sleep(.1)
+                        self.fail('Media job timed out')
+                    ready()
+                    self.assertEqual(client.post(f'/api/episodes/{episode_id}/run', json={'pipeline': 'hardcuts'}).status_code, 200)
+                    episode = ready()
+                    self.assertEqual(len(episode['cuts']), 3)
+                    neighbor, target, archived = episode['cuts']
+                    self.assertEqual(client.put(f"/api/cuts/{target['id']}", json={'title': 'Keep', 'notes': 'My notes', 'description': '', 'results': {}}).status_code, 200)
+                    result = client.post(f"/api/cuts/{archived['id']}/analysis-results", json={'kind': 'cut_description', 'content': 'Keep this result'}).json()
+                    self.assertEqual(client.post(f"/api/cuts/{target['id']}/merge-next").status_code, 200)
+                    episode = ready()
+                    before_neighbor = episode['cuts'][0]
+                    self.assertEqual(client.post(f"/api/cuts/{archived['id']}/detect-hardcuts", json={'scene_threshold': .2}).status_code, 404)
+                    self.assertEqual(client.post(f"/api/cuts/{target['id']}/detect-hardcuts", json={'scene_threshold': 0}).status_code, 422)
+                    response = client.post(f"/api/cuts/{target['id']}/detect-hardcuts", json={'scene_threshold': .2})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    episode = ready()
+                    self.assertEqual([cut['id'] for cut in episode['cuts']], [neighbor['id'], target['id'], archived['id']])
+                    self.assertEqual(episode['cuts'][0], before_neighbor)
+                    self.assertEqual(episode['cuts'][1]['notes'], 'My notes')
+                    self.assertAlmostEqual(episode['cuts'][2]['start_time'], 2, places=2)
+                    self.assertEqual(client.get(f"/api/cuts/{archived['id']}/analysis-results").json()[0]['id'], result['id'])
+                    self.assertEqual(client.get(f"/api/cuts/{target['id']}/frame/last").status_code, 200)
+                    response = client.post(f"/api/cuts/{target['id']}/detect-hardcuts", json={'scene_threshold': .9})
+                    self.assertEqual(response.status_code, 200)
+                    episode = ready()
+                    job = next(job for job in episode['jobs'] if job['id'] == response.json()['job_id'])
+                    self.assertEqual(job['stage'], 'Complete · no new cuts found')
+                    self.assertEqual(len(episode['cuts']), 3)
+                    # Also exercise a genuinely new boundary and shifting a later cut.
+                    self.assertEqual(client.post(f"/api/cuts/{neighbor['id']}/merge-next").status_code, 200)
+                    episode = ready()
+                    following_before = episode['cuts'][1]
+                    with db.connect() as conn:
+                        conn.execute('DELETE FROM cuts WHERE id=?', (target['id'],))
+                    response = client.post(f"/api/cuts/{neighbor['id']}/detect-hardcuts", json={'scene_threshold': .2})
+                    self.assertEqual(response.status_code, 200)
+                    episode = ready()
+                    self.assertEqual(len(episode['cuts']), 3)
+                    self.assertNotEqual(episode['cuts'][1]['id'], target['id'])
+                    self.assertAlmostEqual(episode['cuts'][1]['start_time'], 1, places=2)
+                    self.assertEqual(episode['cuts'][2]['id'], following_before['id'])
+                    self.assertEqual(episode['cuts'][2]['start_time'], following_before['start_time'])
+                    self.assertEqual(episode['cuts'][2]['end_time'], following_before['end_time'])
+            finally:
+                db.DATA_DIR, db.DB_PATH, media.DATA_DIR = old
+
     def test_low_frame_rate_cut_end_uses_decoded_frame(self):
         from app import media
         with tempfile.TemporaryDirectory() as temp:

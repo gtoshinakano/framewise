@@ -48,6 +48,44 @@ class AudioWorkerTests(unittest.TestCase):
             out.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
             out.writeframes(b'\x01\x00' * round((end - start) * 16000))
 
+    def test_invalid_alignment_retries_smaller_windows_without_losing_text(self):
+        window = []
+        def clip(_source, _target, start, end):
+            window[:] = [start, end]
+        def transcribe(**_kwargs):
+            length = window[1] - window[0]
+            stamp = types.SimpleNamespace(start_time=.2, end_time=length + 1 if length > 13 else .8, text='Hello')
+            return [types.SimpleNamespace(text='Hello!', language='English', time_stamps=[stamp])]
+        model = types.SimpleNamespace(transcribe=transcribe)
+        with patch.object(audio_worker, 'clip_audio', side_effect=clip) as clipped:
+            words = audio_worker.transcribe_window(model, self.path / 'audio.wav', self.path / 'sample.wav', 1300, 1325, [])
+        self.assertEqual(clipped.call_count, 3)
+        self.assertEqual([word['text'] for word in words], ['Hello!', 'Hello!'])
+        self.assertAlmostEqual(words[0]['start_time'], 1300.2)
+        self.assertAlmostEqual(words[1]['start_time'], 1312.7)
+        self.assertTrue(all(word['speaker'] is None for word in words))
+
+    def test_invalid_alignment_fails_after_bounded_retries(self):
+        stamp = types.SimpleNamespace(start_time=float('nan'), end_time=1, text='Speech')
+        model = types.SimpleNamespace(transcribe=lambda **_kwargs: [types.SimpleNamespace(text='Speech', language='English', time_stamps=[stamp])])
+        with patch.object(audio_worker, 'clip_audio') as clipped:
+            with self.assertRaisesRegex(RuntimeError, 'after retrying smaller excerpts'):
+                audio_worker.transcribe_window(model, self.path / 'audio.wav', self.path / 'sample.wav', 0, 25, [])
+        self.assertEqual(clipped.call_count, 4)
+
+    def test_alignment_limits_small_rounding_excursions_and_zero_duration(self):
+        stamps = [types.SimpleNamespace(start_time=-.01, end_time=.3, text='One'),
+                  types.SimpleNamespace(start_time=10.02, end_time=10.02, text='two')]
+        result = types.SimpleNamespace(text='One two.', language='English', time_stamps=stamps)
+        words = audio_worker.aligned_words(result, 50, 60)
+        self.assertEqual(''.join(word['text'] for word in words), 'One two.')
+        self.assertEqual(words[0]['start_time'], 50)
+        self.assertAlmostEqual(words[1]['start_time'], 59.99)
+        self.assertEqual(words[1]['end_time'], 60)
+        stamps[1].end_time = 10.5
+        with self.assertRaises(audio_worker.AlignmentError):
+            audio_worker.aligned_words(result, 50, 60)
+
     def test_enrollment_and_transcription_store_results_under_lease(self):
         job = worker.enqueue('e', 'voice_sample', {'character_context_id': 'c', 'start_time': 1, 'end_time': 4})
         claimed = worker.claim_job(('voice_sample',))

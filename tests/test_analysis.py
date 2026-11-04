@@ -82,7 +82,8 @@ class AnalysisTest(unittest.TestCase):
         self.assertNotIn('lease_owner', job_summary)
         self.assertEqual(payload['cuts'][0]['config'], config)
         self.assertEqual([item['id'] for item in payload['cuts'][0]['context']['context_items']], ['ctx'])
-        self.assertEqual(payload['cuts'][1]['config']['frame_mode'], 'endpoints')
+        self.assertEqual(payload['cuts'][1]['config']['frame_mode'], 'uniform')
+        self.assertEqual(payload['cuts'][1]['config']['frame_count'], 4)
         with db.connect() as conn:
             conn.execute("UPDATE context_items SET content='Changed' WHERE id='ctx'")
         self.assertEqual(payload['cuts'][0]['context']['context_items'][0]['content'], 'Green coat')
@@ -98,6 +99,7 @@ class AnalysisTest(unittest.TestCase):
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', side_effect=descriptions), patch.object(inference_worker, 'synthesize', side_effect=summary):
             inference_worker.process(*claimed)
         self.assertEqual(calls, ['c1', 'c2'])
+
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         results = self.client.get('/api/cuts/c1/analysis-results').json()
         self.assertEqual(len(results), 4)
@@ -110,6 +112,13 @@ class AnalysisTest(unittest.TestCase):
         saved = self.client.put('/api/analysis-results/' + results[0]['id'], json={'title': 'Edited', 'content': 'Human revision'})
         self.assertEqual(saved.status_code, 200)
         self.assertEqual(len(self.client.get('/api/cuts/c1/analysis-results?history=true').json()), 5)
+
+    def test_default_frames_and_existing_endpoint_preset(self):
+        default = self.client.get('/api/cuts/c1/analysis-config').json()
+        self.assertEqual((default['frame_mode'], default['frame_count']), ('uniform', 4))
+        self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json={**default, 'frame_mode': 'endpoints', 'frame_count': 2}).status_code, 200)
+        saved = self.client.get('/api/cuts/c1/analysis-config').json()
+        self.assertEqual((saved['frame_mode'], saved['frame_count']), ('endpoints', 2))
 
     def test_episode_cut_result_indicator_tracks_current_results(self):
         def flags():

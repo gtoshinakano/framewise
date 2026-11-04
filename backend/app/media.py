@@ -127,6 +127,27 @@ def detect_cuts(proxy: Path, duration: float, threshold: float):
     return [(start, end) for start, end in zip(starts, starts[1:] + [duration])]
 
 
+def detect_cuts_in_range(proxy: Path, start: float, end: float, threshold: float):
+    """Detect boundaries in a bounded interval, returning episode-relative times."""
+    starts = [start]
+    tail = deque(maxlen=20)
+    with subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "info", "-nostats", "-nostdin",
+                           "-ss", str(start), "-i", str(proxy), "-t", str(end - start),
+                           "-vf", f"select='gt(scene,{threshold})',showinfo", "-an", "-f", "null", "-"],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True) as process:
+        assert process.stderr is not None
+        for line in process.stderr:
+            tail.append(line)
+            match = re.search(r"Parsed_showinfo[^\n]*pts_time:\s*([0-9.]+)", line)
+            if match:
+                timestamp = start + float(match.group(1))
+                if starts[-1] + 0.15 < timestamp < end - 0.15:
+                    starts.append(timestamp)
+        if process.wait():
+            raise RuntimeError("".join(tail)[-1800:])
+    return [(left, right) for left, right in zip(starts, starts[1:] + [end])]
+
+
 def extract_cut_frame(source: Path, output: Path, sample_time: float, start: float, end: float, width: int = 480, last: bool = False, quality: int | None = None, seek_tolerance: float = 0, probe_padding: float = 0, timeout: float | None = None):
     """Extract a real frame inside the cut, returning its presentation timestamp."""
     temp = output.with_name(f"{output.stem}.partial.jpg")

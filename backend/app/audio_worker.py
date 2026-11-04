@@ -50,6 +50,56 @@ def join_clips(source, target, ranges, temp):
                 combined.writeframes(part.readframes(part.getnframes()))
 
 
+class AlignmentError(ValueError):
+    """The model returned speech that cannot be reliably timed in this window."""
+
+
+def aligned_words(result, start, end):
+    words = []
+    duration = end - start
+    for item in result.time_stamps or []:
+        if not item.text.strip():
+            continue
+        try:
+            relative_start, relative_end = float(item.start_time), float(item.end_time)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise AlignmentError('non-numeric timestamps') from exc
+        # Small rounding excursions can be clipped; larger ones often mean the
+        # model generated speech beyond the supplied audio and must be retried.
+        if (not math.isfinite(relative_start) or not math.isfinite(relative_end)
+                or relative_end < relative_start or relative_start < -.08 or relative_end > duration + .08):
+            raise AlignmentError('timestamps outside the audio window or in reverse order')
+        word_start = start + max(0., min(duration, relative_start))
+        word_end = start + max(0., min(duration, relative_end))
+        if word_end == word_start:
+            word_start = max(start, min(word_start, end - .01))
+            word_end = min(end, word_start + .01)
+        words.append({'start_time': word_start, 'end_time': word_end, 'text': item.text.strip()})
+    if result.text.strip() and not words:
+        raise AlignmentError(f'no aligned timestamps ({result.language})')
+    restored = restore_aligned_text(result.text, words)
+    if restored is None:
+        # Preserve the original text as one editable span when the aligner's
+        # tokenization cannot be mapped back to the ASR transcription.
+        restored = [{'start_time': min(word['start_time'] for word in words),
+                     'end_time': max(word['end_time'] for word in words), 'text': result.text}]
+    return restored
+
+
+def transcribe_window(model, audio, sample, start, end, turns, depth=0):
+    clip_audio(audio, sample, start, end)
+    result = model.transcribe(audio=str(sample), language=None, return_time_stamps=True)[0]
+    try:
+        return assign_words(aligned_words(result, start, end), turns)
+    except AlignmentError as exc:
+        if depth >= 3:
+            raise RuntimeError(f'Could not align speech at {start:.2f}–{end:.2f}s after retrying smaller excerpts: {exc}') from exc
+        midpoint = (start + end) / 2
+        log.warning('Retrying speech alignment at %.2f–%.2fs in smaller excerpts: %s', start, end, exc)
+        return (transcribe_window(model, audio, sample, start, midpoint, turns, depth + 1)
+                + transcribe_window(model, audio, sample, midpoint, end, turns, depth + 1))
+
+
 def process(job_id, owner):
     job = db.one('SELECT * FROM jobs WHERE id=? AND status=\'running\' AND lease_owner=?', (job_id, owner))
     if not job:
@@ -135,29 +185,7 @@ def process(job_id, owner):
                 start = end
             for index, (start, end) in enumerate(windows):
                 worker.stage(job_id, owner, episode['id'], f'Transcribing speech {index + 1}/{len(windows)}')
-                clip_audio(audio, sample, start, end)
-                result = model.transcribe(audio=str(sample), language=None, return_time_stamps=True)[0]
-                words = []
-                for item in result.time_stamps or []:
-                    word_start = max(start, start + float(item.start_time))
-                    word_end = min(end, start + float(item.end_time))
-                    if item.text.strip():
-                        if not (math.isfinite(word_start) and math.isfinite(word_end) and word_end >= word_start):
-                            raise RuntimeError(f'Invalid aligned timestamp for speech at {start:.2f}s')
-                        # Aligner quantization may give a word zero duration. Keep
-                        # it editable using a minimal span inside the window.
-                        if word_end == word_start:
-                            word_start = max(start, min(word_start, end - .01))
-                            word_end = min(end, word_start + .01)
-                        words.append({'start_time': word_start, 'end_time': word_end, 'text': item.text.strip()})
-                if result.text.strip() and not words:
-                    raise RuntimeError(f'No aligned timestamps for speech at {start:.2f}s ({result.language}); alignment may not support this language.')
-                restored = restore_aligned_text(result.text, words)
-                if restored is None:
-                    # Do not silently discard ASR text if aligner normalization
-                    # cannot be mapped back to its original spelling.
-                    restored = [{'start_time': words[0]['start_time'], 'end_time': words[-1]['end_time'], 'text': result.text}]
-                segments.extend(assign_words(restored, turns))
+                segments.extend(transcribe_window(model, audio, sample, start, end, turns))
             with db.connect() as conn:
                 worker.require_lease(conn, job_id, owner)
                 # Replace untouched output from this pipeline. Preserve human

@@ -89,8 +89,12 @@ class PipelineInput(BaseModel):
     pipeline: Literal["prepare", "hardcuts"]
 
 
+class CutDetectionInput(BaseModel):
+    scene_threshold: float = Field(ge=0.05, le=0.9, allow_inf_nan=False)
+
+
 class AnalysisConfig(BaseModel):
-    frame_mode: Literal["endpoints", "uniform"] = "endpoints"
+    frame_mode: Literal["endpoints", "uniform"] = "uniform"
     frame_count: int = Field(default=4, ge=2, le=32)
     context_ids: list[str] = Field(default_factory=list, max_length=200)
     detection_queries: list[Annotated[str, Field(min_length=1, max_length=100, pattern=r".*\S.*")]] = Field(default_factory=lambda: ["person", "clothing", "animal", "vehicle", "chair", "table", "subtitles"], min_length=1, max_length=20)
@@ -495,6 +499,17 @@ def set_cut_analysis_enabled(cut_id: str, body: CutAnalysisEnabledInput):
         if not conn.execute("UPDATE cuts SET analysis_enabled=? WHERE id=? AND active=1", (int(body.analysis_enabled), cut_id)).rowcount:
             raise HTTPException(404, "Active cut not found")
     return serialize_cut(db.one("SELECT * FROM cuts WHERE id=?", (cut_id,)))
+
+
+@app.post('/api/cuts/{cut_id}/detect-hardcuts')
+def detect_hardcuts_in_cut(cut_id: str, body: CutDetectionInput):
+    cut = db.one('SELECT episode_id FROM cuts WHERE id=? AND active=1', (cut_id,))
+    if not cut:
+        raise HTTPException(404, 'Active cut not found')
+    try:
+        return {'job_id': worker.enqueue(cut['episode_id'], 'hardcuts', {'cut_id': cut_id, 'scene_threshold': body.scene_threshold})}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = None):
