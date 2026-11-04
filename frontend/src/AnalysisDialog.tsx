@@ -7,6 +7,7 @@ import { CutSummaryPanel, SUMMARY_TITLE } from './AnimationPromptPanel'
 import { DetectionPreview } from './DetectionPreview'
 import { RunFramePreview } from './RunFramePreview'
 import { CutAudioPreview } from './CutAudioPreview'
+import { CutRunHistory } from './CutRunHistory'
 
 type DialogProps = { cut: Cut; previousCut?: Cut; nextCut?: Cut; onNavigate: (cut: Cut) => void; episodeId: string; waveform: Waveform | null; transcript: TranscriptSegment[]; hasAudio: boolean; preparingAudio: boolean; audioVersion: string; busy: boolean; jobs: Job[]; jobsKey: string; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }
 
@@ -46,7 +47,7 @@ function AnalysisDialogContent({ cut, episodeId, waveform, transcript, hasAudio,
         <div className={tab === 'results' ? 'flex min-h-[30rem] flex-1 flex-col lg:min-h-[26rem]' : 'hidden'}>
           <CutSummaryPanel cutId={cut.id} current={current} loaded={resultsLoaded} jobs={jobs} disabled={busy || !cut.active || !cut.analysis_enabled} onStarted={onStarted} onSaved={result => { setResults(previous => [result, ...previous.filter(item => item.id !== result.parent_id)]); setResultsRevision(value => value + 1) }} />
         </div>
-        <div hidden={tab !== 'run'}>{cut.active ? <AnalysisControls cutId={cut.id} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext} /> : <p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p>}</div>
+        <div hidden={tab !== 'run'} className="space-y-4">{cut.active ? <AnalysisControls cutId={cut.id} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext} /> : <p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p>}<CutRunHistory cutId={cut.id} jobs={jobs} /></div>
       </div>
       <div className={`scrollbar flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-1' : ''}`}>
         <div className="shrink-0">{tab === 'results' || !cut.active ? <DetectionPreview cut={cut} results={results} frameVersion={frameVersion} /> : <RunFramePreview cut={cut} episodeId={episodeId} config={config} frameVersion={frameVersion} />}</div>

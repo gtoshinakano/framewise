@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Check, Copy, RefreshCw, Save, Sparkles } from 'lucide-react'
 import { api, type AnalysisResult, type Job } from './api'
+import { SummaryRequestEditor } from './SummaryRequestEditor'
 
 export const SUMMARY_TITLE = 'Cut summary'
 
@@ -83,5 +84,6 @@ export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStar
       <button className="btn btn-quiet flex-1" disabled={working || disabled || !!activeJob} onClick={() => start('regenerate')} title="Write a new summary from the available results and context; your instruction is used as direction"><RefreshCw size={14} /> Queue summary</button>
     </div>
     <p className="muted text-[11px]">Sends the cut's results and selected context to the OpenRouter model chosen in Run settings.</p>
+    <SummaryRequestEditor cutId={cutId} disabled={disabled || !!activeJob} onStarted={onStarted} />
   </section>
 }

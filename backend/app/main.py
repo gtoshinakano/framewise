@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import db, media, worker, storage, frame_source, frame_cache
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, Transcript, VoiceSample, router as external_router
-from .inference_worker import SUMMARY_TITLE
+from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_GB", "40")) * 1024 ** 3
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
@@ -137,6 +137,15 @@ class PromptRegenInput(BaseModel):
     mode: Literal["edit", "regenerate"]
     instruction: str = Field(default="", max_length=5000)
     current_prompt: str | None = Field(default=None, max_length=50000)
+    request_override: dict | None = None
+    preview_base_id: str | None = None
+    preview_checked: bool = False
+    source_job_id: str | None = None
+
+
+class AnalysisRequestRetry(BaseModel):
+    source_job_id: str
+    request_override: dict
 
 
 class ResultUpdate(BaseModel):
@@ -932,6 +941,156 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
     return {"job_id": job_id}
 
 
+def summary_snapshot(conn, cut, config, mode, instruction, current_prompt=None):
+    cut_id = cut["id"]
+    rows = conn.execute("SELECT id,kind,title,content,origin,context_json FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut_id,)).fetchall()
+    summary = next((row for row in reversed(rows) if row["title"] == SUMMARY_TITLE), None)
+    if mode == "edit" and not summary and not (current_prompt or "").strip():
+        raise HTTPException(400, "There is no cut summary to edit; regenerate one instead")
+    current = current_prompt if current_prompt is not None else (summary["content"] if summary else "")
+    results = [{"title": row["title"], "kind": row["kind"], "content": row["content"], "origin": row["origin"]} for row in rows if row["title"] != SUMMARY_TITLE]
+    episode = require_episode(cut["episode_id"])
+    sampled_frames = []
+    for row in rows:
+        match = re.fullmatch(r"(?:Frame|Object detections) at (\d+(?:\.\d+)?)s", row["title"] or "")
+        if match and frame_source.result_frame_spec(row['id'], conn):
+            timestamp = float(match.group(1))
+            try:
+                snapshot = json.loads(row["context_json"] or "{}")
+                if isinstance(snapshot.get('frame_time'), (int, float)):
+                    timestamp = float(snapshot['frame_time'])
+                observation = next((item for item in snapshot.get("sampled_frames", []) if item.get("frame_id") == row["id"]), None)
+                if observation:
+                    timestamp = float(observation["time"])
+            except (ValueError, TypeError, AttributeError):
+                pass
+            if cut["start_time"] <= timestamp < cut["end_time"]:
+                sampled_frames.append({"frame_id": row["id"], "time": timestamp, "description": row["content"]})
+    payload = {"result_type": "summary", "cut_id": cut_id, "mode": mode, "instruction": instruction.strip(), "current_prompt": current if mode == "edit" else "",
+               "model": config.openrouter_model, "base_id": summary["id"] if summary else None, "results": results, "sampled_frames": sampled_frames, "context": selected_analysis_context(cut_id, config)}
+    return payload
+
+
+def validate_summary_request(value, full_analysis=False):
+    if set(value) != ({"model", "system", "input", "summary_system"} if full_analysis else {"model", "system", "input"}):
+        raise HTTPException(400, "The request has missing or unexpected fields")
+    if not isinstance(value["model"], str) or not re.fullmatch(r"[a-zA-Z0-9_./:-]{1,200}", value["model"]):
+        raise HTTPException(400, "Enter a valid OpenRouter model")
+    if not isinstance(value["system"], str) or not value["system"].strip() or len(value["system"]) > 50000:
+        raise HTTPException(400, "The system instruction must contain 1–50000 characters")
+    if full_analysis and (not isinstance(value["summary_system"], str) or not value["summary_system"].strip() or len(value["summary_system"]) > 50000):
+        raise HTTPException(400, "The summary instruction must contain 1–50000 characters")
+    if not isinstance(value["input"], dict):
+        raise HTTPException(400, "Request input must be a JSON object")
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise HTTPException(400, "The request contains invalid JSON values") from exc
+    if len(encoded.encode('utf-8')) > 4_000_000:
+        raise HTTPException(400, "The request is larger than 4 MB")
+    return value
+
+
+@app.get("/api/cuts/{cut_id}/summary-request-preview")
+def summary_request_preview(cut_id: str, source: Literal["current", "failed", "failed_summary"] = "current"):
+    cut, config = analysis_config_for_cut(cut_id)
+    with db.connect() as conn:
+        payload = summary_snapshot(conn, cut, config, "regenerate", "")
+        request_input = {"mode": "regenerate", "instruction": "", "current_summary": "", "context": payload["context"],
+                         "current_results": payload["results"], "sampled_frames": payload["sampled_frames"]}
+        model = payload["model"]
+        source_job = None
+        previous_request = None
+        if source == "failed":
+            rows = conn.execute("""SELECT j.id,j.stage,j.error,j.finished_at,j.payload_json,a.evidence_json
+                FROM jobs j JOIN analysis_job_cuts a ON a.job_id=j.id
+                WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status='failed' AND a.cut_id=? AND a.completed=0
+                ORDER BY j.created_at DESC,j.rowid DESC""", (cut["episode_id"], cut_id)).fetchall()
+            for row in rows:
+                snapshot = json_object_or_empty(row["payload_json"])
+                item = next((item for item in snapshot.get("cuts", []) if isinstance(item, dict) and item.get("cut_id") == cut_id), None)
+                try:
+                    evidence = json.loads(row["evidence_json"])
+                except (TypeError, ValueError):
+                    continue
+                if item and isinstance(evidence, list) and evidence:
+                    request_input["context"] = item.get("context", {})
+                    request_input["sampled_frames"] = [{key: frame[key] for key in ("time", "description", "detections", "image_size", "ocr_response", "ocr") if key in frame} for frame in evidence if isinstance(frame, dict)]
+                    model = item.get("config", {}).get("openrouter_model", model)
+                    source_job = {key: row[key] for key in ("id", "stage", "error", "finished_at")}
+                    source_job["kind"] = "analysis"
+                    previous_request = item.get("request_override")
+                    break
+            if not source_job:
+                raise HTTPException(404, "No failed analysis with saved frame evidence is available for this cut")
+        elif source == "failed_summary":
+            row = conn.execute("""SELECT id,stage,error,finished_at,payload_json FROM jobs
+                WHERE episode_id=? AND pipeline='regen' AND status='failed' AND stage!='Cancelled'
+                AND json_extract(payload_json,'$.cut_id')=? AND json_extract(payload_json,'$.result_type')='summary'
+                ORDER BY created_at DESC,rowid DESC LIMIT 1""", (cut['episode_id'], cut_id)).fetchone()
+            if not row:
+                raise HTTPException(404, "No failed summary request is available for this cut")
+            old = json_object_or_empty(row['payload_json'])
+            source_job = {key: row[key] for key in ("id", "stage", "error", "finished_at")}
+            source_job["kind"] = "summary"
+            previous_request = old.get('request_override')
+            if not previous_request:
+                available = [frame for frame in old.get('sampled_frames', []) if isinstance(frame, dict) and isinstance(frame.get('frame_id'), str) and frame_source.result_frame_spec(frame['frame_id'], conn)]
+                previous_request = {"model": old.get('model', model), "system": SUMMARY_TEXT_SYSTEM,
+                                    "input": {"mode": old.get('mode'), "instruction": old.get('instruction'), "current_summary": old.get('current_prompt'), "context": old.get('context'), "current_results": old.get('results'), "sampled_frames": available}}
+                source_job['reconstructed'] = True
+    if source_job and source_job['kind'] == 'analysis':
+        request = {"model": model, "system": SYSTEM_PROMPT, "summary_system": SUMMARY_SYSTEM,
+                   "input": {"context": request_input["context"], "sampled_frames": request_input["sampled_frames"]}}
+    else:
+        request = {"model": model, "system": SUMMARY_TEXT_SYSTEM, "input": request_input}
+    if source_job and previous_request:
+        try:
+            request = validate_summary_request(previous_request, full_analysis=source_job['kind'] == 'analysis')
+            source_job['reconstructed'] = source_job.get('reconstructed', False)
+        except HTTPException:
+            source_job['reconstructed'] = True
+    elif source_job:
+        source_job['reconstructed'] = True
+    return {"request": request, "base_id": payload["base_id"], "source_job": source_job}
+
+
+@app.post("/api/cuts/{cut_id}/retry-analysis-request")
+def retry_analysis_request(cut_id: str, body: AnalysisRequestRetry):
+    cut, _ = analysis_config_for_cut(cut_id)
+    edited = validate_summary_request(body.request_override, full_analysis=True)
+    job_id = str(uuid.uuid4())
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if not cut['active'] or not cut['analysis_enabled']:
+            raise HTTPException(409, "The cut is archived or disabled for analysis")
+        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (cut['episode_id'],)).fetchone():
+            raise HTTPException(409, "Wait for media preparation or cut detection to finish")
+        old = conn.execute("SELECT * FROM jobs WHERE id=? AND episode_id=? AND pipeline='analyze' AND status='failed'", (body.source_job_id, cut['episode_id'])).fetchone()
+        saved = conn.execute("SELECT evidence_json,completed FROM analysis_job_cuts WHERE job_id=? AND cut_id=?", (body.source_job_id, cut_id)).fetchone()
+        if not old or not saved or saved['completed']:
+            raise HTTPException(409, "The failed analysis evidence is no longer available")
+        snapshot = json_object_or_empty(old['payload_json'])
+        item = next((item for item in snapshot.get('cuts', []) if isinstance(item, dict) and item.get('cut_id') == cut_id), None)
+        if not item or not isinstance(item.get('context', {}).get('cut'), dict):
+            raise HTTPException(409, "The saved analysis context is unavailable")
+        original_cut = item['context']['cut']
+        current = conn.execute("SELECT active,analysis_enabled,start_time,end_time FROM cuts WHERE id=?", (cut_id,)).fetchone()
+        if not current or not current['active'] or not current['analysis_enabled'] or any(current[key] != original_cut.get(key) for key in ('start_time', 'end_time')):
+            raise HTTPException(409, "The cut changed since this analysis; start a new analysis")
+        try:
+            evidence = json.loads(saved['evidence_json'])
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(409, "The saved frame evidence is unreadable") from exc
+        if not isinstance(evidence, list) or not evidence:
+            raise HTTPException(409, "The saved frame evidence is unavailable")
+        item['request_override'] = edited
+        conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (job_id, cut['episode_id'], 'analyze', json.dumps({'cuts': [item]}), old['id']))
+        conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json,completed) VALUES (?,?,?,0)", (job_id, cut_id, saved['evidence_json']))
+        worker.sync_episode_status(conn, cut['episode_id'])
+    return {"job_id": job_id}
+
+
 @app.post("/api/cuts/{cut_id}/regenerate-summary")
 def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
     cut, config = analysis_config_for_cut(cut_id)
@@ -949,32 +1108,14 @@ def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
                 raise HTTPException(409, "The cut is archived or disabled for analysis")
             if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='regen' AND status IN ('queued','running') AND json_extract(payload_json, '$.result_type')='summary' AND json_extract(payload_json, '$.cut_id')=?", (cut["episode_id"], cut_id)).fetchone():
                 raise HTTPException(409, "A summary for this cut is already queued or running")
-            rows = conn.execute("SELECT id,kind,title,content,origin,context_json FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut_id,)).fetchall()
-            summary = next((row for row in reversed(rows) if row["title"] == SUMMARY_TITLE), None)
-            if body.mode == "edit" and not summary and not (body.current_prompt or "").strip():
-                raise HTTPException(400, "There is no cut summary to edit; regenerate one instead")
-            current = body.current_prompt if body.current_prompt is not None else (summary["content"] if summary else "")
-            results = [{"title": row["title"], "kind": row["kind"], "content": row["content"], "origin": row["origin"]} for row in rows if row["title"] != SUMMARY_TITLE]
-            episode = require_episode(cut["episode_id"])
-            sampled_frames = []
-            for row in rows:
-                match = re.fullmatch(r"(?:Frame|Object detections) at (\d+(?:\.\d+)?)s", row["title"] or "")
-                if match and frame_source.result_frame_spec(row['id'], conn):
-                    timestamp = float(match.group(1))
-                    try:
-                        snapshot = json.loads(row["context_json"] or "{}")
-                        if isinstance(snapshot.get('frame_time'), (int, float)):
-                            timestamp = float(snapshot['frame_time'])
-                        observation = next((item for item in snapshot.get("sampled_frames", []) if item.get("frame_id") == row["id"]), None)
-                        if observation:
-                            timestamp = float(observation["time"])
-                    except (ValueError, TypeError, AttributeError):
-                        pass
-                    if cut["start_time"] <= timestamp < cut["end_time"]:
-                        sampled_frames.append({"frame_id": row["id"], "time": timestamp, "description": row["content"]})
-            payload = {"result_type": "summary", "cut_id": cut_id, "mode": body.mode, "instruction": body.instruction.strip(), "current_prompt": current if body.mode == "edit" else "",
-                       "model": config.openrouter_model, "base_id": summary["id"] if summary else None, "results": results, "sampled_frames": sampled_frames, "context": selected_analysis_context(cut_id, config)}
-            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "regen", json.dumps(payload)))
+            payload = summary_snapshot(conn, cut, config, body.mode, body.instruction, body.current_prompt)
+            if body.preview_checked and payload["base_id"] != body.preview_base_id:
+                raise HTTPException(409, "The saved summary changed since the request was prepared; refresh the preview")
+            if body.request_override is not None:
+                payload["request_override"] = validate_summary_request(body.request_override)
+            if body.source_job_id and not conn.execute("SELECT 1 FROM jobs WHERE id=? AND episode_id=? AND pipeline='regen' AND status='failed' AND json_extract(payload_json,'$.cut_id')=?", (body.source_job_id, cut['episode_id'], cut_id)).fetchone():
+                raise HTTPException(409, "The failed summary run is no longer available")
+            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (job_id, cut["episode_id"], "regen", json.dumps(payload), body.source_job_id))
             worker.sync_episode_status(conn, cut["episode_id"])
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc

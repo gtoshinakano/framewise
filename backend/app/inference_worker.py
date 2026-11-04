@@ -385,13 +385,20 @@ def render_relaxed_summary(raw, candidates):
     return text
 
 
-def synthesize(config, context, observations, progress=None):
+def synthesize(config, context, observations, progress=None, request_override=None):
     frames = [{key: frame[key] for key in ("time", "frame_id", "description", "detections", "image_size", "ocr_response", "ocr") if key in frame} for frame in observations]
     candidates = [frame for frame in frames if "frame_id" in frame]
-    evidence = json.dumps({"context": context, "sampled_frames": frames}, ensure_ascii=False)
-    assessments, assessment_model = chat_json(config["openrouter_model"], SYSTEM_PROMPT, evidence, ["visual_evidence", "text_evidence"], progress=(lambda attempt, total: progress("evidence", attempt, total)) if progress else None)
-    summary_input = json.dumps({"context": context, "sampled_frames": frames, "assessments": assessments}, ensure_ascii=False)
-    summary, actual_model = chat_json(config["openrouter_model"], SUMMARY_SYSTEM, summary_input, [key for key, _ in SUMMARY_TOPICS], summary_topics=True, frame_candidates=candidates, progress=(lambda attempt, total: progress("summary", attempt, total)) if progress else None)
+    model, system, summary_system = config['openrouter_model'], SYSTEM_PROMPT, SUMMARY_SYSTEM
+    input_data = {"context": context, "sampled_frames": frames}
+    if request_override is not None:
+        model, system, summary_system, input_data = (request_override[key] for key in ('model', 'system', 'summary_system', 'input'))
+        # Frame IDs are assigned only when results are committed, and are not
+        # silently added to a request the user has reviewed.
+        candidates = []
+    evidence = json.dumps(input_data, ensure_ascii=False)
+    assessments, assessment_model = chat_json(model, system, evidence, ["visual_evidence", "text_evidence"], progress=(lambda attempt, total: progress("evidence", attempt, total)) if progress else None)
+    summary_input = json.dumps({**input_data, "assessments": assessments}, ensure_ascii=False)
+    summary, actual_model = chat_json(model, summary_system, summary_input, [key for key, _ in SUMMARY_TOPICS], summary_topics=True, frame_candidates=candidates, progress=(lambda attempt, total: progress("summary", attempt, total)) if progress else None)
     finalize_frame_recommendation(summary, candidates)
     return {**assessments, "cut_summary": render_summary(summary), "_assessment_model": assessment_model}, actual_model
 
@@ -423,9 +430,18 @@ def process_regen(job_id, owner):
         request = {"mode": mode, "instruction": payload["instruction"], ("current_animation_prompt" if legacy else "current_summary"): payload["current_prompt"], "context": payload["context"], "current_results": payload["results"]}
         if not legacy:
             request["sampled_frames"] = candidates
+        model = payload["model"]
+        override = payload.get("request_override") if not legacy else None
+        if override is not None:
+            model, system, request = override["model"], override["system"], override["input"]
+            # Only make a link to a real candidate that was actually supplied
+            # to the model, regardless of edits to the request JSON.
+            sent_frames = request.get("sampled_frames", [])
+            sent_ids = {frame.get("frame_id") for frame in sent_frames if isinstance(frame, dict) and isinstance(frame.get("frame_id"), str)} if isinstance(sent_frames, list) else set()
+            candidates = [frame for frame in candidates if frame['frame_id'] in sent_ids]
         fields = [field] if legacy else [key for key, _ in SUMMARY_TOPICS]
         generation_started = time.monotonic()
-        output, actual_model = chat_json(payload["model"], system, json.dumps(request, ensure_ascii=False), fields, 6144, summary_topics=not legacy, frame_candidates=candidates if not legacy else None, progress=lambda attempt, total: worker.stage(job_id, owner, job["episode_id"], f"Waiting for OpenRouter summary (attempt {attempt}/{total})"), cancel_check=lambda: check_summary_lease(job_id, owner), plain_text=not legacy)
+        output, actual_model = chat_json(model, system, json.dumps(request, ensure_ascii=False), fields, 6144, summary_topics=not legacy, frame_candidates=candidates if not legacy else None, progress=lambda attempt, total: worker.stage(job_id, owner, job["episode_id"], f"Waiting for OpenRouter summary (attempt {attempt}/{total})"), cancel_check=lambda: check_summary_lease(job_id, owner), plain_text=not legacy)
         generation_seconds = time.monotonic() - generation_started
         content = output[field].strip() if legacy else None
         settings = json.dumps({"mode": mode, "instruction": payload["instruction"], "summary_model": actual_model, "summary_generation_seconds": generation_seconds}, ensure_ascii=False)
@@ -463,6 +479,7 @@ def process(job_id, owner):
             raise RuntimeError("OPENROUTER_API_KEY is not configured for the inference worker")
         for item in json.loads(job["payload_json"])["cuts"]:
             cut_id, config, context = item["cut_id"], item["config"], item["context"]
+            request_override = item.get("request_override")
             worker.stage(job_id, owner, episode["id"], f"Processing cut {context['cut']['cut_index'] + 1}")
             saved = db.one("SELECT * FROM analysis_job_cuts WHERE job_id=? AND cut_id=?", (job_id, cut_id))
             if saved and saved["completed"]:
@@ -470,7 +487,7 @@ def process(job_id, owner):
             observations = json.loads(saved["evidence_json"]) if saved else []
             # Checkpoints created by the earlier pipeline do not contain OCR.
             # Refresh them once so an interrupted pre-upgrade job gets the new evidence.
-            if not saved or not observations or any("ocr_response" not in frame for frame in observations):
+            if not saved or not observations or (request_override is None and any("ocr_response" not in frame for frame in observations)):
                 observations = describe_frames(job_id, owner, episode, context["cut"], config)
                 with db.connect() as conn:
                     worker.require_lease(conn, job_id, owner)
@@ -486,25 +503,32 @@ def process(job_id, owner):
                     observation["frame_id"] = str(uuid.uuid4())
             worker.stage(job_id, owner, episode["id"], f"Consolidating cut {context['cut']['cut_index'] + 1}")
             generation_started = time.monotonic()
-            output, actual_model = synthesize(config, context, observations, progress=lambda phase, attempt, total: worker.stage(job_id, owner, episode["id"], f"Cut {context['cut']['cut_index'] + 1}: waiting for OpenRouter {phase} (attempt {attempt}/{total})"))
+            progress = lambda phase, attempt, total: worker.stage(job_id, owner, episode["id"], f"Cut {context['cut']['cut_index'] + 1}: waiting for OpenRouter {phase} (attempt {attempt}/{total})")
+            if request_override is not None:
+                output, actual_model = synthesize(config, context, observations, progress=progress, request_override=request_override)
+            else:
+                output, actual_model = synthesize(config, context, observations, progress=progress)
             generation_seconds = time.monotonic() - generation_started
             snapshot_data = {**context, "sampled_frames": observations, "assessments": {"visual_evidence": output["visual_evidence"], "text_evidence": output["text_evidence"]}}
+            if request_override is not None:
+                snapshot_data["openrouter_input"] = request_override["input"]
             snapshot = json.dumps(snapshot_data, ensure_ascii=False)
-            settings = json.dumps({**config, "visual_model": MODEL_ID, "visual_revision": MODEL_REVISION, "caption_model": CAPTION_MODEL_ID, "caption_revision": CAPTION_MODEL_REVISION, "summary_model": actual_model, "summary_generation_seconds": generation_seconds, "assessment_model": output.get("_assessment_model", actual_model)}, ensure_ascii=False)
+            settings = json.dumps({**config, **({"openrouter_model": request_override["model"]} if request_override is not None else {}), "visual_model": MODEL_ID, "visual_revision": MODEL_REVISION, "caption_model": CAPTION_MODEL_ID, "caption_revision": CAPTION_MODEL_REVISION, "summary_model": actual_model, "summary_generation_seconds": generation_seconds, "assessment_model": output.get("_assessment_model", actual_model)}, ensure_ascii=False)
             with db.connect() as conn:
                 worker.require_lease(conn, job_id, owner)
                 for kind, title, field in FIELDS:
-                    conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json) VALUES (?,?,?,?,?,'model',?,?,?,?,?)", (str(uuid.uuid4()), cut_id, kind, title, output[field].strip(), actual_model if field == "cut_summary" else output.get("_assessment_model", actual_model), job_id, SUMMARY_SYSTEM if field == "cut_summary" else SYSTEM_PROMPT, settings, snapshot))
+                    prompt = (request_override["summary_system"] if field == "cut_summary" else request_override["system"]) if request_override is not None else (SUMMARY_SYSTEM if field == "cut_summary" else SYSTEM_PROMPT)
+                    conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json) VALUES (?,?,?,?,?,'model',?,?,?,?,?)", (str(uuid.uuid4()), cut_id, kind, title, output[field].strip(), actual_model if field == "cut_summary" else output.get("_assessment_model", actual_model), job_id, prompt, settings, snapshot))
                 for index, observation in enumerate(observations):
                     if "ocr_response" in observation:
-                        conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json) VALUES (?,?,?,?,?,'model',?,?,?,?,?)", (str(uuid.uuid4()), cut_id, "other", f"Raw OCR at {observation['time']:.3f}s", observation["ocr_response"] or "No text returned", MODEL_ID, job_id, observation["ocr_prompt"], settings, snapshot))
+                        conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json) VALUES (?,?,?,?,?,'model',?,?,?,?,?)", (str(uuid.uuid4()), cut_id, "other", f"Raw OCR at {observation['time']:.3f}s", observation["ocr_response"] or "No text returned", MODEL_ID, job_id, observation.get("ocr_prompt", ""), settings, snapshot))
                     frame_id = observation.get("frame_id", str(uuid.uuid4()))
                     conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json) VALUES (?,?,?,?,?,'model',?,?,?,?,?)", (frame_id, cut_id, "first_frame" if index == 0 else "last_frame" if index == len(observations) - 1 else "other", f"Frame at {observation['time']:.6f}s", observation["description"], CAPTION_MODEL_ID, job_id, FRAME_PROMPT, settings, snapshot))
                     if "detections" in observation:
                         result_id = str(uuid.uuid4())
-                        evidence = json.dumps({"image_size": observation["image_size"], "detections": observation["detections"]}, ensure_ascii=False, indent=2)
+                        evidence = json.dumps({"image_size": observation.get("image_size"), "detections": observation["detections"]}, ensure_ascii=False, indent=2)
                         detection_snapshot = json.dumps({**snapshot_data, "frame_time": observation["time"]}, ensure_ascii=False)
-                        conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json) VALUES (?,?,?,?,?,'model',?,?,?,?,?)", (result_id, cut_id, "other", f"Object detections at {observation['time']:.3f}s", evidence, MODEL_ID, job_id, observation["detection_prompt"], settings, detection_snapshot))
+                        conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json) VALUES (?,?,?,?,?,'model',?,?,?,?,?)", (result_id, cut_id, "other", f"Object detections at {observation['time']:.3f}s", evidence, MODEL_ID, job_id, observation.get("detection_prompt", ""), settings, detection_snapshot))
                 conn.execute("UPDATE analysis_job_cuts SET completed=1 WHERE job_id=? AND cut_id=?", (job_id, cut_id))
         with db.connect() as conn:
             worker.require_lease(conn, job_id, owner)

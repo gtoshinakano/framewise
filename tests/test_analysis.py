@@ -394,6 +394,68 @@ class AnalysisTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'truncated'):
                 inference_worker.synthesize(config, {}, observations)
 
+    def test_failed_analysis_preview_and_edited_retry_send_reviewed_input(self):
+        old_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        observations = [{'time': 0.5, 'description': 'Old description', 'ocr_response': 'old text', 'ocr': []}]
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) VALUES (?,?,?)", (old_id, 'c1', json.dumps(observations)))
+            conn.execute("UPDATE jobs SET status='failed',stage='Failed · Cut 1: waiting for OpenRouter summary',error='Invalid response' WHERE id=?", (old_id,))
+        preview = self.client.get('/api/cuts/c1/summary-request-preview?source=failed')
+        self.assertEqual(preview.status_code, 200, preview.text)
+        data = preview.json()
+        self.assertEqual(data['source_job']['id'], old_id)
+        request = data['request']
+        request['model'] = 'test/edited'
+        request['system'] = 'Edited evidence instruction'
+        request['summary_system'] = 'Edited summary instruction'
+        request['input'] = {'sampled_frames': [{'description': 'Edited frame'}], 'new_field': {'enabled': True}}
+        queued = self.client.post('/api/cuts/c1/retry-analysis-request', json={'source_job_id': old_id, 'request_override': request})
+        self.assertEqual(queued.status_code, 200, queued.text)
+        retry_id = queued.json()['job_id']
+        self.assertEqual(db.one('SELECT retry_of FROM jobs WHERE id=?', (retry_id,))['retry_of'], old_id)
+        assessments = {'visual_evidence': 'Observed', 'text_evidence': 'No text'}
+        sections = {key: {'content': 'A section', 'confidence': 'unknown'} for key, _ in inference_worker.SUMMARY_TOPICS}
+        responses = [assessments, sections]
+        def reply(_request, **_kwargs):
+            return io.BytesIO(json.dumps({'model': 'test/actual', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(responses.pop(0))}}]}).encode())
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', side_effect=reply) as call, patch.object(inference_worker, 'describe_frames', side_effect=AssertionError('saved evidence must be reused')):
+            inference_worker.process(*worker.claim_job(('analyze',)))
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (retry_id,))['status'], 'done')
+        first, second = (json.loads(args.args[0].data) for args in call.call_args_list)
+        self.assertEqual((first['model'], first['messages'][0]['content']), ('test/edited', 'Edited evidence instruction'))
+        self.assertEqual(json.loads(first['messages'][1]['content']), request['input'])
+        self.assertEqual(second['messages'][0]['content'], 'Edited summary instruction')
+        self.assertEqual(json.loads(second['messages'][1]['content']), {**request['input'], 'assessments': assessments})
+        result = next(row for row in self.client.get('/api/cuts/c1/analysis-results').json() if row['title'] == 'Cut summary')
+        self.assertEqual(result['context']['openrouter_input'], request['input'])
+        self.assertEqual(result['prompt'], 'Edited summary instruction')
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='failed',stage='Failed · Cut 1: waiting for OpenRouter summary' WHERE id=?", (retry_id,))
+            conn.execute("UPDATE analysis_job_cuts SET completed=0 WHERE job_id=?", (retry_id,))
+        again = self.client.get('/api/cuts/c1/summary-request-preview?source=failed').json()
+        self.assertEqual(again['request'], request)
+        self.assertFalse(again['source_job']['reconstructed'])
+
+    def test_edited_summary_preview_is_sent_and_detects_stale_summary(self):
+        preview = self.client.get('/api/cuts/c1/summary-request-preview').json()
+        request = preview['request']
+        request['model'], request['system'], request['input'] = 'test/edited', 'Custom instruction', {'added': ['value'], 'nested': {'x': 7}}
+        body = {'mode': 'regenerate', 'preview_checked': True, 'preview_base_id': preview['base_id'], 'request_override': request}
+        queued = self.client.post('/api/cuts/c1/regenerate-summary', json=body)
+        self.assertEqual(queued.status_code, 200, queued.text)
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps({'model': 'test/actual', 'choices': [{'finish_reason': 'stop', 'message': {'content': 'A new summary'}}]}).encode())) as call:
+            inference_worker.process_regen(*worker.claim_job(('regen',)))
+        sent = json.loads(call.call_args.args[0].data)
+        self.assertEqual((sent['model'], sent['messages'][0]['content'], json.loads(sent['messages'][1]['content'])), ('test/edited', 'Custom instruction', request['input']))
+        self.assertEqual(self.client.post('/api/cuts/c1/regenerate-summary', json=body).status_code, 409)
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='failed',stage='Failed · Waiting for OpenRouter summary' WHERE id=?", (queued.json()['job_id'],))
+        failed_preview = self.client.get('/api/cuts/c1/summary-request-preview?source=failed_summary').json()
+        self.assertEqual(failed_preview['request'], request)
+        self.assertFalse(failed_preview['source_job']['reconstructed'])
+        bad = {**body, 'preview_base_id': self.client.get('/api/cuts/c1/summary-request-preview').json()['base_id'], 'request_override': {**request, 'input': []}}
+        self.assertEqual(self.client.post('/api/cuts/c1/regenerate-summary', json=bad).status_code, 400)
+
     def test_summary_sections_are_required_and_rendered_in_fixed_order(self):
         sections = {key: {'content': f'Body for {key}', 'confidence': 'medium'} for key, _ in reversed(inference_worker.SUMMARY_TOPICS)}
         incomplete = dict(sections)
