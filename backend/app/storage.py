@@ -32,8 +32,18 @@ def _inventory(conn):
     samples = {row['id']: dict(row) for row in conn.execute('SELECT v.id,c.project_id FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id')}
     evidence = {}
     warnings = []
-    for row in conn.execute('SELECT a.job_id,a.cut_id,a.evidence_json,j.episode_id FROM analysis_job_cuts a JOIN jobs j ON j.id=a.job_id'):
+    for row in conn.execute('SELECT a.job_id,a.cut_id,a.evidence_json,j.episode_id,j.payload_json FROM analysis_job_cuts a JOIN jobs j ON j.id=a.job_id'):
         frames = _json(row['evidence_json'], None)
+        payload = _json(row['payload_json'], {})
+        if isinstance(payload, dict) and payload.get('workflow') == 'single_cut_v2' and isinstance(frames, dict):
+            # V2 stores IDs of committed result revisions, not media filenames.
+            from .structured_results import KINDS
+            valid = all(key in KINDS and isinstance(value, str) and conn.execute('SELECT 1 FROM analysis_results WHERE id=? AND cut_id=?', (value, row['cut_id'])).fetchone() for key, value in frames.items())
+            if valid:
+                continue
+            warnings.append(f"Run {row['job_id']} has an invalid structured checkpoint; its files are protected.")
+            active.add(row['episode_id'])
+            continue
         if not isinstance(frames, list):
             warnings.append(f"Run {row['job_id']} has unreadable saved frame evidence; its files are protected.")
             # A malformed reference could point to any file in this episode.
@@ -377,7 +387,7 @@ def cleanup(body: CleanupRequest):
 @router.get('/jobs/{job_id}/outputs')
 def job_outputs(job_id: str):
     with db.connect() as conn:
-        job = conn.execute('SELECT id,episode_id FROM jobs WHERE id=?', (job_id,)).fetchone()
+        job = conn.execute('SELECT id,episode_id,payload_json FROM jobs WHERE id=?', (job_id,)).fetchone()
         if not job:
             raise HTTPException(404, 'Run not found')
         results = [dict(row) for row in conn.execute('SELECT a.id,a.cut_id,a.title,a.kind,a.origin,a.model_id,a.parent_id,a.superseded_by,c.cut_index,c.active FROM analysis_results a JOIN cuts c ON c.id=a.cut_id WHERE a.job_id=? ORDER BY a.rowid', (job_id,))]
@@ -387,6 +397,8 @@ def job_outputs(job_id: str):
         for item in evidence:
             saved = _json(item.pop('evidence_json'), None)
             item['frame_count'] = len(saved) if isinstance(saved, list) else None
+            payload = _json(job['payload_json'], {})
+            item['checkpoint_count'] = len(saved) if isinstance(saved, dict) and isinstance(payload, dict) and payload.get('workflow') == 'single_cut_v2' else None
         return {'results': results, 'segments': segments, 'evidence': evidence, 'voices': voices}
 
 
@@ -444,11 +456,15 @@ def delete_orphan(kind: str, record_id: str):
 def delete_job_evidence(job_id: str, cut_id: str):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        job = conn.execute('SELECT episode_id FROM jobs WHERE id=?', (job_id,)).fetchone()
+        job = conn.execute('SELECT episode_id,payload_json FROM jobs WHERE id=?', (job_id,)).fetchone()
         if not job:
             raise HTTPException(404, 'Run not found')
         if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (job['episode_id'],)).fetchone():
             raise HTTPException(409, 'Wait for episode jobs to finish before deleting saved evidence')
+        checkpoint = conn.execute('SELECT evidence_json FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job_id, cut_id)).fetchone()
+        payload = _json(job['payload_json'], {})
+        if checkpoint and isinstance(payload, dict) and payload.get('workflow') == 'single_cut_v2' and isinstance(_json(checkpoint['evidence_json'], None), dict):
+            raise HTTPException(409, 'Structured checkpoints are required to resume this run and cannot be deleted separately')
         if conn.execute('SELECT 1 FROM cuts WHERE id=?', (cut_id,)).fetchone():
             changed = conn.execute("UPDATE analysis_job_cuts SET evidence_json='[]' WHERE job_id=? AND cut_id=?", (job_id, cut_id)).rowcount
         else:

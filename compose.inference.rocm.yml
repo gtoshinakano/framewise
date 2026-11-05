@@ -14,12 +14,19 @@ services:
       TMPDIR: /data/tmp
       WEVISONE_MODEL_PATH: /models/wevisone-4b
       CAPTION_MODEL_PATH: /models/qwen3-vl-2b
+      QWEN3_VIDEO_MODEL_PATH: /models/qwen3-vl-8b
+      QWEN35_SERVER_PATH: /models/llamacpp/llama-server
+      QWEN35_MODEL_PATH: /models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf
+      QWEN35_PROJECTOR_PATH: /models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
       - video_data:/data
       - model_cache:/models/cache
       - ${WEVISONE_MODEL_DIR:-./.models/wevisone-4b}:/models/wevisone-4b:ro
       - ${CAPTION_MODEL_DIR:-./.models/qwen3-vl-2b}:/models/qwen3-vl-2b:ro
+      - ${VIDEO_MODEL_DIR:-./.models/qwen3-vl-8b}:/models/qwen3-vl-8b:ro
+      - ${FRAME_MODEL_DIR:-./.models/qwen3.5-27b}:/models/qwen3.5-27b:ro
+      - ${LLAMACPP_RUNTIME_DIR:-./.models/llamacpp-runtime}:/models/llamacpp:ro
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri

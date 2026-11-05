@@ -7,6 +7,7 @@ import threading
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 
 from pathlib import Path
 
@@ -97,7 +98,7 @@ def cleanup_voice_upload(job):
         log.exception('Could not clean up voice upload for job %s', job['id'])
 
 
-def claim_job(pipelines=("prepare", "hardcuts", "cutframes")):
+def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
     now = time.time()
     placeholders = ",".join("?" for _ in pipelines)
     with db.connect() as conn:
@@ -148,12 +149,35 @@ def stage(job_id: str, owner: str, episode_id: str, label: str):
         conn.execute("UPDATE episodes SET status='processing', stage=?, error=NULL WHERE id=?", (label, episode_id))
 
 
+@contextmanager
+def analysis_stage(job_id: str, owner: str, cut_id: str, key: str, label: str):
+    """Record an attempt under the job lease; interrupted attempts remain visible."""
+    stage_id, now = str(uuid.uuid4()), time.time()
+    with db.connect() as conn:
+        require_lease(conn, job_id, owner)
+        conn.execute("UPDATE analysis_job_stages SET status='interrupted',finished_at=last_seen_at WHERE job_id=? AND cut_id=? AND status='running'", (job_id, cut_id))
+        conn.execute("INSERT INTO analysis_job_stages(id,job_id,cut_id,stage_key,label,status,started_at,last_seen_at) VALUES (?,?,?,?,?,'running',?,?)", (stage_id, job_id, cut_id, key, label, now, now))
+    try:
+        yield
+    except Exception as exc:
+        with db.connect() as conn:
+            if conn.execute("SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner)).fetchone():
+                conn.execute("UPDATE analysis_job_stages SET status='failed',finished_at=?,error=? WHERE id=?", (time.time(), str(exc)[-1800:], stage_id))
+        raise
+    else:
+        with db.connect() as conn:
+            require_lease(conn, job_id, owner)
+            conn.execute("UPDATE analysis_job_stages SET status='done',finished_at=? WHERE id=?", (time.time(), stage_id))
+
+
 def heartbeat(job_id: str, owner: str, done: threading.Event):
     while not done.wait(HEARTBEAT_SECONDS):
         try:
             with db.connect() as conn:
                 changed = conn.execute("UPDATE jobs SET lease_until=? WHERE id=? AND status='running' AND lease_owner=?",
                                        (time.time() + LEASE_SECONDS, job_id, owner)).rowcount
+                if changed:
+                    conn.execute("UPDATE analysis_job_stages SET last_seen_at=? WHERE job_id=? AND status='running'", (time.time(), job_id))
             if not changed:
                 return
         except Exception:
@@ -205,6 +229,14 @@ def process(job_id: str, owner: str):
     payload = json.loads(job["payload_json"])
     settings = payload.get("settings") or json.loads(episode["settings_json"])
     try:
+        if job['pipeline'] == 'brief_export':
+            from .brief import process_export
+            process_export(job, owner, episode, payload)
+            with db.connect() as conn:
+                require_lease(conn, job_id, owner)
+                conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+                sync_episode_status(conn, episode_id)
+            return
         targeted = job["pipeline"] == "hardcuts" and bool(payload.get('cut_id'))
         if job["pipeline"] != "cutframes" and not targeted:
             stage(job_id, owner, episode_id, "Probing video")

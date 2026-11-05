@@ -3,6 +3,7 @@ import json
 import math
 import re
 import subprocess
+import tempfile
 from collections import deque
 from pathlib import Path
 
@@ -40,6 +41,37 @@ def probe(path: Path):
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("Could not determine video duration")
     return {"duration": duration, "width": int(video["width"]), "height": int(video["height"]), "has_audio": audio}
+
+
+def prepare_analysis_video(source: Path, output: Path, start: float, end: float, width: int = 640, height: int = 360, fps: float = 4):
+    """Create a temporary, silent cut clip and return its reproducibility metadata."""
+    if source.resolve() == output.resolve():
+        raise ValueError('Analysis clip cannot replace its source')
+    if not all(math.isfinite(v) for v in (start, end, fps)) or start < 0 or end <= start or not 0.25 <= fps <= 30:
+        raise ValueError('Invalid analysis clip timing or frame rate')
+    if width < 128 or width > 1920 or height < 128 or height > 1080 or width % 2 or height % 2:
+        raise ValueError('Invalid analysis clip dimensions')
+    # Keep the original aspect ratio; black padding supplies the requested canvas.
+    scaling = f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2'
+    if end - start < 1 / fps:
+        # A very short interval can yield no frame at a low output FPS. Extract
+        # a real in-cut sample and duplicate it for video processors that need
+        # two frames; report this so no motion is inferred from the padding.
+        with tempfile.TemporaryDirectory(prefix='framewise-short-cut-') as scratch:
+            still = Path(scratch) / 'frame.jpg'
+            actual = extract_cut_frame(source, still, start, start, end, width=width)
+            run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-loop', '1', '-framerate', str(fps), '-i', str(still),
+                 '-frames:v', '2', '-an', '-vf', scaling, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', str(output)])
+        return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps, 'padded_tail': True, 'single_sample_time': actual}
+    filters = f'fps={fps},{scaling}'
+    padded_tail = end - start < 2 / fps
+    if padded_tail:
+        # The Qwen video processor needs at least two frames, even for a very
+        # short cut. Clone the final sampled frame without reading the next cut.
+        filters += ',tpad=stop_mode=clone:stop=1'
+    run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', str(start), '-t', str(end - start), '-i', str(source),
+         '-an', '-vf', filters, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', str(output)])
+    return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps, 'padded_tail': padded_tail}
 
 
 def make_proxy(original: Path, output: Path, width: int, crf: int, preset: str):

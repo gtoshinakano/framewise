@@ -360,3 +360,96 @@ def cut_audio(cut_id: str,
         "Content-Length": str(len(header) + length),
         "X-Audio-Start-Seconds": str(start / rate), "X-Audio-End-Seconds": str(end / rate),
     })
+
+
+class BriefSection(BaseModel):
+    content: str
+    confidence: str
+
+
+class BriefDialogue(BaseModel):
+    id: str
+    start_time: float
+    end_time: float
+    text: str
+    speaker_label: str | None
+    character_context_id: str | None
+
+
+class BriefCut(BaseModel):
+    id: str
+    cut_number: int
+    start_time: float
+    end_time: float
+    initial_frame: dict[str, Any] | None = Field(description='Current structured initial-frame result and provenance, when available.')
+    suggested_frame_url: str | None
+    audio_url: str | None
+    dialogue: list[BriefDialogue]
+    visible_characters: dict[str, BriefSection | None]
+    camera: dict[str, BriefSection | None]
+    setting: BriefSection | None
+    action_beats: BriefSection | None
+    lighting: BriefSection | None
+    composition: BriefSection | None
+    unavailable: dict[str, str | None]
+
+
+class EpisodeBrief(BaseModel):
+    episode_id: str
+    from_cut: int = Field(alias='from')
+    to: int
+    cuts: list[BriefCut]
+
+
+class BriefExportStatus(BaseModel):
+    job_id: str
+    status: str
+    stage: str
+    error: str | None
+    download_url: str | None
+
+
+@router.get('/episodes/{episode_id}/brief', response_model=EpisodeBrief, summary='Get an agent-ready brief for a range of cuts')
+def episode_brief(episode_id: str, from_cut: int = Query(alias='from', ge=1), to: int = Query(ge=1)):
+    """Return inclusive, one-based active cuts. Missing structured analysis requires a new visual analysis run."""
+    from .brief import make_brief
+    return make_brief(episode_id, from_cut, to)
+
+
+@router.post('/episodes/{episode_id}/brief/exports', response_model=BriefExportStatus, summary='Queue a brief and asset ZIP')
+def create_brief_export(episode_id: str, from_cut: int = Query(alias='from', ge=1), to: int = Query(ge=1)):
+    """Snapshot the brief and queue an export; poll the returned job status before downloading."""
+    import uuid
+    from . import worker
+    from .brief import make_brief
+    snapshot = make_brief(episode_id, from_cut, to)
+    job_id = str(uuid.uuid4())
+    with db.connect() as conn:
+        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, 'brief_export', json.dumps({'brief': snapshot})))
+        worker.sync_episode_status(conn, episode_id)
+    worker.wake_event.set()
+    return {'job_id': job_id, 'status': 'queued', 'stage': 'queued', 'error': None, 'download_url': None}
+
+
+@router.get('/brief-exports/{job_id}', response_model=BriefExportStatus, summary='Get brief export status')
+def brief_export_status(job_id: str):
+    row = db.one("SELECT id,status,stage,error FROM jobs WHERE id=? AND pipeline='brief_export'", (job_id,))
+    if not row:
+        raise HTTPException(404, 'Export not found')
+    return {'job_id': row['id'], 'status': row['status'], 'stage': row['stage'], 'error': row['error'], 'download_url': f'/api/v1/brief-exports/{job_id}/download' if row['status'] == 'done' else None}
+
+
+@router.get('/brief-exports/{job_id}/download', summary='Download a completed brief ZIP', responses={200: {'content': {'application/zip': {'schema': {'type': 'string', 'format': 'binary'}}}}})
+def download_brief_export(job_id: str):
+    from fastapi.responses import FileResponse
+    from .brief import export_path
+    job = db.one("SELECT * FROM jobs WHERE id=? AND pipeline='brief_export'", (job_id,))
+    if not job:
+        raise HTTPException(404, 'Export not found')
+    if job['status'] != 'done':
+        raise HTTPException(409, 'Export is not complete')
+    episode = main_api().require_episode(job['episode_id'])
+    path = export_path(episode, job_id)
+    if not path.is_file():
+        raise HTTPException(404, 'Export file unavailable')
+    return FileResponse(path, media_type='application/zip', filename=f'framewise-brief-{job_id}.zip')

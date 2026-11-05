@@ -1,6 +1,7 @@
 """Separate leased worker for per-cut visual analysis and prompt synthesis."""
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -51,6 +52,8 @@ SUMMARY_TOPICS = (
     ("uncertainties", "Evidence and uncertainties"),
 )
 SUMMARY_SYSTEM = """You are a production analyst preparing a detailed analysis of one cut of a video. Cover the supplied visual, text, audio and dialogue evidence fully, including all supplied spoken words and who is associated with them. The analysis will help someone recreate the cut's opening still image and plan its animation. The inputs are analysis results and context about that cut; they are not the video itself, and model predictions can be incomplete or wrong.
+
+For production use, make main_characters and secondary_characters identify visible people, their appearance, position, and relevant character context IDs only when visually supported. In actions give ordered, time-referenced action beats, separating observations from uncertain motion. Describe framing, camera angle and movement, setting, lighting, and composition concretely enough to recreate the shot. State unknowns instead of inventing details.
 
 INPUT MATERIALS
 - context describes the project and episode, the current cut and its time range and notes, adjacent cuts and their current analysis results, overlapping chunk notes, selected context items, additional user context, and current transcript segments. Transcripts may be automatically generated and can contain errors; manual text and speaker links are also supplied evidence, not guaranteed facts. Transcript segment times are episode-relative and segments can extend beyond the cut. Adjacent-cut information does not prove what is visible in this cut. Transcripts describe audio, not visual presence. You receive text evidence, not the original audio, and cannot independently hear voices or verify a transcription.
@@ -112,7 +115,10 @@ def analysis_dir(episode):
 
 def sample_times(start, end, config):
     first, last = media.cut_frame_times(start, end)
-    count = 2 if config["frame_mode"] == "endpoints" else config["frame_count"]
+    count = (max(1, math.ceil(end - start)) if config["frame_mode"] == "per_second"
+             else 2 if config["frame_mode"] == "endpoints" else config["frame_count"])
+    if count == 1:
+        return [first]
     return [first + (last - first) * index / (count - 1) for index in range(count)]
 
 
@@ -163,7 +169,7 @@ def describe_frames(job_id, owner, episode, cut, config):
         for index, timestamp in enumerate(times):
             worker.stage(job_id, owner, episode["id"], f"Analyzing cut {cut['cut_index'] + 1}, frame {index + 1}/{len(times)}")
             image_path = Path(directory) / "frame.jpg"
-            timestamp = media.extract_cut_frame(original, image_path, timestamp, cut["start_time"], cut["end_time"], width=1280, last=(index == len(times) - 1))
+            timestamp = media.extract_cut_frame(original, image_path, timestamp, cut["start_time"], cut["end_time"], width=1280, last=(len(times) > 1 and index == len(times) - 1))
             with Image.open(image_path) as image:
                 image = image.convert("RGB")
                 detection = model.predict(image, task="detection", query=config["detection_queries"], max_new_tokens=512, temperature=0.0, decode_matting=False)
@@ -188,9 +194,9 @@ def check_summary_lease(job_id, owner):
         raise RuntimeError("Job lease was lost")
 
 
-def request_json(request, cancel_check=None):
+def request_json(request, cancel_check=None, timeout=180):
     def read():
-        with urllib.request.urlopen(request, timeout=180) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     if cancel_check is None:
         return read()
@@ -400,7 +406,7 @@ def synthesize(config, context, observations, progress=None, request_override=No
     summary_input = json.dumps({**input_data, "assessments": assessments}, ensure_ascii=False)
     summary, actual_model = chat_json(model, summary_system, summary_input, [key for key, _ in SUMMARY_TOPICS], summary_topics=True, frame_candidates=candidates, progress=(lambda attempt, total: progress("summary", attempt, total)) if progress else None)
     finalize_frame_recommendation(summary, candidates)
-    return {**assessments, "cut_summary": render_summary(summary), "_assessment_model": assessment_model}, actual_model
+    return {**assessments, "cut_summary": render_summary(summary), "_brief_sections": summary, "_assessment_model": assessment_model}, actual_model
 
 
 def fail_job(job_id, owner, episode_id, exc):
@@ -469,15 +475,69 @@ def process_regen(job_id, owner):
         log.exception("Prompt regeneration failed for job %s", job_id)
 
 
+def process_consistency_summary(job_id, owner):
+    from . import structured_results, consistency_summary
+    job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
+    if not job:
+        return
+    payload = json.loads(job['payload_json'])
+    cut_id = payload['cut_id']
+    try:
+        # A crash can occur after committing the result and before marking the
+        # job done. Reuse that committed revision instead of generating again.
+        existing = db.all_rows("SELECT id,settings_json FROM analysis_results WHERE job_id=? AND cut_id=?", (job_id, cut_id))
+        if any(structured_results.structured_type(row['settings_json']) == 'consistency_summary' for row in existing):
+            with db.connect() as conn:
+                worker.require_lease(conn, job_id, owner)
+                conn.execute("UPDATE analysis_job_stages SET status='done',finished_at=last_seen_at WHERE job_id=? AND cut_id=? AND stage_key='consistency_summary' AND status='running'", (job_id, cut_id))
+                conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+                worker.sync_episode_status(conn, job['episode_id'])
+            return
+        if not os.environ.get('OPENROUTER_API_KEY', '').strip():
+            raise RuntimeError('OPENROUTER_API_KEY is not configured for the inference worker')
+        with worker.analysis_stage(job_id, owner, cut_id, 'consistency_summary', 'Consistency summary'):
+            worker.stage(job_id, owner, job['episode_id'], 'Summarizing consistency')
+            output, actual_model = consistency_summary.generate(payload['config'], payload['evidence'],
+                progress=lambda attempt, total: worker.stage(job_id, owner, job['episode_id'], f'Consistency summary · attempt {attempt}/{total}'),
+                cancel_check=lambda: check_summary_lease(job_id, owner))
+            with db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                structured_results.save_generated(conn, cut_id, job_id, owner, 'consistency_summary', output, actual_model,
+                    consistency_summary.SYSTEM, {'source_result_ids': payload['source_result_ids']}, payload['evidence'], expected_current=payload['base_id'])
+        with db.connect() as conn:
+            worker.require_lease(conn, job_id, owner)
+            conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+            worker.sync_episode_status(conn, job['episode_id'])
+    except SummaryCancelled:
+        log.info('Consistency summary %s was cancelled', job_id)
+    except Exception as exc:
+        fail_job(job_id, owner, job['episode_id'], exc)
+        log.exception('Consistency summary failed for job %s', job_id)
+
+
 def process(job_id, owner):
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
         return
     episode = db.one("SELECT * FROM episodes WHERE id=?", (job["episode_id"],))
     try:
+        payload = json.loads(job['payload_json'])
+        if payload.get('workflow') == 'single_cut_v2':
+            from . import single_cut_pipeline, structured_results, summary_queue
+            item = payload['cuts'][0]
+            single_cut_pipeline.run(job, owner, episode, item)
+            results = structured_results.list_results(item['cut_id'])
+            summary_payload = summary_queue.payload_for(item['cut_id'], item['config'], item['context'], results)
+            with db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                worker.require_lease(conn, job_id, owner)
+                summary_queue.insert(conn, job['episode_id'], summary_payload)
+                conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+                worker.sync_episode_status(conn, job['episode_id'])
+            return
         if not os.environ.get("OPENROUTER_API_KEY", "").strip():
             raise RuntimeError("OPENROUTER_API_KEY is not configured for the inference worker")
-        for item in json.loads(job["payload_json"])["cuts"]:
+        for item in payload["cuts"]:
             cut_id, config, context = item["cut_id"], item["config"], item["context"]
             request_override = item.get("request_override")
             worker.stage(job_id, owner, episode["id"], f"Processing cut {context['cut']['cut_index'] + 1}")
@@ -488,7 +548,8 @@ def process(job_id, owner):
             # Checkpoints created by the earlier pipeline do not contain OCR.
             # Refresh them once so an interrupted pre-upgrade job gets the new evidence.
             if not saved or not observations or (request_override is None and any("ocr_response" not in frame for frame in observations)):
-                observations = describe_frames(job_id, owner, episode, context["cut"], config)
+                with worker.analysis_stage(job_id, owner, cut_id, 'frame_evidence', 'Frame evidence'):
+                    observations = describe_frames(job_id, owner, episode, context["cut"], config)
                 with db.connect() as conn:
                     worker.require_lease(conn, job_id, owner)
                     conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json) VALUES (?,?,?) ON CONFLICT(job_id,cut_id) DO UPDATE SET evidence_json=excluded.evidence_json", (job_id, cut_id, json.dumps(observations, ensure_ascii=False)))
@@ -504,12 +565,15 @@ def process(job_id, owner):
             worker.stage(job_id, owner, episode["id"], f"Consolidating cut {context['cut']['cut_index'] + 1}")
             generation_started = time.monotonic()
             progress = lambda phase, attempt, total: worker.stage(job_id, owner, episode["id"], f"Cut {context['cut']['cut_index'] + 1}: waiting for OpenRouter {phase} (attempt {attempt}/{total})")
-            if request_override is not None:
-                output, actual_model = synthesize(config, context, observations, progress=progress, request_override=request_override)
-            else:
-                output, actual_model = synthesize(config, context, observations, progress=progress)
+            with worker.analysis_stage(job_id, owner, cut_id, 'synthesis', 'Evidence and summary'):
+                if request_override is not None:
+                    output, actual_model = synthesize(config, context, observations, progress=progress, request_override=request_override)
+                else:
+                    output, actual_model = synthesize(config, context, observations, progress=progress)
             generation_seconds = time.monotonic() - generation_started
             snapshot_data = {**context, "sampled_frames": observations, "assessments": {"visual_evidence": output["visual_evidence"], "text_evidence": output["text_evidence"]}}
+            if output.get('_brief_sections'):
+                snapshot_data['brief_sections'] = output['_brief_sections']
             if request_override is not None:
                 snapshot_data["openrouter_input"] = request_override["input"]
             snapshot = json.dumps(snapshot_data, ensure_ascii=False)
@@ -544,7 +608,7 @@ def main():
     db.init_db()
     while True:
         try:
-            claimed = worker.claim_job(("analyze", "regen"))
+            claimed = worker.claim_job(("analyze", "regen", "consistency_summary"))
             if claimed:
                 job_id, owner = claimed
                 done = threading.Event()
@@ -552,7 +616,7 @@ def main():
                 beat.start()
                 try:
                     kind = db.one("SELECT pipeline FROM jobs WHERE id=?", (job_id,))["pipeline"]
-                    (process_regen if kind == "regen" else process)(job_id, owner)
+                    (process_regen if kind == "regen" else process_consistency_summary if kind == 'consistency_summary' else process)(job_id, owner)
                 finally:
                     done.set()
                     beat.join(timeout=1)
@@ -564,4 +628,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Avoid loading a second copy when pipeline modules import this worker.
+    # Model globals and lease helpers must refer to the running process.
+    import sys
+    sys.modules['app.inference_worker'] = sys.modules[__name__]
     main()

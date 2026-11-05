@@ -100,6 +100,22 @@ def init_db():
             evidence_json TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(job_id,cut_id)
         );
+        CREATE TABLE IF NOT EXISTS analysis_job_stages (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE,
+            stage_key TEXT NOT NULL, label TEXT NOT NULL,
+            status TEXT NOT NULL, started_at REAL NOT NULL, last_seen_at REAL NOT NULL,
+            finished_at REAL, error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS analysis_job_stages_cut_idx ON analysis_job_stages(cut_id, started_at);
+        CREATE TABLE IF NOT EXISTS analysis_video_windows (
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE,
+            window_index INTEGER NOT NULL, start_time REAL NOT NULL, end_time REAL NOT NULL,
+            model_revision TEXT NOT NULL, content_json TEXT NOT NULL,
+            PRIMARY KEY(job_id,cut_id,window_index)
+        );
         CREATE TABLE IF NOT EXISTS transcript_segments (
             id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
             start_time REAL NOT NULL, end_time REAL NOT NULL, text TEXT NOT NULL,
@@ -162,6 +178,10 @@ def init_db():
                     if cleaned != original:
                         db.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (json.dumps(cleaned, ensure_ascii=False), row["id"]))
         job_columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+        stage_columns = {row['name'] for row in db.execute('PRAGMA table_info(analysis_job_stages)')}
+        if 'last_seen_at' not in stage_columns:
+            db.execute('ALTER TABLE analysis_job_stages ADD COLUMN last_seen_at REAL NOT NULL DEFAULT 0')
+            db.execute('UPDATE analysis_job_stages SET last_seen_at=started_at')
         for column, definition in (
             ("payload_json", "TEXT NOT NULL DEFAULT '{}'"),
             ("lease_owner", "TEXT"),

@@ -2,6 +2,7 @@ import { FrameImage } from './FrameImage'
 import { useRef, useState } from 'react'
 import { Download } from 'lucide-react'
 import { mediaUrl, type AnalysisConfig, type Cut } from './api'
+import { analysisFrameCount } from './analysisFrames'
 
 function PreviewFrame({ cut, episodeId, position, count, frameVersion }: { cut: Cut; episodeId: string; position: number; count: number; frameVersion: string }) {
   const [ready, setReady] = useState(false)
@@ -10,7 +11,7 @@ function PreviewFrame({ cut, episodeId, position, count, frameVersion }: { cut: 
   // Match inference_worker.sample_times, including its end-of-cut adjustment.
   const first = cut.start_time
   const last = Math.max(first, cut.end_time - Math.min(0.000001, (cut.end_time - first) / 4))
-  const time = first + (last - first) * position / (count - 1)
+  const time = count === 1 ? first : first + (last - first) * position / (count - 1)
   const endpoint = position === 0 ? 'first' : position === count - 1 ? 'last' : null
   const imageUrl = endpoint ? `/api/cuts/${cut.id}/frame/${endpoint}?v=${encodeURIComponent(frameVersion)}` : null
   const label = position === 0 ? 'First' : position === count - 1 ? 'Last' : `Frame ${position + 1}`
@@ -38,12 +39,18 @@ function PreviewFrame({ cut, episodeId, position, count, frameVersion }: { cut: 
 }
 
 export function RunFramePreview({ cut, episodeId, config, frameVersion }: { cut: Cut; episodeId: string; config: AnalysisConfig | null; frameVersion: string }) {
+  const [page, setPage] = useState(0)
   if (!config) return <p className="muted text-xs">Loading frame settings…</p>
-  const count = config.frame_mode === 'endpoints' ? 2 : Math.max(2, Math.min(32, Math.floor(config.frame_count) || 2))
-  const positions = Array.from({ length: count }, (_, position) => position)
+  const count = analysisFrameCount(config, cut)
+  const pageSize = 12
+  const pageCount = Math.ceil(count / pageSize)
+  const currentPage = Math.min(page, pageCount - 1)
+  const start = currentPage * pageSize
+  const positions = Array.from({ length: Math.min(pageSize, count - start) }, (_, position) => start + position)
   return <div className="space-y-2">
-    <h3 className="text-xs font-semibold">Frames to analyze</h3>
+    <h3 className="text-xs font-semibold">Subtitle reference frames · {count}</h3>
     <div className="grid grid-cols-2 gap-2">{positions.map(position => <PreviewFrame key={`${position}-${count}-${frameVersion}`} cut={cut} episodeId={episodeId} position={position} count={count} frameVersion={frameVersion} />)}</div>
+    {pageCount > 1 && <div className="flex items-center gap-2 text-xs"><button type="button" className="btn btn-quiet" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous frames</button><span className="muted">{start + 1}–{Math.min(start + pageSize, count)} of {count}</span><button type="button" className="btn btn-quiet" disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)}>Next frames</button></div>}
     <p className="muted text-[11px]">Middle frames are previews from the prepared video; analyzed frames may differ slightly.</p>
   </div>
 }

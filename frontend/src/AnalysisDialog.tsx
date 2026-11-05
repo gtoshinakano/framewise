@@ -8,6 +8,7 @@ import { DetectionPreview } from './DetectionPreview'
 import { RunFramePreview } from './RunFramePreview'
 import { CutAudioPreview } from './CutAudioPreview'
 import { CutRunHistory } from './CutRunHistory'
+import { ConsistencySummary } from './ConsistencySummary'
 
 type DialogProps = { cut: Cut; previousCut?: Cut; nextCut?: Cut; onNavigate: (cut: Cut) => void; episodeId: string; waveform: Waveform | null; transcript: TranscriptSegment[]; hasAudio: boolean; preparingAudio: boolean; audioVersion: string; busy: boolean; jobs: Job[]; jobsKey: string; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }
 
@@ -39,15 +40,17 @@ function AnalysisDialogContent({ cut, episodeId, waveform, transcript, hasAudio,
   const [config, setConfig] = useState<AnalysisConfig | null>(null)
   const [editorTarget, setEditorTarget] = useState<HTMLElement | null>(null)
   const current = results.find(result => result.title === SUMMARY_TITLE && !result.superseded_by)
+  const consistency = results.find(result => result.settings.structured_type === 'consistency_summary' && !result.superseded_by)
   return <>
     <div className={`grid min-h-0 flex-1 gap-5 overflow-y-auto p-5 lg:overflow-hidden ${tab === 'run' ? 'lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.8fr)]' : 'lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]'}`}>
       <div className={`scrollbar flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-2' : ''}`}>
         <div className="flex gap-1 rounded-lg border hairline p-1" role="tablist">{([['results', 'Results'], ['run', 'Run settings']] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={`flex-1 rounded-md py-1.5 text-xs font-semibold ${tab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}</button>)}</div>
         {/* Both stay mounted so unsaved settings and drafts survive a tab switch. */}
         <div className={tab === 'results' ? 'flex min-h-[30rem] flex-1 flex-col lg:min-h-[26rem]' : 'hidden'}>
+          {consistency && <div className="mb-3"><ConsistencySummary cutId={cut.id} result={consistency} disabled={busy || !cut.active} onStarted={onStarted} /></div>}
           <CutSummaryPanel cutId={cut.id} current={current} loaded={resultsLoaded} jobs={jobs} disabled={busy || !cut.active || !cut.analysis_enabled} onStarted={onStarted} onSaved={result => { setResults(previous => [result, ...previous.filter(item => item.id !== result.parent_id)]); setResultsRevision(value => value + 1) }} />
         </div>
-        <div hidden={tab !== 'run'} className="space-y-4">{cut.active ? <AnalysisControls cutId={cut.id} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext} /> : <p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p>}<CutRunHistory cutId={cut.id} jobs={jobs} /></div>
+        <div hidden={tab !== 'run'} className="space-y-4">{cut.active ? <AnalysisControls cut={cut} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext} /> : <p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p>}<CutRunHistory cutId={cut.id} jobs={jobs} /></div>
       </div>
       <div className={`scrollbar flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-1' : ''}`}>
         <div className="shrink-0">{tab === 'results' || !cut.active ? <DetectionPreview cut={cut} results={results} frameVersion={frameVersion} /> : <RunFramePreview cut={cut} episodeId={episodeId} config={config} frameVersion={frameVersion} />}</div>

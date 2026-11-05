@@ -29,13 +29,24 @@ def result_frame_spec(result_id, conn=None):
         if not row:
             return None
         # Manual revisions inherit the exact sampled frame from their parent.
-        if row['parent_id'] and row['origin'] == 'manual' and row['parent_id'] not in seen and conn.execute('SELECT 1 FROM analysis_results WHERE id=?', (row['parent_id'],)).fetchone():
+        if row['parent_id'] and row['origin'] in ('manual', 'manual_edit') and row['parent_id'] not in seen and conn.execute('SELECT 1 FROM analysis_results WHERE id=?', (row['parent_id'],)).fetchone():
             result_id = row['parent_id']
             continue
         # A legacy image without reconstructible metadata remains usable.
         folder = db.DATA_DIR / 'projects' / row['project_id'] / 'episodes' / row['episode_id']
         legacy = folder / 'analysis' / f"{row['id']}.jpg"
         match = re.fullmatch(r'(Frame|Object detections) at (\d+(?:\.\d+)?)s', row['title'] or '')
+        if not match and row['title'] in ('Initial frame description', 'Last frame description'):
+            try:
+                context = json.loads(row['context_json'] or '{}')
+                timestamp = _number(context.get('frame_time'))
+                cut = context.get('cut') or {}
+                start, end = _number(cut.get('start_time')), _number(cut.get('end_time'))
+                original = folder / f"original{row['original_ext']}"
+                if timestamp is not None and start is not None and end is not None and 0 <= start <= timestamp < end and original.is_file():
+                    return {'source': original, 'time': timestamp, 'start': start, 'end': end, 'width': 1280, 'last': False, 'seek_tolerance': .000002, 'legacy': legacy, 'episode_id': row['episode_id']}
+            except (ValueError, TypeError, AttributeError):
+                pass
         if match:
             timestamp = float(match.group(2))
             start, end = row['start_time'], row['end_time']

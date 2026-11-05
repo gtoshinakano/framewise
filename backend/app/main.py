@@ -11,7 +11,7 @@ import sqlite3
 import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -94,8 +94,11 @@ class CutDetectionInput(BaseModel):
 
 
 class AnalysisConfig(BaseModel):
-    frame_mode: Literal["endpoints", "uniform"] = "uniform"
-    frame_count: int = Field(default=4, ge=2, le=32)
+    frame_mode: Literal["per_second", "endpoints", "uniform"] = "per_second"
+    frame_count: int = Field(default=1, ge=1)
+    video_width: int = Field(default=640, ge=128, le=1920, multiple_of=2)
+    video_height: int = Field(default=360, ge=128, le=1080, multiple_of=2)
+    video_fps: float = Field(default=4, ge=0.25, le=30, allow_inf_nan=False)
     context_ids: list[str] = Field(default_factory=list, max_length=200)
     detection_queries: list[Annotated[str, Field(min_length=1, max_length=100, pattern=r".*\S.*")]] = Field(default_factory=lambda: ["person", "clothing", "animal", "vehicle", "chair", "table", "subtitles"], min_length=1, max_length=20)
     additional_context: str = Field(default="", max_length=20000)
@@ -133,6 +136,20 @@ class ResultCreate(BaseModel):
     content: str = Field(min_length=1, max_length=50000)
 
 
+class StructuredAnalysisResult(BaseModel):
+    id: str
+    cut_id: str
+    type: Literal['initial_frame', 'video_analysis', 'last_frame', 'subtitle_ocr', 'consistency_summary']
+    content: dict[str, Any] | None
+    frame_url: str | None
+    origin: str
+    model_id: str | None
+    job_id: str | None
+    parent_id: str | None
+    superseded_by: str | None
+    created_at: str
+
+
 class PromptRegenInput(BaseModel):
     mode: Literal["edit", "regenerate"]
     instruction: str = Field(default="", max_length=5000)
@@ -151,7 +168,7 @@ class AnalysisRequestRetry(BaseModel):
 class ResultUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(default="", max_length=200)
-    content: str = Field(min_length=1, max_length=50000)
+    content: str = Field(min_length=1, max_length=5000000)
 
 
 class TranscriptInput(BaseModel):
@@ -226,9 +243,10 @@ def episode_response(episode_id: str):
         "SELECT a.job_id,a.cut_id FROM analysis_job_cuts a JOIN jobs j ON j.id=a.job_id WHERE j.episode_id=? AND a.completed=1", (episode_id,))}
     for job in episode["jobs"]:
         payload = json_object_or_empty(job.pop("payload_json"))
+        job['workflow'] = payload.get('workflow') if isinstance(payload.get('workflow'), str) else None
         if job["pipeline"] == "analyze":
             items = payload.get("cuts", [])
-        elif job["pipeline"] == "regen":
+        elif job["pipeline"] in ("regen", "consistency_summary"):
             items = [{"cut_id": payload.get("cut_id"), "context": payload.get("context", {})}]
         else:
             items = []
@@ -645,10 +663,32 @@ def revise_analysis_result(result_id: str, body: ResultUpdate):
             raise HTTPException(404, "Analysis result not found")
         if old["superseded_by"]:
             raise HTTPException(409, "This result already has a newer revision")
-        conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,parent_id) VALUES (?,?,?,?,?,?,?)",
-                     (new_id, old["cut_id"], old["kind"], body.title, body.content, "manual_edit", result_id))
+        from .structured_results import structured_type
+        if structured_type(old['settings_json']):
+            try:
+                data = json.loads(body.content, parse_constant=lambda value: (_ for _ in ()).throw(ValueError('Invalid number')))
+                if not isinstance(data, dict):
+                    raise ValueError('Expected a JSON object')
+            except ValueError as exc:
+                raise HTTPException(422, 'Structured results must contain a valid JSON object') from exc
+            conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,parent_id,settings_json,context_json) VALUES (?,?,?,?,?,'manual_edit',?,?,?)",
+                         (new_id, old['cut_id'], old['kind'], body.title, body.content, result_id, old['settings_json'], old['context_json']))
+        else:
+            if len(body.content) > 50000:
+                raise HTTPException(422, 'Text results may contain at most 50000 characters')
+            conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,parent_id) VALUES (?,?,?,?,?,?,?)",
+                         (new_id, old["cut_id"], old["kind"], body.title, body.content, "manual_edit", result_id))
         conn.execute("UPDATE analysis_results SET superseded_by=? WHERE id=?", (new_id, result_id))
     return serialize_result(db.one("SELECT * FROM analysis_results WHERE id=?", (new_id,)))
+
+
+@app.get('/api/cuts/{cut_id}/structured-analysis', response_model=list[StructuredAnalysisResult])
+def get_structured_analysis(cut_id: str, history: bool = False):
+    """Return structured single-cut outputs as JSON; history includes superseded revisions."""
+    from .structured_results import list_results
+    if not db.one('SELECT id FROM cuts WHERE id=?', (cut_id,)):
+        raise HTTPException(404, 'Cut not found')
+    return list_results(cut_id, history)
 
 
 @app.get("/api/episodes/{episode_id}/transcript", responses={200: {"model": list[Transcript]}})
@@ -898,6 +938,36 @@ def get_cut_analysis_config(cut_id: str):
     return config
 
 
+@app.get('/api/cuts/{cut_id}/analysis-stages')
+def get_cut_analysis_stages(cut_id: str):
+    """Return per-attempt timing and state for analysis stages of a cut."""
+    analysis_config_for_cut(cut_id)
+    import time
+    now = time.time()
+    rows = db.all_rows('''SELECT s.*,j.status AS job_status,j.lease_until FROM analysis_job_stages s
+                          JOIN jobs j ON j.id=s.job_id WHERE s.cut_id=? ORDER BY s.started_at,s.rowid''', (cut_id,))
+    for row in rows:
+        if row['status'] == 'running' and (row['job_status'] != 'running' or not row['lease_until'] or row['lease_until'] <= now):
+            row['status'] = 'interrupted'
+            end = row['last_seen_at']
+        else:
+            end = row['finished_at'] or now
+        row['elapsed_seconds'] = max(0, end - row['started_at'])
+        row.pop('lease_until')
+    return rows
+
+
+@app.get('/api/jobs/{job_id}/analysis-windows')
+def get_analysis_windows(job_id: str):
+    """Return saved video-window analyses and source metadata for a run."""
+    if not db.one('SELECT id FROM jobs WHERE id=?', (job_id,)):
+        raise HTTPException(404, 'Job not found')
+    rows = db.all_rows('SELECT cut_id,window_index,start_time,end_time,model_revision,content_json FROM analysis_video_windows WHERE job_id=? ORDER BY cut_id,window_index', (job_id,))
+    for row in rows:
+        row['content'] = json_object_or_empty(row.pop('content_json'))
+    return rows
+
+
 @app.put("/api/cuts/{cut_id}/analysis-config")
 def put_cut_analysis_config(cut_id: str, config: AnalysisConfig):
     analysis_config_for_cut(cut_id)
@@ -908,6 +978,7 @@ def put_cut_analysis_config(cut_id: str, config: AnalysisConfig):
 
 
 def enqueue_analysis(episode_id: str, cut_id: str | None = None):
+    from . import structured_results
     job_id = str(uuid.uuid4())
     try:
         with db.connect() as conn:
@@ -924,6 +995,8 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
                 cut = conn.execute("SELECT id FROM cuts WHERE id=? AND episode_id=? AND active=1 AND analysis_enabled=1", (cut_id, episode_id)).fetchone()
                 if not cut:
                     raise HTTPException(409, "The cut is archived or disabled for analysis")
+                if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='consistency_summary' AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?", (episode_id, cut_id)).fetchone():
+                    raise HTTPException(409, 'Wait for the existing consistency summary before queuing this cut')
                 cuts = [cut]
             # The write lock keeps cut boundaries, presets and context stable until
             # the complete job payload is committed. The helpers use read-only
@@ -933,8 +1006,11 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
                 _, config = analysis_config_for_cut(cut["id"])
                 context = selected_analysis_context(cut["id"], config)
                 context["current_results"] = [dict(row) for row in conn.execute("SELECT kind,title,content,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut["id"],))]
-                inputs.append({"cut_id": cut["id"], "config": config.model_dump(), "context": context})
-            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs})))
+                item = {"cut_id": cut["id"], "config": config.model_dump(), "context": context}
+                if cut_id is not None:
+                    item['base_result_ids'] = {result['type']: result['id'] for result in structured_results.list_results(cut['id'])}
+                inputs.append(item)
+            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs, **({'workflow': 'single_cut_v2'} if cut_id is not None else {})})))
             worker.sync_episode_status(conn, episode_id)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc
@@ -1091,6 +1167,28 @@ def retry_analysis_request(cut_id: str, body: AnalysisRequestRetry):
     return {"job_id": job_id}
 
 
+@app.post('/api/cuts/{cut_id}/consistency-summary')
+def queue_consistency_summary(cut_id: str):
+    """Queue a detached summary of the current structured results and transcript."""
+    from . import structured_results, summary_queue
+    cut, config = analysis_config_for_cut(cut_id)
+    if not cut['active']:
+        raise HTTPException(400, 'Only active cuts can be summarized')
+    context = selected_analysis_context(cut_id, config)
+    results = structured_results.list_results(cut_id)
+    try:
+        payload = summary_queue.payload_for(cut_id, config.model_dump(), context, results)
+        with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='analyze' AND status IN ('queued','running') AND json_extract(payload_json,'$.workflow')='single_cut_v2' AND json_extract(payload_json,'$.cuts[0].cut_id')=?", (cut['episode_id'], cut_id)).fetchone():
+                raise ValueError('Wait for this cut analysis to finish before queuing its summary')
+            job_id = summary_queue.insert(conn, cut['episode_id'], payload)
+            worker.sync_episode_status(conn, cut['episode_id'])
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {'job_id': job_id}
+
+
 @app.post("/api/cuts/{cut_id}/regenerate-summary")
 def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
     cut, config = analysis_config_for_cut(cut_id)
@@ -1218,7 +1316,7 @@ def cancel_inference_job(job_id: str):
         job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job:
             raise HTTPException(404, "Job not found")
-        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "transcribe", "voice_sample")) or (job["status"] == "running" and job["pipeline"] == "regen")
+        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "transcribe", "voice_sample")) or (job["status"] == "running" and job["pipeline"] in ("regen", "consistency_summary"))
         if not cancellable:
             raise HTTPException(409, "Only queued inference jobs or running summary jobs can be cancelled")
         message = "Cancelled before processing" if job["status"] == "queued" else "Cancelled during processing"
@@ -1230,6 +1328,7 @@ def cancel_inference_job(job_id: str):
 
 @app.post("/api/jobs/{job_id}/retry")
 def retry_analysis(job_id: str):
+    import time
     try:
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1251,6 +1350,15 @@ def retry_analysis(job_id: str):
             retry_id = str(uuid.uuid4())
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job["episode_id"], 'analyze', job["payload_json"], job_id))
             conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json,completed) SELECT ?,cut_id,evidence_json,completed FROM analysis_job_cuts WHERE job_id=?", (retry_id, job_id))
+            conn.execute("INSERT INTO analysis_video_windows (job_id,cut_id,window_index,start_time,end_time,model_revision,content_json) SELECT ?,cut_id,window_index,start_time,end_time,model_revision,content_json FROM analysis_video_windows WHERE job_id=?", (retry_id, job_id))
+            if json_object_or_empty(job['payload_json']).get('workflow') == 'single_cut_v2':
+                labels = {'subtitle_ocr': 'Subtitle detection and OCR', 'initial_frame': 'Initial frame', 'video_analysis': 'Video analysis', 'last_frame': 'Last frame'}
+                now = time.time()
+                for checkpoint in conn.execute('SELECT cut_id,evidence_json FROM analysis_job_cuts WHERE job_id=?', (retry_id,)):
+                    saved = json_object_or_empty(checkpoint['evidence_json'])
+                    for key, label in labels.items():
+                        if key in saved:
+                            conn.execute("INSERT INTO analysis_job_stages(id,job_id,cut_id,stage_key,label,status,started_at,last_seen_at,finished_at) VALUES (?,?,?,?,?,'reused',?,?,?)", (str(uuid.uuid4()), retry_id, checkpoint['cut_id'], key, label, now, now, now))
             worker.sync_episode_status(conn, job["episode_id"])
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc

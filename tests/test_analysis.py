@@ -33,6 +33,15 @@ class AnalysisTest(unittest.TestCase):
         db.DATA_DIR, db.DB_PATH, media.DATA_DIR = self.old
         self.tmp.cleanup()
 
+    def legacy_single_job(self):
+        # Jobs queued before the v2 rollout have no workflow marker.
+        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        with db.connect() as conn:
+            payload = json.loads(conn.execute('SELECT payload_json FROM jobs WHERE id=?', (job_id,)).fetchone()['payload_json'])
+            payload.pop('workflow', None)
+            conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload), job_id))
+        return job_id
+
     def test_repeated_merges_refresh_only_changed_cuts(self):
         with db.connect() as conn:
             conn.execute("UPDATE episodes SET duration=8 WHERE id='e'")
@@ -80,10 +89,10 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(job_summary['id'], job_id)
         self.assertNotIn('payload_json', job_summary)
         self.assertNotIn('lease_owner', job_summary)
-        self.assertEqual(payload['cuts'][0]['config'], config)
+        self.assertEqual(payload['cuts'][0]['config'], {**config, 'video_width': 640, 'video_height': 360, 'video_fps': 4})
         self.assertEqual([item['id'] for item in payload['cuts'][0]['context']['context_items']], ['ctx'])
-        self.assertEqual(payload['cuts'][1]['config']['frame_mode'], 'uniform')
-        self.assertEqual(payload['cuts'][1]['config']['frame_count'], 4)
+        self.assertEqual(payload['cuts'][1]['config']['frame_mode'], 'per_second')
+        self.assertEqual(len(inference_worker.sample_times(2, 4, payload['cuts'][1]['config'])), 2)
         with db.connect() as conn:
             conn.execute("UPDATE context_items SET content='Changed' WHERE id='ctx'")
         self.assertEqual(payload['cuts'][0]['context']['context_items'][0]['content'], 'Green coat')
@@ -115,10 +124,23 @@ class AnalysisTest(unittest.TestCase):
 
     def test_default_frames_and_existing_endpoint_preset(self):
         default = self.client.get('/api/cuts/c1/analysis-config').json()
-        self.assertEqual((default['frame_mode'], default['frame_count']), ('uniform', 4))
+        self.assertEqual(default['frame_mode'], 'per_second')
         self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json={**default, 'frame_mode': 'endpoints', 'frame_count': 2}).status_code, 200)
         saved = self.client.get('/api/cuts/c1/analysis-config').json()
         self.assertEqual((saved['frame_mode'], saved['frame_count']), ('endpoints', 2))
+
+    def test_duration_based_defaults_and_custom_counts_are_queued(self):
+        with db.connect() as conn:
+            conn.execute("UPDATE cuts SET end_time=0.8 WHERE id='c1'")
+            conn.execute("UPDATE cuts SET end_time=37.2 WHERE id='c2'")
+        config = self.client.get('/api/cuts/c1/analysis-config').json()
+        self.assertEqual(inference_worker.sample_times(0, 0.8, config), [0])
+        job = self.client.post('/api/episodes/e/analyze').json()['job_id']
+        payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job,))['payload_json'])
+        self.assertEqual([len(inference_worker.sample_times(item['context']['cut']['start_time'], item['context']['cut']['end_time'], item['config'])) for item in payload['cuts']], [1, 36])
+        custom = {**config, 'frame_mode': 'uniform', 'frame_count': 40}
+        self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json=custom).status_code, 200)
+        self.assertEqual(self.client.get('/api/cuts/c1/analysis-config').json()['frame_count'], 40)
 
     def test_episode_cut_result_indicator_tracks_current_results(self):
         def flags():
@@ -273,7 +295,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(db.one("SELECT content FROM context_items WHERE id='ctx'")['content'], 'Changed concurrently')
 
     def test_checkpoint_reuse(self):
-        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        job_id = self.legacy_single_job()
         claimed = worker.claim_job(('analyze',))
         observations = [{'time': 0.05, 'description': 'A figure', 'ocr_response': '<ref>OPEN</ref><box><0><0><100><100></box>', 'ocr_prompt': 'detect words'}]
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', return_value=observations), patch.object(inference_worker, 'synthesize', side_effect=RuntimeError('network error')):
@@ -300,7 +322,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(summary['context']['assessments']['visual_evidence'], 'draft')
 
     def test_older_checkpoint_is_refreshed_for_ocr(self):
-        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        job_id = self.legacy_single_job()
         with db.connect() as conn:
             conn.execute("INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) VALUES (?,?,?)", (job_id, 'c1', json.dumps([{'time': 0.05, 'description': 'Old frame'}])))
         fresh = [{'time': 0.05, 'description': 'New frame', 'ocr_response': 'OPEN', 'ocr_prompt': 'detect words'}]
@@ -345,7 +367,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(len(self.client.get('/api/cuts/c2/analysis-results').json()), 5)
 
     def test_lost_lease_prevents_result_writes(self):
-        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        job_id = self.legacy_single_job()
         claimed = worker.claim_job(('analyze',))
         def lose_lease(*args):
             with db.connect() as conn:
@@ -363,6 +385,177 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(len(times), 5)
         self.assertEqual(times[0], 2)
         self.assertEqual(times[-1], 3.999999)
+        self.assertEqual(inference_worker.sample_times(2, 4, {'frame_mode': 'uniform', 'frame_count': 1}), [2])
+        default_times = inference_worker.sample_times(2, 6.1, {'frame_mode': 'per_second'})
+        self.assertEqual(len(default_times), 5)
+        self.assertAlmostEqual(default_times[1] - default_times[0], default_times[-1] - default_times[-2])
+
+    def test_stage_monitor_records_success_failure_and_interruption(self):
+        job = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        claimed = worker.claim_job(('analyze',))
+        self.assertEqual(claimed[0], job)
+        owner = claimed[1]
+        with worker.analysis_stage(job, owner, 'c1', 'initial', 'Initial frame'):
+            stages = self.client.get('/api/cuts/c1/analysis-stages').json()
+            self.assertEqual(stages[0]['status'], 'running')
+        with self.assertRaisesRegex(ValueError, 'bad frame'):
+            with worker.analysis_stage(job, owner, 'c1', 'video', 'Video analysis'):
+                raise ValueError('bad frame')
+        stages = self.client.get('/api/cuts/c1/analysis-stages').json()
+        self.assertEqual([stage['status'] for stage in stages], ['done', 'failed'])
+        self.assertEqual(stages[1]['error'], 'bad frame')
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_job_stages(id,job_id,cut_id,stage_key,label,status,started_at,last_seen_at) VALUES ('old',?,'c1','video','Video analysis','running',10,20)", (job,))
+        with worker.analysis_stage(job, owner, 'c1', 'video', 'Video analysis'):
+            pass
+        stages = self.client.get('/api/cuts/c1/analysis-stages').json()
+        interrupted = next(stage for stage in stages if stage['id'] == 'old')
+        self.assertEqual(interrupted['status'], 'interrupted')
+        self.assertEqual(interrupted['elapsed_seconds'], 10)
+
+    def test_structured_result_revision_and_brief(self):
+        from app import structured_results
+        job = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        _, owner = worker.claim_job(('analyze',))
+        with db.connect() as conn:
+            first = structured_results.save_generated(conn, 'c1', job, owner, 'initial_frame', {'composition': 'wide'}, 'model', 'prompt', {}, {'frame_time': 0})
+        response = self.client.get('/api/cuts/c1/structured-analysis')
+        self.assertEqual(response.json()[0]['content'], {'composition': 'wide'})
+        self.assertEqual(self.client.put('/api/analysis-results/' + first, json={'title': 'Initial', 'content': 'invalid'}).status_code, 422)
+        changed = self.client.put('/api/analysis-results/' + first, json={'title': 'Initial', 'content': '{"composition":"close"}'})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        current = self.client.get('/api/cuts/c1/structured-analysis').json()
+        self.assertEqual(current[0]['content'], {'composition': 'close'})
+        self.assertEqual(current[0]['origin'], 'manual_edit')
+        self.assertEqual(len(self.client.get('/api/cuts/c1/structured-analysis?history=true').json()), 2)
+        brief = self.client.get('/api/v1/episodes/e/brief?from=1&to=1').json()
+        self.assertEqual(brief['cuts'][0]['initial_frame']['content']['composition'], 'close')
+        with db.connect() as conn:
+            second = structured_results.save_generated(conn, 'c1', job, owner, 'initial_frame', {'composition': 'new'}, 'model', 'prompt', {}, {})
+        self.assertEqual(self.client.get('/api/cuts/c1/structured-analysis').json()[0]['id'], second)
+        self.assertEqual(len(self.client.get('/api/cuts/c1/structured-analysis?history=true').json()), 3)
+
+    def test_structured_results_can_hold_long_cut_evidence(self):
+        from app import structured_results
+        job = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        _, owner = worker.claim_job(('analyze',))
+        content = {'events': 'x' * 60000}
+        with db.connect() as conn:
+            result_id = structured_results.save_generated(conn, 'c1', job, owner, 'video_analysis', content, 'test', 'prompt', {}, {})
+        response = self.client.put('/api/analysis-results/' + result_id, json={'title': 'Video', 'content': json.dumps(content)})
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_structured_frame_link_survives_human_revision(self):
+        from app import structured_results, frame_source
+        (media.episode_dir('p', 'e') / 'original.mp4').touch()
+        job = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        _, owner = worker.claim_job(('analyze',))
+        with db.connect() as conn:
+            result_id = structured_results.save_generated(conn, 'c1', job, owner, 'initial_frame', {'composition': 'wide'}, 'test', 'prompt', {}, {'cut': {'start_time': 0, 'end_time': 2}, 'frame_time': .5})
+        self.assertEqual(frame_source.result_frame_spec(result_id)['time'], .5)
+        revised = self.client.put('/api/analysis-results/' + result_id, json={'title': 'My edit', 'content': '{"composition":"close"}'}).json()
+        self.assertEqual(frame_source.result_frame_spec(revised['id'])['time'], .5)
+        brief = self.client.get('/api/v1/episodes/e/brief?from=1&to=1').json()
+        self.assertEqual(brief['cuts'][0]['initial_frame']['frame_url'], f"/api/analysis-results/{revised['id']}/frame")
+
+    def test_detached_consistency_summary_uses_snapshot_and_is_revision_safe(self):
+        from app import structured_results, consistency_summary
+        job = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        _, owner = worker.claim_job(('analyze',))
+        with db.connect() as conn:
+            for kind in ('initial_frame', 'video_analysis', 'last_frame'):
+                structured_results.save_generated(conn, 'c1', job, owner, kind, {'description': kind}, 'test', 'prompt', {}, {})
+            conn.execute("UPDATE jobs SET status='done',lease_owner=NULL,lease_until=NULL WHERE id=?", (job,))
+        response = self.client.post('/api/cuts/c1/consistency-summary')
+        self.assertEqual(response.status_code, 200, response.text)
+        summary_job = response.json()['job_id']
+        self.assertEqual(self.client.post('/api/cuts/c1/consistency-summary').status_code, 409)
+        _, owner = worker.claim_job(('consistency_summary',))
+        output = {key: key for key in consistency_summary.FIELDS}
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(consistency_summary, 'generate', return_value=(output, 'test/model')):
+            inference_worker.process_consistency_summary(summary_job, owner)
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (summary_job,))['status'], 'done')
+        result = next(item for item in self.client.get('/api/cuts/c1/structured-analysis').json() if item['type'] == 'consistency_summary')
+        self.assertEqual(result['content'], output)
+
+    def test_single_cut_pipeline_checkpoints_and_queues_summary(self):
+        from contextlib import nullcontext
+        from app import single_cut_pipeline
+        response = self.client.post('/api/cuts/c1/analyze')
+        job_id = response.json()['job_id']
+        payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,))['payload_json'])
+        self.assertEqual(payload['workflow'], 'single_cut_v2')
+        subtitles = {'samples': [{'time': 0, 'regions': [], 'readings': []}], 'events': [], 'ocr_performed': False}
+        frame = {'composition': 'wide', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'visible_characters': [], 'other_visual_details': '', 'uncertainties': ''}
+        with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), patch.object(inference_worker, 'get_model', return_value=object()), \
+             patch.object(single_cut_pipeline.subtitle_model, 'inspect_subtitles', return_value=subtitles), \
+             patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source, target, sample, *a, **kw: sample), \
+             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')), \
+             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=lambda *a, **kw: dict(frame)), \
+             patch.object(single_cut_pipeline.video_model, 'analyze_video', return_value={'windows': []}):
+            inference_worker.process(*worker.claim_job(('analyze',)))
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
+        outputs = self.client.get('/api/cuts/c1/structured-analysis').json()
+        self.assertEqual({item['type'] for item in outputs}, {'initial_frame', 'video_analysis', 'last_frame', 'subtitle_ocr'})
+        summary = db.one("SELECT * FROM jobs WHERE pipeline='consistency_summary' AND episode_id='e'")
+        self.assertEqual(summary['status'], 'queued')
+        self.assertEqual(len(json.loads(summary['payload_json'])['source_result_ids']), 4)
+        stages = self.client.get('/api/cuts/c1/analysis-stages').json()
+        self.assertEqual([stage['status'] for stage in stages], ['done'] * 4)
+
+    def test_single_cut_retry_reuses_committed_subtitle_checkpoint(self):
+        from contextlib import nullcontext
+        from app import single_cut_pipeline
+        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        subtitles = {'samples': [{'time': 0, 'regions': [], 'readings': []}], 'events': [], 'ocr_performed': False}
+        frame = {'composition': 'wide', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'visible_characters': [], 'other_visual_details': '', 'uncertainties': ''}
+        with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
+             patch.object(inference_worker, 'get_model', return_value=object()), \
+             patch.object(single_cut_pipeline.subtitle_model, 'inspect_subtitles', return_value=subtitles) as ocr, \
+             patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source, target, sample, *a, **kw: sample), \
+             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')), \
+             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=[RuntimeError('temporary frame failure'), dict(frame), dict(frame)]), \
+             patch.object(single_cut_pipeline.video_model, 'analyze_video', return_value={'windows': []}):
+            inference_worker.process(*worker.claim_job(('analyze',)))
+            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'failed')
+            retry = self.client.post(f'/api/jobs/{job_id}/retry')
+            self.assertEqual(retry.status_code, 200, retry.text)
+            retry_stages = [item for item in self.client.get('/api/cuts/c1/analysis-stages').json() if item['job_id'] == retry.json()['job_id']]
+            self.assertEqual([(item['stage_key'], item['status']) for item in retry_stages], [('subtitle_ocr', 'reused')])
+            inference_worker.process(*worker.claim_job(('analyze',)))
+            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (retry.json()['job_id'],))['status'], 'done')
+            ocr.assert_called_once()
+        ocr_results = [item for item in self.client.get('/api/cuts/c1/structured-analysis?history=true').json() if item['type'] == 'subtitle_ocr']
+        self.assertEqual(len(ocr_results), 1)
+
+    def test_single_cut_retry_reuses_saved_video_windows(self):
+        from contextlib import nullcontext
+        from app import single_cut_pipeline
+        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        subtitles = {'samples': [{'time': 0, 'regions': [], 'readings': []}], 'events': [], 'ocr_performed': False}
+        frame = {'composition': 'wide', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'visible_characters': [], 'other_visual_details': '', 'uncertainties': ''}
+        window = {'source': {'source_start': 0, 'source_end': 2}, 'analysis': {'events': []}}
+        def video(*args, load_window, save_window, **kwargs):
+            saved = load_window(0, 0, 2)
+            if saved is None:
+                save_window(0, window)
+                raise RuntimeError('interrupted after video window')
+            self.assertEqual(saved, window)
+            return {'windows': [saved]}
+        with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
+             patch.object(inference_worker, 'get_model', return_value=object()), patch.object(single_cut_pipeline.subtitle_model, 'inspect_subtitles', return_value=subtitles), \
+             patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source, target, sample, *a, **kw: sample), \
+             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')), \
+             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=lambda *a, **kw: dict(frame)), \
+             patch.object(single_cut_pipeline.video_model, 'analyze_video', side_effect=video):
+            inference_worker.process(*worker.claim_job(('analyze',)))
+            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'failed')
+            self.assertEqual(self.client.get(f'/api/jobs/{job_id}/analysis-windows').json()[0]['content'], window)
+            retry = self.client.post(f'/api/jobs/{job_id}/retry')
+            self.assertEqual(retry.status_code, 200, retry.text)
+            inference_worker.process(*worker.claim_job(('analyze',)))
+            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (retry.json()['job_id'],))['status'], 'done')
+            self.assertEqual(self.client.get(f"/api/jobs/{retry.json()['job_id']}/analysis-windows").json()[0]['content'], window)
 
     def test_openrouter_request_and_validation(self):
         fields = {key: f'{key} draft' for _, _, key in inference_worker.FIELDS}
@@ -487,7 +680,7 @@ class AnalysisTest(unittest.TestCase):
                 value = {key: {'content': 'Not established from available evidence.', 'confidence': 'unknown'} for key, _ in inference_worker.SUMMARY_TOPICS}
                 value['spoken_dialogue'] = {'content': 'Speaker A (Hero), 0.2–1s: Hello there. Words: medium; speaker: medium. Unknown speaker, 1.8–2.2s: Wait! Words: low; speaker: unknown; crosses the cut boundary.', 'confidence': 'unknown'}
             return io.BytesIO(json.dumps({'model': 'test/model', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(value)}}]}).encode())
-        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        job_id = self.legacy_single_job()
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', return_value=[{'time': 0, 'description': 'A figure'}]), patch('urllib.request.urlopen', side_effect=provider):
             inference_worker.process(*worker.claim_job(('analyze',)))
             self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
@@ -693,7 +886,7 @@ class AnalysisTest(unittest.TestCase):
                 value = {key: {'content': 'Evidence-based rationale', 'confidence': 'medium'} for key, _ in inference_worker.SUMMARY_TOPICS}
                 value['suggested_composition_frame']['frame_id'] = evidence['sampled_frames'][-1]['frame_id']
             return io.BytesIO(json.dumps({'model': 'test/model', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(value)}}]}).encode())
-        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        job_id = self.legacy_single_job()
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', return_value=observations), patch('urllib.request.urlopen', side_effect=provider):
             inference_worker.process(*worker.claim_job(('analyze',)))
             self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')

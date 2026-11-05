@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app import db, media
 from app.main import app
@@ -81,6 +82,34 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(self.client.delete('/api/jobs/j').status_code, 200)
         self.assertIsNone(db.one("SELECT job_id FROM analysis_results WHERE id='r'")['job_id'])
         self.assertEqual(self.client.get('/api/jobs/j/outputs').status_code, 404)
+
+    def test_structured_checkpoint_is_not_mistaken_for_corrupt_frame_evidence(self):
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET payload_json=? WHERE id='j'", (json.dumps({'workflow': 'single_cut_v2'}),))
+            conn.execute("UPDATE analysis_job_cuts SET evidence_json=? WHERE job_id='j'", (json.dumps({'initial_frame': 'r'}),))
+        inventory = self.inventory()
+        self.assertFalse(any('unreadable saved frame evidence' in warning for warning in inventory['warnings']))
+        output = self.client.get('/api/jobs/j/outputs').json()['evidence'][0]
+        self.assertEqual(output['checkpoint_count'], 1)
+        self.assertIsNone(output['frame_count'])
+        self.assertEqual(self.client.delete('/api/jobs/j/evidence/c').status_code, 409)
+        self.assertEqual(json.loads(db.one("SELECT evidence_json FROM analysis_job_cuts WHERE job_id='j'")['evidence_json']), {'initial_frame': 'r'})
+
+    def test_abandoned_single_cut_scratch_is_removed_only_when_idle(self):
+        from app import frame_cache
+        scratch = Path(self.tmp.name) / 'framewise-cut-analysis-old'
+        scratch.mkdir()
+        old = time.time() - 90000
+        os.utime(scratch, (old, old))
+        with patch.object(frame_cache.tempfile, 'gettempdir', return_value=self.tmp.name):
+            with db.connect() as conn:
+                conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('busy','e','analyze','running')")
+            frame_cache.clear_abandoned_temporary_files()
+            self.assertTrue(scratch.exists())
+            with db.connect() as conn:
+                conn.execute("UPDATE jobs SET status='failed' WHERE id='busy'")
+            frame_cache.clear_abandoned_temporary_files()
+            self.assertFalse(scratch.exists())
 
     def test_orphan_records_and_corrupt_evidence(self):
         import sqlite3

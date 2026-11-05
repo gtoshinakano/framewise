@@ -8,7 +8,7 @@ export function cutRunOutcome(job: Job, cutId: string) {
   const stageCut = /\bcut\s+(\d+)/i.exec(job.stage)
   const isThisCut = job.cuts.length === 1 || (stageCut !== null && cut.cut_index !== null && Number(stageCut[1]) === cut.cut_index + 1)
   const stageIsSpecific = !!job.stage && !/^(failed|complete|queued|starting|resuming|cancelled)$/i.test(job.stage)
-  if (cut.completed || job.status === 'done') return { status: 'Succeeded', step: job.pipeline === 'regen' ? 'Summary generation completed' : 'Analysis completed', error: null }
+  if (cut.completed || job.status === 'done') return { status: 'Succeeded', step: ['regen', 'consistency_summary'].includes(job.pipeline) ? 'Summary generation completed' : 'Analysis completed', error: null }
   if (job.stage === 'Cancelled') return { status: 'Cancelled', step: job.started_at ? 'Cancelled during processing' : 'Cancelled before processing', error: null }
   if (job.status === 'queued') return { status: 'Queued', step: 'Waiting to start', error: null }
   if (job.status === 'running') return { status: isThisCut ? 'Running' : 'Waiting', step: isThisCut ? job.stage : stageCut ? 'Another cut is being processed' : 'The active cut has not been recorded', error: null }

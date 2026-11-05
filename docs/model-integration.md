@@ -1,5 +1,11 @@
 # Model integration plan
 
+## Single-cut pipeline
+
+Newly queued single-cut jobs use a separate checkpointed pipeline. WeVisOne localizes subtitles in selected frames and performs OCR when transcript segments overlap; its predicted boxes are passed to the visual models as uncertain positions. A local Qwen3.5-27B Q4_K_M GGUF with its BF16 vision projector produces structured initial and final frame descriptions through an isolated ROCm llama.cpp server. Qwen3-VL-8B-Instruct analyzes silent, aspect-preserving cut windows sampled at the configured FPS. Visual jobs do not infer audio or identify a speaker from subtitles. Transcript and deduplicated subtitle OCR are combined with the visual evidence by a separately queued OpenRouter consistency summary; all outputs retain revision links.
+
+The worker processes GPU models sequentially and releases their memory between phases. `compose.inference.rocm.yml` mounts the Qwen3.5 model, matching projector, llama.cpp runtime and Qwen3-VL-8B weights read-only. The runtime and both new models must be installed before single-cut analysis can start. The existing batch and previously queued jobs retain their previous workflow. ROCm compatibility and the larger checkpoints require actual GPU inference validation before treating this path as production-ready.
+
 The requested [WeVisOne-VL paper](https://huggingface.co/papers/2610.31329) and [official implementation](https://github.com/Tencent/WeVisOne-VL) describe image-level detection, referring localization, counting, OCR, segmentation, and matting. The official repository currently shows 2B and 4B variants and a Python 3.10 installation example. Its documented device choices include CUDA, NPU, and CPU; ROCm is not explicitly documented. Framewise has a separate pinned inference worker and download scripts. A host GPU test loaded WeVisOne and confirmed that free-form requests returned bounding-box output, so Qwen3-VL-2B-Instruct supplies natural-language captions while WeVisOne supplies configurable object detections. The container deployment still requires validation.
 
 ## Intended place in the pipeline

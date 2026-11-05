@@ -87,7 +87,7 @@ def clear_expired():
 def clear_abandoned_temporary_files():
     # Don't touch worker scratch while any media, inference, or audio job is active.
     active = db.one("SELECT 1 FROM jobs WHERE status IN ('queued','running') LIMIT 1")
-    prefixes = ('framewise-preview-',) if active else ('framewise-preview-', 'framewise-boundaries-', 'framewise-analysis-')
+    prefixes = ('framewise-preview-',) if active else ('framewise-preview-', 'framewise-boundaries-', 'framewise-analysis-', 'framewise-cut-analysis-', 'framewise-short-cut-')
     for prefix in prefixes:
         for path in Path(tempfile.gettempdir()).glob(prefix + '*'):
             try:
