@@ -1,0 +1,414 @@
+{
+  "cut": {
+    "id": "18c449d0-6b86-4839-83c8-74ccfb7d60fc",
+    "start_time": 231.522542,
+    "end_time": 233.316,
+    "cut_number": 65,
+    "dialogue": [
+      {
+        "id": "05353d86-57d6-44d7-8b99-165dca5692e3",
+        "start_time": 232.28,
+        "end_time": 232.36,
+        "text": "なん",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "59762074-ca05-4c3f-96be-9031e820b069",
+        "start_time": 232.52,
+        "end_time": 232.6,
+        "text": "で",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "c79bec4f-fc92-4e1b-b48f-68c2d51c9d79",
+        "start_time": 232.6,
+        "end_time": 232.68,
+        "text": "も",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "665be0ab-a0cd-43ee-b504-7e33eadbadec",
+        "start_time": 232.76,
+        "end_time": 233.0,
+        "text": "ない",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "e1a8dd57-6742-40aa-8d3c-2c6cbb0ca18b",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut begins with Sakuta Azusagawa in a grocery store produce aisle, transitions through a video analysis showing Sakuta’s hand touching another character’s coat near fruit, and ends with Mai Sakurajima in a school interior gripping a blazer sleeve. The setting, character identities, and dialogue attribution shift dramatically, and subtitle language mismatches add uncertainty. Evidence limitations include reliance on model predictions, manual detection labels, and incomplete visual confirmation of faces and actions.",
+        "clear": "Opening frame (231.522942) shows Sakuta’s torso in a brown jacket against a grocery produce background with shallow depth of field. Video analysis first window (231.522542‑232.589) describes a close‑up of two characters’ hands near fruit, with Sakuta’s hand moving to touch another’s coat sleeve. Last frame (233.2747) shows Mai’s torso in a brown school blazer, red tie, and hand gripping the left sleeve, background neutral. Transcript timestamps (232.280‑233.000) attribute Japanese speech to Mai (SPEAKER_04). Subtitle OCR provides Portuguese text at 231.522942, 232.148583‑232.732491, and 233.2747. Manual character detections confirm Sakuta in the opening frame (ID fff94bfb‑a831‑4428‑872e‑f638c3d4f215) and Mai in the last frame (ID e8626b98‑0ce6‑4f02‑b773‑2797998226d4).",
+        "confusing": "Setting conflict: Opening and video analysis describe a grocery store produce aisle, while the last frame describes a school interior. Character action conflict: Video analysis events attribute hand movements and a close‑up of Sakuta’s face to Sakuta, but the last frame shows Mai performing a similar hand‑gripping gesture. Dialogue/subtitle mismatch: Transcript is Japanese spoken by Mai, whereas subtitle OCR is Portuguese, possibly describing a younger boy (Sakuta) thinking indecent thoughts, creating language and content inconsistency. Timestamp misalignment: Subtitle OCR events align with frame times but the text does not correspond to the Japanese transcript. Identity attribution conflict: Manual detections label Sakuta and Mai per frame, yet video analysis and transcript assign different characters to actions and speech.",
+        "human_review": "Verify the actual audio content to confirm whether the Japanese transcript accurately captures the spoken words and whether the Portuguese subtitles are a translation or a separate audio track. Review the raw video to confirm the visual setting continuity (grocery store vs. school interior) and which character appears in each segment. Resolve the character action attribution by determining which character performs the hand‑gripping gesture and delivers the transcript dialogue.",
+        "recommended_checks": "Play the source video from 231.5s to 233.5s and note the visual setting and character appearances; compare with the described grocery store and school interiors. Export the audio and run Japanese and Portuguese speech‑to‑text to verify transcript and subtitle alignment. Use the detection box IDs (fff94bfb‑a831‑4428‑872e‑f638c3d4f215 and e8626b98‑0ce6‑4f02‑b773‑2797998226d4) in a video editor to confirm which character occupies each frame and whether the hand gesture belongs to Sakuta or Mai. Review the video analysis model outputs for event timestamps to ensure they align with actual frame times and adjust if needed."
+      }
+    },
+    {
+      "id": "39fb0f57-e791-4af6-855d-16305dc85de6",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 231.522542,
+              "source_end": 232.58920866666665,
+              "width": 640,
+              "height": 360,
+              "fps": 30.0,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "A close-up shot in a grocery store setting, focusing on the arms and hands of two characters standing near a fruit display. The background shows a digital scale and a pile of mangoes. The camera remains static throughout the clip.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.0,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "A hand, belonging to Sakuta Azusagawa, enters the frame from the left and moves toward the right, reaching to touch the sleeve of the other character's brown coat.",
+                  "camera": "Apparent static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 231.522542,
+                  "episode_end_seconds": 232.522542
+                }
+              ],
+              "uncertainties": "The full identity and facial expressions of the characters are not visible, and the exact nature of the interaction is not fully clear without context. The camera is static, but the framing is tight, limiting the view to the arms and hands."
+            }
+          },
+          {
+            "source": {
+              "source_start": 232.58920866666665,
+              "source_end": 233.316,
+              "width": 640,
+              "height": 360,
+              "fps": 30.0,
+              "padded_tail": false,
+              "frame_count": 22
+            },
+            "analysis": {
+              "overview": "A close-up shot focusing on the torso and hands of two characters in brown coats. One character's hand is gripping the sleeve of the other character's coat. The camera then cuts to a close-up of the first character's face, showing a slight smile and a gaze directed downward. The background is out of focus, suggesting an outdoor setting with greenery.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.7,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "A hand is gripping the sleeve of another character's coat. The hand is positioned on the right side of the frame, with fingers curled around the fabric. The character's torso and part of their face are visible, showing a slight smile and a downward gaze.",
+                  "camera": "Apparent static close-up shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 232.58920866666665,
+                  "episode_end_seconds": 233.28920866666664
+                },
+                {
+                  "start_seconds": 0.7,
+                  "end_seconds": 0.726791,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "The camera cuts to a close-up of the character's face, showing a slight smile and a gaze directed downward. The character's eyes are visible, and the expression appears calm and slightly amused.",
+                  "camera": "Hard cut to a new close-up shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 233.28920866666664,
+                  "episode_end_seconds": 233.31599966666664
+                }
+              ],
+              "uncertainties": "The final frame of the clip may contain a hard cut to the next shot, but this is not visually confirmed within the provided frames. The character's full identity and actions beyond the visible portions are not fully supported by the visual evidence."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "56a0aee2-04af-4ef5-a62c-ecb654ad7ad6",
+      "type": "last_frame",
+      "content": {
+        "composition": "A tight close-up shot focusing on the torso and right arm of a character. The frame is dominated by the folds of a brown blazer and a cream-colored sweater vest. A red tie hangs vertically on the left side. A hand is visible on the right, gripping the sleeve of the blazer. The composition is intimate and cropped, excluding the character's head and lower body.",
+        "setting": "The background is indistinct and out of focus, appearing as a neutral, light-colored surface, likely an interior wall or hallway typical of a school setting.",
+        "lighting": "The lighting is soft and diffuse, casting gentle shadows within the folds of the clothing. There are no harsh highlights or deep shadows, suggesting an indoor environment with ambient light.",
+        "camera": "The camera is static and positioned at a close range, creating a shallow depth of field that keeps the clothing texture sharp while blurring the background.",
+        "visible_characters": [
+          {
+            "appearance": "The character is wearing a brown school blazer over a cream-colored V-neck sweater vest and a white collared shirt. A solid red tie is visible. The character has fair skin. The right hand is visible, gripping the left sleeve of the blazer.",
+            "position": "The character occupies the entire frame, with the torso centered. The right hand is positioned in the lower right quadrant.",
+            "pose": "The character's right hand is clutching the left sleeve of the blazer near the elbow. The posture suggests a gesture of nervousness or self-comfort. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "The face is not visible in this frame.",
+            "identity_evidence": "The character is identified as Mai Sakurajima based on the user-verified detection box (ID: e8626b98-0ce6-4f02-b773-2797998226d4) in the target frame. The clothing matches the reference images provided for Mai Sakurajima."
+          }
+        ],
+        "other_visual_details": "The animation style is clean with distinct outlines. The fabric of the blazer shows detailed shading to indicate folds and texture. The red tie provides a strong color contrast against the neutral tones of the uniform.",
+        "uncertainties": "The character's facial expression and specific identity are not visually confirmed within this single frame without relying on the provided detection data. The exact context of the hand gesture is ambiguous without further visual information.",
+        "frame_time": 233.2747,
+        "subtitle_regions": [
+          [
+            321.28,
+            604.8,
+            958.72,
+            695.52
+          ]
+        ]
+      }
+    },
+    {
+      "id": "eec0555a-123b-4265-b913-e70de2b1a1e3",
+      "type": "initial_frame",
+      "content": {
+        "composition": "The frame is split diagonally. The right third is dominated by the torso of a character in a brown jacket, creating a foreground element. The left two-thirds show a grocery store produce section with yellow apples in the lower left and green vegetables in the mid-ground. A digital price tag is visible in the upper left background. The composition uses a shallow depth of field, keeping the foreground character sharp while the background produce is slightly blurred.",
+        "setting": "A brightly lit grocery store or supermarket produce aisle. Shelves stocked with fresh fruit (yellow apples) and vegetables (green leafy items) are visible. A digital price display is mounted on the shelf edge.",
+        "lighting": "Bright, diffuse indoor lighting typical of a retail environment. The light source appears to be overhead, casting soft shadows and illuminating the produce and the character's clothing evenly.",
+        "camera": "A medium close-up shot, angled slightly from the side. The camera is positioned at roughly chest height relative to the character, focusing on the torso and the immediate background.",
+        "visible_characters": [
+          {
+            "appearance": "A person wearing a brown blazer or jacket over a white collared shirt. The fabric has visible folds and creases, particularly around the elbow area. The skin tone is light.",
+            "position": "Occupies the right side of the frame, from the top edge down to the bottom. Only the torso and upper arm are visible.",
+            "pose": "The character is standing. The right arm is bent at the elbow, suggesting a relaxed posture. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "Unknown. The face is not visible in this frame.",
+            "identity_evidence": "The character is identified as Sakuta Azusagawa based on the user-verified detection box (ID: fff94bfb-a831-4428-872e-f638c3d4f215) which matches the visible brown jacket and general build described in the context."
+          }
+        ],
+        "other_visual_details": "The produce in the background includes a pile of yellow apples on the left and what appears to be green lettuce or cabbage on the right. A small digital display with a black frame and white screen is visible on the shelf in the upper left. The background is out of focus, emphasizing the foreground character.",
+        "uncertainties": "The identity of the character is confirmed by the provided detection data, but visually only the torso is shown. The specific action or intent of the character is unclear from this single static frame.",
+        "frame_time": 231.522942,
+        "subtitle_regions": [
+          [
+            321.28,
+            604.0799999999999,
+            957.44,
+            691.92
+          ]
+        ]
+      }
+    },
+    {
+      "id": "acc26371-90c8-4ca2-8ef2-7f38e3d83c2d",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 231.522942,
+            "requested_time": 231.522542,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                321.28,
+                604.0799999999999,
+                957.44,
+                691.92
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Não é nada um garoto mais novo\npensa em de forma indecente.",
+                "box": [
+                  322.56,
+                  604.0799999999999,
+                  958.72,
+                  693.36
+                ]
+              }
+            ]
+          },
+          {
+            "time": 232.148583,
+            "requested_time": 232.120361,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                321.28,
+                604.8,
+                957.44,
+                694.8
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Não é nada se um garoto mais novo\npensa em mim de forma indecente.",
+                "box": [
+                  321.28,
+                  604.8,
+                  958.72,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "time": 232.732491,
+            "requested_time": 232.71818,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                322.56,
+                604.8,
+                957.44,
+                694.8
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Não é nada se um garoto mais novo\npensa em mim de forma indecente.",
+                "box": [
+                  322.56,
+                  604.8,
+                  957.44,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "time": 233.2747,
+            "requested_time": 233.315999,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                321.28,
+                604.8,
+                958.72,
+                695.52
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Não é nada se um garoto mais novo\npensa mim de forma indecente.",
+                "box": [
+                  321.28,
+                  605.52,
+                  958.72,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "Não é nada um garoto mais novo\npensa em de forma indecente.",
+            "language": "pt",
+            "first_observed": 231.522942,
+            "last_observed": 231.522942,
+            "observations": [
+              {
+                "time": 231.522942,
+                "box": [
+                  322.56,
+                  604.0799999999999,
+                  958.72,
+                  693.36
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Não é nada se um garoto mais novo\npensa em mim de forma indecente.",
+            "language": "pt",
+            "first_observed": 232.148583,
+            "last_observed": 232.732491,
+            "observations": [
+              {
+                "time": 232.148583,
+                "box": [
+                  321.28,
+                  604.8,
+                  958.72,
+                  696.24
+                ]
+              },
+              {
+                "time": 232.732491,
+                "box": [
+                  322.56,
+                  604.8,
+                  957.44,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Não é nada se um garoto mais novo\npensa mim de forma indecente.",
+            "language": "pt",
+            "first_observed": 233.2747,
+            "last_observed": 233.2747,
+            "observations": [
+              {
+                "time": 233.2747,
+                "box": [
+                  321.28,
+                  605.52,
+                  958.72,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "26a9c78f-683b-4a17-9bcf-49ec49e2f731",
+    "cut_id": "18c449d0-6b86-4839-83c8-74ccfb7d60fc",
+    "job_id": "5e218052-247e-4da0-9e47-5c7920ac79bd",
+    "cut_start": 231.522542,
+    "cut_end": 233.316,
+    "frames_json": "[{\"position\": \"first\", \"time\": 231.522942, \"image_size\": [1280, 720], \"boxes\": [[837.12, 0, 1280, 719.28]], \"raw_response\": \"<ref>person</ref><box><654><0><1000><999></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 233.2747, \"image_size\": [1280, 720], \"boxes\": [[0, 0, 1278.72, 720]], \"raw_response\": \"<ref>person</ref><box><0><0><999><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:33:57",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "fff94bfb-a831-4428-872e-f638c3d4f215",
+        "run_id": "26a9c78f-683b-4a17-9bcf-49ec49e2f731",
+        "position": "first",
+        "box_json": "[837.12, 0, 1280, 719.28]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "e8626b98-0ce6-4f02-b773-2797998226d4",
+        "run_id": "26a9c78f-683b-4a17-9bcf-49ec49e2f731",
+        "position": "last",
+        "box_json": "[0, 0, 1278.72, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      }
+    ]
+  }
+}

@@ -4,6 +4,7 @@ import unittest
 import wave
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app import db, media, worker
 from app.main import app
@@ -51,18 +52,59 @@ class BriefTest(unittest.TestCase):
             with wave.open(io.BytesIO(z.read(manifest[0]['audio']))) as w:
                 self.assertEqual(w.getnframes(), 6000)
 
+    def test_export_uses_snapshotted_first_frame(self):
+        folder = media.episode_dir('p', 'e')
+        (folder / 'original.mp4').write_bytes(b'original')
+        with db.connect() as conn:
+            conn.execute("UPDATE cuts SET first_frame_time=0.3 WHERE id='c'")
+        cut = self.client.get('/api/v1/episodes/e/brief?from=1&to=1').json()['cuts'][0]
+        self.assertEqual(cut['suggested_frame_url'], '/api/cuts/c/frame/first')
+        job = self.client.post('/api/v1/episodes/e/brief/exports?from=1&to=1').json()['job_id']
+        with db.connect() as conn:
+            conn.execute("UPDATE cuts SET first_frame_time=0.5 WHERE id='c'")
+        def extract(source, output, sample, start, end, **kwargs):
+            self.assertEqual((sample, start, end, kwargs['width']), (.3, .25, 1, 480))
+            output.write_bytes(b'first frame')
+        with patch('app.brief.media.extract_cut_frame', side_effect=extract) as frame:
+            worker.process(*worker.claim_job())
+        frame.assert_called_once()
+        status = self.client.get('/api/v1/brief-exports/' + job).json()
+        import io
+        with zipfile.ZipFile(io.BytesIO(self.client.get(status['download_url']).content)) as z:
+            manifest = json.loads(z.read('manifest.json'))
+            self.assertEqual(z.read(manifest[0]['frame']), b'first frame')
+
+    def test_previously_queued_export_keeps_its_legacy_frame(self):
+        folder = media.episode_dir('p', 'e') / 'analysis'
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'frame.jpg').write_bytes(b'legacy frame')
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin) VALUES ('frame','c','first_frame','Frame at 0.750s','frame','model')")
+        from app.brief import make_brief
+        brief = make_brief('e', 1, 1)
+        brief['cuts'][0]['suggested_frame_url'] = '/api/analysis-results/frame/frame'
+        with db.connect() as conn:
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('00000000-0000-0000-0000-000000000001','e','brief_export',?)", (json.dumps({'brief': brief}),))
+        worker.process(*worker.claim_job())
+        status = self.client.get('/api/v1/brief-exports/00000000-0000-0000-0000-000000000001').json()
+        import io
+        with zipfile.ZipFile(io.BytesIO(self.client.get(status['download_url']).content)) as z:
+            manifest = json.loads(z.read('manifest.json'))
+            self.assertEqual(z.read(manifest[0]['frame']), b'legacy frame')
+
     def test_structured_sections_and_frame_link(self):
         folder = media.episode_dir('p', 'e') / 'analysis'
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'frame.jpg').write_bytes(b'jpeg')
+        (folder.parent / 'original.mp4').write_bytes(b'original')
         sections = {'main_characters': {'content': 'A person in a coat', 'confidence': 'medium'},
                     'actions': {'content': '1. The person turns.', 'confidence': 'low'},
                     'suggested_composition_frame': {'content': 'A useful view', 'confidence': 'high', 'frame_id': 'frame'}}
         with db.connect() as conn:
-            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,context_json) VALUES ('frame','c','first_frame','Frame at 0.250s','Frame','model','{}')")
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,context_json) VALUES ('frame','c','first_frame','Frame at 0.750s','Frame','model','{}')")
             conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,context_json) VALUES ('s','c','cut_description','Cut summary','Summary','model',?)", (json.dumps({'brief_sections': sections}),))
         body = self.client.get('/api/v1/episodes/e/brief?from=1&to=1').json()['cuts'][0]
-        self.assertEqual(body['suggested_frame_url'], '/api/analysis-results/frame/frame')
+        self.assertEqual(body['suggested_frame_url'], '/api/cuts/c/frame/first')
         self.assertEqual(body['visible_characters']['main']['content'], 'A person in a coat')
         self.assertEqual(body['action_beats']['confidence'], 'low')
         schema = self.client.get('/openapi.json').json()

@@ -15,14 +15,14 @@ from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import db, media, worker, storage, frame_source, frame_cache
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, Transcript, VoiceSample, router as external_router
-from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM
+from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_GB", "40")) * 1024 ** 3
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
@@ -32,6 +32,8 @@ DEFAULT_SETTINGS = {"proxy_width": 960, "proxy_crf": 28, "proxy_preset": "veryfa
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init_db()
+    from .composition_brief import register_projection
+    register_projection()
     worker.start_worker()
     frame_cache.clear_abandoned_temporary_files()
     async def clear_cache_periodically():
@@ -49,6 +51,12 @@ async def lifespan(_app: FastAPI):
 INTEGRATION_GUIDE = (Path(__file__).parent / "integration-guide.md").read_text(encoding="utf-8")
 app = FastAPI(title="Framewise API", version="1.0.0", description=INTEGRATION_GUIDE, lifespan=lifespan,
               docs_url=None, redoc_url=None)
+from .composition_brief import CompositionError
+
+@app.exception_handler(CompositionError)
+async def composition_error_handler(_request, exc):
+    return JSONResponse(status_code=exc.status_code, content={'detail':exc.detail})
+
 app.include_router(storage.router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
@@ -93,15 +101,27 @@ class CutDetectionInput(BaseModel):
     scene_threshold: float = Field(ge=0.05, le=0.9, allow_inf_nan=False)
 
 
+class CharacterDetectionLabelInput(BaseModel):
+    character_context_id: str | None = None
+
+
+class CharacterDetectionBoxInput(BaseModel):
+    position: Literal['first', 'last']
+    box: tuple[float, float, float, float]
+
+
 class AnalysisConfig(BaseModel):
     frame_mode: Literal["per_second", "endpoints", "uniform"] = "per_second"
     frame_count: int = Field(default=1, ge=1)
     video_width: int = Field(default=640, ge=128, le=1920, multiple_of=2)
     video_height: int = Field(default=360, ge=128, le=1080, multiple_of=2)
-    video_fps: float = Field(default=4, ge=0.25, le=30, allow_inf_nan=False)
+    video_fps: float = Field(default=4, gt=0, le=30, allow_inf_nan=False)
+    video_frame_budget: int | None = Field(default=None, ge=2, le=60)
     context_ids: list[str] = Field(default_factory=list, max_length=200)
     detection_queries: list[Annotated[str, Field(min_length=1, max_length=100, pattern=r".*\S.*")]] = Field(default_factory=lambda: ["person", "clothing", "animal", "vehicle", "chair", "table", "subtitles"], min_length=1, max_length=20)
     additional_context: str = Field(default="", max_length=20000)
+    text_provider: Literal["openrouter", "local"] = "openrouter"
+    local_thinking: bool = False
     openrouter_model: str = Field(default="openrouter/free", min_length=1, max_length=200, pattern=r"^[a-zA-Z0-9_./:-]+$")
 
 
@@ -244,8 +264,11 @@ def episode_response(episode_id: str):
     for job in episode["jobs"]:
         payload = json_object_or_empty(job.pop("payload_json"))
         job['workflow'] = payload.get('workflow') if isinstance(payload.get('workflow'), str) else None
+        job['stages'] = payload.get('stages') if isinstance(payload.get('stages'), list) else None
         if job["pipeline"] == "analyze":
             items = payload.get("cuts", [])
+        elif job["pipeline"] == "character_detect":
+            items = [{"cut_id": payload.get("cut_id"), "context": {"cut": payload.get("cut", {})}}]
         elif job["pipeline"] in ("regen", "consistency_summary"):
             items = [{"cut_id": payload.get("cut_id"), "context": payload.get("context", {})}]
         else:
@@ -919,7 +942,14 @@ def analysis_config_for_cut(cut_id: str):
     if not cut:
         raise HTTPException(404, "Cut not found")
     saved = db.one("SELECT config_json FROM cut_analysis_configs WHERE cut_id=?", (cut_id,))
-    return cut, AnalysisConfig.model_validate_json(saved["config_json"]) if saved else AnalysisConfig()
+    duration = max(0.000001, cut["end_time"] - cut["start_time"])
+    if saved:
+        config = AnalysisConfig.model_validate_json(saved["config_json"])
+        if config.video_frame_budget is not None:
+            config.video_fps = min(30.0, 56.0 / duration)
+    else:
+        config = AnalysisConfig(video_fps=min(30.0, 56.0 / duration), video_frame_budget=60)
+    return cut, config.model_copy(update=text_generation_settings())
 
 
 def selected_analysis_context(cut_id: str, config: AnalysisConfig):
@@ -927,9 +957,205 @@ def selected_analysis_context(cut_id: str, config: AnalysisConfig):
     valid = {item["id"] for item in context["context_items"]}
     if not set(config.context_ids).issubset(valid):
         raise HTTPException(400, "One or more selected context items no longer apply to this cut")
-    context["context_items"] = [item for item in context["context_items"] if item["id"] in config.context_ids]
+    detections = get_character_detections(cut_id)
+    detected_ids = {d['character_context_id'] for d in detections['detections'] if d['character_context_id']} if detections and not detections['stale'] else set()
+    context["context_items"] = [item for item in context["context_items"] if item["id"] in config.context_ids or (item['kind'] == 'character' and item['id'] in detected_ids)]
     context["additional_context"] = config.additional_context
+    if detections and not detections['stale']:
+        context['character_detections'] = {'run_id': detections['id'], 'model_id': detections['model_id'], 'model_revision': detections['model_revision'],
+            'frames': [{'position': frame['position'], 'time': frame['time'], 'image_size': frame['image_size']} for frame in detections['frames']],
+            'detections': [{'id': d['id'], 'position': d['position'], 'box': d['box'], 'character_context_id': d['character_context_id'],
+                            'character_name': d['character_name'], 'label_source': d['label_source'], 'match_reason': d['match_reason'], 'match_model_id': d['match_model_id'], 'match_model_revision': d['match_model_revision']} for d in detections['detections']]}
     return context
+
+
+@app.post('/api/cuts/{cut_id}/character-detection')
+def queue_character_detection(cut_id: str):
+    """Queue person localization for both cut boundary frames."""
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        cut = conn.execute('SELECT * FROM cuts WHERE id=?', (cut_id,)).fetchone()
+        if not cut or not cut['active']:
+            raise HTTPException(404, 'Active cut not found')
+        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (cut['episode_id'],)).fetchone():
+            raise HTTPException(409, 'Wait for the current episode job to finish')
+        job_id = str(uuid.uuid4())
+        from . import character_detection
+        episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (cut['episode_id'],)).fetchone()
+        payload = {'cut_id': cut_id, 'cut': dict(cut), 'references': character_detection.reference_snapshots(conn, episode['project_id'])}
+        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut['episode_id'], 'character_detect', json.dumps(payload)))
+        worker.sync_episode_status(conn, cut['episode_id'])
+    return {'job_id': job_id}
+
+
+@app.post('/api/episodes/{episode_id}/character-detection')
+def queue_missing_character_detections(episode_id: str):
+    # Each cut uses the existing leased worker and its own retryable job.
+    from . import character_detection
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()
+        if not episode:
+            raise HTTPException(404, 'Episode not found')
+        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline!='character_detect' AND status IN ('queued','running')", (episode_id,)).fetchone():
+            raise HTTPException(409, 'Wait for the current episode job to finish')
+        cuts = conn.execute('''SELECT c.* FROM cuts c WHERE c.episode_id=? AND c.active=1 AND c.analysis_enabled=1
+            AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.episode_id=c.episode_id AND j.pipeline='character_detect'
+                AND j.status IN ('queued','running') AND json_extract(j.payload_json,'$.cut_id')=c.id)
+            AND NOT EXISTS (SELECT 1 FROM character_detection_runs r LEFT JOIN jobs j ON j.id=r.job_id
+                WHERE r.id=(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id ORDER BY r2.rowid DESC LIMIT 1)
+                AND r.cut_start=c.start_time AND r.cut_end=c.end_time AND (r.job_id IS NULL OR j.status='done'))
+            ORDER BY c.cut_index''', (episode_id,)).fetchall()
+        references = character_detection.reference_snapshots(conn, episode['project_id']) if cuts else []
+        job_ids = []
+        for cut in cuts:
+            job_id = str(uuid.uuid4())
+            payload = {'cut_id': cut['id'], 'cut': dict(cut), 'references': references}
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, 'character_detect', json.dumps(payload)))
+            job_ids.append(job_id)
+        if job_ids:
+            worker.sync_episode_status(conn, episode_id)
+    return {'queued': len(job_ids), 'job_ids': job_ids}
+
+
+@app.get('/api/cuts/{cut_id}/character-detections')
+def get_character_detections(cut_id: str):
+    cut = db.one('SELECT * FROM cuts WHERE id=?', (cut_id,))
+    if not cut:
+        raise HTTPException(404, 'Cut not found')
+    run = db.one('SELECT * FROM character_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1', (cut_id,))
+    if not run:
+        return None
+    run['frames'] = json.loads(run.pop('frames_json'))
+    run['stale'] = run['cut_start'] != cut['start_time'] or run['cut_end'] != cut['end_time']
+    boxes = db.all_rows('''SELECT d.*,c.title AS character_name,EXISTS(SELECT 1 FROM character_image_references r WHERE r.detection_id=d.id) AS is_reference
+                           FROM character_detections d LEFT JOIN context_items c ON c.id=d.character_context_id WHERE d.run_id=? ORDER BY d.rowid''', (run['id'],))
+    for box in boxes:
+        box['box'] = json.loads(box.pop('box_json'))
+        box['is_reference'] = bool(box['is_reference'])
+    run['detections'] = boxes
+    return run
+
+
+@app.put('/api/character-detections/{detection_id}')
+def label_character_detection(detection_id: str, body: CharacterDetectionLabelInput):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('''SELECT d.id,e.project_id FROM character_detections d
+                              JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id
+                              JOIN episodes e ON e.id=c.episode_id WHERE d.id=?''', (detection_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Detection not found')
+        if body.character_context_id and not conn.execute("SELECT 1 FROM context_items WHERE id=? AND project_id=? AND kind='character'", (body.character_context_id, row['project_id'])).fetchone():
+            raise HTTPException(400, 'Choose a character from this project')
+        if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
+            raise HTTPException(409, 'Remove the saved reference before changing this label')
+        conn.execute("UPDATE character_detections SET character_context_id=?,label_source=?,match_reason=NULL,match_model_id=NULL,match_model_revision=NULL WHERE id=?", (body.character_context_id, 'manual' if body.character_context_id else None, detection_id))
+    return {'ok': True}
+
+
+@app.delete('/api/character-detections/{detection_id}')
+def delete_character_detection(detection_id: str):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
+            raise HTTPException(409, 'Remove the saved reference before deleting this detection')
+        if not conn.execute('DELETE FROM character_detections WHERE id=?', (detection_id,)).rowcount:
+            raise HTTPException(404, 'Detection not found')
+    return {'ok': True}
+
+
+@app.post('/api/character-detections/{detection_id}/reference')
+def save_character_reference(detection_id: str):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        detection = conn.execute('SELECT character_context_id FROM character_detections WHERE id=?', (detection_id,)).fetchone()
+        if not detection:
+            raise HTTPException(404, 'Detection not found')
+        if not detection['character_context_id']:
+            raise HTTPException(400, 'Assign a character before saving a reference')
+        ref = conn.execute('SELECT id FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone()
+        if ref:
+            return {'id': ref['id']}
+        ref_id = str(uuid.uuid4())
+        conn.execute('INSERT INTO character_image_references(id,character_context_id,detection_id) VALUES (?,?,?)', (ref_id, detection['character_context_id'], detection_id))
+        conn.execute("UPDATE character_detections SET label_source='manual' WHERE id=?", (detection_id,))
+    return {'id': ref_id}
+
+
+@app.delete('/api/character-detections/{detection_id}/reference')
+def delete_character_reference(detection_id: str):
+    with db.connect() as conn:
+        if not conn.execute('DELETE FROM character_image_references WHERE detection_id=?', (detection_id,)).rowcount:
+            raise HTTPException(404, 'Reference not found')
+    return {'ok': True}
+
+
+@app.get('/api/jobs/{job_id}/character-detection-status')
+def character_detection_status(job_id: str):
+    job = db.one("SELECT id,status,stage,error FROM jobs WHERE id=? AND pipeline='character_detect'", (job_id,))
+    if not job:
+        raise HTTPException(404, 'Character detection job not found')
+    return job
+
+
+@app.get('/api/character-detection-runs/{run_id}/frame/{position}')
+async def character_detection_frame(run_id: str, position: Literal['first', 'last']):
+    run = db.one('''SELECT r.*,e.id AS episode_id,e.project_id,e.original_ext FROM character_detection_runs r
+                    JOIN cuts c ON c.id=r.cut_id JOIN episodes e ON e.id=c.episode_id WHERE r.id=?''', (run_id,))
+    if not run:
+        raise HTTPException(404, 'Detection run not found')
+    frames = json.loads(run['frames_json'])
+    frame = next((frame for frame in frames if frame['position'] == position), None)
+    source = media.episode_dir(run['project_id'], run['episode_id']) / f"original{run['original_ext']}"
+    if not frame or not source.is_file():
+        raise HTTPException(404, 'Frame unavailable')
+    try:
+        image = await frame_cache.get({'source': source, 'time': frame['time'], 'start': run['cut_start'], 'end': run['cut_end'], 'width': 1280, 'last': False, 'seek_tolerance': .000002})
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return Response(content=image, media_type='image/jpeg')
+
+
+@app.get('/api/projects/{project_id}/character-references')
+def list_character_references(project_id: str):
+    require_project(project_id)
+    rows = db.all_rows('''SELECT ref.id,ref.character_context_id,ci.title AS character_name,d.id AS detection_id,d.position,d.box_json,
+                                 r.id AS run_id,r.frames_json FROM character_image_references ref
+                           JOIN context_items ci ON ci.id=ref.character_context_id JOIN character_detections d ON d.id=ref.detection_id
+                           JOIN character_detection_runs r ON r.id=d.run_id WHERE ci.project_id=? AND ci.kind='character' ORDER BY ci.title,ref.created_at DESC''', (project_id,))
+    for row in rows:
+        frame = next((frame for frame in json.loads(row.pop('frames_json')) if frame['position'] == row['position']), None)
+        row['image_size'] = frame['image_size'] if frame else None
+        row['box'] = json.loads(row.pop('box_json'))
+    return rows
+
+
+@app.delete('/api/character-references/{reference_id}')
+def delete_character_reference_by_id(reference_id: str):
+    with db.connect() as conn:
+        if not conn.execute('DELETE FROM character_image_references WHERE id=?', (reference_id,)).rowcount:
+            raise HTTPException(404, 'Reference not found')
+    return {'ok': True}
+
+
+@app.post('/api/character-detection-runs/{run_id}/boxes')
+def add_character_detection_box(run_id: str, body: CharacterDetectionBoxInput):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        run = conn.execute('SELECT * FROM character_detection_runs WHERE id=?', (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(404, 'Detection run not found')
+        frame = next((f for f in json.loads(run['frames_json']) if f['position'] == body.position), None)
+        if not frame:
+            raise HTTPException(400, 'Frame not found')
+        x1, y1, x2, y2 = body.box
+        width, height = frame['image_size']
+        if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+            raise HTTPException(400, 'Box must fit inside the frame')
+        box_id = str(uuid.uuid4())
+        conn.execute('INSERT INTO character_detections(id,run_id,position,box_json) VALUES (?,?,?,?)', (box_id, run_id, body.position, json.dumps(body.box)))
+    return {'id': box_id}
 
 
 @app.get("/api/cuts/{cut_id}/analysis-config")
@@ -957,6 +1183,39 @@ def get_cut_analysis_stages(cut_id: str):
     return rows
 
 
+@app.get('/api/jobs/{job_id}/cuts/{cut_id}/run-details')
+def get_cut_run_details(job_id: str, cut_id: str):
+    """Return saved run inputs and outputs for one cut, including reused checkpoints."""
+    job = db.one('SELECT id,pipeline,status,error,payload_json FROM jobs WHERE id=?', (job_id,))
+    if not job:
+        raise HTTPException(404, 'Run not found')
+    payload = json_object_or_empty(job['payload_json'])
+    if job['pipeline'] == 'analyze':
+        run_input = next((item for item in payload.get('cuts', []) if isinstance(item, dict) and item.get('cut_id') == cut_id), None)
+    else:
+        run_input = payload if payload.get('cut_id') == cut_id and job['pipeline'] in ('regen', 'consistency_summary') else None
+    if run_input is None:
+        raise HTTPException(404, 'Cut not found in this run')
+    checkpoint = db.one('SELECT evidence_json FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job_id, cut_id))
+    saved = json_object_or_empty(checkpoint['evidence_json']) if checkpoint else {}
+    checkpoint_ids = [value for value in saved.values() if isinstance(value, str)]
+    with db.connect() as conn:
+        rows = [dict(row) for row in conn.execute('SELECT * FROM analysis_results WHERE job_id=? AND cut_id=? ORDER BY rowid', (job_id, cut_id))]
+        seen = {row['id'] for row in rows}
+        for result_id in checkpoint_ids:
+            if result_id not in seen:
+                row = conn.execute('SELECT * FROM analysis_results WHERE id=? AND cut_id=?', (result_id, cut_id)).fetchone()
+                if row:
+                    rows.append(dict(row))
+                    seen.add(result_id)
+        windows = [dict(row) for row in conn.execute('SELECT window_index,start_time,end_time,model_revision,content_json FROM analysis_video_windows WHERE job_id=? AND cut_id=? ORDER BY window_index', (job_id, cut_id))]
+        rejected = [dict(row) for row in conn.execute('SELECT window_index,start_time,end_time,error,response FROM rejected_video_responses WHERE job_id=? AND cut_id=? ORDER BY id', (job_id, cut_id))]
+    for row in windows:
+        row['content'] = json_object_or_empty(row.pop('content_json'))
+    return {'pipeline': job['pipeline'], 'status': job['status'], 'error': job['error'], 'input': run_input,
+            'results': [serialize_result(row) for row in rows], 'video_windows': windows, 'rejected_responses': rejected}
+
+
 @app.get('/api/jobs/{job_id}/analysis-windows')
 def get_analysis_windows(job_id: str):
     """Return saved video-window analyses and source metadata for a run."""
@@ -977,7 +1236,10 @@ def put_cut_analysis_config(cut_id: str, config: AnalysisConfig):
     return config
 
 
-def enqueue_analysis(episode_id: str, cut_id: str | None = None):
+VISUAL_STAGES = ('subtitle_ocr', 'initial_frame', 'video_analysis', 'last_frame')
+
+
+def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[str] | None = None):
     from . import structured_results
     job_id = str(uuid.uuid4())
     try:
@@ -985,8 +1247,8 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
             conn.execute("BEGIN IMMEDIATE")
             if not conn.execute("SELECT 1 FROM episodes WHERE id=?", (episode_id,)).fetchone():
                 raise HTTPException(404, "Episode not found")
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (episode_id,)).fetchone():
-                raise HTTPException(409, "Wait for media preparation or cut detection to finish")
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
+                raise HTTPException(409, "Wait for media preparation or detection to finish")
             if cut_id is None:
                 cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 ORDER BY cut_index", (episode_id,)).fetchall()
                 if not cuts:
@@ -995,6 +1257,12 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
                 cut = conn.execute("SELECT id FROM cuts WHERE id=? AND episode_id=? AND active=1 AND analysis_enabled=1", (cut_id, episode_id)).fetchone()
                 if not cut:
                     raise HTTPException(409, "The cut is archived or disabled for analysis")
+                active_jobs = conn.execute("SELECT j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running') AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (episode_id, cut_id)).fetchall()
+                for active_job in active_jobs:
+                    active_payload = json_object_or_empty(active_job['payload_json'])
+                    active_stages = active_payload.get('stages') if active_payload.get('workflow') == 'single_cut_v2' else None
+                    if set(stages or VISUAL_STAGES) & set(active_stages or VISUAL_STAGES):
+                        raise HTTPException(409, 'An overlapping visual analysis stage is already queued or running for this cut')
                 if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='consistency_summary' AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?", (episode_id, cut_id)).fetchone():
                     raise HTTPException(409, 'Wait for the existing consistency summary before queuing this cut')
                 cuts = [cut]
@@ -1005,16 +1273,110 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None):
             for cut in cuts:
                 _, config = analysis_config_for_cut(cut["id"])
                 context = selected_analysis_context(cut["id"], config)
+                # Queueing an individual cut confirms the displayed named boxes.
+                # Keep detector provenance; batch queueing does not imply review.
+                if cut_id is not None and context.get('character_detections'):
+                    context['character_detections']['labels_confirmed_by_queue'] = True
                 context["current_results"] = [dict(row) for row in conn.execute("SELECT kind,title,content,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut["id"],))]
                 item = {"cut_id": cut["id"], "config": config.model_dump(), "context": context}
                 if cut_id is not None:
+                    from . import character_detection
+                    labeled = {d['character_context_id'] for d in context.get('character_detections', {}).get('detections', []) if d['character_context_id']}
+                    labeled.update(entry['id'] for entry in context['context_items'] if entry['kind'] == 'character')
+                    project_id = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()['project_id']
+                    item['character_references'] = character_detection.select_analysis_references(character_detection.reference_snapshots(conn, project_id), labeled)
                     item['base_result_ids'] = {result['type']: result['id'] for result in structured_results.list_results(cut['id'])}
+                    if stages and 'subtitle_ocr' not in stages:
+                        subtitle_id = item['base_result_ids'].get('subtitle_ocr')
+                        row = conn.execute('SELECT content,context_json FROM analysis_results WHERE id=?', (subtitle_id,)).fetchone() if subtitle_id else None
+                        if row:
+                            source_cut = json_object_or_empty(row['context_json']).get('cut', {})
+                            subtitle_data = json_object_or_empty(row['content'])
+                            if (isinstance(source_cut, dict) and source_cut.get('start_time') == context['cut']['start_time'] and source_cut.get('end_time') == context['cut']['end_time'] and isinstance(subtitle_data.get('samples'), list)):
+                                item['subtitle_input'] = {'result_id': subtitle_id, 'content': subtitle_data}
                 inputs.append(item)
-            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs, **({'workflow': 'single_cut_v2'} if cut_id is not None else {})})))
+            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs, **({'workflow': 'single_cut_v2', 'auto_consistency': False} if cut_id is not None else {}), **({'stages': stages} if stages else {})})))
             worker.sync_episode_status(conn, episode_id)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc
     return {"job_id": job_id}
+
+
+
+@app.post('/api/episodes/{episode_id}/visual-analysis')
+def queue_episode_visual_analysis(episode_id: str):
+    """Queue one restart-safe visual-only job for each enabled active cut."""
+    from . import character_detection, structured_results
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()
+        if not episode:
+            raise HTTPException(404, 'Episode not found')
+        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
+            raise HTTPException(409, 'Wait for media preparation or detection to finish')
+        cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 ORDER BY cut_index", (episode_id,)).fetchall()
+        references = character_detection.reference_snapshots(conn, episode['project_id'])
+        job_ids = []
+        for cut in cuts:
+            cut_id = cut['id']
+            if conn.execute("SELECT 1 FROM jobs j WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running') AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (episode_id, cut_id)).fetchone():
+                continue
+            _, config = analysis_config_for_cut(cut_id)
+            context = selected_analysis_context(cut_id, config)
+            context['current_results'] = [dict(row) for row in conn.execute('SELECT kind,title,content,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid', (cut_id,))]
+            labeled = {d['character_context_id'] for d in context.get('character_detections', {}).get('detections', []) if d['character_context_id']}
+            labeled.update(entry['id'] for entry in context['context_items'] if entry['kind'] == 'character')
+            item = {'cut_id': cut_id, 'config': config.model_dump(), 'context': context,
+                    'character_references': character_detection.select_analysis_references(references, labeled),
+                    'base_result_ids': {result['type']: result['id'] for result in structured_results.list_results(cut_id)}}
+            job_id = str(uuid.uuid4())
+            payload = {'cuts': [item], 'workflow': 'single_cut_v2', 'auto_consistency': False}
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'analyze',?)", (job_id, episode_id, json.dumps(payload, ensure_ascii=False)))
+            job_ids.append(job_id)
+        if job_ids:
+            worker.sync_episode_status(conn, episode_id)
+    return {'queued': len(job_ids), 'job_ids': job_ids}
+
+
+class BatchTextInput(BaseModel):
+    text_provider: Literal['local', 'openrouter'] = 'openrouter'
+    local_thinking: bool = False
+    openrouter_model: str = Field(default='openrouter/free', min_length=1, max_length=200, pattern=r'^[a-zA-Z0-9_./:-]+$')
+
+
+@app.post('/api/episodes/{episode_id}/text-processing')
+def queue_episode_text_processing(episode_id: str, body: BatchTextInput):
+    """Queue consistency followed by a dependent production brief for each prepared cut."""
+    from . import structured_results, summary_queue
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not conn.execute('SELECT id FROM episodes WHERE id=?', (episode_id,)).fetchone():
+            raise HTTPException(404, 'Episode not found')
+        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (episode_id,)).fetchone():
+            raise HTTPException(409, 'Wait for media preparation or detection to finish')
+        cuts = conn.execute('SELECT * FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 ORDER BY cut_index', (episode_id,)).fetchall()
+        job_ids, skipped = [], 0
+        for cut in cuts:
+            cut_id = cut['id']
+            if conn.execute("SELECT 1 FROM jobs j WHERE j.episode_id=? AND j.status IN ('queued','running') AND j.pipeline IN ('analyze','regen','consistency_summary') AND (json_extract(j.payload_json,'$.cut_id')=? OR EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?))", (episode_id, cut_id, cut_id)).fetchone():
+                skipped += 1; continue
+            _, config = analysis_config_for_cut(cut_id)
+            config = config.model_copy(update={'text_provider': body.text_provider, 'local_thinking': body.local_thinking, 'openrouter_model': body.openrouter_model})
+            context = selected_analysis_context(cut_id, config)
+            results = structured_results.list_results(cut_id)
+            try:
+                consistency = summary_queue.payload_for(cut_id, config.model_dump(), context, results)
+            except ValueError:
+                skipped += 1; continue
+            brief = summary_snapshot(conn, cut, config, 'regenerate', '')
+            first = summary_queue.insert(conn, episode_id, consistency)
+            brief['depends_on_consistency'] = first
+            second = str(uuid.uuid4())
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'regen',?)", (second, episode_id, json.dumps(brief, ensure_ascii=False)))
+            job_ids.extend((first, second))
+        if job_ids:
+            worker.sync_episode_status(conn, episode_id)
+    return {'cuts_queued': len(job_ids) // 2, 'skipped': skipped, 'job_ids': job_ids}
 
 
 def summary_snapshot(conn, cut, config, mode, instruction, current_prompt=None):
@@ -1042,8 +1404,9 @@ def summary_snapshot(conn, cut, config, mode, instruction, current_prompt=None):
                 pass
             if cut["start_time"] <= timestamp < cut["end_time"]:
                 sampled_frames.append({"frame_id": row["id"], "time": timestamp, "description": row["content"]})
-    payload = {"result_type": "summary", "cut_id": cut_id, "mode": mode, "instruction": instruction.strip(), "current_prompt": current if mode == "edit" else "",
-               "model": config.openrouter_model, "base_id": summary["id"] if summary else None, "results": results, "sampled_frames": sampled_frames, "context": selected_analysis_context(cut_id, config)}
+    saved_instructions = conn.execute("SELECT content FROM cut_brief_instructions WHERE cut_id=?", (cut_id,)).fetchone()
+    payload = {"production_brief": True, "human_instructions": saved_instructions["content"] if saved_instructions else "", "result_type": "summary", "cut_id": cut_id, "mode": mode, "instruction": instruction.strip(), "current_prompt": current if mode == "edit" else "",
+               "model": config.openrouter_model, "text_provider": config.text_provider, "local_thinking": config.local_thinking, "base_id": summary["id"] if summary else None, "results": results, "sampled_frames": sampled_frames, "context": selected_analysis_context(cut_id, config)}
     return payload
 
 
@@ -1073,7 +1436,7 @@ def summary_request_preview(cut_id: str, source: Literal["current", "failed", "f
     with db.connect() as conn:
         payload = summary_snapshot(conn, cut, config, "regenerate", "")
         request_input = {"mode": "regenerate", "instruction": "", "current_summary": "", "context": payload["context"],
-                         "current_results": payload["results"], "sampled_frames": payload["sampled_frames"]}
+                         "current_results": payload["results"], "sampled_frames": payload["sampled_frames"], "human_instructions": payload["human_instructions"]}
         model = payload["model"]
         source_job = None
         previous_request = None
@@ -1112,14 +1475,14 @@ def summary_request_preview(cut_id: str, source: Literal["current", "failed", "f
             previous_request = old.get('request_override')
             if not previous_request:
                 available = [frame for frame in old.get('sampled_frames', []) if isinstance(frame, dict) and isinstance(frame.get('frame_id'), str) and frame_source.result_frame_spec(frame['frame_id'], conn)]
-                previous_request = {"model": old.get('model', model), "system": SUMMARY_TEXT_SYSTEM,
-                                    "input": {"mode": old.get('mode'), "instruction": old.get('instruction'), "current_summary": old.get('current_prompt'), "context": old.get('context'), "current_results": old.get('results'), "sampled_frames": available}}
+                previous_request = {"model": old.get('model', model), "system": PRODUCTION_BRIEF_SYSTEM if old.get('production_brief') else SUMMARY_TEXT_SYSTEM,
+                                    "input": {"mode": old.get('mode'), "instruction": old.get('instruction'), "current_summary": old.get('current_prompt'), "context": old.get('context'), "current_results": old.get('results'), "sampled_frames": available, **({'human_instructions': old.get('human_instructions', '')} if old.get('production_brief') else {})}}
                 source_job['reconstructed'] = True
     if source_job and source_job['kind'] == 'analysis':
         request = {"model": model, "system": SYSTEM_PROMPT, "summary_system": SUMMARY_SYSTEM,
                    "input": {"context": request_input["context"], "sampled_frames": request_input["sampled_frames"]}}
     else:
-        request = {"model": model, "system": SUMMARY_TEXT_SYSTEM, "input": request_input}
+        request = {"model": model, "system": PRODUCTION_BRIEF_SYSTEM, "input": request_input}
     if source_job and previous_request:
         try:
             request = validate_summary_request(previous_request, full_analysis=source_job['kind'] == 'analysis')
@@ -1133,7 +1496,7 @@ def summary_request_preview(cut_id: str, source: Literal["current", "failed", "f
 
 @app.post("/api/cuts/{cut_id}/retry-analysis-request")
 def retry_analysis_request(cut_id: str, body: AnalysisRequestRetry):
-    cut, _ = analysis_config_for_cut(cut_id)
+    cut, current_config = analysis_config_for_cut(cut_id)
     edited = validate_summary_request(body.request_override, full_analysis=True)
     job_id = str(uuid.uuid4())
     with db.connect() as conn:
@@ -1142,6 +1505,8 @@ def retry_analysis_request(cut_id: str, body: AnalysisRequestRetry):
             raise HTTPException(409, "The cut is archived or disabled for analysis")
         if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (cut['episode_id'],)).fetchone():
             raise HTTPException(409, "Wait for media preparation or cut detection to finish")
+        if conn.execute("SELECT 1 FROM jobs j WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running') AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (cut['episode_id'], cut_id)).fetchone():
+            raise HTTPException(409, 'An analysis for this cut is already queued or running')
         old = conn.execute("SELECT * FROM jobs WHERE id=? AND episode_id=? AND pipeline='analyze' AND status='failed'", (body.source_job_id, cut['episode_id'])).fetchone()
         saved = conn.execute("SELECT evidence_json,completed FROM analysis_job_cuts WHERE job_id=? AND cut_id=?", (body.source_job_id, cut_id)).fetchone()
         if not old or not saved or saved['completed']:
@@ -1161,7 +1526,8 @@ def retry_analysis_request(cut_id: str, body: AnalysisRequestRetry):
         if not isinstance(evidence, list) or not evidence:
             raise HTTPException(409, "The saved frame evidence is unavailable")
         item['request_override'] = edited
-        conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (job_id, cut['episode_id'], 'analyze', json.dumps({'cuts': [item]}), old['id']))
+        item['config'] = {**item.get('config', {}), 'text_provider': current_config.text_provider, 'local_thinking': current_config.local_thinking}
+        conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (job_id, cut['episode_id'], 'analyze', json.dumps({'cuts': [item], 'workflow': 'legacy_text_retry', 'text_only': True}), old['id']))
         conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json,completed) VALUES (?,?,?,0)", (job_id, cut_id, saved['evidence_json']))
         worker.sync_episode_status(conn, cut['episode_id'])
     return {"job_id": job_id}
@@ -1187,6 +1553,76 @@ def queue_consistency_summary(cut_id: str):
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {'job_id': job_id}
+
+
+class BriefInstructionsInput(BaseModel):
+    content: str = Field(max_length=50000)
+
+
+@app.get("/api/cuts/{cut_id}/brief-instructions")
+def get_brief_instructions(cut_id: str):
+    analysis_config_for_cut(cut_id)
+    row = db.one("SELECT content FROM cut_brief_instructions WHERE cut_id=?", (cut_id,))
+    return {"content": row["content"] if row else ""}
+
+
+@app.put("/api/cuts/{cut_id}/brief-instructions")
+def put_brief_instructions(cut_id: str, body: BriefInstructionsInput):
+    analysis_config_for_cut(cut_id)
+    with db.connect() as conn:
+        conn.execute("INSERT INTO cut_brief_instructions(cut_id,content) VALUES (?,?) ON CONFLICT(cut_id) DO UPDATE SET content=excluded.content,updated_at=CURRENT_TIMESTAMP", (cut_id, body.content))
+    return {"content": body.content}
+
+
+class TextGenerationSettings(BaseModel):
+    text_provider: Literal['local', 'openrouter'] = 'openrouter'
+    local_thinking: bool = False
+    openrouter_model: str = Field(default='openrouter/free', min_length=1, max_length=200, pattern=r'^[a-zA-Z0-9_./:-]+$')
+
+
+def text_generation_settings():
+    row = db.one('SELECT text_provider,local_thinking,openrouter_model FROM text_generation_settings WHERE id=1')
+    if not row:
+        return TextGenerationSettings().model_dump()
+    row['local_thinking'] = bool(row['local_thinking'])
+    return row
+
+
+@app.get('/api/text-generation-settings')
+def get_text_generation_settings():
+    return text_generation_settings()
+
+
+@app.put('/api/text-generation-settings')
+def put_text_generation_settings(body: TextGenerationSettings):
+    with db.connect() as conn:
+        conn.execute('UPDATE text_generation_settings SET text_provider=?,local_thinking=?,openrouter_model=? WHERE id=1',
+                     (body.text_provider, int(body.local_thinking), body.openrouter_model))
+    return body
+
+
+@app.get('/api/local-text-model')
+def local_text_model_status():
+    import time
+    row = db.one('SELECT * FROM local_text_model_state WHERE id=1')
+    if not row:
+        raise HTTPException(503, 'Model status is unavailable')
+    row['desired_loaded'] = bool(row['desired_loaded'])
+    if time.time() - row['heartbeat'] > 15:
+        row['state'] = 'worker_offline'
+        row['detail'] = 'Inference worker is not responding'
+    return row
+
+
+class LocalModelLoadInput(BaseModel):
+    loaded: bool
+
+
+@app.put('/api/local-text-model')
+def set_local_text_model(body: LocalModelLoadInput):
+    with db.connect() as conn:
+        conn.execute('UPDATE local_text_model_state SET desired_loaded=? WHERE id=1', (int(body.loaded),))
+    return local_text_model_status()
 
 
 @app.post("/api/cuts/{cut_id}/regenerate-summary")
@@ -1302,26 +1738,60 @@ def analyze_cut(cut_id: str):
     return enqueue_analysis(cut["episode_id"], cut_id)
 
 
+class VisualStageInput(BaseModel):
+    stage: Literal['subtitle_ocr', 'initial_frame', 'video_analysis', 'last_frame']
+
+
+@app.post('/api/cuts/{cut_id}/analysis-stages/run')
+def analyze_cut_stage(cut_id: str, body: VisualStageInput):
+    cut, _ = analysis_config_for_cut(cut_id)
+    if not cut['active']:
+        raise HTTPException(400, 'Only active cuts can be analyzed')
+    return enqueue_analysis(cut['episode_id'], cut_id, [body.stage])
+
+
 @app.post("/api/episodes/{episode_id}/analyze")
 def analyze_episode(episode_id: str):
-    require_episode(episode_id)
-    return enqueue_analysis(episode_id)
+    # Keep the older route as a visual-only alias.  New jobs must not trigger
+    # text generation implicitly; the worker still handles old snapshots.
+    result = queue_episode_visual_analysis(episode_id)
+    return {**result, 'job_id': result['job_ids'][0] if result['job_ids'] else None}
+
+
+@app.post("/api/jobs/cancel-queued")
+def cancel_all_queued_jobs():
+    """Cancel queued processing jobs across episodes; exports and running jobs continue."""
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        jobs = conn.execute("SELECT * FROM jobs WHERE status='queued' AND pipeline!='brief_export'").fetchall()
+        conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled before processing',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE status='queued' AND pipeline!='brief_export'")
+        for episode_id in {job['episode_id'] for job in jobs if job['pipeline'] != 'composition_compact'}:
+            worker.sync_episode_status(conn, episode_id)
+    for job in jobs:
+        worker.cleanup_voice_upload(job)
+    return {"cancelled": len(jobs)}
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 def cancel_inference_job(job_id: str):
-    """Cancel a queued inference job or a running summary job."""
+    """Cancel queued inference or a supported running inference job."""
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job:
             raise HTTPException(404, "Job not found")
-        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "transcribe", "voice_sample")) or (job["status"] == "running" and job["pipeline"] in ("regen", "consistency_summary"))
+        payload = json_object_or_empty(job['payload_json'])
+        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "transcribe", "voice_sample", "character_detect", "composition_compact")) or (job["status"] == "running" and (job["pipeline"] in ("regen", "consistency_summary", "composition_compact") or (job['pipeline'] == 'analyze' and (payload.get('text_only') is True or payload.get('workflow') == 'single_cut_v2'))))
         if not cancellable:
-            raise HTTPException(409, "Only queued inference jobs or running summary jobs can be cancelled")
+            raise HTTPException(409, "This job cannot be cancelled while running")
         message = "Cancelled before processing" if job["status"] == "queued" else "Cancelled during processing"
         conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (message, job_id))
-        worker.sync_episode_status(conn, job["episode_id"])
+        import time
+        conn.execute("UPDATE analysis_job_stages SET status='cancelled',finished_at=?,error=? WHERE job_id=? AND status='running'", (time.time(), message, job_id))
+        if job['pipeline'] == 'consistency_summary':
+            conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled because the preceding consistency summary was cancelled',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE pipeline='regen' AND status='queued' AND json_extract(payload_json,'$.depends_on_consistency')=?", (job_id,))
+        if job['pipeline'] != 'composition_compact':
+            worker.sync_episode_status(conn, job["episode_id"])
     worker.cleanup_voice_upload(job)
     return {"ok": True}
 
@@ -1335,6 +1805,21 @@ def retry_analysis(job_id: str):
             job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not job:
                 raise HTTPException(404, "Job not found")
+            if job['pipeline'] == 'composition_compact' and job['status'] == 'failed':
+                from . import composition_compaction
+                payload = json_object_or_empty(job['payload_json'])
+                try:
+                    current = composition_compaction._current_record(conn, job['episode_id'], payload['cut_id'])
+                    digest = composition_compaction.input_hash(composition_compaction.text_fields(current), composition_compaction.names_for(current))
+                except (KeyError, ValueError, RuntimeError) as exc:
+                    raise HTTPException(409, 'The composition evidence is no longer ready') from exc
+                if digest != payload.get('input_hash'):
+                    raise HTTPException(409, 'Composition evidence changed; request a fresh brief')
+                if conn.execute("SELECT 1 FROM jobs WHERE pipeline='composition_compact' AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=? AND json_extract(payload_json,'$.input_hash')=?", (payload['cut_id'],digest)).fetchone():
+                    raise HTTPException(409, 'Compaction is already queued or running')
+                retry_id = str(uuid.uuid4())
+                conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
+                return {'job_id': retry_id}
             if job["pipeline"] != "analyze" or job["status"] != "failed":
                 raise HTTPException(409, "Only failed analysis jobs can be retried")
             if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (job["episode_id"],)).fetchone():
@@ -1347,6 +1832,14 @@ def retry_analysis(job_id: str):
                 saved = item["context"]["cut"]
                 if not cut or not cut["active"] or not cut["analysis_enabled"] or cut["start_time"] != saved["start_time"] or cut["end_time"] != saved["end_time"]:
                     raise HTTPException(409, "An unfinished cut changed since this run; start a new analysis")
+                active_jobs = conn.execute("SELECT j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running') AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (job['episode_id'], item['cut_id'])).fetchall()
+                retry_payload = json_object_or_empty(job['payload_json'])
+                retry_stages = retry_payload.get('stages') if retry_payload.get('workflow') == 'single_cut_v2' else None
+                for active_job in active_jobs:
+                    active_payload = json_object_or_empty(active_job['payload_json'])
+                    active_stages = active_payload.get('stages') if active_payload.get('workflow') == 'single_cut_v2' else None
+                    if set(retry_stages or VISUAL_STAGES) & set(active_stages or VISUAL_STAGES):
+                        raise HTTPException(409, 'An overlapping analysis for this cut is already queued or running')
             retry_id = str(uuid.uuid4())
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job["episode_id"], 'analyze', job["payload_json"], job_id))
             conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json,completed) SELECT ?,cut_id,evidence_json,completed FROM analysis_job_cuts WHERE job_id=?", (retry_id, job_id))

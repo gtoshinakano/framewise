@@ -1,0 +1,258 @@
+{
+  "cut": {
+    "id": "89deebf4-8caa-410f-8de1-6dc3675f2198",
+    "start_time": 151.192292,
+    "end_time": 154.570667,
+    "cut_number": 44,
+    "dialogue": []
+  },
+  "results": [
+    {
+      "id": "698fb8a7-9717-4b72-b774-613eee377045",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut opens with a low-angle static shot of tiled flooring and a green wall or counter base with no visible characters. Video analysis reports a person's legs and a shopping cart entering from the right, a pan across the cart, and a cut to three people in an aisle, but the final frame shows only the cart's lower section with no people and character detections are empty. No transcript or subtitle OCR is available for dialogue verification.",
+        "clear": "Opening frame (151.192714): direct observation of a low-angle static shot with beige foreground tiles, a dark/light grey checkered tile strip, a white trim, and a green wall or counter surface; no characters visible. Video analysis window 1 (151.192292–153.122792): model-inferred motion of a person's legs and feet in brown loafers and dark tights walking right to left, with a wheeled cart partially visible on the far right; camera described as static. Video analysis window 2 (153.122792–154.570667): model-inferred shot of a metal shopping cart on tiled floor before a green wall, with the camera panning right. Last frame (154.529378): direct observation of a static eye-level medium shot of the lower section of a grey metal shopping cart against a green wall and tiled floor; no characters visible. Character detection model (WeVisOne-VL-4B) returned empty detections for both the first and last frames.",
+        "confusing": "Video analysis window 2 claims a cut at 154.522792 to a supermarket aisle containing three people (a man in a white shirt and green tie, a woman with long dark hair, and a man in a brown suit and red tie), but the last frame at 154.529378 shows only the shopping cart's lower section with no people, and character detections at that timestamp are empty. Sources: Qwen3-VL video analysis event at 154.522792 versus last-frame description and WeVisOne-VL detection at 154.529378. Camera angle for the cart is described inconsistently: video analysis window 2 calls it a low-angle shot, while the last frame describes an eye-level medium shot. It is unresolved whether the cut actually contains the three-person aisle scene or ends on the cart, which materially affects character reconstruction and ending composition.",
+        "human_review": "A human must determine whether the reported cut to three people in the aisle at approximately 154.52s actually exists or whether the video analysis misaligned or hallucinated the cut, given that the final frame and empty character detections show only the cart. This decision determines whether the cut ends with no characters or with three identifiable characters and affects animation, positioning, and dialogue attribution for the ending.",
+        "recommended_checks": "Inspect frames around 154.52–154.57s to confirm whether a three-person aisle scene appears or whether the cut ends on the shopping cart. Re-run or review character detection on intermediate frames between 153.12s and 154.57s, especially around the reported cut at 154.522792s, to verify the presence or absence of people. Compare the camera angle (low-angle versus eye-level) of the cart shots in video analysis window 2 against the last frame to resolve the framing inconsistency."
+      }
+    },
+    {
+      "id": "380246f4-a01e-4297-9244-b617acc8b457",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 151.192292,
+              "source_end": 153.122792,
+              "width": 640,
+              "height": 360,
+              "fps": 16.576016576016688,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "The scene is a low-angle shot focused on a tiled floor and a green wall with a white baseboard. A date, \"5月20日\" (May 20) in Japanese and \"20 de maio\" in Portuguese, is displayed at the top. A person's legs and feet, wearing brown loafers and dark tights, enter from the right and walk leftward across the frame. A wheeled cart appears on the far right as the person walks past. The camera remains static throughout.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.0,
+                  "subject": "Person",
+                  "visual_action": "Feet enter the frame from the right side.",
+                  "camera": "Apparent static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 151.192292,
+                  "episode_end_seconds": 151.192292
+                },
+                {
+                  "start_seconds": 0.4,
+                  "end_seconds": 1.8,
+                  "subject": "Person",
+                  "visual_action": "Walks from right to left across the frame, with feet stepping on alternating light and dark tiles.",
+                  "camera": "Apparent static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 151.59229200000001,
+                  "episode_end_seconds": 152.99229200000002
+                },
+                {
+                  "start_seconds": 1.7,
+                  "end_seconds": 1.9,
+                  "subject": "Wheeled cart",
+                  "visual_action": "Enters the frame from the right and moves leftward, partially visible.",
+                  "camera": "Apparent static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 152.892292,
+                  "episode_end_seconds": 153.09229200000001
+                }
+              ],
+              "uncertainties": "No significant uncertainty"
+            }
+          },
+          {
+            "source": {
+              "source_start": 153.122792,
+              "source_end": 154.570667,
+              "width": 640,
+              "height": 360,
+              "fps": 16.576016576016688,
+              "padded_tail": false,
+              "frame_count": 24
+            },
+            "analysis": {
+              "overview": "The scene opens with a low-angle shot of a metal shopping cart on a tiled floor, positioned in front of a green wall. The camera slowly pans right, revealing more of the cart's structure. The scene then cuts to a supermarket aisle where three people are visible: a man in a white shirt and green tie pushing a cart on the left, a woman with long dark hair standing in the center, and a man in a brown suit and red tie pushing a cart on the right. The woman is facing the man in the brown suit, and both are looking at the produce displays. The lighting is bright and even, typical of a retail environment.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.4,
+                  "subject": "shopping cart",
+                  "visual_action": "The camera pans right, revealing the full length of the shopping cart from its front wheel to its rear structure.",
+                  "camera": "The camera pans right.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 153.122792,
+                  "episode_end_seconds": 154.522792
+                },
+                {
+                  "start_seconds": 1.4,
+                  "end_seconds": 1.4,
+                  "subject": "shopping cart",
+                  "visual_action": "The scene cuts to a different location, showing three people in a supermarket aisle.",
+                  "camera": "The scene cuts to a new location.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 154.522792,
+                  "episode_end_seconds": 154.522792
+                }
+              ],
+              "uncertainties": "The initial frames show only the shopping cart and a wall with text. The scene cuts abruptly to a new location with three people, and no visual evidence is provided to confirm the identity of the people or their specific actions beyond their positions and orientations."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "2add905c-efbf-43a9-a98d-d65b037d1935",
+      "type": "last_frame",
+      "content": {
+        "composition": "A static, eye-level medium shot focused on the lower section of a metal shopping cart. The cart is positioned horizontally across the frame, dominating the foreground. The background consists of a green wall and a tiled floor, creating a simple, two-tone backdrop.",
+        "setting": "An indoor retail environment, likely a supermarket or convenience store, indicated by the presence of a shopping cart and the tiled flooring.",
+        "lighting": "Even, diffuse indoor lighting. Shadows are soft and cast directly beneath the cart's wheels, suggesting overhead light sources typical of a commercial space.",
+        "camera": "Static shot with a neutral, eye-level angle. The framing is tight on the cart, excluding the upper portion of the cart and any surrounding environment beyond the immediate background wall.",
+        "visible_characters": [],
+        "other_visual_details": "The primary object is a grey metal shopping cart with four wheels. The wheels have grey hubs and black tires. The cart's frame is tubular. The background features a solid green wall with a white baseboard. The floor is composed of large, light-colored square tiles with visible grout lines.",
+        "uncertainties": "No characters are visible in this frame. The context suggests a person may be present but is obscured by the cart or outside the frame.",
+        "frame_time": 154.529378,
+        "subtitle_regions": [
+          [
+            134.4,
+            44.64,
+            752.64,
+            172.07999999999998
+          ]
+        ]
+      }
+    },
+    {
+      "id": "b9098240-48e0-4990-92e7-b04eeedfb05f",
+      "type": "initial_frame",
+      "content": {
+        "composition": "The frame is a low-angle, static shot focused entirely on the floor and the base of a wall or counter. The composition is divided into three distinct horizontal bands: a beige tiled floor in the foreground, a dark grey and light grey checkered tile section in the middle ground, and a large green surface (likely a wall or counter side) in the background, separated by a white trim. The perspective lines of the floor tiles converge slightly towards the center, creating a sense of depth.",
+        "setting": "An indoor commercial space, likely a supermarket or convenience store, indicated by the durable, easy-to-clean tiled flooring and the utilitarian green wall/counter base.",
+        "lighting": "The lighting is diffuse and even, typical of indoor fluorescent lighting. There are no harsh shadows, suggesting overhead ambient light sources. The floor has a slight sheen, reflecting the ambient light.",
+        "camera": "The camera is positioned at a low angle, looking slightly upwards towards the wall/counter. It appears to be stationary in this frame.",
+        "visible_characters": [],
+        "other_visual_details": "The floor consists of large beige square tiles in the immediate foreground. Behind them is a strip of alternating dark grey and light grey square tiles. Above this is a white baseboard or trim, followed by a solid green surface that takes up the majority of the upper frame. There is a faint, semi-transparent text overlay near the top center of the green area, which appears to be a date stamp ('20 de maio'), but this is ignored as per instructions.",
+        "uncertainties": "No characters are visible in this specific frame. While context suggests a character named Mai Sakurajima is present in the scene, she is not visible in this particular shot, which focuses solely on the environment.",
+        "frame_time": 151.192714,
+        "subtitle_regions": [
+          [
+            527.36,
+            47.52,
+            752.64,
+            82.8
+          ]
+        ]
+      }
+    },
+    {
+      "id": "e48d574e-da6f-4997-bced-10ce5d8635a6",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 151.192714,
+            "requested_time": 151.192292,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                527.36,
+                47.52,
+                752.64,
+                82.8
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 152.318839,
+            "requested_time": 152.31841666666668,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                136.96,
+                46.800000000000004,
+                752.64,
+                169.92
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 153.444952,
+            "requested_time": 153.44454133333332,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                136.96,
+                45.36,
+                752.64,
+                171.35999999999999
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 154.529378,
+            "requested_time": 154.570666,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                134.4,
+                44.64,
+                752.64,
+                172.07999999999998
+              ]
+            ],
+            "readings": []
+          }
+        ],
+        "events": [],
+        "ocr_requested": false,
+        "ocr_performed": false,
+        "language_note": "Language is unknown until verified.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect."
+      }
+    }
+  ],
+  "detections": {
+    "id": "8be09b9c-d9f1-4399-bfff-7a8bd770fef3",
+    "cut_id": "89deebf4-8caa-410f-8de1-6dc3675f2198",
+    "job_id": "39b0ff17-abd3-4bc2-bef3-113d165957cf",
+    "cut_start": 151.192292,
+    "cut_end": 154.570667,
+    "frames_json": "[{\"position\": \"first\", \"time\": 151.192714, \"image_size\": [1280, 720], \"boxes\": [], \"raw_response\": \"<ref>person</ref><box>none</box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 154.529378, \"image_size\": [1280, 720], \"boxes\": [], \"raw_response\": \"<ref>person</ref><box>none</box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:11:48",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": []
+  }
+}

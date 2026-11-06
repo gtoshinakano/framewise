@@ -20,10 +20,13 @@ def structured_type(settings):
         return None
 
 
-def list_results(cut_id, history=False):
+def list_results(cut_id, history=False, conn=None):
     from . import frame_source
+    if conn is None:
+        with db.connect() as conn:
+            return list_results(cut_id, history, conn)
     where = '' if history else ' AND superseded_by IS NULL'
-    rows = db.all_rows(f'SELECT * FROM analysis_results WHERE cut_id=?{where} ORDER BY rowid DESC', (cut_id,))
+    rows = conn.execute(f'SELECT * FROM analysis_results WHERE cut_id=?{where} ORDER BY rowid DESC', (cut_id,)).fetchall()
     results = []
     for row in rows:
         kind = structured_type(row['settings_json'])
@@ -35,7 +38,7 @@ def list_results(cut_id, history=False):
             content = None
         if not isinstance(content, dict):
             content = None
-        frame_url = f"/api/analysis-results/{row['id']}/frame" if kind in ('initial_frame', 'last_frame') and frame_source.result_frame_spec(row['id']) else None
+        frame_url = f"/api/analysis-results/{row['id']}/frame" if kind in ('initial_frame', 'last_frame') and frame_source.result_frame_spec(row['id'], conn) else None
         results.append({'id': row['id'], 'cut_id': row['cut_id'], 'type': kind, 'content': content, 'frame_url': frame_url,
                         'origin': row['origin'], 'model_id': row['model_id'], 'job_id': row['job_id'],
                         'parent_id': row['parent_id'], 'superseded_by': row['superseded_by'], 'created_at': row['created_at']})

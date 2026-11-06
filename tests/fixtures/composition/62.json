@@ -1,0 +1,355 @@
+{
+  "cut": {
+    "id": "c2b44023-9e55-444e-9818-a2f4bfd59c3b",
+    "start_time": 219.176875,
+    "end_time": 222.346708,
+    "cut_number": 62,
+    "dialogue": [
+      {
+        "id": "1a12a9c2-a1d1-4682-947a-67a7dedf9027",
+        "start_time": 219.28,
+        "end_time": 219.52,
+        "text": "。マイ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "dfc10f01-cf71-41bd-bbf4-86c77af020d4",
+        "start_time": 219.52,
+        "end_time": 219.76,
+        "text": "さん",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "d4a77505-03ec-4f33-839c-56ffec9340bd",
+        "start_time": 219.76,
+        "end_time": 219.84,
+        "text": "の",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "9cbba40a-af07-4225-8b24-9131fdbc77fe",
+        "start_time": 219.84,
+        "end_time": 220.32,
+        "text": "想像",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "1b7e0f00-b18b-4df6-b383-b95dd08c4fbb",
+        "start_time": 220.32,
+        "end_time": 220.4,
+        "text": "の",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "2ac11904-4966-40fe-bdf1-4e2db8ef2a46",
+        "start_time": 220.4,
+        "end_time": 220.8,
+        "text": "百",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "3b29c93c-0a34-4f61-abd7-88391a3ba049",
+        "start_time": 220.8,
+        "end_time": 220.96,
+        "text": "倍",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "01227887-e177-4a98-b149-77cf36c5595e",
+        "start_time": 220.96,
+        "end_time": 221.12,
+        "text": "は",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "03f9f255-0e50-4b78-a01d-7b40afca9670",
+        "start_time": 221.12,
+        "end_time": 221.36,
+        "text": "エロい",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "98ed263f-ba11-4b52-8722-d945e05d4675",
+        "start_time": 221.36,
+        "end_time": 221.52,
+        "text": "こと",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "6f5618c4-bfe5-423d-80bf-9bd72a3928e7",
+        "start_time": 221.52,
+        "end_time": 221.92000000000002,
+        "text": "考え",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "4e024ede-6139-49d1-9a68-902d7163f56b",
+        "start_time": 221.92000000000002,
+        "end_time": 222.07999999999998,
+        "text": "てる",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "5bb21521-a586-4444-a081-ebe2ea1be469",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "An extreme close‑up of Sakuta Azusagawa in an outdoor, blurred setting is shown in two frames, with a slight shift from a three‑quarter view looking left to a direct frontal pose; video analysis claims a static shot that abruptly cuts to another character at the end, which is not visible in the provided frames.",
+        "clear": "Sakuta is consistently identified by user‑verified detection boxes, the camera is static, the background is heavily blurred green foliage, and only his head and neck are visible.",
+        "confusing": "Visual descriptions show a closed mouth and leftward gaze, while video analysis reports a slightly open mouth and direct eye contact; the analysis also indicates a hard cut to a different character after 222.346 s, but the supplied frames end before that cut, creating uncertainty about the actual sequence.",
+        "human_review": "Human review is needed to confirm whether the cut to another character occurs after the last frame and to verify the exact mouth and gaze details for accurate animation.",
+        "recommended_checks": "Check the video segment from 222.305 s to 222.347 s for the cut to another character, examine the frames around 219–222 s to determine if the mouth is closed or slightly open and the gaze direction, and verify the subtitle timing against the transcript."
+      }
+    },
+    {
+      "id": "8f746d34-ff52-44bc-867f-7e70ccf19d7f",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 219.176875,
+              "source_end": 220.98820814285713,
+              "width": 640,
+              "height": 360,
+              "fps": 17.66654584011202,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "A close-up shot of a young male anime character with brown, tousled hair and large brown eyes. He is positioned in the foreground, looking slightly upward and to his right with a neutral to slightly surprised expression. His mouth is slightly open. The background is softly blurred, showing indistinct green and purple foliage, suggesting an outdoor or garden setting. The lighting is bright and even. The camera is static.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.8,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Maintains a static pose with eyes looking upward and to the right, mouth slightly open.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 219.176875,
+                  "episode_end_seconds": 220.976875
+                }
+              ],
+              "uncertainties": "No significant uncertainty"
+            }
+          },
+          {
+            "source": {
+              "source_start": 220.98820814285713,
+              "source_end": 222.346708,
+              "width": 640,
+              "height": 360,
+              "fps": 17.66654584011202,
+              "padded_tail": false,
+              "frame_count": 25
+            },
+            "analysis": {
+              "overview": "A close-up shot of a young male anime character with brown hair and brown eyes, looking directly at the camera with a slightly open mouth. The background is softly blurred, showing green and purple foliage. The shot cuts to a close-up of a young female anime character with long dark hair and purple eyes, smiling gently at the camera. The background remains blurred with green foliage.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.3585,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Maintains a stationary close-up pose, looking directly at the camera with wide, half-lidded eyes and a slightly open mouth. The head remains still throughout the shot.",
+                  "camera": "Apparent static close-up shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 220.98820814285713,
+                  "episode_end_seconds": 222.346708
+                },
+                {
+                  "start_seconds": 1.3585,
+                  "end_seconds": 1.3585,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "The shot cuts abruptly to a different character.",
+                  "camera": "Hard cut to a new shot.",
+                  "uncertainty": "The cut is abrupt and transitions to a different character.",
+                  "episode_start_seconds": 222.346708,
+                  "episode_end_seconds": 222.346708
+                }
+              ],
+              "uncertainties": "The final frame of the clip shows a hard cut to a different character, which is not part of the current shot's visual state. The transition is abrupt and not a continuous motion."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "2c52049e-ae3c-452a-8705-5e2c8875376e",
+      "type": "last_frame",
+      "content": {
+        "composition": "Extreme close-up focusing on the character's face, filling the majority of the frame. The character is positioned slightly to the right of center, with the background heavily blurred to emphasize the subject.",
+        "setting": "An outdoor environment, indicated by the soft, out-of-focus greenery and light in the background, suggesting a park or garden setting.",
+        "lighting": "Bright, diffuse natural daylight. The lighting is even across the face with soft shadows, typical of an overcast day or open shade.",
+        "camera": "Static extreme close-up shot. The camera is positioned at eye level with the subject.",
+        "visible_characters": [
+          {
+            "appearance": "A teenage male with short, tousled ash-brown hair and large, muted brown eyes. He has a fair complexion and a defined jawline.",
+            "position": "Center-right of the frame, occupying the foreground.",
+            "pose": "Head and shoulders visible. The character is facing the camera directly. Walking is unconfirmed.",
+            "expression": "The character has a neutral to slightly serious expression with a direct gaze. The mouth is closed.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box (ID: ac38092a-19ad-4d79-89ac-aaf0d3e21349) matching the character's distinctive hair and eye features."
+          }
+        ],
+        "other_visual_details": "The background consists of soft bokeh with green and white tones. There is a purple patterned object visible in the bottom right corner, likely part of another person's clothing or an object out of focus.",
+        "uncertainties": "The specific location is indeterminate due to the shallow depth of field. The character's full body posture is obscured.",
+        "frame_time": 222.3054,
+        "subtitle_regions": [
+          [
+            314.88,
+            604.8,
+            967.6800000000001,
+            695.52
+          ]
+        ]
+      }
+    },
+    {
+      "id": "b55ae7d6-3e22-4fdc-8cda-4b424ada6236",
+      "type": "initial_frame",
+      "content": {
+        "composition": "Extreme close-up focusing on the character's face, which occupies the right two-thirds of the frame. The background is heavily blurred (bokeh effect), creating a shallow depth of field that isolates the subject. The character is positioned slightly off-center to the right, looking towards the left side of the frame.",
+        "setting": "An outdoor environment, likely a park or garden, indicated by the out-of-focus green foliage and hints of purple flowers in the background. The lighting suggests it is daytime.",
+        "lighting": "Soft, natural daylight illuminating the character's face evenly from the front-left, casting subtle shadows on the right side of the face and neck. The eyes have distinct catchlights reflecting the light source.",
+        "camera": "Static shot with a telephoto lens effect, evidenced by the compressed perspective and significant background blur. The camera angle is slightly low, looking up at the character's face.",
+        "visible_characters": [
+          {
+            "appearance": "Young male with short, tousled ash-brown hair and large, muted brown-gray eyes. He has a fair complexion and a slender face shape.",
+            "position": "Center-right of the frame, filling most of the vertical space. His head is turned slightly to his right, presenting a three-quarter view to the camera.",
+            "pose": "Only the head and upper neck are visible. The body posture is obscured. Walking is unconfirmed.",
+            "expression": "Neutral to slightly concerned or contemplative. His eyes are wide open, and his mouth is closed in a straight line.",
+            "identity_evidence": "User-verified detection box 'ac38092a-19ad-4d79-89ac-aaf0d3e21349' confirms identity as Sakuta Azusagawa based on distinctive hair, eye color, and facial structure matching the reference image."
+          }
+        ],
+        "other_visual_details": "The character's hair has a textured, spiky appearance with individual strands visible. The background features soft, circular bokeh highlights in green and white, suggesting sunlight filtering through leaves. A small portion of a white collar is visible at the bottom right.",
+        "uncertainties": "The exact location within the outdoor setting is unclear due to the heavy blur. The character's full body posture and any potential movement are obscured by the tight framing.",
+        "frame_time": 219.177253,
+        "subtitle_regions": []
+      }
+    },
+    {
+      "id": "396a3d23-02d6-4b8e-9025-d0a2a32f1ea5",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 219.177253,
+            "requested_time": 219.176875,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [],
+            "readings": []
+          },
+          {
+            "time": 222.3054,
+            "requested_time": 222.346707,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                314.88,
+                604.8,
+                967.6800000000001,
+                695.52
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Estou pensando em coisas 100 vezes\nmais indecentes do que imagina.",
+                "box": [
+                  313.6,
+                  604.8,
+                  968.96,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "Estou pensando em coisas 100 vezes\nmais indecentes do que imagina.",
+            "language": "pt",
+            "first_observed": 222.3054,
+            "last_observed": 222.3054,
+            "observations": [
+              {
+                "time": 222.3054,
+                "box": [
+                  313.6,
+                  604.8,
+                  968.96,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "ca25d9f9-0175-4605-8ebe-0a08b6da0de6",
+    "cut_id": "c2b44023-9e55-444e-9818-a2f4bfd59c3b",
+    "job_id": "7b95ccc6-e2a5-4b4a-87c1-bb76485f471d",
+    "cut_start": 219.176875,
+    "cut_end": 222.346708,
+    "frames_json": "[{\"position\": \"first\", \"time\": 219.177253, \"image_size\": [1280, 720], \"boxes\": [[309.76, 0, 1278.72, 720]], \"raw_response\": \"<ref>person</ref><box><242><0><999><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 222.3054, \"image_size\": [1280, 720], \"boxes\": [[311.03999999999996, 0, 1280, 720]], \"raw_response\": \"<ref>person</ref><box><243><0><1000><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:29:29",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "ac38092a-19ad-4d79-89ac-aaf0d3e21349",
+        "run_id": "ca25d9f9-0175-4605-8ebe-0a08b6da0de6",
+        "position": "first",
+        "box_json": "[309.76, 0, 1278.72, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a close-up of a character with distinctive features that perfectly match the reference image: brown, slightly messy hair, large brown eyes with specific shading, and a similar facial structure. The art style and character design are identical, confirming the identity.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "7addd618-bb89-418b-ba41-414535e772c3",
+        "run_id": "ca25d9f9-0175-4605-8ebe-0a08b6da0de6",
+        "position": "last",
+        "box_json": "[311.03999999999996, 0, 1280, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinctive features that perfectly match the reference image: brown, slightly messy hair with a specific fringe pattern, large brown eyes with identical shading and highlights, and the same facial structure. The art style and character design are consistent across both images.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      }
+    ]
+  }
+}

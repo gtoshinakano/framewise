@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { RefreshCw, Sparkles } from 'lucide-react'
 import { api, type AnalysisResult } from './api'
+import { ResultMetrics } from './ResultMetrics'
 
 const fields = [
   ['summary', 'Summary'], ['clear', 'Clear evidence'], ['confusing', 'Conflicting or unclear'],
@@ -21,6 +22,7 @@ export function ConsistencySummary({ cutId, result, disabled, onStarted }: { cut
   }
   return <section aria-label="Consistency summary" className="space-y-3 rounded-xl border hairline bg-[#1b202a] p-4">
     <h3 className="flex items-center gap-2 text-xs font-semibold"><Sparkles size={14} className="text-[#bca7ff]" /> Consistency summary</h3>
+    <ResultMetrics result={result} />
     {fields.map(([key, label]) => <div key={key}><h4 className="text-[11px] font-semibold text-[#c3aeff]">{label}</h4><p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5">{typeof content[key] === 'string' ? content[key] as string : 'Unavailable'}</p></div>)}
     <p className="muted text-[11px]">Review or edit this result and its previous versions in Analysis fields.</p>
     {message && <p role="status" className="text-xs text-[#c3aeff]">{message}</p>}

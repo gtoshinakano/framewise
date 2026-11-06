@@ -1,3 +1,4 @@
+import { LocalModelControl } from './LocalModelControl'
 import { useCallback, useEffect, useState } from 'react'
 import { ArrowLeft, RefreshCw, Trash2 } from 'lucide-react'
 import { api } from './api'
@@ -40,7 +41,7 @@ export default function Storage() {
     setWorking(true); setError(''); setMessage('')
     try { await api(`/storage/orphan-evidence/${item.job_id}/${item.cut_id}`, { method: 'DELETE' }); await load(); setMessage('Deleted orphan evidence.') } catch (err) { setError((err as Error).message) } finally { setWorking(false) }
   }
-  return <div className="min-h-screen"><header className="border-b hairline bg-[#10131a]"><div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4"><h1 className="text-lg font-semibold">Storage &amp; cleanup</h1><a href="#/" className="btn btn-quiet"><ArrowLeft size={15} /> Projects</a></div></header>
+  return <div className="min-h-screen"><header className="border-b hairline bg-[#10131a]"><div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4"><h1 className="text-lg font-semibold">Storage &amp; cleanup</h1><div className="flex items-center gap-3"><LocalModelControl /><a href="#/" className="btn btn-quiet"><ArrowLeft size={15} /> Projects</a></div></div></header>
     <main className="mx-auto max-w-7xl px-6 py-8"><p className="muted max-w-3xl text-sm">Inspect files stored with projects and episodes, their links, and missing media. Originals are protected. Video frames can be recreated on demand; playback media can be rebuilt with Prepare. The model cache and database are not included.</p>
       {error && <p role="alert" className="mt-4 text-sm text-[#ff9fa7]">{error}</p>}{message && <p role="status" className="mt-4 text-sm text-[#7bdcb2]">{message}</p>}
       {inventory && <><div className="my-6 flex flex-wrap items-center gap-4 text-sm"><strong>{bytes(inventory.total_bytes)} in project files</strong><span className="muted">{bytes(inventory.reclaimable_bytes)} in cleanup candidates</span><button onClick={load} disabled={working} className="btn btn-quiet"><RefreshCw size={14} /> Refresh</button></div>

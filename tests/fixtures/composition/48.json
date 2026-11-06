@@ -1,0 +1,428 @@
+{
+  "cut": {
+    "id": "662160fa-921d-4604-90d9-ee4b202cd6c4",
+    "start_time": 167.792208,
+    "end_time": 173.422833,
+    "cut_number": 48,
+    "dialogue": [
+      {
+        "id": "46d1478e-965a-4eac-abc8-45d97053179a",
+        "start_time": 169.68,
+        "end_time": 170.07999999999998,
+        "text": "。今",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "629e9336-f6ba-455e-9928-cf8dac0f5f3d",
+        "start_time": 170.07999999999998,
+        "end_time": 170.4,
+        "text": "マイ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "d1309ddb-3daa-448c-8993-6d6566efab9e",
+        "start_time": 170.4,
+        "end_time": 170.64,
+        "text": "さん",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "25c4495d-f6b1-4fcf-9e19-41810e461b29",
+        "start_time": 170.64,
+        "end_time": 170.72,
+        "text": "が",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "b5907ba8-189a-4c40-9352-0c4f007cd546",
+        "start_time": 170.72,
+        "end_time": 170.96,
+        "text": "握っ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "6c938749-d970-43cf-95dc-d26ff5818297",
+        "start_time": 170.96,
+        "end_time": 171.12,
+        "text": "て",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "38c2d06c-48d3-450f-ad6b-ef208d3aabad",
+        "start_time": 171.12,
+        "end_time": 171.28,
+        "text": "いる",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "e49e768d-ddbf-433c-b129-bd6ba7d6e643",
+        "start_time": 171.28,
+        "end_time": 171.76,
+        "text": "人参",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "5f9dcedf-48c7-43fb-ad44-cefb98f91d65",
+        "start_time": 171.76,
+        "end_time": 171.84,
+        "text": "は",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "cb559df6-0958-4d42-b458-3b8549e23e56",
+        "start_time": 172.4,
+        "end_time": 172.56,
+        "text": "、マイ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "80aab5d3-9ab2-47d2-b4dc-8d3ce88c441c",
+        "start_time": 172.56,
+        "end_time": 172.72,
+        "text": "さん",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "7a912c88-6eed-40fd-b306-fa7634ab86be",
+        "start_time": 172.72,
+        "end_time": 172.8,
+        "text": "が",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "b23e28d7-ebee-4cb3-8d74-171122b58671",
+        "start_time": 172.8,
+        "end_time": 173.04,
+        "text": "見え",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "c91f17e1-5b62-4675-9b9b-bbd47f745701",
+        "start_time": 173.04,
+        "end_time": 173.12,
+        "text": "て",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "84ad4e40-8aaf-4310-b153-140dffd36856",
+        "start_time": 173.12,
+        "end_time": 173.36,
+        "text": "ない",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "479a3384-559b-4534-a8b7-ab1b61b5e07b",
+        "start_time": 173.36,
+        "end_time": 173.44,
+        "text": "人",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "6da3148d-7432-4664-92da-1facdd8af426",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut presents Sakuta Azusagawa in a close‑up school hallway scene, appearing stationary with a neutral to slightly concerned expression. Visual analysis and detections consistently identify him, and his lip movements align with a Japanese transcript spanning 169.68‑173.44 s. A Portuguese subtitle appears at the final frame, but its relationship to the dialogue is unclear.",
+        "clear": "• Identity: Both initial and last frames and all video‑analysis windows label the subject as Sakuta Azusagawa (detection IDs 0ad27fc3‑31ce‑46da‑be8a‑92c213c0a6a1).\\n• Pose & movement: Video events describe Sakuta standing still, facing forward, with eyes open; mouth briefly opens/closes during 169.29‑170.99 s, matching the transcript’s timing.\\n• Transcript: All segments are linked to Sakuta (SPEAKER_07) from 169.68‑173.44 s, providing a continuous spoken passage.\\n• Subtitle OCR: A single period at 167.79 s and a Portuguese question at 173.30 s appear on screen, the latter coinciding with the last frame.",
+        "confusing": "• Content mismatch: The Japanese transcript does not contain carrot‑related wording, while the subtitle OCR at 173.30 s asks about a carrot in hand, raising questions about whether the subtitle is a translation or a separate overlay.\\n• Position discrepancy: Frame descriptions place Sakuta slightly right of center, whereas video‑analysis overviews state he is centered.\\n• Timing gap: The transcript extends to 173.44 s, just beyond the last visual analysis window (ends 173.4228 s), leaving the final ~0.018 s of speech unverified visually.\\n• Emotional ambiguity: Both visual and transcript evidence describe a neutral‑to‑concerned expression, but the exact emotional state remains unresolved.",
+        "human_review": "A human needs to determine whether the Portuguese subtitle is an intended translation of Sakuta’s Japanese speech or an unrelated caption, and to verify the precise on‑screen positioning of Sakuta (right‑of‑center vs. centered) for accurate animation framing. Additionally, the transcript’s final segment (173.36‑173.44 s) should be visually confirmed to ensure no missed gestures or lip‑movement details.",
+        "recommended_checks": "1. Review the full video from 173.36‑173.44 s to confirm Sakuta’s mouth movements and any subtle gestures align with the transcript.\\n2. Compare the Portuguese subtitle text with a translation of the Japanese transcript to establish if they correspond; if not, clarify its source.\\n3. Examine the initial and last frames with precise measurement tools to confirm Sakuta’s horizontal position relative to the frame center (right‑of‑center offset).\\n4. Verify that the subtitle OCR timing matches the transcript timestamps, ensuring no misalignment or missing captions."
+      }
+    },
+    {
+      "id": "7df4c3db-de21-4b94-97cb-da74325e7a83",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 167.792208,
+              "source_end": 171.009708,
+              "width": 640,
+              "height": 360,
+              "fps": 9.94560994560993,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "A close-up shot of a young male anime character with brown, tousled hair and brown eyes, wearing a white collared shirt under a brown blazer. He is positioned in the center of the frame, facing forward with a neutral to slightly concerned expression. The background is a brightly lit, out-of-focus indoor setting, likely a school hallway, with architectural elements like walls and windows visible. The camera remains static throughout the clip.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.5,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Stands still, facing forward with a neutral expression. His eyes are open and looking directly at the camera. His mouth is closed and remains still.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 167.792208,
+                  "episode_end_seconds": 169.292208
+                },
+                {
+                  "start_seconds": 1.5,
+                  "end_seconds": 3.2,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Maintains a forward-facing position. His eyes remain open and focused forward. His mouth slightly opens and closes, indicating subtle lip movement, possibly in response to dialogue or thought, though no audible speech is present.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 169.292208,
+                  "episode_end_seconds": 170.99220799999998
+                }
+              ],
+              "uncertainties": "No significant uncertainty"
+            }
+          },
+          {
+            "source": {
+              "source_start": 171.009708,
+              "source_end": 173.422833,
+              "width": 640,
+              "height": 360,
+              "fps": 9.94560994560993,
+              "padded_tail": false,
+              "frame_count": 24
+            },
+            "analysis": {
+              "overview": "A close-up shot of a young male anime character with brown, tousled hair and brown eyes, wearing a white collared shirt under a brown jacket. He is positioned in the center of the frame, looking directly at the camera with a neutral expression. The background is a brightly lit, blurred indoor setting, likely a school hallway or building corridor, with green and white architectural elements. The camera is static, maintaining a steady focus on the character's face.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 2.413125,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Maintains a stationary, front-facing pose with a neutral facial expression. His eyes are open and looking directly at the camera, and his mouth remains closed throughout the clip.",
+                  "camera": "Apparent static shot with no movement.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 171.009708,
+                  "episode_end_seconds": 173.422833
+                }
+              ],
+              "uncertainties": "The clip is silent and contains no audio cues. The character's expression is neutral and unchanging, making it impossible to infer emotional state or intent. The background is out of focus, limiting environmental context. The final frame may contain a hard cut to the next shot, but this is not visually confirmed in the provided frames."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "11ad1199-d989-4bc2-9a81-9e1247e4af17",
+      "type": "last_frame",
+      "content": {
+        "composition": "Close-up shot centered on the character's face, filling the majority of the frame. The background is blurred, creating a shallow depth of field that isolates the subject. The character is positioned slightly to the right of the center.",
+        "setting": "An indoor environment, likely a school hallway or corridor, indicated by the blurred architectural elements in the background such as walls and what appears to be a window or glass door frame.",
+        "lighting": "Bright, diffuse indoor lighting. The light source appears to be overhead, casting soft shadows on the character's face and highlighting the top of his hair.",
+        "camera": "Static close-up shot, eye-level with the character.",
+        "visible_characters": [
+          {
+            "appearance": "Young male with short, tousled ash-brown hair and muted brown eyes. He is wearing a white collared shirt under a brown blazer.",
+            "position": "Centered in the frame, occupying the foreground.",
+            "pose": "Upper torso visible; head and shoulders are upright. Lower body and legs are obscured. Walking is unconfirmed.",
+            "expression": "Neutral to slightly concerned or questioning, with wide eyes and a slightly open mouth.",
+            "identity_evidence": "User-verified detection box (ID: 0ad27fc3-31ce-46da-be8a-92c213c0a6a1) matches the character Sakuta Azusagawa based on distinctive hair, eye shape, and school uniform."
+          }
+        ],
+        "other_visual_details": "The background features soft green and white tones. There is a hint of a blue and red sign or poster on the wall to the left.",
+        "uncertainties": "The exact location within the building is unclear due to the blurred background. The character's full body posture is unknown.",
+        "frame_time": 173.298111,
+        "subtitle_regions": [
+          [
+            272.64,
+            605.52,
+            1004.8000000000001,
+            696.24
+          ]
+        ]
+      }
+    },
+    {
+      "id": "14723743-cdb7-40f2-a152-8581747730fa",
+      "type": "initial_frame",
+      "content": {
+        "composition": "A medium close-up shot centered on the character's face and upper torso. The character is positioned slightly to the right of the frame's center. The background is significantly blurred (shallow depth of field), isolating the subject. The framing cuts off just below the shoulders.",
+        "setting": "An indoor environment, likely a school hallway or corridor, indicated by the blurred architectural elements such as a teal-colored wall or pillar on the left and a window or glass door structure on the right.",
+        "lighting": "Bright, diffuse indoor lighting. The light source appears to be overhead, casting soft shadows under the chin and nose. There are distinct specular highlights in the character's eyes and on the top of the hair.",
+        "camera": "Static shot with a slight low-angle perspective, looking up at the character. The focus is sharp on the character's face, specifically the eyes.",
+        "visible_characters": [
+          {
+            "appearance": "A teenage male with short, tousled ash-brown hair and muted brown eyes. He is wearing a brown school blazer over a white collared shirt. His skin tone is fair.",
+            "position": "Centered in the frame, occupying the majority of the visual space from the chest up.",
+            "pose": "Upper body visible; legs and feet are obscured. The posture appears upright and stationary. Walking is unconfirmed.",
+            "expression": "Neutral to slightly surprised or attentive. The eyes are wide open, looking directly forward, and the mouth is closed in a small, straight line.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box (ID: 0ad27fc3-31ce-46da-be8a-92c213c0a6a1) which matches the character's distinctive hair, eye shape, and school uniform."
+          }
+        ],
+        "other_visual_details": "The background features a teal vertical structure on the left and a blurred window frame on the right. A small portion of a blue and red sign is visible in the background on the left. The art style is typical of modern anime with clean lines and soft shading.",
+        "uncertainties": "The specific location within the building is unclear due to the heavy background blur. The character's exact emotional state is ambiguous, ranging from neutral observation to mild surprise.",
+        "frame_time": 167.792619,
+        "subtitle_regions": [
+          [
+            340.48,
+            175.68,
+            423.68,
+            351.36
+          ]
+        ]
+      }
+    },
+    {
+      "id": "afd88015-3b75-45b8-b41d-b409e54fda8d",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 167.792619,
+            "requested_time": 167.792208,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                340.48,
+                175.68,
+                423.68,
+                351.36
+              ]
+            ],
+            "readings": [
+              {
+                "text": ".",
+                "box": [
+                  335.36,
+                  172.79999999999998,
+                  424.96000000000004,
+                  354.24
+                ]
+              }
+            ]
+          },
+          {
+            "time": 173.298111,
+            "requested_time": 173.422832,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                272.64,
+                605.52,
+                1004.8000000000001,
+                696.24
+              ]
+            ],
+            "readings": [
+              {
+                "text": "O que acontece com essa cenoura em\nsua mão, se pessoas não te enxergam?",
+                "box": [
+                  272.64,
+                  604.8,
+                  1007.36,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": ".",
+            "language": "unknown",
+            "first_observed": 167.792619,
+            "last_observed": 167.792619,
+            "observations": [
+              {
+                "time": 167.792619,
+                "box": [
+                  335.36,
+                  172.79999999999998,
+                  424.96000000000004,
+                  354.24
+                ]
+              }
+            ]
+          },
+          {
+            "text": "O que acontece com essa cenoura em\nsua mão, se pessoas não te enxergam?",
+            "language": "pt",
+            "first_observed": 173.298111,
+            "last_observed": 173.298111,
+            "observations": [
+              {
+                "time": 173.298111,
+                "box": [
+                  272.64,
+                  604.8,
+                  1007.36,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "324e1514-7ca9-47ad-ace5-1d27407ae293",
+    "cut_id": "662160fa-921d-4604-90d9-ee4b202cd6c4",
+    "job_id": "db740e97-f95b-4b24-83d5-25ec8470fe9c",
+    "cut_start": 167.792208,
+    "cut_end": 173.422833,
+    "frames_json": "[{\"position\": \"first\", \"time\": 167.792619, \"image_size\": [1280, 720], \"boxes\": [[215.04000000000002, 0, 1085.44, 720]], \"raw_response\": \"<ref>person</ref><box><168><0><848><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 173.298111, \"image_size\": [1280, 720], \"boxes\": [[261.12, 0, 1050.8799999999999, 720]], \"raw_response\": \"<ref>person</ref><box><204><0><821><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:13:44",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "0ad27fc3-31ce-46da-be8a-92c213c0a6a1",
+        "run_id": "324e1514-7ca9-47ad-ace5-1d27407ae293",
+        "position": "first",
+        "box_json": "[215.04000000000002, 0, 1085.44, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinctive features that perfectly match the reference image: brown, slightly messy hair with specific highlights, large brown eyes with a unique shape, and a similar facial structure. The character is also wearing the same brown school blazer and white shirt, confirming the visual identity.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "15c1fb21-f926-49cc-ac0b-bfaaff26efdd",
+        "run_id": "324e1514-7ca9-47ad-ace5-1d27407ae293",
+        "position": "last",
+        "box_json": "[261.12, 0, 1050.8799999999999, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinctive features that perfectly match the reference image: brown, spiky hair with specific highlights, large brown eyes with a unique shape, and a similar facial structure. The art style and character design are identical, confirming the identity.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      }
+    ]
+  }
+}

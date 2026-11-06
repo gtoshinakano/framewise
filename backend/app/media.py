@@ -43,11 +43,11 @@ def probe(path: Path):
     return {"duration": duration, "width": int(video["width"]), "height": int(video["height"]), "has_audio": audio}
 
 
-def prepare_analysis_video(source: Path, output: Path, start: float, end: float, width: int = 640, height: int = 360, fps: float = 4):
+def prepare_analysis_video(source: Path, output: Path, start: float, end: float, width: int = 640, height: int = 360, fps: float = 4, frame_limit: int | None = None):
     """Create a temporary, silent cut clip and return its reproducibility metadata."""
     if source.resolve() == output.resolve():
         raise ValueError('Analysis clip cannot replace its source')
-    if not all(math.isfinite(v) for v in (start, end, fps)) or start < 0 or end <= start or not 0.25 <= fps <= 30:
+    if not all(math.isfinite(v) for v in (start, end, fps)) or start < 0 or end <= start or not 0 < fps <= 30:
         raise ValueError('Invalid analysis clip timing or frame rate')
     if width < 128 or width > 1920 or height < 128 or height > 1080 or width % 2 or height % 2:
         raise ValueError('Invalid analysis clip dimensions')
@@ -70,7 +70,7 @@ def prepare_analysis_video(source: Path, output: Path, start: float, end: float,
         # short cut. Clone the final sampled frame without reading the next cut.
         filters += ',tpad=stop_mode=clone:stop=1'
     run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', str(start), '-t', str(end - start), '-i', str(source),
-         '-an', '-vf', filters, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', str(output)])
+         '-an', '-vf', filters, *(['-frames:v', str(frame_limit)] if frame_limit is not None else []), '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', str(output)])
     return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps, 'padded_tail': padded_tail}
 
 
@@ -180,7 +180,7 @@ def detect_cuts_in_range(proxy: Path, start: float, end: float, threshold: float
     return [(left, right) for left, right in zip(starts, starts[1:] + [end])]
 
 
-def extract_cut_frame(source: Path, output: Path, sample_time: float, start: float, end: float, width: int = 480, last: bool = False, quality: int | None = None, seek_tolerance: float = 0, probe_padding: float = 0, timeout: float | None = None):
+def extract_cut_frame(source: Path, output: Path, sample_time: float, start: float, end: float, width: int = 480, last: bool = False, quality: int | None = None, seek_tolerance: float = 0, probe_padding: float = 0, timeout: float | None = None, exact_size: tuple[int, int] | None = None):
     """Extract a real frame inside the cut, returning its presentation timestamp."""
     temp = output.with_name(f"{output.stem}.partial.jpg")
     try:
@@ -212,8 +212,9 @@ def extract_cut_frame(source: Path, output: Path, sample_time: float, start: flo
         for back in (0, .1, .25, .5, 1, 2, end - start):
             seek = max(start, sample_time - back - seek_tolerance)
             temp.unlink(missing_ok=True)
+            scale = f"scale={exact_size[0]}:{exact_size[1]}:force_original_aspect_ratio=decrease,pad={exact_size[0]}:{exact_size[1]}:(ow-iw)/2:(oh-ih)/2" if exact_size else f"scale=w='min(iw,{width})':h=-2"
             result = run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-nostats", "-nostdin", "-y", "-ss", str(seek), "-i", str(source),
-                          "-t", str(end - seek), "-frames:v", "1", "-vf", f"showinfo,scale=w='min(iw,{width})':h=-2",
+                          "-t", str(end - seek), "-frames:v", "1", "-vf", f"showinfo,{scale}",
                           "-pix_fmt", "yuvj420p", "-threads", "1", *(["-q:v", str(quality)] if quality is not None else []), str(temp)], timeout=timeout)
             if temp.is_file() and temp.stat().st_size:
                 match = re.search(r"Parsed_showinfo[^\n]*\bn:\s*0\s+pts:.*?pts_time:\s*([-+0-9.eE]+)", result.stderr)

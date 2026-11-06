@@ -1,0 +1,182 @@
+{
+  "cut": {
+    "id": "f115bb12-64a1-4735-a4cc-c4b43b853e21",
+    "start_time": 201.409125,
+    "end_time": 202.7855,
+    "cut_number": 56,
+    "dialogue": []
+  },
+  "results": [
+    {
+      "id": "23bec6d7-3702-44dd-9ba3-6035543e888b",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut opens with a blurred refrigerated display case and no visible characters. Shortly after, a right hand appears, transitions from clenched to open palm‑up, then remains stationary. Later, Sakuta Azusagawa (brown blazer) and Mai Sakurajima (school uniform) appear, with Sakuta extending his hand toward Mai as the camera pulls back. The final frame is a close‑up of a hand matching Sakuta’s clothing, extended horizontally. Evidence is limited by heavy blur, lack of facial visibility, and ambiguous continuity between hand motion events.",
+        "clear": "The opening frame shows a medium shot of a refrigerated display case with no characters. Video analysis indicates a hand enters at ~201.71 s, opens palm‑up, and stays stationary. At ~202.48 s, Sakuta (brown blazer) and Mai (school uniform) are seen; Sakuta extends his right hand toward Mai while the camera pulls back from a close‑up. The last frame at ~202.74 s is a close‑up of a hand with a brown blazer sleeve and white cuff, consistent with Sakuta’s reference, extended horizontally. No transcript or subtitle data is present.",
+        "confusing": "The first analysis window describes the hand remaining stationary, while the second window shows the same hand (identified as Sakuta) actively extending toward Mai, with no clear visual cue of a cut. This creates uncertainty about whether the hand’s motion is continuous across the two windows or represents separate shots. Additionally, the hand’s identity is inferred only from clothing; the face is not visible, leaving the identification unconfirmed.",
+        "human_review": "Confirm whether the hand motion transition between the two analysis windows is a continuous action or a cut, and verify the exact timing of the hand’s movement relative to the characters’ appearance. Also, check for any facial details or additional context that could definitively confirm the hand’s identity in the final frame.",
+        "recommended_checks": "Review the raw video around 202.3–202.5 seconds to observe any cut or continuity between the stationary hand and the subsequent gesture. Examine the full frames for facial features or reference images to validate the hand’s identity. If available, obtain transcript or subtitle data for the segment to confirm dialogue attribution."
+      }
+    },
+    {
+      "id": "b0663680-a5f4-4872-b428-dc36228d7aa1",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 201.409125,
+              "source_end": 202.47579166666665,
+              "width": 640,
+              "height": 360,
+              "fps": 30.0,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit grocery store aisle, with blurred shelves of packaged goods and fresh produce visible in the background. A person's right hand, wearing a brown suit jacket with a white shirt cuff and two black buttons, enters the frame from the top left and moves into the foreground. The hand is initially clenched and then opens into a relaxed, palm-up gesture, remaining stationary in the foreground for the duration of the clip.",
+              "events": [
+                {
+                  "start_seconds": 0.3,
+                  "end_seconds": 0.9,
+                  "subject": "A person's right hand",
+                  "visual_action": "The hand enters the frame from the top left, transitions from a clenched fist to an open palm-up position, and remains stationary in the foreground.",
+                  "camera": "Apparent static camera.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 201.709125,
+                  "episode_end_seconds": 202.309125
+                }
+              ],
+              "uncertainties": "The background is out of focus, making it impossible to identify specific products or the full environment. The person's body or face is not visible, so their identity and full posture cannot be determined. The hand's motion is clearly visible, but the exact timing of the transition from clenched to open is inferred from frame progression."
+            }
+          },
+          {
+            "source": {
+              "source_start": 202.47579166666665,
+              "source_end": 202.7855,
+              "width": 640,
+              "height": 360,
+              "fps": 30.0,
+              "padded_tail": false,
+              "frame_count": 10
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit supermarket aisle, with shelves stocked with produce visible in the background. A male character in a brown blazer and white shirt is pushing a shopping cart and extending his right hand toward a female character in a school uniform. The female character stands still, facing him with a neutral expression. The camera starts with a close-up of the male's hand and then pulls back to reveal both characters in a medium shot.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.3,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Extends his right hand forward, palm up, in a gesturing motion.",
+                  "camera": "Pulls back from a close-up of the hand to a medium shot showing both characters.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 202.47579166666665,
+                  "episode_end_seconds": 202.77579166666666
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.3,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Stands still, facing the male character with a neutral expression.",
+                  "camera": "Pulls back from a close-up of the hand to a medium shot showing both characters.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 202.47579166666665,
+                  "episode_end_seconds": 202.77579166666666
+                }
+              ],
+              "uncertainties": "The final frame may contain contamination from the next shot, but no hard cut is visually confirmed. The character identities are user-verified for the boundary frames, but their actions are inferred from visual continuity."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "2a22c596-a391-4234-a234-7e054c94284d",
+      "type": "last_frame",
+      "content": {
+        "composition": "A close-up shot focusing on a single hand extended horizontally from the left side of the frame. The background is heavily blurred (shallow depth of field), isolating the hand as the primary subject. The arm enters from the left edge, creating a sense of reaching or offering.",
+        "setting": "An indoor retail environment, likely a supermarket or convenience store. The background features blurred shelves stocked with colorful items, including what appear to be packaged goods and fresh produce (green and yellow hues).",
+        "lighting": "Bright, diffuse indoor lighting typical of a commercial space. The light source appears to be overhead, casting soft shadows on the underside of the hand and arm.",
+        "camera": "Static close-up shot with a shallow depth of field, keeping the hand in sharp focus while blurring the background significantly.",
+        "visible_characters": [
+          {
+            "appearance": "A fair-skinned hand and forearm. The character is wearing a brown blazer sleeve with two black buttons visible near the cuff, and a white shirt cuff extending slightly beyond the jacket.",
+            "position": "The arm and hand enter from the left side of the frame, extending towards the center-right.",
+            "pose": "The arm is extended straight out with the palm facing upwards and fingers slightly curled in a relaxed, open gesture. The rest of the body is not visible.",
+            "expression": "Not visible.",
+            "identity_evidence": "The brown blazer and white shirt match the school uniform worn by Sakuta Azusagawa in the provided reference images. The hand size and sleeve style are consistent with a male character."
+          }
+        ],
+        "other_visual_details": "The hand is drawn with clean lines and subtle shading to indicate volume. The background colors are soft pastels of green, yellow, and white, suggesting a well-lit grocery aisle.",
+        "uncertainties": "While the clothing strongly suggests Sakuta Azusagawa, the face is not visible to confirm identity definitively. The specific action (offering, reaching, gesturing) is ambiguous without further context.",
+        "frame_time": 202.744167,
+        "subtitle_regions": []
+      }
+    },
+    {
+      "id": "78669c5a-2b2b-4c1b-a458-34b483e05275",
+      "type": "initial_frame",
+      "content": {
+        "composition": "The frame is a medium shot focused on a brightly lit refrigerated display case, likely in a convenience store or supermarket. The composition is slightly angled, with the main display unit occupying the left and center of the frame. To the right, another shelving unit is visible, angled away from the camera, creating a sense of depth. The image is heavily blurred, obscuring fine details.",
+        "setting": "An indoor retail environment, specifically the refrigerated section of a store. The shelves are stocked with various packaged goods and fresh produce.",
+        "lighting": "The scene is illuminated by bright, cool-toned artificial light emanating from within the refrigerated display cases, which casts a glow on the products and the surrounding area.",
+        "camera": "The camera is static, capturing a still shot. The focus is soft or the image is intentionally blurred, rendering the contents of the shelves indistinct.",
+        "visible_characters": [],
+        "other_visual_details": "The left display case has three visible shelves. The top shelf contains rows of packaged items with pink, yellow, and white packaging. The middle shelf holds rows of what appear to be bento boxes or similar food containers. The bottom shelf has more packaged goods. The shelving unit on the right contains bins of fresh produce, including green vegetables and possibly oranges or tomatoes.",
+        "uncertainties": "Due to the significant blur, specific product types and brands are unidentifiable. No characters are visible in this frame, despite the provided context suggesting their presence in the scene.",
+        "frame_time": 201.409503,
+        "subtitle_regions": []
+      }
+    },
+    {
+      "id": "5a77ccb4-6357-4ddd-938c-bbba8a1aef1a",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 201.409503,
+            "requested_time": 201.409125,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [],
+            "readings": []
+          },
+          {
+            "time": 202.744167,
+            "requested_time": 202.78549900000002,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [],
+            "readings": []
+          }
+        ],
+        "events": [],
+        "ocr_requested": false,
+        "ocr_performed": false,
+        "language_note": "Language is unknown until verified.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect."
+      }
+    }
+  ],
+  "detections": {
+    "id": "caed3273-9160-4ef4-aae1-afc5ffa55170",
+    "cut_id": "f115bb12-64a1-4735-a4cc-c4b43b853e21",
+    "job_id": "9296ab4d-9721-41a1-8b01-61a5134e8aae",
+    "cut_start": 201.409125,
+    "cut_end": 202.7855,
+    "frames_json": "[{\"position\": \"first\", \"time\": 201.409503, \"image_size\": [1280, 720], \"boxes\": [], \"raw_response\": \"<ref>person</ref><box>none</box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 202.744167, \"image_size\": [1280, 720], \"boxes\": [[0, 236.88000000000002, 1039.3600000000001, 635.04]], \"raw_response\": \"<ref>person</ref><box><0><329><812><882></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:21:02",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": []
+  }
+}

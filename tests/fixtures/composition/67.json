@@ -1,0 +1,262 @@
+{
+  "cut": {
+    "id": "9b9459c7-3a52-43cd-9cff-d656188b3653",
+    "start_time": 234.191875,
+    "end_time": 234.900917,
+    "cut_number": 67,
+    "dialogue": [
+      {
+        "id": "a208264e-a512-4282-b22b-c2b15c3d52ce",
+        "start_time": 233.4,
+        "end_time": 235.4,
+        "text": "は",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "d729818b-e778-4bcd-a6e2-487ad956c325",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut opens and closes on a medium close-up of a man in a white collared shirt and dark green tie with short dark hair and rectangular glasses in a brightly lit supermarket refrigerated aisle; available frame descriptions otherwise agree on the subject, background, and mostly static framing, but expression and camera-angle details conflict. The opening-frame evidence says the man has closed or downcast eyes and a grimacing or neutral mouth, while the timestamped video analysis reports open forward-looking eyes and a neutral closed-mouth expression, and the last frame reports neutral or contemplative eyes forward. A transcript segment around 233.4 to 235.4 seconds links SPEAKER_07 to Sakuta Azusagawa, but its wording and subtitle or OCR coverage are too incomplete to support reliable dialogue attribution.",
+        "clear": "Consistently supported are the medium close-up chest-up framing, the man with the white shirt and dark green tie, short dark hair, rectangular glasses, supermarket refrigerated shelves, bright diffuse overhead lighting, and an initially static eye-level camera. The video analysis and last frame both describe a stationary man with a neutral or closed-mouth expression and forward-looking eyes, though the initial frame differs. The identity is described as the man with the white shirt based on visual matching, not as definitively confirmed.",
+        "confusing": "The main material inconsistency is expression and eye state: the initial frame at 234.192275 says the man's eyes were closed or looking down and his mouth was neutral or slightly grimacing, while the video analysis event around 234.19 to 234.89 says the eyes were open, looking forward, and the mouth was closed, and the last frame at 234.859611 says the eyes were looking forward with a neutral or contemplative expression. Camera description also shifts from a static eye-level shot in the opening frame to a static slight low-angle shot in the last frame, and facing direction is described differently. Transcript timing around 233.4 to 235.4 seconds and subtitle regions do not clearly align with the analyzed video window, and the OCR event provides no usable spoken-text content.",
+        "human_review": "Human judgment is required to determine whether the opening-frame downcast eyes and grimace are intentional and how to depict the man's emotional state in reconstruction, because the frame evidence and video model conflict. Dialogue attribution and any physical action beyond the supplied frames also need human review.",
+        "recommended_checks": "Run a higher-resolution frame comparison at approximately 234.192275 and 234.859611, inspect source frames around 233.4 to 235.4 seconds, and verify camera metadata and angle continuity before reconstruction."
+      }
+    },
+    {
+      "id": "959c49d1-5aad-4f40-8332-d6b544cdc2aa",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 234.191875,
+              "source_end": 234.900917,
+              "width": 640,
+              "height": 360,
+              "fps": 30.0,
+              "padded_tail": false,
+              "frame_count": 21
+            },
+            "analysis": {
+              "overview": "A middle-aged man with black hair and glasses, wearing a white shirt and green tie, stands in a brightly lit supermarket aisle. He is positioned in the foreground, facing slightly to his right with his head turned toward the camera. Behind him are refrigerated shelves stocked with packaged food items on the left and green produce on the right. The camera is static, maintaining a medium close-up shot focused on the man's upper body and face. His expression is neutral, and his eyes are open, looking forward. His mouth remains closed throughout the clip.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.7,
+                  "subject": "man",
+                  "visual_action": "maintains a stationary pose with a neutral facial expression, eyes open and looking forward, mouth closed.",
+                  "camera": "apparently static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 234.191875,
+                  "episode_end_seconds": 234.891875
+                }
+              ],
+              "uncertainties": "No significant uncertainty"
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "2765c1df-38ae-4484-8866-593aa5381ce4",
+      "type": "last_frame",
+      "content": {
+        "composition": "Medium close-up shot centered on a man from the chest up. He is positioned slightly to the right of the frame's center. The background consists of brightly lit supermarket shelves filled with packaged goods, creating a sense of depth behind the subject.",
+        "setting": "Interior of a supermarket or grocery store, specifically in an aisle with refrigerated or chilled shelves displaying packaged food items.",
+        "lighting": "Bright, diffuse overhead lighting typical of a retail environment. The light source appears to be coming from above, casting soft shadows under the character's chin and nose, and creating highlights on the plastic packaging in the background.",
+        "camera": "Static shot with a slight low-angle perspective, looking up at the character. The focus is sharp on the character's face, with the background slightly softer but still distinct.",
+        "visible_characters": [
+          {
+            "appearance": "A man with short, dark hair parted on the side, wearing rectangular glasses. He is dressed in a white button-down shirt and a dark green tie.",
+            "position": "Center-right of the frame, occupying the foreground. He is facing the camera in a three-quarter view, angled slightly towards the left.",
+            "pose": "Standing upright. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "Neutral to slightly serious or contemplative. His mouth is closed, and his eyes are looking forward.",
+            "identity_evidence": "Identified as the man with the white shirt based on visual appearance matching the context description."
+          }
+        ],
+        "other_visual_details": "The background shelves contain rows of packaged goods. On the left, there are packages with orange/pink contents, possibly meat or fish. On the right, there are packages with green contents, likely vegetables or salads. Price tags or labels are visible on the shelf edges but are illegible.",
+        "uncertainties": "The specific type of food in the packages is inferred from color and context but not explicitly clear. The exact nature of the man's thoughts or immediate actions cannot be determined from a single static frame.",
+        "frame_time": 234.859611,
+        "subtitle_regions": [
+          [
+            213.76000000000002,
+            580.32,
+            309.76,
+            642.24
+          ],
+          [
+            1099.52,
+            643.6800000000001,
+            1192.96,
+            714.96
+          ]
+        ]
+      }
+    },
+    {
+      "id": "73d22700-7e20-440f-955f-2f082295e107",
+      "type": "initial_frame",
+      "content": {
+        "composition": "A medium close-up shot centered on a man from the chest up. He is positioned slightly to the right of the frame's center. The background consists of refrigerated display shelves filled with packaged food items, creating horizontal lines that recede into the distance. The framing is tight, focusing on the character's upper body and facial expression.",
+        "setting": "The interior of a grocery store or supermarket, specifically in the refrigerated section. Shelves behind the character hold rows of packaged goods, including what appears to be meat or fish on the left and green vegetables or fruits on the right.",
+        "lighting": "Bright, diffuse overhead lighting typical of a retail environment. The light source is above, casting soft shadows under the character's chin and nose. The background shelves are well-lit, likely by internal shelf lighting.",
+        "camera": "Static camera angle at eye level with the character. The shot is stable with no visible motion blur or camera movement.",
+        "visible_characters": [
+          {
+            "appearance": "A man with short, dark hair and rectangular glasses. He is wearing a white collared shirt and a dark green tie. He has visible wrinkles on his forehead and cheeks.",
+            "position": "Center-right of the frame, occupying the foreground. He is facing slightly to the left of the camera in a three-quarter view.",
+            "pose": "Standing upright. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "His eyes are closed or looking down, and his mouth is set in a neutral or slightly grimacing line. He appears to be in a state of contemplation, fatigue, or mild distress.",
+            "identity_evidence": "Identified as the man with the white shirt based on visual description matching the context provided."
+          }
+        ],
+        "other_visual_details": "The background shelves contain neatly arranged packages. On the left, the packages appear to contain pinkish food items (possibly meat). On the right, there are green items (possibly vegetables or apples). Small digital price tags or labels are visible on the shelf edges.",
+        "uncertainties": "The specific type of food in the background packages is not clearly identifiable. The exact emotion of the character is ambiguous, though it leans towards negative or tired.",
+        "frame_time": 234.192275,
+        "subtitle_regions": [
+          [
+            213.76000000000002,
+            581.0400000000001,
+            308.48,
+            642.24
+          ],
+          [
+            1099.52,
+            644.4,
+            1192.96,
+            714.96
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c16b261e-f9ec-4fa1-8421-a99959d94103",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 234.192275,
+            "requested_time": 234.191875,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                213.76000000000002,
+                581.0400000000001,
+                308.48,
+                642.24
+              ],
+              [
+                1099.52,
+                644.4,
+                1192.96,
+                714.96
+              ]
+            ],
+            "readings": [
+              {
+                "text": ".",
+                "box": [
+                  1136.64,
+                  686.88,
+                  1158.4,
+                  704.88
+                ]
+              }
+            ]
+          },
+          {
+            "time": 234.859611,
+            "requested_time": 234.900916,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                213.76000000000002,
+                580.32,
+                309.76,
+                642.24
+              ],
+              [
+                1099.52,
+                643.6800000000001,
+                1192.96,
+                714.96
+              ]
+            ],
+            "readings": [
+              {
+                "text": ".",
+                "box": [
+                  1134.08,
+                  688.3199999999999,
+                  1187.8400000000001,
+                  709.2
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": ".",
+            "language": "unknown",
+            "first_observed": 234.192275,
+            "last_observed": 234.859611,
+            "observations": [
+              {
+                "time": 234.192275,
+                "box": [
+                  1136.64,
+                  686.88,
+                  1158.4,
+                  704.88
+                ]
+              },
+              {
+                "time": 234.859611,
+                "box": [
+                  1134.08,
+                  688.3199999999999,
+                  1187.8400000000001,
+                  709.2
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "8ef54124-635c-49ca-94c9-ebe5e6e82932",
+    "cut_id": "9b9459c7-3a52-43cd-9cff-d656188b3653",
+    "job_id": "e5fa2d35-8d5d-4c51-ab42-96b7f092f6af",
+    "cut_start": 234.191875,
+    "cut_end": 234.900917,
+    "frames_json": "[{\"position\": \"first\", \"time\": 234.192275, \"image_size\": [1280, 720], \"boxes\": [[416.0, 33.84, 979.2, 720]], \"raw_response\": \"<ref>person</ref><box><325><47><765><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 234.859611, \"image_size\": [1280, 720], \"boxes\": [[414.72, 31.68, 980.48, 720]], \"raw_response\": \"<ref>person</ref><box><324><44><766><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:36:04",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": []
+  }
+}

@@ -15,6 +15,7 @@ from . import db, media
 
 log = logging.getLogger(__name__)
 worker_thread: threading.Thread | None = None
+export_thread: threading.Thread | None = None
 wake_event = threading.Event()
 stop_event = threading.Event()
 LEASE_SECONDS = 60
@@ -23,7 +24,7 @@ MAX_ATTEMPTS = 3
 
 
 def start_worker():
-    global worker_thread
+    global worker_thread, export_thread
     if worker_thread and worker_thread.is_alive():
         return
     for episode in db.all_rows("SELECT id,duration,settings_json FROM episodes WHERE duration IS NOT NULL AND NOT EXISTS (SELECT 1 FROM chunks WHERE chunks.episode_id=episodes.id)"):
@@ -32,6 +33,8 @@ def start_worker():
     stop_event.clear()
     worker_thread = threading.Thread(target=work_loop, name="media-worker", daemon=True)
     worker_thread.start()
+    export_thread = threading.Thread(target=work_loop, args=(("brief_export",),), name="export-worker", daemon=True)
+    export_thread.start()
 
 
 def stop_worker():
@@ -39,6 +42,8 @@ def stop_worker():
     wake_event.set()
     if worker_thread and worker_thread.is_alive():
         worker_thread.join(timeout=2)
+    if export_thread and export_thread.is_alive():
+        export_thread.join(timeout=2)
 
 
 def sync_chunks(episode_id: str, duration: float, chunk_duration: int):
@@ -64,7 +69,7 @@ def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
             episode = conn.execute("SELECT settings_json FROM episodes WHERE id=?", (episode_id,)).fetchone()
             if not episode:
                 raise ValueError("Episode not found")
-            existing = conn.execute("SELECT id FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (episode_id,)).fetchone()
+            existing = conn.execute("SELECT id FROM jobs WHERE episode_id=? AND pipeline NOT IN ('brief_export','composition_compact') AND status IN ('queued','running')", (episode_id,)).fetchone()
             if existing:
                 raise ValueError("An analysis job is already running for this episode")
             if pipeline == 'hardcuts' and extra and extra.get('cut_id'):
@@ -106,19 +111,23 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
         exhausted = conn.execute(f"SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND status='running' AND (lease_until IS NULL OR lease_until<=?) AND attempt_count>=?", (*pipelines, now, MAX_ATTEMPTS)).fetchall()
         for job in exhausted:
             conn.execute("UPDATE jobs SET status='failed',stage='Failed',error='Interrupted too many times; run the pipeline again',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
-            sync_episode_status(conn, job["episode_id"], "Interrupted too many times; run the pipeline again")
+            if job['pipeline'] not in ('brief_export', 'composition_compact'):
+                sync_episode_status(conn, job["episode_id"], "Interrupted too many times; run the pipeline again")
         job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND
             (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
-            AND NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status='running' AND other.id!=jobs.id
+            AND (jobs.pipeline='brief_export' OR NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status='running' AND other.id!=jobs.id AND other.pipeline!='brief_export'
                 AND NOT ((jobs.pipeline='cutframes' AND other.pipeline IN ('analyze','regen')) OR (other.pipeline='cutframes' AND jobs.pipeline IN ('analyze','regen'))))
-            ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, rowid LIMIT 1""", (*pipelines, now)).fetchone()
+            )
+            ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+                     CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid LIMIT 1""", (*pipelines, now)).fetchone()
         claimed = None
         if job:
             owner = str(uuid.uuid4())
             conn.execute("UPDATE jobs SET status='running',stage=?,error=NULL,lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                          ("Resuming" if job["status"] == "running" else "Starting", owner, now + LEASE_SECONDS, job["id"]))
-            conn.execute("UPDATE episodes SET status='processing',stage=?,error=NULL WHERE id=?",
-                         ("Resuming" if job["status"] == "running" else "Starting", job["episode_id"]))
+            if job['pipeline'] not in ('brief_export', 'composition_compact'):
+                conn.execute("UPDATE episodes SET status='processing',stage=?,error=NULL WHERE id=?",
+                             ("Resuming" if job["status"] == "running" else "Starting", job["episode_id"]))
             claimed = job["id"], owner
     for old_job in exhausted:
         cleanup_voice_upload(old_job)
@@ -127,7 +136,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
 
 def sync_episode_status(conn, episode_id: str, error: str | None = None):
     """Reflect remaining work after a job finishes without hiding its history."""
-    pending = conn.execute("SELECT status,stage FROM jobs WHERE episode_id=? AND status IN ('queued','running') ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,created_at,rowid LIMIT 1", (episode_id,)).fetchone()
+    pending = conn.execute("SELECT status,stage FROM jobs WHERE episode_id=? AND pipeline NOT IN ('brief_export','composition_compact') AND status IN ('queued','running') ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,created_at,rowid LIMIT 1", (episode_id,)).fetchone()
     if pending:
         conn.execute("UPDATE episodes SET status=?,stage=?,error=NULL WHERE id=?", ('processing' if pending['status'] == 'running' else 'queued', pending['stage'], episode_id))
     elif error:
@@ -146,7 +155,7 @@ def stage(job_id: str, owner: str, episode_id: str, label: str):
     with db.connect() as conn:
         require_lease(conn, job_id, owner)
         conn.execute("UPDATE jobs SET stage=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (label, job_id))
-        conn.execute("UPDATE episodes SET status='processing', stage=?, error=NULL WHERE id=?", (label, episode_id))
+        conn.execute("UPDATE episodes SET status='processing', stage=?, error=NULL WHERE id=? AND (SELECT pipeline FROM jobs WHERE id=?) NOT IN ('brief_export','composition_compact')", (label, episode_id, job_id))
 
 
 @contextmanager
@@ -184,10 +193,10 @@ def heartbeat(job_id: str, owner: str, done: threading.Event):
             log.exception("Could not renew media job lease: %s", job_id)
 
 
-def work_loop():
+def work_loop(pipelines=("prepare", "hardcuts", "cutframes")):
     while not stop_event.is_set():
         try:
-            claimed = claim_job()
+            claimed = claim_job(pipelines)
             if claimed:
                 job_id, owner = claimed
                 done = threading.Event()
@@ -235,7 +244,6 @@ def process(job_id: str, owner: str):
             with db.connect() as conn:
                 require_lease(conn, job_id, owner)
                 conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-                sync_episode_status(conn, episode_id)
             return
         targeted = job["pipeline"] == "hardcuts" and bool(payload.get('cut_id'))
         if job["pipeline"] != "cutframes" and not targeted:
@@ -371,6 +379,6 @@ def process(job_id: str, owner: str):
         with db.connect() as conn:
             changed = conn.execute("UPDATE jobs SET status='failed', stage='Failed', error=?, lease_owner=NULL, lease_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND lease_owner=?",
                                    (message, job_id, owner)).rowcount
-            if changed:
+            if changed and job['pipeline'] != 'brief_export':
                 sync_episode_status(conn, episode_id, message)
         log.exception("Failed processing episode %s", episode_id)

@@ -1,0 +1,490 @@
+{
+  "cut": {
+    "id": "a8f99bcc-4bdd-4697-8d8d-3d8430bbe890",
+    "start_time": 173.422833,
+    "end_time": 176.884625,
+    "cut_number": 49,
+    "dialogue": [
+      {
+        "id": "479a3384-559b-4534-a8b7-ab1b61b5e07b",
+        "start_time": 173.36,
+        "end_time": 173.44,
+        "text": "人",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "6f08c51b-e704-4fc9-9e7b-44911c5af779",
+        "start_time": 173.44,
+        "end_time": 173.52,
+        "text": "に",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "e53aebd0-caa4-4b92-be53-767bb0310616",
+        "start_time": 173.52,
+        "end_time": 173.68,
+        "text": "は",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "7e8419c3-86a6-4b65-a332-6ac8184de6c1",
+        "start_time": 173.76,
+        "end_time": 173.92000000000002,
+        "text": "どう",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "f47d2cef-c163-40c1-b5b5-f4a39827a462",
+        "start_time": 173.92000000000002,
+        "end_time": 174.16,
+        "text": "見え",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "7c750a8d-1bb5-4ed7-8cef-cf5c60df6a6c",
+        "start_time": 174.16,
+        "end_time": 174.32,
+        "text": "てる",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "77c0820c-f1c1-4e69-965e-b80fbf88ad1d",
+        "start_time": 174.32,
+        "end_time": 174.4,
+        "text": "ん",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "78978c1b-d881-426e-acab-4f38c35800b8",
+        "start_time": 174.4,
+        "end_time": 174.56,
+        "text": "です",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "e93221df-4577-4d4c-a837-5ccd1ffa1abd",
+        "start_time": 174.56,
+        "end_time": 174.72,
+        "text": "か？",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "a0223763-6772-4f20-b35b-b238a498bbfa",
+        "start_time": 175.48,
+        "end_time": 175.64,
+        "text": "見え",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "66dc477c-5f35-4f9c-bb46-07d2f682421e",
+        "start_time": 175.64,
+        "end_time": 175.8,
+        "text": "て",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "a28206f5-8a3d-4dee-9556-877e73c2b524",
+        "start_time": 175.8,
+        "end_time": 175.96,
+        "text": "ない",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "75571772-503d-4e4c-86c8-a69598ecffc6",
+        "start_time": 175.96,
+        "end_time": 176.28,
+        "text": "みたい",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "918b2e75-efd1-4edb-abd9-2daa9b94a20d",
+        "start_time": 176.28,
+        "end_time": 176.52,
+        "text": "よ",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "af1bba63-0c91-417b-8224-0c124715abf4",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut features Mai Sakurajima in a supermarket aisle, initially in a medium close-up holding a carrot while a partially visible male character stands to her left; later the view changes to a medium shot of both characters in profile, Mai still holding the carrot and the male now holding bananas. Visual and video analysis agree on character identity, pose changes, and static camera, but the Portuguese subtitle OCR about the carrot conflicts with the Japanese transcript and offers no clear link to the visual action.",
+        "clear": "Mai Sakurajima is consistently identified by detection boxes and user verification, wearing a brown blazer, white shirt, red tie, and holding a carrot; her expression shifts from neutral to a slight smile while looking at the carrot. The male character is only partially visible at the start (shoulder) and later fully visible holding bananas, with no definitive identity provided. Camera remains static throughout, and the sequence of head turn, eye closure, and smile is supported by the video analysis events.",
+        "confusing": "The Portuguese subtitle OCR (\"O que acontece com essa cenoura em sua mão, se pessoas não te enxergam?\") appears at 173.423244 and 176.843322, suggesting dialogue about the carrot, yet the Japanese transcript shows Sakuta asking a question about visibility and Mai responding about not being seen, with no explicit reference to the carrot, creating a potential mismatch between audio/subtitle content and visual context.",
+        "human_review": "Need to verify whether the Portuguese subtitle corresponds to the actual spoken dialogue (Japanese) or is a translation error, and confirm the intended meaning of the carrot reference, as this could affect dialogue attribution and narrative reconstruction.",
+        "recommended_checks": "1) Compare the original audio track at timestamps 173.36–174.88 and 175.48–176.52 to determine if the Portuguese subtitle matches the spoken words or is a mistranslation. 2) Review the character detection model outputs for the male figure to see if any identity tags or additional context are present in higher‑resolution frames or alternate camera angles. 3) Examine subtitle timing to ensure the Portuguese lines are synchronized with the correct speech segments and not misaligned with the visual action."
+      }
+    },
+    {
+      "id": "ae6a8f16-7f7c-4c82-8785-b0670d5bbbd6",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 173.422833,
+              "source_end": 175.40099985714286,
+              "width": 640,
+              "height": 360,
+              "fps": 16.176592932215442,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit supermarket aisle. A young woman with long dark hair and purple eyes, identified as Mai Sakurajima, is in the foreground, holding a carrot. She is wearing a brown blazer over a white shirt and red tie. To her left, a man in a white shirt is partially visible, facing away from the camera and looking at produce. The background shows shelves stocked with packaged food items, including meat and vegetables. The camera is static, maintaining a medium shot focused on the woman.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.978167,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Holds a carrot in her right hand, initially looking forward with a neutral expression. She then turns her head slightly to her right, closes her eyes briefly, and smiles while looking down at the carrot.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 173.422833,
+                  "episode_end_seconds": 175.40099985714286
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.978167,
+                  "subject": "Man in white shirt",
+                  "visual_action": "Remains in the background, facing away from the camera, looking down at produce. His head and upper body are visible, but his face is not clearly seen.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 173.422833,
+                  "episode_end_seconds": 175.40099985714286
+                }
+              ],
+              "uncertainties": "The man's face is not clearly visible, and his specific actions beyond looking at produce are not detailed. The camera is static, and no movement is observed."
+            }
+          },
+          {
+            "source": {
+              "source_start": 175.40099985714286,
+              "source_end": 176.884625,
+              "width": 640,
+              "height": 360,
+              "fps": 16.176592932215442,
+              "padded_tail": false,
+              "frame_count": 25
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit supermarket produce aisle. Two characters are visible: a woman with long dark hair and purple eyes, wearing a brown blazer over a white shirt, and a man with short dark hair and glasses, wearing a white shirt and green tie. The woman is in the foreground, holding a carrot in her right hand and looking toward the right side of the frame. The man is behind her and to her left, holding a bunch of bananas. The background shows shelves stocked with various fruits and vegetables. The camera is static, providing a medium shot focused on the two characters.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.5,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Holding a carrot in her right hand, looking toward the right side of the frame with a slight smile. Her head is turned to her right, showing a profile view. Her left hand is partially visible near her waist, holding a small object.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty"
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.5,
+                  "subject": "The man",
+                  "visual_action": "Holding a bunch of bananas in both hands, looking down at them. His head is slightly tilted downward, and his gaze is directed at the bananas. His body is angled slightly toward the woman.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty"
+                }
+              ],
+              "uncertainties": "The final frame at 1.483625 seconds shows a hard cut to a different shot, which is not part of the current visual sequence. The analysis must end at this boundary, and the final frame is excluded from the overview and events."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "96f0b336-9f4b-45af-9493-83549b87192a",
+      "type": "last_frame",
+      "content": {
+        "composition": "Medium shot featuring two characters in profile/three-quarter view. The female character is positioned in the center-right foreground, while the male character is on the left, slightly behind her. The background consists of supermarket shelves stocked with produce, creating depth. The framing focuses on the upper bodies of the characters.",
+        "setting": "Interior of a brightly lit supermarket or grocery store. Visible elements include refrigerated display cases containing packaged meat and fresh produce such as bananas, carrots, and leafy greens.",
+        "lighting": "Bright, diffuse overhead lighting typical of a retail environment. The light source appears to be from above, casting soft shadows and highlighting the characters' hair and clothing textures.",
+        "camera": "Static medium shot at eye level. The camera angle is slightly from the side, capturing the profiles of the characters as they look towards the right side of the frame.",
+        "visible_characters": [
+          {
+            "appearance": "Female with very long, straight dark charcoal-black hair with subtle bluish highlights. She has large, almond-shaped deep blue-violet eyes. She is wearing a brown blazer over a white collared shirt and a red tie.",
+            "position": "Center-right foreground. She is shown in a three-quarter view, facing towards the right.",
+            "pose": "Standing posture. Her right arm is raised, holding an orange carrot. Her left arm is obscured. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "She has a slight smile and her eyes are looking at the carrot she is holding. Her expression appears calm and contemplative.",
+            "identity_evidence": "Identified as Mai Sakurajima based on user-verified detection box (ID: f91a8589-8512-422d-83ae-53fc8b7b5fce) matching the character's distinct long dark hair, eye color, and school uniform."
+          },
+          {
+            "appearance": "Male with short dark hair and glasses. He is wearing a white long-sleeved shirt or jacket.",
+            "position": "Left side of the frame, positioned slightly behind the female character. He is shown in profile, facing towards the right.",
+            "pose": "Standing posture. His right hand is holding a bunch of yellow bananas. His left arm is obscured. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "Neutral expression, looking forward towards the shelves.",
+            "identity_evidence": "Unnamed supporting character. No specific identity provided in context."
+          }
+        ],
+        "other_visual_details": "The female character is holding a single orange carrot in her right hand. The male character is holding a bunch of yellow bananas in his right hand. The background shelves display various items including packaged meat in red trays and green leafy vegetables. The animation style is clean with soft shading.",
+        "uncertainties": "The specific dialogue or thoughts of the characters cannot be determined from the visual frame alone. The exact relationship between the two characters is not explicitly stated in the visual data.",
+        "frame_time": 176.843322,
+        "subtitle_regions": [
+          [
+            400.64,
+            650.16,
+            878.08,
+            694.8
+          ]
+        ]
+      }
+    },
+    {
+      "id": "ff53b624-8988-4f09-9b08-bf66915a4f84",
+      "type": "initial_frame",
+      "content": {
+        "composition": "Medium close-up shot focusing on the upper body of the main character. She is positioned slightly to the left of the center, with her body angled towards the right. The background is a brightly lit grocery store aisle, slightly out of focus, creating depth. A second character is partially visible on the far left edge.",
+        "setting": "Interior of a supermarket or grocery store. Visible elements include refrigerated display cases with packaged meat and produce shelves stocked with green vegetables and fruits in the background.",
+        "lighting": "Bright, diffuse overhead lighting typical of a retail environment. The light source appears to be from above, casting soft shadows and highlighting the character's hair and face evenly.",
+        "camera": "Static shot at eye level with the character. The framing is tight on the subject, emphasizing her facial expression and the object in her hand.",
+        "visible_characters": [
+          {
+            "appearance": "Female character with very long, straight dark charcoal-black hair with subtle bluish highlights. She has large, almond-shaped deep blue-violet eyes. She is wearing a brown school blazer over a white collared shirt with a red tie.",
+            "position": "Center-left of the frame. She is shown from the chest up.",
+            "pose": "Standing posture. Her body is angled slightly to the right, but her head is turned to face the camera directly. Her right hand is raised, holding an orange carrot. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "Her expression is neutral to slightly concerned or questioning. Her eyes are wide and looking directly forward.",
+            "identity_evidence": "Identified as Mai Sakurajima based on user-verified detection box (ID: f91a8589-8512-422d-83ae-53fc8b7b5fce) matching visual features: long dark hair, purple eyes, and specific school uniform."
+          },
+          {
+            "appearance": "Only the shoulder and upper arm of a person wearing a white garment (possibly a shirt or coat) are visible.",
+            "position": "Far left edge of the frame, partially cut off.",
+            "pose": "Standing next to the main character. Orientation and specific pose are obscured.",
+            "expression": "Not visible.",
+            "identity_evidence": "Unnamed. Context suggests a supporting character in a white shirt, but visual confirmation is limited to a shoulder."
+          }
+        ],
+        "other_visual_details": "The main character is holding a single orange carrot in her right hand. In the background, shelves are stocked with various items including what appears to be packaged meat and green leafy vegetables. The overall color palette is bright and clean.",
+        "uncertainties": "The identity of the partially visible character on the left is unknown. The specific action or intent of the main character is unclear from a single frame, though she appears to be in the middle of an interaction.",
+        "frame_time": 173.423244,
+        "subtitle_regions": [
+          [
+            271.36,
+            606.96,
+            1006.08,
+            696.24
+          ]
+        ]
+      }
+    },
+    {
+      "id": "20dff444-a8d9-4308-be62-10b78f7cf640",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 173.423244,
+            "requested_time": 173.422833,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                271.36,
+                606.96,
+                1006.08,
+                696.24
+              ]
+            ],
+            "readings": [
+              {
+                "text": "O que acontece com essa cenoura em\nsua mão, se pessoas não te enxergam?",
+                "box": [
+                  272.64,
+                  606.24,
+                  1008.6400000000001,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "time": 175.174984,
+            "requested_time": 175.1537285,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                756.48,
+                502.55999999999995,
+                794.88,
+                558.72
+              ]
+            ],
+            "readings": [
+              {
+                "text": ".",
+                "box": [
+                  759.04,
+                  511.2,
+                  787.2,
+                  534.96
+                ]
+              }
+            ]
+          },
+          {
+            "time": 176.843322,
+            "requested_time": 176.884624,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                400.64,
+                650.16,
+                878.08,
+                694.8
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Parece que não enxergam.",
+                "box": [
+                  399.36,
+                  649.44,
+                  880.6399999999999,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "O que acontece com essa cenoura em\nsua mão, se pessoas não te enxergam?",
+            "language": "pt",
+            "first_observed": 173.423244,
+            "last_observed": 173.423244,
+            "observations": [
+              {
+                "time": 173.423244,
+                "box": [
+                  272.64,
+                  606.24,
+                  1008.6400000000001,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "text": ".",
+            "language": "unknown",
+            "first_observed": 175.174984,
+            "last_observed": 175.174984,
+            "observations": [
+              {
+                "time": 175.174984,
+                "box": [
+                  759.04,
+                  511.2,
+                  787.2,
+                  534.96
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Parece que não enxergam.",
+            "language": "pt",
+            "first_observed": 176.843322,
+            "last_observed": 176.843322,
+            "observations": [
+              {
+                "time": 176.843322,
+                "box": [
+                  399.36,
+                  649.44,
+                  880.6399999999999,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "092d8835-c515-4ff2-8e3b-908346e3e827",
+    "cut_id": "a8f99bcc-4bdd-4697-8d8d-3d8430bbe890",
+    "job_id": "57ad1386-5f57-4877-8690-cbec2d91e144",
+    "cut_start": 173.422833,
+    "cut_end": 176.884625,
+    "frames_json": "[{\"position\": \"first\", \"time\": 173.423244, \"image_size\": [1280, 720], \"boxes\": [[252.16000000000003, 0, 925.4399999999999, 720]], \"raw_response\": \"<ref>person</ref><box><197><0><723><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 176.843322, \"image_size\": [1280, 720], \"boxes\": [[0, 7.2, 387.84, 720], [322.56, 5.04, 985.6, 720]], \"raw_response\": \"<ref>person</ref><box><0><10><303><1000>,<252><7><770><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 11:51:05",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "f91a8589-8512-422d-83ae-53fc8b7b5fce",
+        "run_id": "092d8835-c515-4ff2-8e3b-908346e3e827",
+        "position": "first",
+        "box_json": "[252.16000000000003, 0, 925.4399999999999, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with long, straight dark hair, purple eyes, and a specific school uniform (brown blazer, white shirt, red tie). These visual features are identical to the character shown in the reference images labeled 'Mai Sakurajima'. The character in the other reference ('Rio Futaba') has distinctively different features, including glasses and wavy hair.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Mai Sakurajima"
+      },
+      {
+        "id": "bdccdd7b-a011-4307-bea3-64bc0364502c",
+        "run_id": "092d8835-c515-4ff2-8e3b-908346e3e827",
+        "position": "last",
+        "box_json": "[322.56, 5.04, 985.6, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with long, straight dark hair, a specific eye shape, and a brown blazer. These visual features are identical to the character shown in the reference images labeled 'Mai Sakurajima'. The character in the target image is clearly distinct from the reference for 'Rio Futaba', who has wavy hair and wears a white lab coat.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Mai Sakurajima"
+      }
+    ]
+  },
+  "verified_detections": {
+    "labels_confirmed_by_queue": true,
+    "detections": [
+      {
+        "id": "f91a8589-8512-422d-83ae-53fc8b7b5fce",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "bdccdd7b-a011-4307-bea3-64bc0364502c",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      }
+    ]
+  }
+}

@@ -1,0 +1,452 @@
+{
+  "cut": {
+    "id": "036fe208-cf4a-42a9-aea8-fdf82ee4a552",
+    "start_time": 234.900917,
+    "end_time": 239.030042,
+    "cut_number": 68,
+    "dialogue": [
+      {
+        "id": "a208264e-a512-4282-b22b-c2b15c3d52ce",
+        "start_time": 233.4,
+        "end_time": 235.4,
+        "text": "は",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "7e5558cc-73be-498b-912b-52df3a2ce219",
+        "start_time": 236.76,
+        "end_time": 236.76999999999998,
+        "text": "。うん",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "956dc971-df53-48cf-8100-76e12c5555bd",
+        "start_time": 236.92,
+        "end_time": 237.16,
+        "text": "。僕",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "19996d07-6622-4796-858a-1443abf06918",
+        "start_time": 237.16,
+        "end_time": 237.32,
+        "text": "の",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "64d093a6-581d-4d22-9a72-632b0c3b12d9",
+        "start_time": 237.32,
+        "end_time": 237.48,
+        "text": "こと",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "225f66cf-4fdf-4fec-90c4-a45855aaa214",
+        "start_time": 237.48,
+        "end_time": 237.64,
+        "text": "は",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "09b115e8-8b3d-4dd5-8738-b0c8479a7ee6",
+        "start_time": 237.72,
+        "end_time": 237.88,
+        "text": "見え",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "86e6e127-d048-4002-9c24-4127612718ad",
+        "start_time": 237.88,
+        "end_time": 238.04,
+        "text": "てる",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "ba0fc3ba-a88e-4aba-91cd-762e5e1a2923",
+        "start_time": 238.04,
+        "end_time": 238.44,
+        "text": "みたい",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "72967d07-4d43-4f02-ae1a-c90dd1cbbb24",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut shows a supermarket produce aisle with three characters in the opening frame—Mai Sakurajima, Sakuta Azusagawa, and an unidentified man—later reduced to only Mai and Sakuta. Poses differ: the initial frame has Mai’s left hand on Sakuta’s right shoulder, while video analysis describes Mai’s right arm around Sakuta’s left shoulder, and the final frame returns to a left‑hand placement. The video is silent, yet a Japanese transcript links Sakuta to brief speech overlapping the visual window, creating a modality mismatch. Uncertainties remain about the third character’s identity and the exact timing of his exit.",
+        "clear": "Direct frame observations confirm Mai (long dark hair, violet eyes) and Sakuta (messy brown hair) in both opening and closing frames, with matching school uniforms (brown blazer, white shirt, red tie). The initial frame also shows a third male in a white shirt/green tie standing left of background; this figure is absent from the last frame and from the second video analysis window. Video analysis records head turns and slight gaze shifts but no full‑body movement, and the camera remains static throughout. The transcript timestamps (233.4‑238.44 s) are linked to Sakuta Azusagawa, providing spoken Japanese words that are not audible in the silent video. Subtitle OCR indicates Portuguese text at 238.988744 s, unrelated to the Japanese transcript.",
+        "confusing": "Arm‑placement inconsistency: initial frame says Mai’s left hand on Sakuta’s right shoulder, video analysis window 1 describes Mai’s right arm around Sakuta’s left shoulder, and the final frame reverts to a left‑hand placement. The third character appears in the opening frame and first video window but disappears without explanation by the second window and final frame. Transcript timing starts before the first visual frame (233.4 s vs 234.9 s) and includes speech that is not audible in the silent video, creating a cross‑modal mismatch. The subtitle OCR language (Portuguese) and content do not align with the Japanese transcript, though they are not directly comparable.",
+        "human_review": "A human needs to verify the arm‑placement in the original footage to determine which side is correct for animation. The identity of the third background character should be confirmed (or ruled out) using additional frames or audio cues. The source of the Japanese transcript (e.g., separate audio track) must be examined to resolve the silent‑video discrepancy.",
+        "recommended_checks": "Review the raw video at 234.9‑237.3 s and 237.3‑239.0 s to confirm the presence and pose of the third character and the exact arm placement between Mai and Sakuta. Align the transcript timestamps with the video to verify if the spoken Japanese corresponds to any visible lip‑movement or if it belongs to a separate audio track. Check subtitle OCR source to ensure it matches the intended language for the cut (e.g., verify if Portuguese subtitle is a translation of the Japanese transcript)."
+      }
+    },
+    {
+      "id": "fba92c11-ca7e-45dc-a1a8-3dc46bc133b0",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 234.900917,
+              "source_end": 237.260417,
+              "width": 640,
+              "height": 360,
+              "fps": 13.562195380377146,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit supermarket produce aisle. In the foreground, two teenagers, Mai Sakurajima (a girl with long dark hair and blue-violet eyes) and Sakuta Azusagawa (a boy with messy brown hair), stand close together. Mai has her right arm around Sakuta's left shoulder, and both are looking toward the right side of the frame. In the background to the left, a man in a white shirt and green tie stands near a refrigerated display case filled with packaged food items. The camera is static, framing the three individuals against the backdrop of fruit displays, including green apples and yellow lemons.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.6,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Stands with her right arm around Sakuta Azusagawa's left shoulder, looking toward the right side of the frame with a slight smile. Her head is tilted slightly to her right.",
+                  "camera": "Apparent static camera.",
+                  "uncertainty": "No significant uncertainty.",
+                  "episode_start_seconds": 234.900917,
+                  "episode_end_seconds": 236.500917
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.6,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Stands with his left arm at his side, looking toward the right side of the frame. His head is slightly turned to his left, looking at Mai. His expression is neutral.",
+                  "camera": "Apparent static camera.",
+                  "uncertainty": "No significant uncertainty.",
+                  "episode_start_seconds": 234.900917,
+                  "episode_end_seconds": 236.500917
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.6,
+                  "subject": "Man in white shirt",
+                  "visual_action": "Stands in the background to the left, facing forward. He is partially obscured by the foreground characters. His head is turned slightly to his right, looking toward the produce display.",
+                  "camera": "Apparent static camera.",
+                  "uncertainty": "No significant uncertainty.",
+                  "episode_start_seconds": 234.900917,
+                  "episode_end_seconds": 236.500917
+                },
+                {
+                  "start_seconds": 1.6,
+                  "end_seconds": 2.2,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Maintains her pose with her arm around Sakuta's shoulder, but her head turns slightly more to her right, and her gaze shifts slightly downward. Her expression remains a gentle smile.",
+                  "camera": "Apparent static camera.",
+                  "uncertainty": "No significant uncertainty.",
+                  "episode_start_seconds": 236.500917,
+                  "episode_end_seconds": 237.10091699999998
+                },
+                {
+                  "start_seconds": 1.6,
+                  "end_seconds": 2.2,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Turns his head slightly more to his left to look directly at Mai. His expression remains neutral, and his posture is unchanged.",
+                  "camera": "Apparent static camera.",
+                  "uncertainty": "No significant uncertainty.",
+                  "episode_start_seconds": 236.500917,
+                  "episode_end_seconds": 237.10091699999998
+                },
+                {
+                  "start_seconds": 1.6,
+                  "end_seconds": 2.2,
+                  "subject": "Man in white shirt",
+                  "visual_action": "Turns his head to his left, looking toward the foreground characters. His body remains stationary.",
+                  "camera": "Apparent static camera.",
+                  "uncertainty": "No significant uncertainty.",
+                  "episode_start_seconds": 236.500917,
+                  "episode_end_seconds": 237.10091699999998
+                }
+              ],
+              "uncertainties": "The video clip is silent and contains no on-screen text. The final frame at 2.3595 seconds is not visible in the provided frames, so the end of the clip is not fully observed. The camera is static, and no movement is detected."
+            }
+          },
+          {
+            "source": {
+              "source_start": 237.260417,
+              "source_end": 239.030042,
+              "width": 640,
+              "height": 360,
+              "fps": 13.562195380377146,
+              "padded_tail": false,
+              "frame_count": 25
+            },
+            "analysis": {
+              "overview": "The scene is set inside a brightly lit supermarket, with two characters, Mai Sakurajima and Sakuta Azusagawa, standing side-by-side in front of a refrigerated produce display. Mai, on the left, has long dark hair and is wearing a brown school uniform blazer with a red tie. She has her right hand resting on Sakuta's left shoulder. Sakuta, on the right, has messy brown hair and is also in a similar uniform. Both are facing forward, looking slightly off-camera. The background shows shelves stocked with green and yellow apples, and other packaged food items. The camera is static, providing a medium shot that frames both characters from the waist up.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.769625,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Stands still with her right hand on Sakuta Azusagawa's left shoulder. Her head is slightly tilted, and her eyes are looking forward with a subtle smile. Her mouth is closed and remains still throughout the clip.",
+                  "camera": "Apparent static shot",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 237.260417,
+                  "episode_end_seconds": 239.03004199999998
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.769625,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Stands still with his left arm slightly bent at the elbow. His head is turned slightly to his left, looking forward. His mouth is closed and remains still throughout the clip.",
+                  "camera": "Apparent static shot",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 237.260417,
+                  "episode_end_seconds": 239.03004199999998
+                }
+              ],
+              "uncertainties": "The final frame at 1.769625 seconds shows a hard cut to a completely different scene, indicating the end of the current shot. The next shot is not part of the current visual sequence and should be excluded from this analysis."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "bce2bc89-ff83-4e38-b417-99238507d584",
+      "type": "last_frame",
+      "content": {
+        "composition": "Medium shot of two characters standing side-by-side in a supermarket aisle. The female character is positioned on the left, slightly behind the male character on the right. They are framed from the waist up. The background consists of refrigerated display shelves filled with produce, creating horizontal lines that contrast with the vertical stance of the characters.",
+        "setting": "Interior of a supermarket or grocery store, specifically the produce section. Visible elements include glass-fronted refrigerated display cases stocked with green apples, yellow pears, and packaged strawberries or meat products.",
+        "lighting": "Bright, even artificial lighting typical of a retail environment. The light source appears to be overhead, casting soft shadows and illuminating the characters' faces and the products on the shelves clearly.",
+        "camera": "Static medium shot at eye level. The camera is positioned directly in front of the characters, capturing them in a two-shot composition.",
+        "visible_characters": [
+          {
+            "appearance": "Female character with very long, straight dark charcoal-black hair with subtle bluish highlights. She has large, almond-shaped deep blue-violet eyes. She is wearing a brown school blazer over a white shirt and a red tie.",
+            "position": "Located on the left side of the frame, standing slightly behind and to the left of the male character. She is facing the camera in a three-quarter view, angled slightly towards the right.",
+            "pose": "Standing upright. Her left hand is resting on the male character's right shoulder. Legs and feet are obscured by the frame cutoff. Walking is unconfirmed.",
+            "expression": "She has a gentle, slight smile with her eyes looking forward.",
+            "identity_evidence": "Identified as Mai Sakurajima based on user-verified detection box 5e587317-27a4-4aa9-a6ce-4896c6b59713. Visual features match the reference: long dark hair, violet eyes, and specific school uniform."
+          },
+          {
+            "appearance": "Male character with short, tousled ash-brown hair. He has muted brown to gray-brown eyes. He is wearing a brown school blazer over a white shirt and a red tie.",
+            "position": "Located on the right side of the frame, standing slightly in front of the female character. He is facing the camera in a three-quarter view, angled slightly towards the left.",
+            "pose": "Standing upright with a relaxed posture. Legs and feet are obscured by the frame cutoff. Walking is unconfirmed.",
+            "expression": "He has a calm, neutral expression with a faint smile, looking forward.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box 28ff38db-6348-4a5f-b389-680b08f113e3. Visual features match the reference: messy brown hair, specific eye shape, and matching school uniform."
+          }
+        ],
+        "other_visual_details": "The characters are wearing matching school uniforms consisting of brown blazers, white collared shirts, and red ties. The background shelves are well-stocked with various fruits and packaged goods. There are price tags visible on the shelves.",
+        "uncertainties": "The exact nature of the interaction between the characters is unclear from a single static frame, though their proximity suggests familiarity. The specific type of packaged goods on the far left and right shelves is indistinct.",
+        "frame_time": 238.988744,
+        "subtitle_regions": [
+          [
+            353.28000000000003,
+            651.6,
+            928.0,
+            694.8
+          ]
+        ]
+      }
+    },
+    {
+      "id": "88e0cf74-d8e8-4138-b028-371c4d816955",
+      "type": "initial_frame",
+      "content": {
+        "composition": "Medium shot featuring three characters arranged horizontally. The two main characters are positioned in the center-right foreground, while a third character stands in the left background. The background consists of refrigerated display shelves stocked with produce, creating horizontal lines that frame the subjects.",
+        "setting": "Interior of a supermarket or grocery store, specifically the produce section. Visible elements include white shelving units with green trim, price tags, and bins of green apples, yellow pears, and packaged strawberries.",
+        "lighting": "Bright, diffuse artificial lighting typical of a retail environment. Shadows are soft and minimal, suggesting overhead fluorescent fixtures. The lighting is even across the characters' faces.",
+        "camera": "Static eye-level shot. The camera is positioned at a medium distance, capturing the characters from the waist up.",
+        "visible_characters": [
+          {
+            "appearance": "Male character with short, tousled ash-brown hair and brown eyes. He wears a brown school blazer, white shirt, and red tie.",
+            "position": "Right foreground. Facing slightly left in a three-quarter view.",
+            "pose": "Standing upright. Legs and feet are obscured by the frame cutoff. Walking is unconfirmed.",
+            "expression": "Neutral to slightly surprised, with wide eyes and a slightly open mouth.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box 28ff38db-6348-4a5f-b389-680b08f113e3."
+          },
+          {
+            "appearance": "Female character with very long, straight dark charcoal-black hair and blue-violet eyes. She wears a brown school blazer, white shirt, and red tie.",
+            "position": "Center foreground, standing to the left of the male character. Facing slightly right in a three-quarter view.",
+            "pose": "Standing upright. Her left hand is resting on the male character's right shoulder. Legs and feet are obscured. Walking is unconfirmed.",
+            "expression": "Calm and composed, with a slight smile.",
+            "identity_evidence": "Identified as Mai Sakurajima based on user-verified detection box 5e587317-27a4-4aa9-a6ce-4896c6b59713."
+          },
+          {
+            "appearance": "Male character with short black hair and glasses. He wears a white button-down shirt and a dark green tie.",
+            "position": "Left background. Facing slightly right in a three-quarter view.",
+            "pose": "Standing upright. Legs and feet are obscured. Walking is unconfirmed.",
+            "expression": "Neutral, looking forward.",
+            "identity_evidence": "Unnamed character. No verified identity provided."
+          }
+        ],
+        "other_visual_details": "The background shelves are stocked with green apples on the middle shelf and yellow pears on the bottom shelf behind the female character. To the right, there are packages of strawberries. The characters are wearing matching school uniforms.",
+        "uncertainties": "The exact relationship between the characters is not visually confirmed beyond their proximity. The specific type of store is inferred from the produce but could be a general supermarket.",
+        "frame_time": 234.901317,
+        "subtitle_regions": [
+          [
+            373.76,
+            655.9200000000001,
+            428.8,
+            690.48
+          ]
+        ]
+      }
+    },
+    {
+      "id": "db9369a5-9f36-401a-aad0-8945deb1cc69",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 234.901317,
+            "requested_time": 234.900917,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                373.76,
+                655.9200000000001,
+                428.8,
+                690.48
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 238.988744,
+            "requested_time": 239.030041,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                353.28000000000003,
+                651.6,
+                928.0,
+                694.8
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Parece que ainda me enxergam.",
+                "box": [
+                  352.0,
+                  650.16,
+                  930.56,
+                  696.96
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "Parece que ainda me enxergam.",
+            "language": "pt",
+            "first_observed": 238.988744,
+            "last_observed": 238.988744,
+            "observations": [
+              {
+                "time": 238.988744,
+                "box": [
+                  352.0,
+                  650.16,
+                  930.56,
+                  696.96
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "4f876511-00d1-4bf4-8795-670f167b5b27",
+    "cut_id": "036fe208-cf4a-42a9-aea8-fdf82ee4a552",
+    "job_id": "999c10b6-2090-4ba1-ae45-8bb3dac64624",
+    "cut_start": 234.900917,
+    "cut_end": 239.030042,
+    "frames_json": "[{\"position\": \"first\", \"time\": 234.901317, \"image_size\": [1280, 720], \"boxes\": [[0, 234.72, 289.28000000000003, 719.28], [450.55999999999995, 157.68, 808.96, 719.28], [684.8000000000001, 48.24, 1157.1200000000001, 719.28]], \"raw_response\": \"<ref>person</ref><box><0><326><226><999>,<352><219><632><999>,<535><67><904><999></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 238.988744, \"image_size\": [1280, 720], \"boxes\": [[453.12, 156.24, 807.6800000000001, 720], [684.8000000000001, 30.240000000000002, 1152.0, 720]], \"raw_response\": \"<ref>person</ref><box><354><217><631><1000>,<535><42><900><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:37:01",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "8257f399-54f2-4807-a1a9-68a0a9749ee5",
+        "run_id": "4f876511-00d1-4bf4-8795-670f167b5b27",
+        "position": "first",
+        "box_json": "[0, 234.72, 289.28000000000003, 719.28]",
+        "character_context_id": null,
+        "label_source": null,
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": null
+      },
+      {
+        "id": "5e587317-27a4-4aa9-a6ce-4896c6b59713",
+        "run_id": "4f876511-00d1-4bf4-8795-670f167b5b27",
+        "position": "first",
+        "box_json": "[450.55999999999995, 157.68, 808.96, 719.28]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      },
+      {
+        "id": "28ff38db-6348-4a5f-b389-680b08f113e3",
+        "run_id": "4f876511-00d1-4bf4-8795-670f167b5b27",
+        "position": "first",
+        "box_json": "[684.8000000000001, 48.24, 1157.1200000000001, 719.28]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinctive features matching the reference: messy light brown hair, specific eye shape and color, and the same school uniform consisting of a brown blazer, white shirt, and red tie. The facial structure and art style are identical to the reference character Sakuta Azusagawa.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "a6cab857-b901-4430-a680-4477fe9c642f",
+        "run_id": "4f876511-00d1-4bf4-8795-670f167b5b27",
+        "position": "last",
+        "box_json": "[453.12, 156.24, 807.6800000000001, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      },
+      {
+        "id": "9de5b99e-b3bd-4cc2-a704-2b5d0e3059f7",
+        "run_id": "4f876511-00d1-4bf4-8795-670f167b5b27",
+        "position": "last",
+        "box_json": "[684.8000000000001, 30.240000000000002, 1152.0, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinctive features matching the reference: brown spiky hair, specific eye shape and color, and the same school uniform (brown blazer, white shirt, red tie). The facial structure and art style are identical to the reference character Sakuta Azusagawa.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      }
+    ]
+  }
+}

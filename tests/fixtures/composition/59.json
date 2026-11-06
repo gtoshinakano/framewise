@@ -1,0 +1,365 @@
+{
+  "cut": {
+    "id": "70518486-2005-40ef-bd4a-889991bbdb0d",
+    "start_time": 210.668375,
+    "end_time": 213.170875,
+    "cut_number": 59,
+    "dialogue": [
+      {
+        "id": "843a9158-2587-4c7d-9ec0-8e44c4ad1f34",
+        "start_time": 211.12,
+        "end_time": 211.2,
+        "text": "、ま",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "1edb1eff-b522-4c6a-886a-40208ee1e209",
+        "start_time": 211.76,
+        "end_time": 212.16,
+        "text": "、合格",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "edc88134-92a2-4dbe-8d6f-f613b5ee4272",
+        "start_time": 212.16,
+        "end_time": 212.32,
+        "text": "に",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "53b9acc2-18d6-465c-b033-f498c6de5523",
+        "start_time": 212.32,
+        "end_time": 212.4,
+        "text": "し",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "7c95332b-1eab-4038-8627-2153059a1d8b",
+        "start_time": 212.4,
+        "end_time": 212.48,
+        "text": "て",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "8467bfb6-891c-4c6e-8fd0-beb4b2d729cb",
+        "start_time": 212.48,
+        "end_time": 212.88,
+        "text": "あげる",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "551904bf-87b1-4e40-b770-eb525e8d5459",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "A static medium‑close‑up in a grocery store shows Sakuta Azusagawa’s arm and shoulder, then Mai Sakurajima reaches out and grasps his arm, followed by a tight close‑up of both characters in school uniforms with hands gripping each other's lapels while Mai speaks, as indicated by the transcript and Portuguese subtitle.",
+        "clear": "The opening frame (210.668 s) displays Sakuta’s tan blazer arm in a produce aisle with a static eye‑level camera; video analysis (210.968‑212.068 s) reports Mai’s hand grasping Sakuta’s arm and both standing with interlocked arms; the final frame (213.129 s) shows a chest‑level static close‑up of Mai on the left and Sakuta on the right, hands on lapels, with both in brown school blazers.",
+        "confusing": "Uncertainty remains whether Mai’s hand grasp (210.968‑212.068 s) occurs before, during, or after the dialogue (211.120‑212.880 s) and whether the transition to the lapel‑grip close‑up (213.129 s) involves a cut or camera move not captured in the analysis windows, and whether Sakuta’s tan blazer and the brown school blazer are consistent across the sequence.",
+        "human_review": "Human review is needed to confirm the temporal relationship between the arm‑grasp and lapel‑grip actions, verify any camera cut or zoom between 212.098 s and 213.129 s, and ensure clothing continuity between the tan blazer in the first frame and the brown school blazer in the final frame.",
+        "recommended_checks": "Review raw frames around 210.9‑212.1 s to verify the hand‑grasp timing; inspect frame boundaries or metadata between 212.098 s and 213.129 s for evidence of a cut or camera movement; compare clothing details in the first and last frames to confirm outfit consistency; extract the full dialogue transcript for 211.120‑212.880 s to match spoken words with the visual actions."
+      }
+    },
+    {
+      "id": "a9d3e409-1dc2-410d-862f-65b463ae8251",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 210.668375,
+              "source_end": 212.098375,
+              "width": 640,
+              "height": 360,
+              "fps": 22.377622377622398,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "A close-up shot in a grocery store setting, focusing on the right arm and hand of a person in a brown suit. The background shows a display of yellow pears and green lettuce. A second person's hand enters from the left and grasps the first person's arm. The camera remains static throughout the clip.",
+              "events": [
+                {
+                  "start_seconds": 0.3,
+                  "end_seconds": 1.4,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Reaches out with her right hand and grasps Sakuta Azusagawa's right arm, pulling it slightly toward her.",
+                  "camera": "Apparent static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 210.968375,
+                  "episode_end_seconds": 212.068375
+                }
+              ],
+              "uncertainties": "The full identity and actions of the person on the right are not fully visible, but the hand and arm are clearly identifiable as belonging to Sakuta Azusagawa based on the provided context. The action is inferred from the hand movement and the context provided."
+            }
+          },
+          {
+            "source": {
+              "source_start": 212.098375,
+              "source_end": 213.170875,
+              "width": 640,
+              "height": 360,
+              "fps": 22.377622377622398,
+              "padded_tail": false,
+              "frame_count": 24
+            },
+            "analysis": {
+              "overview": "A close-up shot focuses on the arms and hands of two characters in brown suits. One character's hand is gripping the other's arm. The camera slowly pulls back to reveal both characters standing in what appears to be a grocery store aisle, with produce visible in the background. The character on the left is identified as Sakuta Azusagawa, and the character on the right is identified as Mai Sakurajima. Both are standing still, facing each other, with their arms interlocked. Sakuta's left hand is on Mai's right arm, and Mai's left hand is on Sakuta's right arm. Sakuta's right hand is visible near his waist, and Mai's right hand is visible near her waist. The lighting is bright and even, suggesting an indoor setting. The camera remains static throughout the clip.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.0,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Standing still with his left hand gripping Mai Sakurajima's right arm. His right hand is visible near his waist.",
+                  "camera": "Apparent static camera",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 212.098375,
+                  "episode_end_seconds": 213.098375
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.0,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Standing still with her left hand gripping Sakuta Azusagawa's right arm. Her right hand is visible near her waist.",
+                  "camera": "Apparent static camera",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 212.098375,
+                  "episode_end_seconds": 213.098375
+                }
+              ],
+              "uncertainties": "The camera appears to be static, but the final frame may be contaminated by a hard cut to the next shot, as the real source interval ends at 1.072500 seconds. The visible environment suggests a grocery store, but the exact context is not fully clear from the frames alone."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "1d5caf20-c933-4445-b833-1e2cb3dba33a",
+      "type": "last_frame",
+      "content": {
+        "composition": "A tight close-up shot focusing on the torsos and hands of two characters. The frame is vertically split, with the character on the left occupying the left third and the character on the right occupying the right two-thirds. The primary visual interest is the interaction of hands in the center-right, where one character's hands are gripping the lapel of the other's jacket. The composition emphasizes the physical contact and the texture of the clothing.",
+        "setting": "The background is heavily blurred, suggesting a shallow depth of field. Hints of bright green and white suggest an outdoor setting, possibly a park or street with foliage, or a brightly lit indoor area with plants. The specific location is indeterminate due to the blur.",
+        "lighting": "The lighting is bright and diffuse, consistent with daylight. Shadows are soft, falling naturally on the folds of the clothing and under the hands. There are no harsh highlights or deep shadows, indicating an overcast day or open shade.",
+        "camera": "The camera is static and positioned at chest level, creating an intimate perspective. The angle is slightly low, looking up at the torsos. The framing is extremely tight, cutting off heads and lower bodies to focus entirely on the upper bodies and the hand interaction.",
+        "visible_characters": [
+          {
+            "appearance": "Wearing a brown school blazer over a cream-colored V-neck sweater vest and a white collared shirt with a red tie. Only the torso and hands are visible. The hands are fair-skinned with neatly trimmed nails.",
+            "position": "Occupies the left side of the frame. The torso is angled slightly towards the right.",
+            "pose": "The character is standing. Both hands are visible, gripping the lapel of the other character's jacket. The left hand is lower, holding the fabric, while the right hand is higher, also grasping the lapel. Walking is unconfirmed.",
+            "expression": "Unknown, as the face is not visible.",
+            "identity_evidence": "Identified as Mai Sakurajima based on the user-verified detection box (ID: d2b48ae3-63d8-4c78-8fb4-a3a524bccc37) and the matching school uniform (brown blazer, cream vest, red tie) seen in the reference images."
+          },
+          {
+            "appearance": "Wearing a brown school blazer. Only the right side of the torso and the right arm are visible. The sleeve of a white shirt is visible at the wrist.",
+            "position": "Occupies the right side of the frame. The torso is angled slightly towards the left.",
+            "pose": "The character is standing. The right arm is bent at the elbow, with the hand resting near the chest/shoulder area, partially obscured by the other character's grip. Walking is unconfirmed.",
+            "expression": "Unknown, as the face is not visible.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on the user-verified detection box (ID: 81be78d7-9a8a-4f30-a082-445b69d53a37) and the matching brown blazer seen in the reference images."
+          }
+        ],
+        "other_visual_details": "The fabric of the blazers shows detailed shading and folds, indicating a soft material. The hands of the character on the left (Mai) are actively gripping the jacket of the character on the right (Sakuta), suggesting a moment of tension, reassurance, or emphasis. The red tie provides a strong color accent against the neutral tones of the uniforms.",
+        "uncertainties": "The exact nature of the interaction is ambiguous without audio or further context. It is unclear if the grip is aggressive, comforting, or accidental. The background is too blurred to determine the specific location.",
+        "frame_time": 213.129556,
+        "subtitle_regions": [
+          [
+            405.76,
+            647.28,
+            872.96,
+            696.24
+          ]
+        ]
+      }
+    },
+    {
+      "id": "aae2fe96-e05b-4580-b6a0-fb145d48f8bd",
+      "type": "initial_frame",
+      "content": {
+        "composition": "The frame is split vertically. The right third is dominated by a close-up of a character's arm and shoulder in sharp focus. The left two-thirds show a grocery store produce section with fruit and vegetables, rendered with a shallow depth of field, making the background blurry. A digital price tag is visible in the upper left background.",
+        "setting": "A brightly lit grocery store or supermarket produce aisle. Shelves display yellow apples or pears in the foreground left and green leafy vegetables (possibly cabbage or lettuce) in the mid-ground. A digital price display is mounted on the shelf edge in the background.",
+        "lighting": "Bright, diffuse indoor lighting typical of a retail environment. The light source appears to be overhead, creating soft highlights on the fruit and the character's clothing without harsh shadows.",
+        "camera": "A static, medium-close-up shot. The camera is positioned at eye level relative to the characters, focusing sharply on the right side of the frame while blurring the background elements on the left.",
+        "visible_characters": [
+          {
+            "appearance": "A character wearing a tan or light brown blazer over a white collared shirt. Only the right arm, shoulder, and part of the torso are visible. The fabric shows natural folds and creases.",
+            "position": "Occupies the right side of the frame, extending from the top edge to the bottom. The character is positioned in the foreground.",
+            "pose": "The right arm is visible, hanging down by the side. The elbow is slightly bent. The hand is not visible. The posture suggests standing still. Walking is unconfirmed.",
+            "expression": "Unknown. The face is not visible.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on the user-verified detection box (ID: 81be78d7-9a8a-4f30-a082-445b69d53a37) and the matching tan blazer seen in the reference images."
+          }
+        ],
+        "other_visual_details": "The fruit on the left appears to be yellow apples or pears with reddish blushes. The green vegetables in the center background look like heads of cabbage or lettuce. The digital price tag in the background is out of focus but clearly identifiable as a retail display.",
+        "uncertainties": "The identity of the character is confirmed by the provided detection data, but visually only the arm and clothing are seen. It is unclear if the character is holding anything or interacting with the produce, as the hand is out of frame.",
+        "frame_time": 210.668753,
+        "subtitle_regions": [
+          [
+            96.0,
+            52.559999999999995,
+            266.24,
+            118.80000000000001
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c06f7f04-ef67-46ee-ab41-fa336be5ef1d",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 210.668753,
+            "requested_time": 210.668375,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                96.0,
+                52.559999999999995,
+                266.24,
+                118.80000000000001
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 211.920013,
+            "requested_time": 211.9196245,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                404.48,
+                647.28,
+                872.96,
+                694.8
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Bem, considero aprovado.",
+                "box": [
+                  404.48,
+                  647.28,
+                  876.8000000000001,
+                  697.68
+                ]
+              }
+            ]
+          },
+          {
+            "time": 213.129556,
+            "requested_time": 213.170874,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                405.76,
+                647.28,
+                872.96,
+                696.24
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Bem, considero aprovado.",
+                "box": [
+                  404.48,
+                  647.28,
+                  876.8000000000001,
+                  697.68
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "Bem, considero aprovado.",
+            "language": "pt",
+            "first_observed": 211.920013,
+            "last_observed": 213.129556,
+            "observations": [
+              {
+                "time": 211.920013,
+                "box": [
+                  404.48,
+                  647.28,
+                  876.8000000000001,
+                  697.68
+                ]
+              },
+              {
+                "time": 213.129556,
+                "box": [
+                  404.48,
+                  647.28,
+                  876.8000000000001,
+                  697.68
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "c8499d82-809a-4082-95b2-16c0bfb467e0",
+    "cut_id": "70518486-2005-40ef-bd4a-889991bbdb0d",
+    "job_id": "7036fce4-7d87-4792-afcd-db580e9950b2",
+    "cut_start": 210.668375,
+    "cut_end": 213.170875,
+    "frames_json": "[{\"position\": \"first\", \"time\": 210.668753, \"image_size\": [1280, 720], \"boxes\": [[837.12, 0, 1280, 719.28]], \"raw_response\": \"<ref>person</ref><box><654><0><1000><999></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 213.129556, \"image_size\": [1280, 720], \"boxes\": [[0, 0, 1278.72, 720]], \"raw_response\": \"<ref>person</ref><box><0><0><999><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:25:25",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "81be78d7-9a8a-4f30-a082-445b69d53a37",
+        "run_id": "c8499d82-809a-4082-95b2-16c0bfb467e0",
+        "position": "first",
+        "box_json": "[837.12, 0, 1280, 719.28]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "d2b48ae3-63d8-4c78-8fb4-a3a524bccc37",
+        "run_id": "c8499d82-809a-4082-95b2-16c0bfb467e0",
+        "position": "last",
+        "box_json": "[0, 0, 1278.72, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      }
+    ]
+  }
+}

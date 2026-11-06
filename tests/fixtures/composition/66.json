@@ -1,0 +1,285 @@
+{
+  "cut": {
+    "id": "9532dca6-c948-4bce-bc8d-723339ec87b7",
+    "start_time": 233.316,
+    "end_time": 234.191875,
+    "cut_number": 66,
+    "dialogue": [
+      {
+        "id": "afc051d3-61b9-4f66-a262-9843e96ad9e1",
+        "start_time": 233.32,
+        "end_time": 233.4,
+        "text": "。う",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "a208264e-a512-4282-b22b-c2b15c3d52ce",
+        "start_time": 233.4,
+        "end_time": 235.4,
+        "text": "は",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "b4c5b98c-d650-45ad-bb86-81e5d423950e",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut opens with a static extreme close-up of Sakuta Azusagawa, a young male anime character with ash-brown hair and grey-brown eyes, blushing with wide surprised eyes. The background is heavily blurred, suggesting an indoor setting such as a classroom or hallway. The clip ends with a hard cut to a medium shot of a different man in glasses, white shirt, and green tie standing before refrigerated shelves. The opening and ending frames describe the same character but differ in pose details (head tilt vs. slight right head angle) and background interpretation.",
+        "clear": "Sakuta Azusagawa is visible throughout the cut as the sole detected character, confirmed by both manual and auto detection labels. His appearance is consistent: short ash-brown hair, grey-brown eyes, fair complexion, and prominent blush. The expression is consistently wide-eyed with a slightly open mouth, conveying surprise or embarrassment. The camera remains static throughout the opening shot, using extreme close-up framing. The subtitle OCR at 233.775–234.150s shows a single period character, which is consistent with a silent or untranscribed segment.",
+        "confusing": "The video analysis overview describes the background as suggesting a 'store setting with shelves,' while the frame descriptions suggest an indoor classroom or hallway with a window. This is a material inconsistency in setting description that could affect scene reconstruction. Additionally, the ending frame's background includes 'posters or bulletin boards,' whereas the opening frame mentions 'indistinct shapes of green and purple suggesting foliage or objects outside a window,' indicating divergent background interpretations between frames. The video analysis also describes a 'different man' appearing after the cut, but no detection box is provided for this second character, making it impossible to verify whether this is a new character introduced by the cut or a misinterpretation.",
+        "human_review": "The setting description conflict between 'store with shelves' and 'classroom/hallway with window' requires human judgment to determine which environment is correct for scene reconstruction. The identity of the second man described in the video analysis overview needs verification—whether he is actually present in the ending frame or was misidentified by the model. The subtitle OCR showing only a period character may indicate either a genuine silence or a model failure to transcribe speech; this cannot be resolved without audio evidence.",
+        "recommended_checks": "[\n  \"Verify the actual indoor setting by checking for window frames, classroom signs, or shelving units in the source footage around 233.316–234.191s.\",\n  \"Inspect the ending frame around 234.150578s to confirm whether the second man in glasses and white shirt is present and obtain a detection box if needed.\",\n  \"Check audio tracks for speech around 233.320–235.400s to determine whether the subtitle OCR period represents genuine silence or transcription failure.\",\n  \"Compare the background blur interpretation across frames to resolve whether the setting is a store, classroom, or hallway.\"\n]"
+      }
+    },
+    {
+      "id": "c8595751-82c9-45f5-902a-3e9c2a6d1972",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 233.316,
+              "source_end": 234.191875,
+              "width": 640,
+              "height": 360,
+              "fps": 30.0,
+              "padded_tail": false,
+              "frame_count": 28
+            },
+            "analysis": {
+              "overview": "The clip opens with a close-up of a young male anime character with brown hair and wide, surprised eyes, blushing. His mouth is slightly open. The background is blurred but suggests a store setting with shelves. The shot then cuts to a medium shot of a different man with glasses and a white shirt and green tie, standing in front of refrigerated shelves stocked with packaged food and produce. He has a neutral expression and is looking slightly down.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.875,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "The character has a surprised expression with wide eyes and an open mouth, and is blushing. His head is slightly tilted.",
+                  "camera": "The camera is static in a close-up shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 233.316,
+                  "episode_end_seconds": 234.191
+                },
+                {
+                  "start_seconds": 0.875,
+                  "end_seconds": 0.875,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "The character's expression remains surprised and blushing.",
+                  "camera": "The camera cuts to a different shot.",
+                  "uncertainty": "The final frame is a hard cut to the next shot, so this event is truncated.",
+                  "episode_start_seconds": 234.191,
+                  "episode_end_seconds": 234.191
+                }
+              ],
+              "uncertainties": "The clip ends with a hard cut to a different shot, so the final frame is not part of the current shot's visual state. The character's expression and pose are consistent throughout the visible frames."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "3b6570b8-619e-4d81-bf10-60a9022b87ed",
+      "type": "last_frame",
+      "content": {
+        "composition": "Extreme close-up on the character's face, filling the majority of the frame. The character is positioned slightly to the left, with the right side of the face more prominent. The background is heavily blurred, creating a shallow depth of field that isolates the subject.",
+        "setting": "An indoor environment, likely a classroom or school hallway, suggested by the blurred background elements which include what appears to be a window with light coming through and indistinct shapes that could be posters or bulletin boards.",
+        "lighting": "Bright, diffuse lighting, likely natural light from a window source to the left, illuminating the character's face evenly. There are soft shadows under the nose and chin, and highlights in the eyes.",
+        "camera": "Static shot, extreme close-up. The camera is positioned at eye level with the character.",
+        "visible_characters": [
+          {
+            "appearance": "Young male with short, tousled ash-brown hair and grey-brown eyes. He has a fair complexion with a noticeable blush across his cheeks and nose.",
+            "position": "Centered in the frame, occupying most of the visual space. His head is angled slightly to his right (viewer's left).",
+            "pose": "Only the head and neck are visible. The body posture is obscured. Walking is unconfirmed.",
+            "expression": "Wide-eyed with a slightly open mouth, conveying surprise, shock, or flustered embarrassment. The blush reinforces the flustered or embarrassed interpretation.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box (ID: 48f03191-1de4-4b99-8538-99bb04b6c0b6) matching the character's distinct ash-brown hair, eye color, and facial structure described in the context."
+          }
+        ],
+        "other_visual_details": "The character's eyes are wide open, with distinct catchlights. His mouth is slightly agape. The blush is a prominent feature, covering the cheeks and bridge of the nose. The background is out of focus, showing hints of green (possibly foliage outside a window) and purple/white shapes (possibly posters).",
+        "uncertainties": "The exact cause of the character's expression is unknown from this single frame. The specific location within the building is unclear due to the heavy blur.",
+        "frame_time": 234.150578,
+        "subtitle_regions": [
+          [
+            801.28,
+            567.36,
+            1280.0,
+            720.0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "95de8b25-0e7d-472b-ae7b-3f3cc247be04",
+      "type": "initial_frame",
+      "content": {
+        "composition": "Extreme close-up centered on the character's face, filling most of the frame. The background is heavily blurred, creating a shallow depth of field that isolates the subject.",
+        "setting": "Indoor environment, likely a classroom or school hallway, indicated by the blurred window frame and light-colored walls in the background.",
+        "lighting": "Bright, diffuse natural lighting coming from the front-left, casting soft shadows on the right side of the face and highlighting the hair texture.",
+        "camera": "Static shot with a telephoto lens effect, focusing tightly on the facial expression.",
+        "visible_characters": [
+          {
+            "appearance": "Male anime character with short, tousled ash-brown hair and grey-brown eyes. He has a fair complexion with a noticeable blush across his cheeks and nose.",
+            "position": "Centered in the frame, occupying the majority of the visual space.",
+            "pose": "Head and shoulders visible; body orientation is unknown due to the tight framing. Walking is unconfirmed.",
+            "expression": "Wide-eyed and staring forward with a surprised or shocked expression, mouth slightly open.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box 48f03191-1de4-4b99-8538-99bb04b6c0b6. The ash-brown hair, eye color, and facial structure match the reference character description."
+          }
+        ],
+        "other_visual_details": "The character's eyes are wide open with distinct highlights, emphasizing the surprise. The blush is rendered with a soft gradient. The background features indistinct shapes of green and purple, suggesting foliage or objects outside a window.",
+        "uncertainties": "The specific cause of the character's expression is unknown from this single frame. The exact location within the building is unclear due to the heavy background blur.",
+        "frame_time": 233.316411,
+        "subtitle_regions": []
+      }
+    },
+    {
+      "id": "45622f26-8c7b-49a3-85b1-a3a6f6496380",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 233.316411,
+            "requested_time": 233.316,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [],
+            "readings": []
+          },
+          {
+            "time": 233.775204,
+            "requested_time": 233.753937,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                801.28,
+                567.36,
+                1280.0,
+                720.0
+              ]
+            ],
+            "readings": [
+              {
+                "text": ".",
+                "box": [
+                  811.52,
+                  563.76,
+                  1280.0,
+                  720.0
+                ]
+              }
+            ]
+          },
+          {
+            "time": 234.150578,
+            "requested_time": 234.191874,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                801.28,
+                567.36,
+                1280.0,
+                720.0
+              ]
+            ],
+            "readings": [
+              {
+                "text": ".",
+                "box": [
+                  811.52,
+                  562.32,
+                  1280.0,
+                  720.0
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": ".",
+            "language": "unknown",
+            "first_observed": 233.775204,
+            "last_observed": 234.150578,
+            "observations": [
+              {
+                "time": 233.775204,
+                "box": [
+                  811.52,
+                  563.76,
+                  1280.0,
+                  720.0
+                ]
+              },
+              {
+                "time": 234.150578,
+                "box": [
+                  811.52,
+                  562.32,
+                  1280.0,
+                  720.0
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "4fa7e9ed-c11e-4e4e-ad12-d1c778f7e2c8",
+    "cut_id": "9532dca6-c948-4bce-bc8d-723339ec87b7",
+    "job_id": "f2cc8ab8-0049-4c6d-aa39-0019748d0e54",
+    "cut_start": 233.316,
+    "cut_end": 234.191875,
+    "frames_json": "[{\"position\": \"first\", \"time\": 233.316411, \"image_size\": [1280, 720], \"boxes\": [[116.47999999999999, 0, 1278.72, 720]], \"raw_response\": \"<ref>person</ref><box><91><0><999><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 234.150578, \"image_size\": [1280, 720], \"boxes\": [[58.879999999999995, 0, 1158.4, 720]], \"raw_response\": \"<ref>person</ref><box><46><0><905><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:35:05",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "48f03191-1de4-4b99-8538-99bb04b6c0b6",
+        "run_id": "4fa7e9ed-c11e-4e4e-ad12-d1c778f7e2c8",
+        "position": "first",
+        "box_json": "[116.47999999999999, 0, 1278.72, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "20aa38a3-55a2-4645-b71c-0f313098de12",
+        "run_id": "4fa7e9ed-c11e-4e4e-ad12-d1c778f7e2c8",
+        "position": "last",
+        "box_json": "[58.879999999999995, 0, 1158.4, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinct physical features that perfectly match the reference image of Sakuta Azusagawa. Specifically, the messy brown hair, the shape and color of the eyes (grey/brown), and the facial structure are identical. Although the target image is a close-up showing a blushing expression, the underlying character design is unmistakably the same as the reference.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      }
+    ]
+  }
+}

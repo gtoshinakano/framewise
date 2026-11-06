@@ -399,7 +399,8 @@ def job_outputs(job_id: str):
             item['frame_count'] = len(saved) if isinstance(saved, list) else None
             payload = _json(job['payload_json'], {})
             item['checkpoint_count'] = len(saved) if isinstance(saved, dict) and isinstance(payload, dict) and payload.get('workflow') == 'single_cut_v2' else None
-        return {'results': results, 'segments': segments, 'evidence': evidence, 'voices': voices}
+        rejected = [dict(row) for row in conn.execute('SELECT id,cut_id,window_index,start_time,end_time,error,response,created_at FROM rejected_video_responses WHERE job_id=? ORDER BY id', (job_id,))]
+        return {'results': results, 'segments': segments, 'evidence': evidence, 'voices': voices, 'rejected_video_responses': rejected}
 
 
 @router.delete('/jobs/{job_id}')

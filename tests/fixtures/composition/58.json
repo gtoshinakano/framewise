@@ -1,0 +1,379 @@
+{
+  "cut": {
+    "id": "537b0167-dbce-429d-a5a9-4a518fa135a7",
+    "start_time": 207.164875,
+    "end_time": 210.668375,
+    "cut_number": 58,
+    "dialogue": [
+      {
+        "id": "df8c7bfd-bfed-4ed3-a78e-acf568b864cb",
+        "start_time": 208.8,
+        "end_time": 209.36,
+        "text": "。若干",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "e53f82f0-9c88-4130-90df-57e8d354a31e",
+        "start_time": 209.36,
+        "end_time": 209.84,
+        "text": "気持ち",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "ee43ad8b-ece8-42fc-92d3-b5202f6e1bb6",
+        "start_time": 209.84,
+        "end_time": 210.08,
+        "text": "悪い",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "f6a04457-6ec7-4719-830d-fcec86fe8d8b",
+        "start_time": 210.08,
+        "end_time": 210.4,
+        "text": "けど",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "d177e06a-c088-425d-9b5a-6aa586737ae2",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut is a static medium close-up of a single female character, manually identified as Mai Sakurajima, in a grocery store produce aisle from approximately 207.17s to 210.63s. Visual analysis shows minimal movement: she stands still facing the camera, briefly closes and reopens her eyes, and opens her mouth slightly. Transcript segments attribute Japanese speech to SPEAKER_04 linked to Mai Sakurajima between 208.80s and 210.40s, while Portuguese subtitle OCR appears with partially overlapping but differently timed content.",
+        "clear": "Opening and ending frames both show one female character in a blurred grocery store produce section under bright indoor lighting, with a static eye-level camera. Character detections at the first frame (207.165242s) and last frame (210.627056s) both link to the same user-verified Mai Sakurajima identity (ID 1ab61da1-6b7b-44af-89cb-9ea73ebb83a9). Video-analysis events describe the character standing still, facing forward, briefly closing and reopening her eyes, and opening her mouth slightly between roughly 208.06s and 209.06s. Transcript segments consistently assign SPEAKER_04 to Mai Sakurajima across four contiguous segments from 208.80s to 210.40s.",
+        "confusing": "Hair accessory discrepancy: the opening frame describes two white hair clips on the right side of the head, while the ending frame describes a single small pink hair clip on the right side, with no explained change within the static shot. Clothing detail discrepancy: the opening frame mentions a beige vest under the brown blazer, while the ending frame describes the blazer over a white collared shirt and red tie without mentioning the vest. Mouth-state conflict near the cut end: video-analysis window 2 (through approximately 210.66s) describes the mouth as slightly open in a subtle smile, while the ending frame at 210.627056s describes the mouth as closed in a small straight line. Transcript and subtitle OCR use different languages (Japanese vs Portuguese) with only partial timestamp overlap; the OCR event at the initial frame time (207.165242s) has no corresponding transcript segment in the provided range, and it is unclear whether the Portuguese subtitles translate the Japanese transcript or represent separate dialogue.",
+        "human_review": "A human should confirm whether the hair clip color/count and vest presence are genuine continuity errors or observation granularity differences, since this affects character appearance reconstruction. A human should also determine the mouth state at the end of the cut to align animation timing and lip-sync with the transcript. Finally, a human should decide whether the Portuguese subtitle OCR corresponds to the Japanese transcript segments or to different audio, affecting dialogue attribution and subtitle timing.",
+        "recommended_checks": "Compare full-resolution first and last frame crops (207.165242s and 210.627056s) to verify hair clip color/count and vest visibility. Inspect frames around 210.60s to 210.63s to reconcile the video-analysis mouth-open description with the ending-frame mouth-closed description. Cross-reference the Japanese transcript timestamps (208.80s–210.40s) with the Portuguese subtitle OCR timestamps (207.165242s and 208.917002s–210.627056s) and, if available, the audio track to determine whether they represent the same dialogue."
+      }
+    },
+    {
+      "id": "93d22a0a-5185-4acb-be1f-5d2c49184c08",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 207.164875,
+              "source_end": 209.166875,
+              "width": 640,
+              "height": 360,
+              "fps": 15.984015984015972,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "A close-up shot of a young woman with long dark hair and purple eyes, wearing a school uniform, standing in a brightly lit supermarket produce section. She is positioned in the foreground, facing the camera. Behind her, shelves display packaged fruits, including melons in the foreground and red apples in the background. The camera remains static throughout the clip.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.9,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Stands still, facing the camera with her eyes open and a neutral expression. Her head is slightly tilted forward.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 207.164875,
+                  "episode_end_seconds": 208.064875
+                },
+                {
+                  "start_seconds": 0.9,
+                  "end_seconds": 1.4,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Closes her eyes briefly, then opens them again, maintaining a neutral expression.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 208.064875,
+                  "episode_end_seconds": 208.564875
+                },
+                {
+                  "start_seconds": 1.4,
+                  "end_seconds": 1.9,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Opens her mouth slightly, as if about to speak or reacting to something, while maintaining eye contact with the camera.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 208.564875,
+                  "episode_end_seconds": 209.064875
+                }
+              ],
+              "uncertainties": "No significant uncertainty"
+            }
+          },
+          {
+            "source": {
+              "source_start": 209.166875,
+              "source_end": 210.668375,
+              "width": 640,
+              "height": 360,
+              "fps": 15.984015984015972,
+              "padded_tail": false,
+              "frame_count": 24
+            },
+            "analysis": {
+              "overview": "A close-up shot of a young woman with long, dark gray hair and purple eyes, wearing a brown blazer over a white collared shirt with a red tie. She is positioned in the foreground, facing the camera directly. The background shows shelves stocked with packaged fruit, including yellow apples in the foreground and red apples and other fruits in the background. The lighting is bright and even, typical of a retail environment. The camera is static, maintaining a steady focus on the character's face and upper body.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.5,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Maintains a stationary, front-facing pose with a neutral facial expression. Her mouth is slightly open in a subtle smile, and her eyes are looking directly at the camera. Her head remains still throughout the clip.",
+                  "camera": "Apparent static shot with no movement.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 209.166875,
+                  "episode_end_seconds": 210.666875
+                }
+              ],
+              "uncertainties": "The clip is very short and static, with no observable motion or camera movement. The final frame at 1.5 seconds may be contaminated by a hard cut to the next shot, but this is not confirmed by the visual evidence alone; the current shot's state is described up to the boundary."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "3f04b2a0-af56-4b52-b04d-8caf61078f01",
+      "type": "last_frame",
+      "content": {
+        "composition": "Medium close-up centered on a single female character. The background is a blurred grocery store produce section, creating depth of field that isolates the subject. The character is framed from the chest up, occupying the central vertical axis.",
+        "setting": "Interior of a grocery store or supermarket, specifically in the produce aisle. Shelves stocked with fruits (peaches, apples, melons) are visible in the background.",
+        "lighting": "Bright, diffuse indoor lighting typical of a retail environment. Soft shadows on the character's face suggest overhead lighting. Highlights are visible in the eyes and on the hair.",
+        "camera": "Static shot, eye-level perspective. The camera is focused sharply on the character's face, with a shallow depth of field blurring the background shelves.",
+        "visible_characters": [
+          {
+            "appearance": "Female anime character with very long, straight dark charcoal-black hair with subtle bluish highlights. She has large, almond-shaped deep blue-violet eyes. She is wearing a brown school blazer over a white collared shirt with a red tie. A small pink hair clip is visible on the right side of her head.",
+            "position": "Centered in the frame, occupying the majority of the vertical space. She is facing the camera directly.",
+            "pose": "Upper body visible from the chest up. Shoulders are level. Arms and legs are not visible. Walking is unconfirmed.",
+            "expression": "Neutral to slightly concerned expression. Eyes are wide and looking forward. Mouth is closed in a small, straight line.",
+            "identity_evidence": "Matches user-verified detection box 'c0b9b38f-4dd4-4bd7-a212-83072aa61a08' for 'Mai Sakurajima' (ID 1ab61da1-6b7b-44af-89cb-9ea73ebb83a9). Visual features (hair color, eye color, uniform) align with the provided character context."
+          }
+        ],
+        "other_visual_details": "Background shelves contain various fruits: pink peaches in netting on the top shelf, red apples on the right, and yellow melons or apples on the bottom left. Price tags are visible but illegible due to blur. The character has a small mole on her left cheek.",
+        "uncertainties": "None regarding the visible character's identity due to user verification. The exact nature of the fruits in the background is inferred from shape and color but not definitively identified.",
+        "frame_time": 210.627056,
+        "subtitle_regions": [
+          [
+            326.4,
+            648.0,
+            952.3199999999999,
+            691.1999999999999
+          ]
+        ]
+      }
+    },
+    {
+      "id": "69f5cc87-d8f1-4652-8b71-72c67a0d2f4e",
+      "type": "initial_frame",
+      "content": {
+        "composition": "Medium close-up centered on a single female character. The background is a blurred grocery store produce section, creating a shallow depth of field that isolates the subject. The character is positioned slightly to the right of the center, with her head and shoulders filling the majority of the frame.",
+        "setting": "Interior of a grocery store or supermarket, specifically in the produce aisle. Shelves stocked with fruits (peaches, apples, melons) are visible in the background.",
+        "lighting": "Bright, diffuse indoor lighting typical of a retail environment. Soft shadows on the character's face suggest overhead lighting. Highlights are visible in her eyes and hair.",
+        "camera": "Static shot, eye-level perspective. The camera is focused sharply on the character's face, with the background significantly out of focus (bokeh effect).",
+        "visible_characters": [
+          {
+            "appearance": "Female anime character with very long, straight dark charcoal-black hair with subtle bluish highlights. She has large, almond-shaped deep blue-violet eyes with prominent upper lashes. She wears a white collared shirt, a red tie, a beige vest, and a brown blazer. Two white hair clips are visible on the right side of her head.",
+            "position": "Centered in the frame, occupying the foreground from the chest up.",
+            "pose": "Upper body visible; posture appears upright and stationary. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "Neutral to slightly surprised or attentive expression. Eyes are wide open, looking directly forward. Mouth is closed in a small, neutral line.",
+            "identity_evidence": "Matches user-verified character detection 'Mai Sakurajima' (ID 1ab61da1-6b7b-44af-89cb-9ea73ebb83a9) based on hair color, eye color, school uniform, and facial features."
+          }
+        ],
+        "other_visual_details": "Background shelves contain various fruits: pinkish peaches or nectarines in the upper left, red apples in the upper right, and yellow melons or apples in the lower left. Price tags and digital displays are visible but blurred on the shelves.",
+        "uncertainties": "The exact nature of the character's emotional state is ambiguous; it could be surprise, attentiveness, or mild confusion. The specific type of fruit in the lower left is not clearly identifiable due to blur.",
+        "frame_time": 207.165242,
+        "subtitle_regions": [
+          [
+            281.6,
+            604.0799999999999,
+            1000.96,
+            696.24
+          ]
+        ]
+      }
+    },
+    {
+      "id": "2a558d93-b55e-432b-9a1d-ec14c001fc49",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 207.165242,
+            "requested_time": 207.164875,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                281.6,
+                604.0799999999999,
+                1000.96,
+                696.24
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Por favor, seja minha primeira, já quem\nnunca peguei na mão de uma garota.",
+                "box": [
+                  280.32,
+                  603.36,
+                  1000.96,
+                  696.96
+                ]
+              }
+            ]
+          },
+          {
+            "time": 208.917002,
+            "requested_time": 208.9166245,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                326.4,
+                648.0,
+                952.3199999999999,
+                691.1999999999999
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Isso foi terrível de várias maneiras.",
+                "box": [
+                  326.4,
+                  648.72,
+                  954.88,
+                  690.48
+                ]
+              }
+            ]
+          },
+          {
+            "time": 210.627056,
+            "requested_time": 210.668374,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                326.4,
+                648.0,
+                952.3199999999999,
+                691.1999999999999
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Isso foi terrível de várias maneiras.",
+                "box": [
+                  326.4,
+                  649.44,
+                  954.88,
+                  690.48
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "Por favor, seja minha primeira, já quem\nnunca peguei na mão de uma garota.",
+            "language": "pt",
+            "first_observed": 207.165242,
+            "last_observed": 207.165242,
+            "observations": [
+              {
+                "time": 207.165242,
+                "box": [
+                  280.32,
+                  603.36,
+                  1000.96,
+                  696.96
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Isso foi terrível de várias maneiras.",
+            "language": "pt",
+            "first_observed": 208.917002,
+            "last_observed": 210.627056,
+            "observations": [
+              {
+                "time": 208.917002,
+                "box": [
+                  326.4,
+                  648.72,
+                  954.88,
+                  690.48
+                ]
+              },
+              {
+                "time": 210.627056,
+                "box": [
+                  326.4,
+                  649.44,
+                  954.88,
+                  690.48
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "9534130c-8a49-459a-8f6b-0c751390070a",
+    "cut_id": "537b0167-dbce-429d-a5a9-4a518fa135a7",
+    "job_id": "3513055c-7052-4492-b6fb-5a6e1dbe881e",
+    "cut_start": 207.164875,
+    "cut_end": 210.668375,
+    "frames_json": "[{\"position\": \"first\", \"time\": 207.165242, \"image_size\": [1280, 720], \"boxes\": [[363.52, 0, 1071.36, 720]], \"raw_response\": \"<ref>person</ref><box><284><0><837><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 210.627056, \"image_size\": [1280, 720], \"boxes\": [[371.2, 0, 1109.76, 720]], \"raw_response\": \"<ref>person</ref><box><290><0><867><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:24:19",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "c0b9b38f-4dd4-4bd7-a212-83072aa61a08",
+        "run_id": "9534130c-8a49-459a-8f6b-0c751390070a",
+        "position": "first",
+        "box_json": "[363.52, 0, 1071.36, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      },
+      {
+        "id": "ce70135e-8a1d-4eb6-81f6-73fddf7820f7",
+        "run_id": "9534130c-8a49-459a-8f6b-0c751390070a",
+        "position": "last",
+        "box_json": "[371.2, 0, 1109.76, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      }
+    ]
+  }
+}

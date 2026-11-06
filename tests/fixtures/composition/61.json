@@ -1,0 +1,344 @@
+{
+  "cut": {
+    "id": "177e2d2b-0695-4dbc-a537-595290679efa",
+    "start_time": 216.173875,
+    "end_time": 219.176875,
+    "cut_number": 61,
+    "dialogue": [
+      {
+        "id": "2917d42b-2748-4e91-9db5-d7bd33702a3e",
+        "start_time": 216.48,
+        "end_time": 216.72,
+        "text": "。今",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "cbfe06f5-2438-4ef7-a41b-b3fc59c2f230",
+        "start_time": 217.36,
+        "end_time": 217.68,
+        "text": "、エロい",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "c05f0681-6ad8-477e-a5a3-8ff122542984",
+        "start_time": 217.68,
+        "end_time": 217.92000000000002,
+        "text": "こと",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "c102c87d-1cc5-4633-a60e-68390c81975b",
+        "start_time": 217.92000000000002,
+        "end_time": 218.32,
+        "text": "考え",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "197af09c-f5c9-48a1-8c47-96f083e74259",
+        "start_time": 218.32,
+        "end_time": 218.56,
+        "text": "てる",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "23c2e920-da59-430d-b0d4-f985120bc3cb",
+        "start_time": 218.56,
+        "end_time": 218.8,
+        "text": "でしょう",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "948750f4-23ee-400b-b8e0-b6013e33f382",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "A static extreme close-up of Mai Sakurajima in a grocery store setting, featuring bright lighting and a shallow depth of field. The character delivers dialogue that aligns with on-screen subtitles regarding indecent thoughts. Visual descriptions of her attire and accessories show minor inconsistencies between the opening and closing frames.",
+        "clear": "The camera remains static throughout the cut. The character is consistently identified as Mai Sakurajima via user-verified detection boxes. The Japanese transcript and Portuguese subtitle OCR convey matching meanings with overlapping timestamps. Video analysis confirms a progression from a neutral expression to a slight smile while maintaining direct eye contact.",
+        "confusing": "The opening frame describes a beige or light brown jacket, whereas the last frame specifies a beige vest and brown blazer, and notes a pink hair clip absent from the initial description. The video analysis repeatedly states the character's mouth remains closed, yet the transcript attributes continuous dialogue to her. A hand visible in the upper right corner of the opening frame lacks context or explanation.",
+        "human_review": "Verify the exact costume configuration and accessory placement to ensure accurate character modeling. Confirm whether the character's mouth animates during the dialogue or if the delivery is intended to be subtle, as this dictates lip-sync animation parameters.",
+        "recommended_checks": "Compare the opening and last frame visual descriptions against the source video to resolve the clothing and accessory discrepancies. Check the lip-sync animation timing against the transcript timestamps (216.48–218.80s) to verify mouth movement. Inspect the upper-right corner of the opening frame to identify the visible hand and determine its scene relevance."
+      }
+    },
+    {
+      "id": "c267e921-131f-4498-9f8e-0e5870392788",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 216.173875,
+              "source_end": 217.889875,
+              "width": 640,
+              "height": 360,
+              "fps": 18.648018648018734,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "A close-up shot of a young anime girl with long dark hair and large blue-violet eyes. She is positioned in the foreground, looking directly at the camera with a slight smile. The background is softly blurred, showing green foliage and what appears to be a cluster of green apples on the left. The lighting is bright and even, suggesting an outdoor daytime setting. The camera remains static throughout the clip.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.2,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "The girl blinks slowly, her eyes closing briefly before opening again.",
+                  "camera": "Apparent static camera.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 216.173875,
+                  "episode_end_seconds": 216.373875
+                },
+                {
+                  "start_seconds": 0.2,
+                  "end_seconds": 1.7,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "The girl maintains eye contact with the camera, her expression shifting to a gentle, slightly teasing smile. Her mouth remains closed throughout.",
+                  "camera": "Apparent static camera.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 216.373875,
+                  "episode_end_seconds": 217.873875
+                }
+              ],
+              "uncertainties": "No significant uncertainty"
+            }
+          },
+          {
+            "source": {
+              "source_start": 217.889875,
+              "source_end": 219.176875,
+              "width": 640,
+              "height": 360,
+              "fps": 18.648018648018734,
+              "padded_tail": false,
+              "frame_count": 24
+            },
+            "analysis": {
+              "overview": "A close-up shot of the anime character Mai Sakurajima, who has long dark hair and large blue-violet eyes. She is looking directly at the camera with a slight, knowing smile. The background is softly blurred, showing green foliage. The shot is static with no camera movement.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.287,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Maintains a stationary pose, looking directly at the camera with a slight smile. Her eyes are wide and expressive, and her head remains still throughout the clip.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 217.889875,
+                  "episode_end_seconds": 219.176875
+                }
+              ],
+              "uncertainties": "No significant uncertainty"
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "e65afb46-d8d4-405c-b02a-050caa149ab3",
+      "type": "last_frame",
+      "content": {
+        "composition": "Extreme close-up centered on the character's face, filling the majority of the frame. The background is heavily blurred (bokeh effect), isolating the subject. The character is positioned slightly off-center to the left.",
+        "setting": "An indoor retail environment, likely a grocery store or supermarket produce section, indicated by the blurred green and yellow shapes resembling fruits or vegetables in the background.",
+        "lighting": "Bright, diffuse lighting typical of an indoor commercial space. Soft shadows on the face suggest overhead lighting. Highlights are visible in the eyes and on the hair.",
+        "camera": "Static shot with a shallow depth of field, focusing sharply on the character's eyes while blurring the background.",
+        "visible_characters": [
+          {
+            "appearance": "Female anime character with long, straight dark charcoal-black hair with subtle bluish highlights. She has large, almond-shaped deep blue-violet eyes with prominent upper lashes. She wears a white collared shirt under a beige vest and a brown blazer. A pink hair clip is visible on the right side of her head.",
+            "position": "Centered in the frame, occupying the foreground. Her face is the primary focus.",
+            "pose": "Upper torso and head visible. She is facing the camera directly. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "Her eyes are wide and focused forward. Her mouth is closed in a neutral or slightly smiling expression. She appears to be looking directly at the viewer or another character.",
+            "identity_evidence": "User-verified detection box (ID 0a40d2dd-84e5-4527-9d62-83a1a6af93d5) matches the character description for Mai Sakurajima (ID 1ab61da1-6b7b-44af-89cb-9ea73ebb83a9) provided in the context."
+          }
+        ],
+        "other_visual_details": "A pink hair clip is visible on the right side of her head. The background consists of out-of-focus green and yellow shapes, consistent with produce displays. There are Portuguese subtitles at the bottom of the frame.",
+        "uncertainties": "The exact nature of the background objects is unclear due to the blur, though they resemble fruits or vegetables. The character's full body posture is obscured.",
+        "frame_time": 219.135556,
+        "subtitle_regions": [
+          [
+            417.28000000000003,
+            604.8,
+            862.72,
+            695.52
+          ]
+        ]
+      }
+    },
+    {
+      "id": "8d8538b0-b13f-49f3-a012-5371a4a14814",
+      "type": "initial_frame",
+      "content": {
+        "composition": "Extreme close-up centered on the character's face, filling most of the frame. The background is heavily blurred (bokeh effect), creating a shallow depth of field that isolates the subject. The character is positioned slightly off-center to the left.",
+        "setting": "An indoor retail environment, likely a grocery store or supermarket produce section, indicated by the blurred stacks of green apples or similar round fruits visible in the background.",
+        "lighting": "Bright, diffuse, and even lighting typical of an indoor commercial space. There are soft highlights in the eyes and on the hair, with no harsh shadows on the face.",
+        "camera": "Static extreme close-up shot. The camera is positioned at eye level with the subject.",
+        "visible_characters": [
+          {
+            "appearance": "Female anime character with long, straight dark charcoal-black hair featuring subtle bluish highlights. She has large, almond-shaped deep blue-violet eyes with prominent upper lashes. Her face is an oval shape with a narrow chin, small nose, and softly defined cheeks. She wears a white collared shirt under a beige or light brown jacket.",
+            "position": "Centered in the frame, occupying the majority of the visual space. Her face is oriented directly towards the camera (facing camera).",
+            "pose": "Only the head and upper shoulders are visible. The body is stationary; walking is unconfirmed.",
+            "expression": "Her eyes are wide open with a direct gaze, and her mouth is closed in a neutral, slightly downturned line. Her expression appears serious, attentive, or perhaps slightly surprised.",
+            "identity_evidence": "Identified as Mai Sakurajima based on the user-verified detection box (ID 0a40d2dd-84e5-4527-9d62-83a1a6af93d5) and matching visual features (hair color, eye color, facial structure) described in the character context."
+          }
+        ],
+        "other_visual_details": "A small mole is visible on the character's left cheek. A small portion of a hand is visible in the upper right corner, seemingly touching or adjusting her hair. The background consists of out-of-focus green shapes resembling fruit.",
+        "uncertainties": "The specific action of the hand in the background is unclear due to the framing. The exact nature of the background objects is inferred from shape and color but not perfectly distinct.",
+        "frame_time": 216.174253,
+        "subtitle_regions": []
+      }
+    },
+    {
+      "id": "7c544d7c-a21d-4f1d-bab5-8091b97f023c",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 216.174253,
+            "requested_time": 216.173875,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [],
+            "readings": []
+          },
+          {
+            "time": 217.675752,
+            "requested_time": 217.6753745,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                417.28000000000003,
+                604.8,
+                862.72,
+                695.52
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Está pensando em coisas\nindecentes agora, não é?",
+                "box": [
+                  417.28000000000003,
+                  604.8,
+                  865.2800000000001,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "time": 219.135556,
+            "requested_time": 219.176874,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                417.28000000000003,
+                604.8,
+                862.72,
+                695.52
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Está pensando em coisas\nindecentes agora, não é?",
+                "box": [
+                  417.28000000000003,
+                  604.8,
+                  864.0,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "Está pensando em coisas\nindecentes agora, não é?",
+            "language": "pt",
+            "first_observed": 217.675752,
+            "last_observed": 219.135556,
+            "observations": [
+              {
+                "time": 217.675752,
+                "box": [
+                  417.28000000000003,
+                  604.8,
+                  865.2800000000001,
+                  696.24
+                ]
+              },
+              {
+                "time": 219.135556,
+                "box": [
+                  417.28000000000003,
+                  604.8,
+                  864.0,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "35ffb65c-0a1f-4815-b8b5-71ebded9213f",
+    "cut_id": "177e2d2b-0695-4dbc-a537-595290679efa",
+    "job_id": "b15d5538-52a2-4c58-a046-d73e3b3c593c",
+    "cut_start": 216.173875,
+    "cut_end": 219.176875,
+    "frames_json": "[{\"position\": \"first\", \"time\": 216.174253, \"image_size\": [1280, 720], \"boxes\": [[49.92, 0, 1125.12, 720]], \"raw_response\": \"<ref>person</ref><box><39><0><879><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 219.135556, \"image_size\": [1280, 720], \"boxes\": [[74.24000000000001, 0, 1173.76, 720]], \"raw_response\": \"<ref>person</ref><box><58><0><917><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:28:25",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "0a40d2dd-84e5-4527-9d62-83a1a6af93d5",
+        "run_id": "35ffb65c-0a1f-4815-b8b5-71ebded9213f",
+        "position": "first",
+        "box_json": "[49.92, 0, 1125.12, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      },
+      {
+        "id": "6ab81aa1-01df-4432-8c33-21407d7e7697",
+        "run_id": "35ffb65c-0a1f-4815-b8b5-71ebded9213f",
+        "position": "last",
+        "box_json": "[74.24000000000001, 0, 1173.76, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      }
+    ]
+  }
+}

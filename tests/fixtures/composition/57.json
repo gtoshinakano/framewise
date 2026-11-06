@@ -1,0 +1,657 @@
+{
+  "cut": {
+    "id": "3263cbab-58e2-4298-b51c-b6b470e9786c",
+    "start_time": 202.7855,
+    "end_time": 207.164875,
+    "cut_number": 57,
+    "dialogue": [
+      {
+        "id": "118ca101-7743-4062-89a0-58e4837b94b5",
+        "start_time": 202.96,
+        "end_time": 203.2,
+        "text": "、女子",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "76cec509-2470-4cb9-ad01-e97adfd931a0",
+        "start_time": 203.2,
+        "end_time": 203.36,
+        "text": "と",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "e9fb6a4d-f92d-4181-a340-3e033ae33672",
+        "start_time": 203.36,
+        "end_time": 203.52,
+        "text": "手",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "af771d86-7263-4508-99e7-6a42fccfa795",
+        "start_time": 203.52,
+        "end_time": 203.76,
+        "text": "すら",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "b164fc00-0fc7-4783-ac12-309c0ed3d463",
+        "start_time": 203.76,
+        "end_time": 204.08,
+        "text": "つない",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "537f5027-6987-4d7f-86ed-b9003611b0f1",
+        "start_time": 204.08,
+        "end_time": 204.24,
+        "text": "だ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "f519fe26-3b79-4597-8890-0b74e86aa4b0",
+        "start_time": 204.24,
+        "end_time": 204.4,
+        "text": "こと",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "8c8dea04-3fc8-4c53-bc1d-fd7f129672a8",
+        "start_time": 204.4,
+        "end_time": 204.56,
+        "text": "の",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "ac2a8582-8f33-4032-99bc-8cfbdd4d9ce0",
+        "start_time": 204.56,
+        "end_time": 204.72,
+        "text": "ない",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "9e5935eb-927a-42d6-ab0e-127c6cbf41cb",
+        "start_time": 204.72,
+        "end_time": 205.04,
+        "text": "僕",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "ae73219a-b903-4a9c-89ae-f54b826d838c",
+        "start_time": 205.04,
+        "end_time": 205.12,
+        "text": "の",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "7c8bfbef-300f-4718-a0fc-4167c5478eda",
+        "start_time": 205.12,
+        "end_time": 205.6,
+        "text": "初めて",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "3d404a9a-45e7-4dc0-ad3f-29aa32f12d99",
+        "start_time": 205.6,
+        "end_time": 205.76,
+        "text": "を",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "b3c7820b-98fc-4cd0-9f62-38fc0581c8bf",
+        "start_time": 205.84,
+        "end_time": 206.08,
+        "text": "もらっ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "4d866ee0-ef3a-4613-aebb-6a6cda92fd76",
+        "start_time": 206.08,
+        "end_time": 206.24,
+        "text": "て",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "b4ba7593-9fcc-4828-b250-7c91a9a21690",
+        "start_time": 206.24,
+        "end_time": 206.72,
+        "text": "ください",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "24119a06-eb01-4ad9-ba28-8e0b418b525d",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut depicts a medium two-shot in a supermarket where Sakuta Azusagawa (left) extends a hand toward Mai Sakurajima (right) while holding a shopping cart, with a background extra present. Sakuta speaks a Japanese line about never having held hands with a girl, while Portuguese subtitles appear as translation. The shot ends with a hard cut to a close-up of Mai. ",
+        "clear": "Initial frame shows Sakuta standing, left hand extended palm-open toward Mai, right hand on cart handle; Mai stands upright with arms at sides. Character identities are user-verified for both leads. Transcript segments (202.96–206.72s) consistently attribute Japanese dialogue to Sakuta. Subtitle OCR provides Portuguese translations matching the dialogue meaning. Background extra appears consistently in first and last frames. ",
+        "confusing": "Video analysis window 1 (202.79–205.29s) describes Sakuta as 'bent over, pushing a shopping cart with his left hand while extending his right hand,' contradicting the initial frame's standing pose with left hand extended and right hand on cart. Last frame (207.12s) shows Sakuta leaning forward with right arm extended and left hand holding a shopping basket, not a cart, introducing a prop discrepancy. The video analysis reports a hard cut to close-up at 207.16s, but the supplied last frame at 207.12s remains a medium shot. ",
+        "human_review": "Determine whether Sakuta's pose shifts from standing to bent over within the first window, and which hand is extended toward Mai. Resolve the shopping cart vs. basket inconsistency for prop continuity. Confirm the exact cut point to the close-up of Mai. ",
+        "recommended_checks": "Review source frames 202.78–205.28s to verify Sakuta's posture and hand positions. Compare frames at 205.28–207.12s for prop change (cart to basket). Check edit timeline for hard cut at 207.16s. Validate Portuguese subtitle timing against Japanese transcript. "
+      }
+    },
+    {
+      "id": "99ddec13-94bb-44a2-8966-224dfa9e53ee",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 202.7855,
+              "source_end": 205.288,
+              "width": 640,
+              "height": 360,
+              "fps": 12.787212787212841,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit supermarket aisle, with shelves stocked with produce visible in the background. In the foreground, a male character (Sakuta Azusagawa) in a brown school blazer and white shirt is bent over, pushing a shopping cart with his left hand. He extends his right hand toward a female character (Mai Sakurajima), who stands facing him in a similar uniform. She has long dark hair and a neutral expression. A third person is partially visible in the background on the left. The camera is static, maintaining a medium shot that captures both characters and their immediate surroundings.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 2.5,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Bent over, pushing a shopping cart with his left hand while extending his right hand toward Mai Sakurajima. His head is tilted slightly downward, and his gaze is directed at her hand. His posture remains consistent throughout the clip.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 202.7855,
+                  "episode_end_seconds": 205.2855
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 2.5,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Standing upright, facing Sakuta Azusagawa. Her hands are at her sides, and her expression is neutral. She does not move or change her posture during the clip.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 202.7855,
+                  "episode_end_seconds": 205.2855
+                }
+              ],
+              "uncertainties": "The video is silent, so no audio or dialogue can be verified. The presence of a third person in the background is inferred from visual evidence but not explicitly confirmed as a named character. The exact timing of any subtle facial expression changes is not discernible from the provided frames."
+            }
+          },
+          {
+            "source": {
+              "source_start": 205.288,
+              "source_end": 207.164875,
+              "width": 640,
+              "height": 360,
+              "fps": 12.787212787212841,
+              "padded_tail": false,
+              "frame_count": 25
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit supermarket produce aisle. A male character, Sakuta Azusagawa, is in the foreground on the left, leaning forward with his right hand extended toward a female character, Mai Sakurajima, who stands on the right. Both are wearing school uniforms. The camera is static, focusing on their interaction. In the background, another person is visible browsing shelves. The shot transitions to a close-up of Mai Sakurajima's face.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.876875,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Leans forward with his right arm extended, palm up, toward Mai Sakurajima. His head is tilted slightly downward, and his gaze is directed at her. His mouth is closed, and his facial expression is earnest.",
+                  "camera": "Apparent static shot",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 205.288,
+                  "episode_end_seconds": 207.164875
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.876875,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Stands still, facing Sakuta Azusagawa. Her head is slightly tilted, and her gaze is directed at him. Her expression is neutral to slightly surprised. Her hands are at her sides, and her posture is upright.",
+                  "camera": "Apparent static shot",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 205.288,
+                  "episode_end_seconds": 207.164875
+                },
+                {
+                  "start_seconds": 1.876875,
+                  "end_seconds": 1.876875,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "The shot cuts to a close-up of her face. Her eyes are wide open, and her expression is neutral. Her head is centered in the frame.",
+                  "camera": "Hard cut to close-up",
+                  "uncertainty": "The final frame shows a hard cut to a different shot, indicating the end of the current visual sequence.",
+                  "episode_start_seconds": 207.164875,
+                  "episode_end_seconds": 207.164875
+                }
+              ],
+              "uncertainties": "The final frame shows a hard cut to a different shot, which is not part of the current visual sequence. The camera movement is static throughout the initial frames."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "bf2ff82a-098d-405e-b85c-f1e576f88908",
+      "type": "last_frame",
+      "content": {
+        "composition": "Two-shot medium frame with the male character on the left and the female character on the right, separated by a central aisle. The composition uses the aisle as a leading line. A third character is visible in the background on the far left.",
+        "setting": "Interior of a supermarket or grocery store. Visible elements include refrigerated display cases stocked with produce (fruits and vegetables) on the right, and shelving units on the left. The floor is tiled.",
+        "lighting": "Bright, diffuse overhead lighting typical of a retail environment. Soft shadows are cast beneath the characters and shelves.",
+        "camera": "Eye-level medium shot. The camera is static, capturing the interaction between the two main characters.",
+        "visible_characters": [
+          {
+            "appearance": "Male with short, tousled ash-brown hair. Wearing a brown school blazer, white collared shirt, and dark trousers.",
+            "position": "Left side of the frame. Facing right in a three-quarter view.",
+            "pose": "Leaning forward with his right arm extended, palm open, towards the female character. His left hand holds a shopping basket. Legs are obscured by the basket and frame edge; walking is unconfirmed.",
+            "expression": "Looking down at his hand or the space between them with a neutral or slightly shy expression.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box e1e861db-1014-4e0f-b8aa-fa856c6493197."
+          },
+          {
+            "appearance": "Female with very long, straight dark charcoal-black hair with subtle bluish highlights. Wearing a brown school blazer, white shirt, red tie, and dark skirt.",
+            "position": "Right side of the frame. Facing left in a three-quarter view.",
+            "pose": "Standing upright with arms at her sides. Legs are partially visible; walking is unconfirmed.",
+            "expression": "Looking at the male character with a neutral, slightly surprised or attentive expression.",
+            "identity_evidence": "Identified as Mai Sakurajima based on user-verified detection box 4d080df6-9e44-48e4-b9fa-05dc0a9001e3."
+          },
+          {
+            "appearance": "Person with short brown hair, wearing a white top and dark bottoms.",
+            "position": "Background, far left. Facing right in profile.",
+            "pose": "Standing still, partially obscured by the foreground character. Walking is unconfirmed.",
+            "expression": "Obscured/indistinct.",
+            "identity_evidence": "Unnamed secondary character."
+          }
+        ],
+        "other_visual_details": "Blue promotional signs with the number '2' are visible on the shelves in the background. The produce on the shelves includes oranges, melons, and leafy greens.",
+        "uncertainties": "The specific type of store (supermarket vs. convenience store) is inferred from the layout but not explicitly confirmed. The exact emotion of the characters is open to interpretation.",
+        "frame_time": 207.123544,
+        "subtitle_regions": [
+          [
+            281.6,
+            604.0799999999999,
+            998.4000000000001,
+            693.36
+          ]
+        ]
+      }
+    },
+    {
+      "id": "5a1d5ce2-d4d9-4b93-a169-4309135d2a57",
+      "type": "initial_frame",
+      "content": {
+        "composition": "Medium shot composition with two primary subjects positioned in the foreground. The male character is on the left, angled towards the right, while the female character stands on the right, facing slightly left. A shopping cart is positioned in the lower center, acting as a visual anchor between them. The background features supermarket aisles receding into the distance, creating depth. A secondary character is visible in the far left background, slightly out of focus.",
+        "setting": "Interior of a brightly lit supermarket or grocery store. Visible elements include white shelving units stocked with produce (fruits and vegetables), price tags, and overhead fluorescent lighting fixtures. The floor appears to be a neutral tile.",
+        "lighting": "Even, diffuse artificial lighting typical of a retail environment. Light sources appear to be overhead fluorescent panels, casting soft shadows and illuminating the scene uniformly without harsh contrast.",
+        "camera": "Static medium shot at eye level. The camera is positioned slightly to the right of the male character, capturing both subjects in a two-shot arrangement.",
+        "visible_characters": [
+          {
+            "appearance": "Male character with short, tousled ash-brown hair. Wearing a brown school blazer over a white collared shirt and a red tie. Dark trousers are visible.",
+            "position": "Left side of the frame, occupying the foreground. Body is angled towards the right, facing the female character. Head is turned in profile towards the right.",
+            "pose": "Standing posture. Left hand is extended forward with palm open, gesturing towards the female character. Right hand is holding the handle of a shopping cart. Legs are partially obscured by the cart; feet are not visible. Walking is unconfirmed.",
+            "expression": "Neutral to slightly concerned expression. Eyes are looking towards the female character. Mouth is closed.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box (ID: e1e861db-1014-4e0f-b8aa-fa856c649317) matching the character context description (ash-brown hair, brown blazer, red tie)."
+          },
+          {
+            "appearance": "Female character with very long, straight dark charcoal-black hair with subtle bluish highlights. Wearing a brown school blazer, white collared shirt, red tie, and a dark pleated skirt.",
+            "position": "Right side of the frame, occupying the foreground. Standing upright, facing slightly towards the left (towards the male character).",
+            "pose": "Standing posture with arms at her sides. Legs and feet are obscured by the framing. Walking is unconfirmed.",
+            "expression": "Neutral expression with a slight frown. Eyes are looking towards the male character.",
+            "identity_evidence": "Identified as Mai Sakurajima based on user-verified detection box (ID: 4d080df6-9e44-48e4-b9fa-05dc0a9001e3) matching the character context description (long dark hair, brown blazer, red tie)."
+          },
+          {
+            "appearance": "Person with short brown hair, wearing a white top and carrying a bag over their shoulder.",
+            "position": "Far left background, partially obscured and out of focus.",
+            "pose": "Standing, facing away from the camera towards the shelves. Walking is unconfirmed.",
+            "expression": "Not visible due to being in profile and out of focus.",
+            "identity_evidence": "Unnamed secondary character. No verified identity information available."
+          }
+        ],
+        "other_visual_details": "A light blue shopping cart is prominent in the lower center. Shelves in the background are stocked with various fruits and vegetables. Price tags are visible on the shelves. The overall color palette is dominated by the brown of the uniforms, the white of the store interior, and the green of the produce.",
+        "uncertainties": "The exact nature of the interaction between the two main characters is unclear from a single frame. The identity of the background character is unknown. It is unconfirmed whether any character is in motion.",
+        "frame_time": 202.785878,
+        "subtitle_regions": [
+          [
+            0.0,
+            63.36,
+            48.64,
+            161.28
+          ],
+          [
+            29.439999999999998,
+            172.07999999999998,
+            93.44,
+            254.88
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c4230153-7b95-4095-a104-d2244c98eeb3",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 202.785878,
+            "requested_time": 202.7855,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                0.0,
+                63.36,
+                48.64,
+                161.28
+              ],
+              [
+                29.439999999999998,
+                172.07999999999998,
+                93.44,
+                254.88
+              ]
+            ],
+            "readings": [
+              {
+                "text": "2",
+                "box": [
+                  0.0,
+                  85.67999999999999,
+                  34.56,
+                  141.12
+                ]
+              },
+              {
+                "text": "2",
+                "box": [
+                  32.0,
+                  190.08,
+                  81.92,
+                  241.20000000000002
+                ]
+              }
+            ]
+          },
+          {
+            "time": 203.911999,
+            "requested_time": 203.8803435,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                281.6,
+                604.8,
+                999.6800000000001,
+                693.36
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Por fazem seja minha primeira, que\nnunca paguei mão de uma garatota.",
+                "box": [
+                  281.6,
+                  604.8,
+                  999.6800000000001,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "time": 204.996409,
+            "requested_time": 204.975187,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                281.6,
+                604.8,
+                1000.96,
+                694.8
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Por fazem seja minha primeira, já que\nnunca paguei na mao de uma garota.",
+                "box": [
+                  281.6,
+                  604.8,
+                  1000.96,
+                  695.52
+                ]
+              }
+            ]
+          },
+          {
+            "time": 206.08083,
+            "requested_time": 206.0700305,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                281.6,
+                604.8,
+                1000.96,
+                694.8
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Por fazem seja minha primeira, já que\nnunca paguei na mao de uma garota.",
+                "box": [
+                  281.6,
+                  604.8,
+                  1000.96,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "time": 207.123544,
+            "requested_time": 207.164874,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                281.6,
+                604.0799999999999,
+                998.4000000000001,
+                693.36
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Por fazem seja minha primeira, já que\nnunca peguei mao de uma garota.",
+                "box": [
+                  281.6,
+                  604.8,
+                  999.6800000000001,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "2",
+            "language": "unknown",
+            "first_observed": 202.785878,
+            "last_observed": 202.785878,
+            "observations": [
+              {
+                "time": 202.785878,
+                "box": [
+                  0.0,
+                  85.67999999999999,
+                  34.56,
+                  141.12
+                ]
+              },
+              {
+                "time": 202.785878,
+                "box": [
+                  32.0,
+                  190.08,
+                  81.92,
+                  241.20000000000002
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Por fazem seja minha primeira, que\nnunca paguei mão de uma garatota.",
+            "language": "pt",
+            "first_observed": 203.911999,
+            "last_observed": 203.911999,
+            "observations": [
+              {
+                "time": 203.911999,
+                "box": [
+                  281.6,
+                  604.8,
+                  999.6800000000001,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Por fazem seja minha primeira, já que\nnunca paguei na mao de uma garota.",
+            "language": "pt",
+            "first_observed": 204.996409,
+            "last_observed": 206.08083,
+            "observations": [
+              {
+                "time": 204.996409,
+                "box": [
+                  281.6,
+                  604.8,
+                  1000.96,
+                  695.52
+                ]
+              },
+              {
+                "time": 206.08083,
+                "box": [
+                  281.6,
+                  604.8,
+                  1000.96,
+                  696.24
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Por fazem seja minha primeira, já que\nnunca peguei mao de uma garota.",
+            "language": "pt",
+            "first_observed": 207.123544,
+            "last_observed": 207.123544,
+            "observations": [
+              {
+                "time": 207.123544,
+                "box": [
+                  281.6,
+                  604.8,
+                  999.6800000000001,
+                  696.24
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "17242895-cce5-4a11-a358-62f73ae102ac",
+    "cut_id": "3263cbab-58e2-4298-b51c-b6b470e9786c",
+    "job_id": "cfc12fee-caa3-497f-bbe4-d83a14890edd",
+    "cut_start": 202.7855,
+    "cut_end": 207.164875,
+    "frames_json": "[{\"position\": \"first\", \"time\": 202.785878, \"image_size\": [1280, 720], \"boxes\": [[70.4, 354.96, 161.28, 719.28], [117.75999999999999, 105.11999999999999, 719.3600000000001, 720], [883.1999999999999, 52.559999999999995, 1141.76, 719.28]], \"raw_response\": \"<ref>person</ref><box><55><493><126><999>,<92><146><562><1000>,<690><73><892><999></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 207.123544, \"image_size\": [1280, 720], \"boxes\": [[101.12, 376.56, 188.16, 720], [144.64000000000001, 141.84, 714.24, 720], [866.5600000000001, 92.16, 1113.6, 720]], \"raw_response\": \"<ref>person</ref><box><79><523><147><1000>,<113><197><558><1000>,<677><128><870><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:21:44",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "e1e861db-1014-4e0f-b8aa-fa856c649317",
+        "run_id": "17242895-cce5-4a11-a358-62f73ae102ac",
+        "position": "first",
+        "box_json": "[117.75999999999999, 105.11999999999999, 719.3600000000001, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with the exact same distinctive physical features as the reference: brown, messy hair with specific highlights, identical eye shape and color, and facial structure. Additionally, the character is wearing the same brown school blazer and white shirt, confirming the visual match.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "4d080df6-9e44-48e4-b9fa-05dc0a9001e3",
+        "run_id": "17242895-cce5-4a11-a358-62f73ae102ac",
+        "position": "first",
+        "box_json": "[883.1999999999999, 52.559999999999995, 1141.76, 719.28]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      },
+      {
+        "id": "928553b1-e458-4fdc-9bd5-6c28c6521b65",
+        "run_id": "17242895-cce5-4a11-a358-62f73ae102ac",
+        "position": "last",
+        "box_json": "[144.64000000000001, 141.84, 714.24, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The character in the target image exhibits identical physical features to the reference image, specifically the messy brown hair, facial structure, and eye shape. Additionally, the character is wearing the exact same school uniform (brown blazer, white shirt, red tie), confirming the identity.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "0fd8cb04-4709-462b-8709-2124c99ca382",
+        "run_id": "17242895-cce5-4a11-a358-62f73ae102ac",
+        "position": "last",
+        "box_json": "[866.5600000000001, 92.16, 1113.6, 720]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      }
+    ]
+  }
+}

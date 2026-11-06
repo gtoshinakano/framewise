@@ -1,0 +1,57 @@
+{
+  "model_id": "Qwen/Qwen3.6-35B-A3B:Q4_K_M",
+  "input": {
+    "values": {
+      "setting": "A brightly lit supermarket produce section; The background features white refrigerated display cases with glass doors",
+      "lighting": "The scene is illuminated by bright; diffuse overhead lighting typical of a supermarket",
+      "subjects.0.facing": "away",
+      "subjects.0.pose": "Standing",
+      "subjects.0.hands": "holding a bunch of bananas in right hand",
+      "subjects.0.outfit_visible": "white long-sleeved shirt and dark trousers",
+      "subjects.1.pose": "Standing",
+      "subjects.1.hands": "right arm is visible, hanging by side",
+      "subjects.1.gaze": "towards the right",
+      "subjects.1.expression": "Neutral to slightly concerned",
+      "subjects.1.outfit_visible": "beige blazer, white shirt, red tie, and dark pleated skirt",
+      "subjects.2.pose": "Standing",
+      "subjects.2.hands": "holding the handle of a shopping cart with both hands",
+      "subjects.2.gaze": "towards the left",
+      "subjects.2.expression": "Neutral to slightly surprised",
+      "subjects.2.outfit_visible": "brown blazer, white shirt, and red tie",
+      "beats.0.action": "Holds a carrot in her right hand and looks down at it, then slightly lowers her head; Man in white shirt: bends forward at the waist, lowering his head and obscuring his face from view; Sakuta Azusagawa: Stands still, holding the handle of his shopping cart with both hands",
+      "end_state.subjects.0.facing": "away",
+      "end_state.subjects.1.facing": "camera",
+      "end_state.subjects.1.gaze": "forward",
+      "end_state.subjects.1.expression": "Neutral to slightly concerned or attentive",
+      "end_state.subjects.2.hands": "left hand is visible gripping the handle of a shopping cart"
+    },
+    "names": [
+      "Mai Sakurajima",
+      "Sakuta Azusagawa"
+    ]
+  },
+  "values": {
+    "setting": "brightly lit supermarket produce section; background white refrigerated display cases with glass doors",
+    "lighting": "bright diffuse overhead lighting typical of supermarket",
+    "subjects.0.facing": "away",
+    "subjects.0.pose": "Standing",
+    "subjects.0.hands": "right hand holds bunch of bananas",
+    "subjects.0.outfit_visible": "white long-sleeved shirt dark trousers",
+    "subjects.1.pose": "Standing",
+    "subjects.1.hands": "right arm visible hanging by side",
+    "subjects.1.gaze": "right",
+    "subjects.1.expression": "Neutral to slightly concerned",
+    "subjects.1.outfit_visible": "beige blazer white shirt red tie dark pleated skirt",
+    "subjects.2.pose": "Standing",
+    "subjects.2.hands": "both hands hold shopping cart handle",
+    "subjects.2.gaze": "left",
+    "subjects.2.expression": "Neutral to slightly surprised",
+    "subjects.2.outfit_visible": "brown blazer white shirt red tie",
+    "beats.0.action": "holds carrot right hand looks down at it then slightly lowers head; Man in white shirt bends forward at waist lowers head obscures face from view; Sakuta Azusagawa stands still holds shopping cart handle both hands",
+    "end_state.subjects.0.facing": "away",
+    "end_state.subjects.1.facing": "camera",
+    "end_state.subjects.1.gaze": "forward",
+    "end_state.subjects.1.expression": "Neutral to slightly concerned or attentive",
+    "end_state.subjects.2.hands": "left hand visible grips shopping cart handle"
+  }
+}

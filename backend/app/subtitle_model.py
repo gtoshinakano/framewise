@@ -3,7 +3,7 @@ from pathlib import Path
 from . import media, subtitle_evidence
 
 
-def inspect_subtitles(original, cut, config, has_transcript, scratch, model, on_frame=None):
+def inspect_subtitles(original, cut, config, has_transcript, scratch, model, on_frame=None, cancel_check=None):
     from PIL import Image
     from wevisone_vl.visualization import parse_predictions
     from .inference_worker import sample_times
@@ -13,6 +13,8 @@ def inspect_subtitles(original, cut, config, has_transcript, scratch, model, on_
     samples = []
     ocr_performed = False
     for index, requested in enumerate(times):
+        if cancel_check:
+            cancel_check()
         if on_frame:
             on_frame(index + 1, len(times))
         target = Path(scratch) / 'subtitle-frame.jpg'
@@ -21,11 +23,15 @@ def inspect_subtitles(original, cut, config, has_transcript, scratch, model, on_
         with Image.open(target) as image:
             image = image.convert('RGB')
             detection = model.predict(image, task='detection', query=['subtitles'], max_new_tokens=512, temperature=0.0, decode_matting=False)
+            if cancel_check:
+                cancel_check()
             regions = parse_predictions(detection.response, image.width, image.height)
             readings = []
             selected_for_ocr = requested in selected
             if has_transcript and regions and selected_for_ocr:
                 ocr = model.predict(image, task='ocr', max_new_tokens=1024, temperature=0.0, decode_matting=False)
+                if cancel_check:
+                    cancel_check()
                 ocr_performed = True
                 readings = subtitle_evidence.subtitle_readings(regions, parse_predictions(ocr.response, image.width, image.height))
             samples.append({'time': actual, 'requested_time': requested, 'selected_for_ocr': selected_for_ocr, 'image_size': [image.width, image.height],

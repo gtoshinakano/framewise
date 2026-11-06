@@ -3,7 +3,7 @@ import type { Job } from './api'
 // Keep finished jobs in the counter until the active queue empties. This also
 // lets individual cut jobs contribute to the same progress as a batch job.
 export function analysisQueueProgress(jobs: Job[], session: Set<string>) {
-  const active = jobs.filter(job => ['analyze', 'regen'].includes(job.pipeline) && ['queued', 'running'].includes(job.status))
+  const active = jobs.filter(job => ['analyze', 'regen', 'consistency_summary', 'character_detect'].includes(job.pipeline) && ['queued', 'running'].includes(job.status))
   if (!active.length) {
     session.clear()
     return { completed: 0, total: 0 }

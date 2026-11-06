@@ -1,0 +1,623 @@
+{
+  "cut": {
+    "id": "932d834f-7cf4-488e-84ee-6f24f604f958",
+    "start_time": 154.570667,
+    "end_time": 157.615375,
+    "cut_number": 45,
+    "dialogue": []
+  },
+  "results": [
+    {
+      "id": "3ae1ea39-0240-4ade-8a19-e0fef059f74a",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut spans roughly 154.57‑157.57 s in a brightly lit supermarket produce aisle. It opens with three characters—Mai (user‑verified), Sakuta (user‑verified), and an unnamed left‑side man—in a medium static shot; Mai later holds a carrot and a hard cut to a Sakuta close‑up occurs just before the final frame, which again shows all three characters with minor pose and accessory changes. No transcript or subtitle OCR is available, and the left‑side man is not detected by the character‑detection model.",
+        "clear": "Composition and setting are consistent: a medium static eye‑level shot of a supermarket aisle with horizontal shelving. Mai and Sakuta are both user‑verified in the opening and final frames. Visual analysis shows Mai moving from a hands‑behind‑back pose to holding a carrot, and a cut to a Sakuta close‑up at ~157.61 s. The camera is static except for the abrupt cut. The left‑side man is described visually in both frames (short black hair, glasses, white shirt, green tie) but lacks a detection or identity label.",
+        "confusing": "The left‑side man has no detection or identity evidence, creating a gap for animation. Video analysis timestamps a cut to a Sakuta close‑up at ~157.61 s, while the last frame is at ~157.57 s, leaving a ~0.04 s gap that could indicate a missing frame or timing mismatch. Subtitle regions are present but no OCR/transcript data is provided, leaving potential dialogue unaccounted for.",
+        "human_review": "Verify the left‑side man’s appearance and identity (e.g., name, clothing details) by reviewing the raw video or manual detection. Confirm the exact timing of the cut to the Sakuta close‑up relative to the last frame to ensure correct animation sequencing. Check the subtitle regions for any OCR or transcript that might contain dialogue for any of the characters.",
+        "recommended_checks": "1. Review raw video from ~157.57 s to ~157.65 s to confirm the cut to Sakuta close‑up and ensure the left‑side man remains visible. 2. Perform a manual detection or label the left‑side man to provide identity evidence for animation. 3. Extract and OCR any subtitle regions present in the cut to capture potential dialogue. 4. If a transcript exists elsewhere, verify its alignment with the visual events and timestamps."
+      }
+    },
+    {
+      "id": "b1bd7f75-bfac-4b3a-839b-c17230906b9a",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 154.570667,
+              "source_end": 156.31050014285714,
+              "width": 640,
+              "height": 360,
+              "fps": 18.39256835138205,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "Three anime characters are standing in a brightly lit supermarket produce aisle. On the left, a man with black hair and glasses, wearing a white shirt and green tie, stands facing away from the camera, holding a shopping cart. In the center, a woman with long dark hair, wearing a brown blazer and skirt, stands with her back mostly to the camera, looking at produce. On the right, a man with brown hair, wearing a brown blazer and red tie, stands facing forward, looking toward the center woman. The background shows shelves stocked with various vegetables under fluorescent lighting. The camera is static.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.7,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Stands with her back mostly to the camera, looking at vegetables on the shelf. Her right hand moves slightly toward the produce as if considering selection.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 154.570667,
+                  "episode_end_seconds": 156.27066699999997
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.7,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Stands facing forward, looking toward Mai Sakurajima. His expression is neutral and his posture remains still.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 154.570667,
+                  "episode_end_seconds": 156.27066699999997
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.7,
+                  "subject": "Man on the left",
+                  "visual_action": "Stands facing away from the camera, holding a shopping cart with both hands. His posture is stationary.",
+                  "camera": "Static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 154.570667,
+                  "episode_end_seconds": 156.27066699999997
+                }
+              ],
+              "uncertainties": "No significant uncertainty"
+            }
+          },
+          {
+            "source": {
+              "source_start": 156.31050014285714,
+              "source_end": 157.615375,
+              "width": 640,
+              "height": 360,
+              "fps": 18.39256835138205,
+              "padded_tail": false,
+              "frame_count": 25
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit supermarket produce aisle. Three characters are visible: a man in a white shirt and green tie pushing a shopping cart on the left, a woman with long dark hair in a brown blazer standing in the center, and a man in a brown blazer and red tie standing on the right. The woman is holding a carrot and examining it. The camera begins with a medium shot of all three and then cuts to a close-up of the man on the right.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.3,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Holding a carrot in her right hand and examining it while standing in the produce aisle.",
+                  "camera": "Apparent static shot, then cuts to close-up.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 156.31050014285714,
+                  "episode_end_seconds": 157.61050014285715
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.3,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Standing still on the right side of the frame, looking forward with a neutral expression.",
+                  "camera": "Apparent static shot, then cuts to close-up.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 156.31050014285714,
+                  "episode_end_seconds": 157.61050014285715
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.3,
+                  "subject": "Man in white shirt",
+                  "visual_action": "Pushing a shopping cart with both hands, facing away from the camera toward the produce shelves.",
+                  "camera": "Apparent static shot, then cuts to close-up.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 156.31050014285714,
+                  "episode_end_seconds": 157.61050014285715
+                },
+                {
+                  "start_seconds": 1.3,
+                  "end_seconds": 1.3,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "The camera cuts to a close-up of his face, showing him looking forward with a neutral expression.",
+                  "camera": "Hard cut to close-up.",
+                  "uncertainty": "The cut is abrupt, ending the current shot.",
+                  "episode_start_seconds": 157.61050014285715,
+                  "episode_end_seconds": 157.61050014285715
+                }
+              ],
+              "uncertainties": "The final frame shows a hard cut to a different shot, indicating the end of the current visual sequence."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "94d8ede1-cc30-4cee-9c4d-dc5e364d68bf",
+      "type": "last_frame",
+      "content": {
+        "composition": "A medium shot captures three characters in a horizontal arrangement within a supermarket aisle. The composition is balanced with the male character on the left, the female character in the center, and the second male character on the right. The background shelves create horizontal lines that guide the eye across the frame. The characters are positioned at varying depths, with the central female character slightly forward.",
+        "setting": "A brightly lit supermarket produce section. Shelves stocked with fresh vegetables like carrots, celery, and leafy greens are visible in the background. The environment is clean and organized, typical of a modern grocery store.",
+        "lighting": "The scene is illuminated by bright, even overhead lighting, characteristic of a retail environment. There are no harsh shadows, suggesting diffuse light sources. The lighting highlights the colors of the produce and the characters' clothing.",
+        "camera": "The camera is positioned at eye level, providing a neutral perspective. The shot is static, with no apparent movement or zoom, focusing on the interaction between the characters.",
+        "visible_characters": [
+          {
+            "appearance": "Male character with short black hair, wearing glasses, a white dress shirt, a green tie, and dark trousers. He has a slender build.",
+            "position": "Left side of the frame, facing right in profile.",
+            "pose": "Standing upright, holding a shopping cart handle with both hands. Legs and feet are obscured by the cart and frame edge. Walking is unconfirmed.",
+            "expression": "Neutral, looking towards the center of the frame.",
+            "identity_evidence": "Unnamed character; no verified identity from context."
+          },
+          {
+            "appearance": "Female character with very long, straight dark charcoal-black hair with subtle bluish highlights, side-swept bangs, and a pink hair clip. She wears a brown blazer over a white shirt and red tie, with a dark skirt.",
+            "position": "Center of the frame, facing left in profile.",
+            "pose": "Standing upright, holding a carrot in her right hand. Legs and feet are obscured by the frame edge. Walking is unconfirmed.",
+            "expression": "Neutral, looking at the carrot in her hand.",
+            "identity_evidence": "User-verified as Mai Sakurajima (ID 1ab61da1-6b7b-44af-89cb-9ea73ebb83a9) via detection box cc2f9b5d-3003-4b4f-96d9-574f573d270c."
+          },
+          {
+            "appearance": "Male character with ash-brown, short, tousled hair. He wears a brown blazer over a white shirt and red tie, with dark trousers.",
+            "position": "Right side of the frame, facing left in three-quarter view.",
+            "pose": "Standing upright, holding a shopping basket with his left hand. Legs and feet are obscured by the frame edge. Walking is unconfirmed.",
+            "expression": "Neutral, looking towards the center of the frame.",
+            "identity_evidence": "User-verified as Sakuta Azusagawa (ID 290d19bd-b44d-4500-ad8e-f1b45fd6057a) via detection box f3c50751-b48f-4158-bb52-32c795ac."
+          }
+        ],
+        "other_visual_details": "The produce shelves are well-stocked with various vegetables, including carrots, celery, and leafy greens. The characters are holding shopping carts or baskets, indicating they are in the process of shopping. The overall color palette is bright and vibrant, with the green of the vegetables contrasting with the characters' clothing.",
+        "uncertainties": "The exact relationship between the characters is unclear from this single frame. The purpose of their gathering in the supermarket is not specified. The expressions are neutral, making it difficult to infer their emotional states or intentions.",
+        "frame_time": 157.574089,
+        "subtitle_regions": [
+          [
+            445.43999999999994,
+            586.8,
+            1182.72,
+            624.96
+          ]
+        ]
+      }
+    },
+    {
+      "id": "41ae0d25-8b1c-417b-9101-b77670e563ff",
+      "type": "initial_frame",
+      "content": {
+        "composition": "A medium shot captures three characters in a horizontal arrangement within a supermarket aisle. The composition is balanced with the male character on the left, the female character in the center, and the second male character on the right. The background shelves create strong horizontal lines that guide the eye across the frame. The characters are positioned in the foreground, with the shelves of produce filling the mid-ground and background.",
+        "setting": "The scene takes place in the produce section of a brightly lit supermarket. Shelves are stocked with various vegetables, including leafy greens, carrots, and potatoes. The environment is clean and organized, typical of a modern grocery store.",
+        "lighting": "The lighting is bright and even, characteristic of indoor fluorescent supermarket lighting. There are no harsh shadows, and the light source appears to be overhead, illuminating the characters and the produce clearly.",
+        "camera": "The camera is positioned at eye level, providing a straightforward view of the characters. The shot is static, with no apparent camera movement, allowing the viewer to focus on the characters and their interactions.",
+        "visible_characters": [
+          {
+            "appearance": "Male character with short black hair, wearing glasses, a white shirt, and a green tie.",
+            "position": "Left side of the frame, facing away from the camera.",
+            "pose": "Standing upright, holding a shopping cart handle. Legs and feet are not visible.",
+            "expression": "Unknown, as the face is turned away from the camera.",
+            "identity_evidence": "Unnamed character, no verified identity."
+          },
+          {
+            "appearance": "Female character with very long, straight dark charcoal-black hair with subtle bluish highlights, wearing a brown blazer over a white shirt and red tie.",
+            "position": "Center of the frame, facing slightly to the left in profile.",
+            "pose": "Standing upright, hands behind her back. Legs and feet are not visible.",
+            "expression": "Neutral, with a slight frown.",
+            "identity_evidence": "User-verified as Mai Sakurajima based on distinctive hair and school uniform."
+          },
+          {
+            "appearance": "Male character with ash-brown, short, thick, and naturally tousled hair, wearing a brown blazer over a white shirt and red tie.",
+            "position": "Right side of the frame, facing the camera.",
+            "pose": "Standing upright, holding a shopping cart handle. Legs and feet are not visible.",
+            "expression": "Neutral, with a slightly concerned look.",
+            "identity_evidence": "User-verified as Sakuta Azusagawa based on distinctive hair and school uniform."
+          }
+        ],
+        "other_visual_details": "The characters are holding shopping carts, indicating they are in the process of shopping. The produce on the shelves is neatly arranged, with price tags visible. The overall atmosphere is calm and routine.",
+        "uncertainties": "The exact relationship between the characters is not clear from this single frame. The expressions and body language suggest a casual interaction, but the context is limited.",
+        "frame_time": 154.571089,
+        "subtitle_regions": [
+          [
+            0.0,
+            254.88,
+            30.72,
+            282.24
+          ],
+          [
+            1.28,
+            473.76000000000005,
+            58.879999999999995,
+            498.96
+          ],
+          [
+            30.72,
+            270.72,
+            79.36,
+            309.6
+          ],
+          [
+            57.599999999999994,
+            486.72,
+            108.80000000000001,
+            524.16
+          ],
+          [
+            412.16,
+            300.24,
+            472.32,
+            332.64000000000004
+          ],
+          [
+            442.88,
+            491.04,
+            503.04,
+            516.96
+          ],
+          [
+            471.03999999999996,
+            317.52,
+            518.4000000000001,
+            354.24
+          ],
+          [
+            501.76,
+            501.84,
+            549.12,
+            535.68
+          ],
+          [
+            583.6800000000001,
+            321.84000000000003,
+            631.04,
+            346.32
+          ],
+          [
+            632.3199999999999,
+            342.71999999999997,
+            648.96,
+            368.64
+          ],
+          [
+            760.3199999999999,
+            343.44,
+            784.64,
+            366.48
+          ],
+          [
+            788.48,
+            352.8,
+            826.88,
+            385.92
+          ],
+          [
+            789.76,
+            506.88,
+            817.9200000000001,
+            528.48
+          ],
+          [
+            817.9200000000001,
+            514.8,
+            858.8800000000001,
+            546.48
+          ],
+          [
+            884.4799999999999,
+            358.56,
+            930.56,
+            381.6
+          ],
+          [
+            920.3199999999999,
+            511.91999999999996,
+            967.6800000000001,
+            534.24
+          ],
+          [
+            929.28,
+            371.52,
+            966.4,
+            401.76000000000005
+          ],
+          [
+            965.12,
+            522.0,
+            1004.8000000000001,
+            551.52
+          ],
+          [
+            1213.44,
+            702.72,
+            1263.36,
+            720.0
+          ],
+          [
+            1250.56,
+            532.8,
+            1260.8,
+            560.16
+          ]
+        ]
+      }
+    },
+    {
+      "id": "2e582eee-eb1a-458c-8003-0a0c41d81c62",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 154.571089,
+            "requested_time": 154.570667,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                0.0,
+                254.88,
+                30.72,
+                282.24
+              ],
+              [
+                1.28,
+                473.76000000000005,
+                58.879999999999995,
+                498.96
+              ],
+              [
+                30.72,
+                270.72,
+                79.36,
+                309.6
+              ],
+              [
+                57.599999999999994,
+                486.72,
+                108.80000000000001,
+                524.16
+              ],
+              [
+                412.16,
+                300.24,
+                472.32,
+                332.64000000000004
+              ],
+              [
+                442.88,
+                491.04,
+                503.04,
+                516.96
+              ],
+              [
+                471.03999999999996,
+                317.52,
+                518.4000000000001,
+                354.24
+              ],
+              [
+                501.76,
+                501.84,
+                549.12,
+                535.68
+              ],
+              [
+                583.6800000000001,
+                321.84000000000003,
+                631.04,
+                346.32
+              ],
+              [
+                632.3199999999999,
+                342.71999999999997,
+                648.96,
+                368.64
+              ],
+              [
+                760.3199999999999,
+                343.44,
+                784.64,
+                366.48
+              ],
+              [
+                788.48,
+                352.8,
+                826.88,
+                385.92
+              ],
+              [
+                789.76,
+                506.88,
+                817.9200000000001,
+                528.48
+              ],
+              [
+                817.9200000000001,
+                514.8,
+                858.8800000000001,
+                546.48
+              ],
+              [
+                884.4799999999999,
+                358.56,
+                930.56,
+                381.6
+              ],
+              [
+                920.3199999999999,
+                511.91999999999996,
+                967.6800000000001,
+                534.24
+              ],
+              [
+                929.28,
+                371.52,
+                966.4,
+                401.76000000000005
+              ],
+              [
+                965.12,
+                522.0,
+                1004.8000000000001,
+                551.52
+              ],
+              [
+                1213.44,
+                702.72,
+                1263.36,
+                720.0
+              ],
+              [
+                1250.56,
+                532.8,
+                1260.8,
+                560.16
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 155.613792,
+            "requested_time": 155.58556933333332,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                445.43999999999994,
+                586.8,
+                1184.0,
+                622.8
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 156.614794,
+            "requested_time": 156.60047166666666,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                445.43999999999994,
+                586.8,
+                1184.0,
+                622.8
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 157.574089,
+            "requested_time": 157.615374,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                445.43999999999994,
+                586.8,
+                1182.72,
+                624.96
+              ]
+            ],
+            "readings": []
+          }
+        ],
+        "events": [],
+        "ocr_requested": false,
+        "ocr_performed": false,
+        "language_note": "Language is unknown until verified.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect."
+      }
+    }
+  ],
+  "detections": {
+    "id": "319853ec-e485-495e-90de-afde68fb3353",
+    "cut_id": "932d834f-7cf4-488e-84ee-6f24f604f958",
+    "job_id": "a965001d-6e84-404e-b782-f972180baae7",
+    "cut_start": 154.570667,
+    "cut_end": 157.615375,
+    "frames_json": "[{\"position\": \"first\", \"time\": 154.571089, \"image_size\": [1280, 720], \"boxes\": [[25.6, 47.52, 410.88, 720], [588.8000000000001, 159.12, 796.16, 720], [983.04, 174.96, 1253.12, 720]], \"raw_response\": \"<ref>person</ref><box><20><66><321><1000>,<460><221><622><1000>,<768><243><979><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 157.574089, \"image_size\": [1280, 720], \"boxes\": [[25.6, 48.24, 410.88, 720], [542.72, 162.72, 789.76, 720], [983.04, 182.88, 1253.12, 720]], \"raw_response\": \"<ref>person</ref><box><20><67><321><1000>,<424><226><617><1000>,<768><254><979><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-06 02:04:44",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "2baab5e9-d99c-4545-b356-052fd86c94ed",
+        "run_id": "319853ec-e485-495e-90de-afde68fb3353",
+        "position": "first",
+        "box_json": "[25.6, 47.52, 410.88, 720]",
+        "character_context_id": null,
+        "label_source": null,
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": null
+      },
+      {
+        "id": "be011925-ddfd-48e3-ba35-71a8f6f1a4b7",
+        "run_id": "319853ec-e485-495e-90de-afde68fb3353",
+        "position": "first",
+        "box_json": "[588.8000000000001, 159.12, 796.16, 720]",
+        "character_context_id": null,
+        "label_source": null,
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": null
+      },
+      {
+        "id": "c938f1a3-adbf-40a1-b52e-68182b0a920a",
+        "run_id": "319853ec-e485-495e-90de-afde68fb3353",
+        "position": "first",
+        "box_json": "[983.04, 174.96, 1253.12, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinctive features matching the reference: brown spiky hair, specific eye shape and color, and the same school uniform consisting of a brown blazer, white shirt, and red tie. The facial structure and art style are identical.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "729cb627-1e1b-4da9-91a3-370ef017c341",
+        "run_id": "319853ec-e485-495e-90de-afde68fb3353",
+        "position": "last",
+        "box_json": "[25.6, 48.24, 410.88, 720]",
+        "character_context_id": null,
+        "label_source": null,
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": null
+      },
+      {
+        "id": "d1ed653e-5682-4280-b07c-447e67c9d0ee",
+        "run_id": "319853ec-e485-495e-90de-afde68fb3353",
+        "position": "last",
+        "box_json": "[542.72, 162.72, 789.76, 720]",
+        "character_context_id": null,
+        "label_source": null,
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": null
+      },
+      {
+        "id": "17ef1716-8c35-4336-aa22-b31903569733",
+        "run_id": "319853ec-e485-495e-90de-afde68fb3353",
+        "position": "last",
+        "box_json": "[983.04, 182.88, 1253.12, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinctive features matching the reference: brown spiky hair, grey eyes, and a specific school uniform consisting of a brown blazer, white shirt, and red tie. The facial structure and art style are identical to the reference character Sakuta Azusagawa.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      }
+    ]
+  }
+}

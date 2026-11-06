@@ -12,7 +12,11 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from app import db, media, worker, inference_worker
-from app.main import app
+from app.main import app, enqueue_analysis
+
+PRODUCTION_TEXT = ('### Scene\nA store.\n\n### Opening Frame\nA person.\n\n'
+                   '### Animation Timeline\n[0–1] Holds still.\n\n### Dialogue\nHello there. Wait!\n\n'
+                   '### Continuity & Constraints\nStatic camera.')
 
 
 class AnalysisTest(unittest.TestCase):
@@ -41,6 +45,10 @@ class AnalysisTest(unittest.TestCase):
             payload.pop('workflow', None)
             conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload), job_id))
         return job_id
+
+    def legacy_batch_job(self):
+        # Recreate the payload shape that may still be present after upgrades.
+        return enqueue_analysis('e')['job_id']
 
     def test_repeated_merges_refresh_only_changed_cuts(self):
         with db.connect() as conn:
@@ -81,15 +89,13 @@ class AnalysisTest(unittest.TestCase):
     def test_batch_snapshots_and_resume(self):
         config = {'frame_mode': 'uniform', 'frame_count': 3, 'detection_queries': ['person', 'coat'], 'context_ids': ['ctx'], 'additional_context': 'At night', 'openrouter_model': 'openrouter/free'}
         self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json=config).status_code, 200)
-        response = self.client.post('/api/episodes/e/analyze')
-        self.assertEqual(response.status_code, 200, response.text)
-        job_id = response.json()['job_id']
+        job_id = self.legacy_batch_job()
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,))['payload_json'])
         job_summary = self.client.get('/api/episodes/e').json()['jobs'][0]
         self.assertEqual(job_summary['id'], job_id)
         self.assertNotIn('payload_json', job_summary)
         self.assertNotIn('lease_owner', job_summary)
-        self.assertEqual(payload['cuts'][0]['config'], {**config, 'video_width': 640, 'video_height': 360, 'video_fps': 4})
+        self.assertEqual(payload['cuts'][0]['config'], {**config, 'video_width': 640, 'video_height': 360, 'video_fps': 4, 'video_frame_budget': None, 'text_provider': 'openrouter', 'local_thinking': False})
         self.assertEqual([item['id'] for item in payload['cuts'][0]['context']['context_items']], ['ctx'])
         self.assertEqual(payload['cuts'][1]['config']['frame_mode'], 'per_second')
         self.assertEqual(len(inference_worker.sample_times(2, 4, payload['cuts'][1]['config'])), 2)
@@ -135,7 +141,7 @@ class AnalysisTest(unittest.TestCase):
             conn.execute("UPDATE cuts SET end_time=37.2 WHERE id='c2'")
         config = self.client.get('/api/cuts/c1/analysis-config').json()
         self.assertEqual(inference_worker.sample_times(0, 0.8, config), [0])
-        job = self.client.post('/api/episodes/e/analyze').json()['job_id']
+        job = self.legacy_batch_job()
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job,))['payload_json'])
         self.assertEqual([len(inference_worker.sample_times(item['context']['cut']['start_time'], item['context']['cut']['end_time'], item['config'])) for item in payload['cuts']], [1, 36])
         custom = {**config, 'frame_mode': 'uniform', 'frame_count': 40}
@@ -158,7 +164,7 @@ class AnalysisTest(unittest.TestCase):
     def test_job_history_identifies_batch_cuts_and_failure(self):
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET title='Opening' WHERE id='c1'")
-        job_id = self.client.post('/api/episodes/e/analyze').json()['job_id']
+        job_id = self.legacy_batch_job()
         queued = self.client.get('/api/episodes/e').json()['jobs'][0]
         self.assertEqual([(item['id'], item['cut_index'], item['title'], item['completed']) for item in queued['cuts']],
                          [('c1', 0, 'Opening', False), ('c2', 1, '', False)])
@@ -236,10 +242,10 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(self.client.put('/api/cuts/c2/analysis-enabled', json={'analysis_enabled': False}).status_code, 200)
         self.assertEqual(self.client.post('/api/cuts/c2/analyze').status_code, 409)
         self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json={'additional_context': 'First preset'}).status_code, 200)
-        first = self.client.post('/api/episodes/e/analyze').json()['job_id']
+        first = self.legacy_batch_job()
         self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json={'additional_context': 'Second preset'}).status_code, 200)
         self.assertEqual(self.client.put('/api/cuts/c2/analysis-enabled', json={'analysis_enabled': True}).status_code, 200)
-        second = self.client.post('/api/episodes/e/analyze').json()['job_id']
+        second = self.legacy_batch_job()
         snapshots = [json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job,))['payload_json'])['cuts'] for job in (first, second)]
         self.assertEqual([item['cut_id'] for item in snapshots[0]], ['c1'])
         self.assertEqual([item['cut_id'] for item in snapshots[1]], ['c1', 'c2'])
@@ -345,7 +351,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'failed')
 
     def test_retry_batch_skips_completed_cuts(self):
-        job_id = self.client.post('/api/episodes/e/analyze').json()['job_id']
+        job_id = self.legacy_batch_job()
         claimed = worker.claim_job(('analyze',))
         described, summarized = [], []
         def describe(job, owner, episode, cut, config):
@@ -478,6 +484,19 @@ class AnalysisTest(unittest.TestCase):
         result = next(item for item in self.client.get('/api/cuts/c1/structured-analysis').json() if item['type'] == 'consistency_summary')
         self.assertEqual(result['content'], output)
 
+    def test_cut_run_details_are_scoped_and_include_saved_evidence(self):
+        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,job_id,prompt,settings_json,context_json) VALUES ('result','c1','other','Output','answer','model',?,'prompt','{}','{}')", (job_id,))
+            conn.execute("INSERT INTO rejected_video_responses(job_id,cut_id,window_index,start_time,end_time,error,response) VALUES (?,'c1',0,0,2,'bad','raw response')", (job_id,))
+        response = self.client.get(f'/api/jobs/{job_id}/cuts/c1/run-details')
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['input']['cut_id'], 'c1')
+        self.assertEqual(body['results'][0]['content'], 'answer')
+        self.assertEqual(body['rejected_responses'][0]['response'], 'raw response')
+        self.assertEqual(self.client.get(f'/api/jobs/{job_id}/cuts/c2/run-details').status_code, 404)
+
     def test_single_cut_pipeline_checkpoints_and_queues_summary(self):
         from contextlib import nullcontext
         from app import single_cut_pipeline
@@ -490,13 +509,19 @@ class AnalysisTest(unittest.TestCase):
         with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), patch.object(inference_worker, 'get_model', return_value=object()), \
              patch.object(single_cut_pipeline.subtitle_model, 'inspect_subtitles', return_value=subtitles), \
              patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source, target, sample, *a, **kw: sample), \
-             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')), \
-             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=lambda *a, **kw: dict(frame)), \
+             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')) as server, \
+             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=lambda *a, **kw: dict(frame)) as describe, \
              patch.object(single_cut_pipeline.video_model, 'analyze_video', return_value={'windows': []}):
             inference_worker.process(*worker.claim_job(('analyze',)))
+            server.assert_called_once()
+            self.assertEqual(describe.call_count, 2)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         outputs = self.client.get('/api/cuts/c1/structured-analysis').json()
         self.assertEqual({item['type'] for item in outputs}, {'initial_frame', 'video_analysis', 'last_frame', 'subtitle_ocr'})
+        summary = db.one("SELECT * FROM jobs WHERE pipeline='consistency_summary' AND episode_id='e'")
+        self.assertIsNone(summary)
+        queued = self.client.post('/api/cuts/c1/consistency-summary')
+        self.assertEqual(queued.status_code, 200, queued.text)
         summary = db.one("SELECT * FROM jobs WHERE pipeline='consistency_summary' AND episode_id='e'")
         self.assertEqual(summary['status'], 'queued')
         self.assertEqual(len(json.loads(summary['payload_json'])['source_result_ids']), 4)
@@ -534,7 +559,7 @@ class AnalysisTest(unittest.TestCase):
         job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
         subtitles = {'samples': [{'time': 0, 'regions': [], 'readings': []}], 'events': [], 'ocr_performed': False}
         frame = {'composition': 'wide', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'visible_characters': [], 'other_visual_details': '', 'uncertainties': ''}
-        window = {'source': {'source_start': 0, 'source_end': 2}, 'analysis': {'events': []}}
+        window = {'source': {'source_start': 0, 'source_end': 2}, 'analysis': ['valid JSON without the usual object structure']}
         def video(*args, load_window, save_window, **kwargs):
             saved = load_window(0, 0, 2)
             if saved is None:
@@ -545,8 +570,8 @@ class AnalysisTest(unittest.TestCase):
         with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
              patch.object(inference_worker, 'get_model', return_value=object()), patch.object(single_cut_pipeline.subtitle_model, 'inspect_subtitles', return_value=subtitles), \
              patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source, target, sample, *a, **kw: sample), \
-             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')), \
-             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=lambda *a, **kw: dict(frame)), \
+             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')) as server, \
+             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=lambda *a, **kw: dict(frame)) as describe, \
              patch.object(single_cut_pipeline.video_model, 'analyze_video', side_effect=video):
             inference_worker.process(*worker.claim_job(('analyze',)))
             self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'failed')
@@ -555,13 +580,14 @@ class AnalysisTest(unittest.TestCase):
             self.assertEqual(retry.status_code, 200, retry.text)
             inference_worker.process(*worker.claim_job(('analyze',)))
             self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (retry.json()['job_id'],))['status'], 'done')
+            server.assert_called_once()
+            self.assertEqual(describe.call_count, 2)
             self.assertEqual(self.client.get(f"/api/jobs/{retry.json()['job_id']}/analysis-windows").json()[0]['content'], window)
 
     def test_openrouter_request_and_validation(self):
         fields = {key: f'{key} draft' for _, _, key in inference_worker.FIELDS}
         sections = {key: {'content': f'{key} draft', 'confidence': 'medium'} for key, _ in inference_worker.SUMMARY_TOPICS}
         fields['cut_summary'] = inference_worker.render_summary(sections)
-        inference_worker.finalize_frame_recommendation(sections, [])
         expected_summary = inference_worker.render_summary(sections)
         response = {'model': 'provider/concrete', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({**fields, **sections})}}]}
         config = {'openrouter_model': 'openrouter/free'}
@@ -636,7 +662,7 @@ class AnalysisTest(unittest.TestCase):
         body = {'mode': 'regenerate', 'preview_checked': True, 'preview_base_id': preview['base_id'], 'request_override': request}
         queued = self.client.post('/api/cuts/c1/regenerate-summary', json=body)
         self.assertEqual(queued.status_code, 200, queued.text)
-        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps({'model': 'test/actual', 'choices': [{'finish_reason': 'stop', 'message': {'content': 'A new summary'}}]}).encode())) as call:
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps({'model': 'test/actual', 'choices': [{'finish_reason': 'stop', 'message': {'content': PRODUCTION_TEXT}}]}).encode())) as call:
             inference_worker.process_regen(*worker.claim_job(('regen',)))
         sent = json.loads(call.call_args.args[0].data)
         self.assertEqual((sent['model'], sent['messages'][0]['content'], json.loads(sent['messages'][1]['content'])), ('test/edited', 'Custom instruction', request['input']))
@@ -679,7 +705,8 @@ class AnalysisTest(unittest.TestCase):
             else:
                 value = {key: {'content': 'Not established from available evidence.', 'confidence': 'unknown'} for key, _ in inference_worker.SUMMARY_TOPICS}
                 value['spoken_dialogue'] = {'content': 'Speaker A (Hero), 0.2–1s: Hello there. Words: medium; speaker: medium. Unknown speaker, 1.8–2.2s: Wait! Words: low; speaker: unknown; crosses the cut boundary.', 'confidence': 'unknown'}
-            return io.BytesIO(json.dumps({'model': 'test/model', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(value)}}]}).encode())
+            content = PRODUCTION_TEXT if 'mode' in evidence else json.dumps(value)
+            return io.BytesIO(json.dumps({'model': 'test/model', 'choices': [{'finish_reason': 'stop', 'message': {'content': content}}]}).encode())
         job_id = self.legacy_single_job()
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', return_value=[{'time': 0, 'description': 'A figure'}]), patch('urllib.request.urlopen', side_effect=provider):
             inference_worker.process(*worker.claim_job(('analyze',)))
@@ -688,17 +715,16 @@ class AnalysisTest(unittest.TestCase):
             inference_worker.process_regen(*worker.claim_job(('regen',)))
             self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (regen_id,))['status'], 'done')
         self.assertEqual(requests[1][0], inference_worker.SUMMARY_SYSTEM)
-        self.assertEqual(requests[2][0], inference_worker.SUMMARY_TEXT_SYSTEM)
+        self.assertEqual(requests[2][0], inference_worker.PRODUCTION_BRIEF_SYSTEM)
+        self.assertIn('every supplied current transcript segment', requests[1][0])
+        self.assertIn('Preserve the source transcript text accurately', requests[2][0])
         for system, evidence in (requests[1], requests[2]):
-            self.assertIn('every supplied current transcript segment', system)
-            self.assertIn('separate qualitative confidence for the words and the speaker attribution', system)
-            self.assertIn('cannot independently hear voices', system)
             segments = evidence['context']['transcript_segments']
             self.assertEqual([item['text'] for item in segments], ['Hello there.', 'Wait!'])
             self.assertEqual(segments[0]['character_name'], 'Hero')
             self.assertEqual(segments[1]['end_time'], 2.2)
         current = next(item for item in self.client.get('/api/cuts/c1/analysis-results').json() if item['title'] == 'Cut summary')
-        self.assertIn('Spoken dialogue by speaker · Confidence: Unknown', current['content'])
+        self.assertIn('### Dialogue', current['content'])
         self.assertIn('Hello there.', current['content'])
         self.assertIn('Wait!', current['content'])
 
@@ -773,7 +799,6 @@ class AnalysisTest(unittest.TestCase):
         replies = [io.BytesIO(json.dumps(reply).encode()) for reply in (first, repaired, repaired)]
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'secret'}), patch('urllib.request.urlopen', side_effect=replies) as call:
             result, model = inference_worker.synthesize({'openrouter_model': 'openrouter/free'}, {}, [])
-        inference_worker.finalize_frame_recommendation(sections, [])
         fields['cut_summary'] = inference_worker.render_summary(sections)
         self.assertEqual({key: result[key] for key in fields}, fields)
         self.assertEqual(model, 'provider/free')
@@ -825,11 +850,13 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual([(item['id'], item['content']) for item in result], [('old-summary', 'Keep this')])
         self.assertEqual(self.client.post('/api/jobs/' + job_id + '/cancel').status_code, 409)
 
-    def test_running_visual_analysis_cannot_be_cancelled(self):
+    def test_running_visual_analysis_can_be_cancelled_and_retried(self):
         job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
         self.assertEqual(worker.claim_job(('analyze',))[0], job_id)
-        self.assertEqual(self.client.post('/api/jobs/' + job_id + '/cancel').status_code, 409)
-        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'running')
+        self.assertEqual(self.client.post('/api/jobs/' + job_id + '/cancel').status_code, 200)
+        job = db.one('SELECT status,stage,lease_owner FROM jobs WHERE id=?', (job_id,))
+        self.assertEqual((job['status'], job['stage'], job['lease_owner']), ('failed', 'Cancelled', None))
+        self.assertEqual(self.client.post('/api/jobs/' + job_id + '/retry').status_code, 200)
 
     def test_summary_jobs_for_different_cuts_can_be_queued_without_duplicate_same_cut(self):
         first = self.client.post('/api/cuts/c1/regenerate-summary', json={'mode': 'regenerate'})
@@ -852,74 +879,29 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual((payload['base_id'], payload['current_prompt']), ('anim', 'Unsaved prompt'))
         self.assertEqual([item['title'] for item in payload['results']], ['Shot description'])
         claimed = worker.claim_job(('regen',))
-        response = {'model': 'provider/x', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({key: {'content': 'New prompt', 'confidence': 'medium'} for key, _ in inference_worker.SUMMARY_TOPICS})}}]}
+        response = {'model': 'provider/x', 'choices': [{'finish_reason': 'stop', 'message': {'content': PRODUCTION_TEXT}}]}
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'k'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps(response).encode())):
             inference_worker.process_regen(*claimed)
         results = self.client.get('/api/cuts/c1/analysis-results?include_context=false').json()
         current = next(item for item in results if item['title'] == 'Cut summary')
-        expected = {key: {'content': 'New prompt', 'confidence': 'medium'} for key, _ in inference_worker.SUMMARY_TOPICS}
-        inference_worker.finalize_frame_recommendation(expected, [])
-        self.assertEqual((current['content'], current['parent_id'], current['origin']), (inference_worker.render_summary(expected), 'anim', 'model'))
+        self.assertEqual((current['content'], current['parent_id'], current['origin']), (PRODUCTION_TEXT, 'anim', 'model'))
         self.assertEqual(current['model_id'], 'provider/x')
         self.assertGreaterEqual(current['settings']['summary_generation_seconds'], 0)
         self.assertEqual(db.one("SELECT superseded_by FROM analysis_results WHERE id='anim'")['superseded_by'], current['id'])
         self.assertEqual(db.one("SELECT status FROM jobs WHERE id=?", (job_id,))['status'], 'done')
 
-    def test_composition_recommendation_download_and_regeneration(self):
-        folder = media.episode_dir('p', 'e') / 'analysis'
-        folder.mkdir(exist_ok=True)
-        (folder.parent / 'original.mp4').write_bytes(b'video placeholder')
-        (folder / 'sample-a.jpg').write_bytes(b'first jpeg')
-        (folder / 'sample-b.jpg').write_bytes(b'better jpeg')
-        observations = [
-            {'time': .1, 'description': 'A distant figure', 'ocr_response': '', 'ocr_prompt': 'ocr', 'frame_file': 'sample-a.jpg'},
-            {'time': 1.25, 'description': 'Expressive face and clear pose', 'ocr_response': '', 'ocr_prompt': 'ocr', 'frame_file': 'sample-b.jpg'},
-        ]
-        requests = []
-        def provider(request, **kwargs):
-            payload = json.loads(request.data)
-            evidence = json.loads(payload['messages'][1]['content'])
-            requests.append(evidence)
-            if 'assessments' not in evidence and 'mode' not in evidence:
-                value = {'visual_evidence': 'Two samples', 'text_evidence': 'None'}
-            else:
-                value = {key: {'content': 'Evidence-based rationale', 'confidence': 'medium'} for key, _ in inference_worker.SUMMARY_TOPICS}
-                value['suggested_composition_frame']['frame_id'] = evidence['sampled_frames'][-1]['frame_id']
-            return io.BytesIO(json.dumps({'model': 'test/model', 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(value)}}]}).encode())
-        job_id = self.legacy_single_job()
-        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', return_value=observations), patch('urllib.request.urlopen', side_effect=provider):
-            inference_worker.process(*worker.claim_job(('analyze',)))
-            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
-            results = self.client.get('/api/cuts/c1/analysis-results').json()
-            summary = next(result for result in results if result['title'] == 'Cut summary')
-            chosen = requests[-1]['sampled_frames'][-1]['frame_id']
-            self.assertIn('Suggested composition frame · Confidence: Medium', summary['content'])
-            self.assertEqual(summary['model_id'], 'test/model')
-            self.assertGreaterEqual(summary['settings']['summary_generation_seconds'], 0)
-            self.assertIn('Sample time: 1.250000 seconds', summary['content'])
-            self.assertIn(f'/api/analysis-results/{chosen}/frame', summary['content'])
-            with patch('app.frame_cache._generate', return_value=b'better jpeg'):
-                self.assertEqual(self.client.get(f'/api/analysis-results/{chosen}/frame').content, b'better jpeg')
-            regen_id = self.client.post('/api/cuts/c1/regenerate-summary', json={'mode': 'regenerate'}).json()['job_id']
-            inference_worker.process_regen(*worker.claim_job(('regen',)))
-            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (regen_id,))['status'], 'done')
-            current = next(result for result in self.client.get('/api/cuts/c1/analysis-results').json() if result['title'] == 'Cut summary')
-            self.assertIn(f'/api/analysis-results/{chosen}/frame', current['content'])
-            self.assertEqual(self.client.delete(f'/api/analysis-results/{chosen}').status_code, 200)
-            self.assertEqual(self.client.get(f'/api/analysis-results/{chosen}/frame').status_code, 404)
+    def test_summary_does_not_select_a_composition_frame(self):
+        sections = {key: {'content': 'Description', 'confidence': 'medium'} for key, _ in inference_worker.SUMMARY_TOPICS}
+        sections['suggested_composition_frame'] = {'content': 'Misleading recommendation', 'confidence': 'high', 'frame_id': 'wrong'}
+        self.assertNotIn('suggested_composition_frame', inference_worker.SUMMARY_SYSTEM)
+        self.assertNotIn('Suggested composition frame', inference_worker.render_summary(sections))
+        self.assertNotIn('Misleading recommendation', inference_worker.render_relaxed_summary(json.dumps(sections)))
+        self.assertNotIn('Misleading', inference_worker.render_relaxed_summary('{\"suggested_composition_frame\":{\"content\":\"Misleading\"}'))
+        self.assertNotIn('Misleading', inference_worker.render_relaxed_summary(json.dumps({'suggested_composition_frame': {'content': 'Misleading'}})))
+        text = 'Overview · Confidence: Medium\nScene\n\nSuggested composition frame · Confidence: High\nLater frame\n\nMain characters · Confidence: Medium\nA person'
+        self.assertEqual(inference_worker.strip_suggested_frame(text), 'Overview · Confidence: Medium\nScene\n\nMain characters · Confidence: Medium\nA person')
 
-    def test_invalid_composition_frame_is_retried(self):
-        sections = {key: {'content': 'Rationale', 'confidence': 'low'} for key, _ in inference_worker.SUMMARY_TOPICS}
-        candidates = [{'frame_id': 'real-id', 'time': .5}]
-        def reply(frame_id):
-            sections['suggested_composition_frame']['frame_id'] = frame_id
-            return io.BytesIO(json.dumps({'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(sections)}}]}).encode())
-        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', side_effect=[reply('invented'), reply('real-id')]) as call:
-            output, _ = inference_worker.chat_json('model', 'system', '{}', [key for key, _ in inference_worker.SUMMARY_TOPICS], summary_topics=True, frame_candidates=candidates)
-        self.assertEqual(output['suggested_composition_frame']['frame_id'], 'real-id')
-        self.assertIn('must match a supplied', json.loads(call.call_args_list[1].args[0].data)['messages'][-1]['content'])
-
-    def test_summary_edit_accepts_partial_response_and_invalid_frame_without_retry(self):
+    def test_summary_edit_rejects_partial_response_without_replacing_current(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin) VALUES ('old','c1','cut_description','Cut summary','Original','model'),('real-frame','c1','first_frame','Frame at 0.500s','A frame','model')")
         folder = media.episode_dir('p', 'e') / 'analysis'
@@ -928,16 +910,16 @@ class AnalysisTest(unittest.TestCase):
         job_id = self.client.post('/api/cuts/c1/regenerate-summary', json={'mode': 'edit', 'instruction': 'Expand dialogue'}).json()['job_id']
         content = json.dumps({'overview': {'content': 'Useful analysis', 'confidence': 'uncertain'}, 'suggested_composition_frame': {'content': 'A suggested view', 'frame_id': 'invented'}})
         response = {'model': 'provider/free', 'choices': [{'finish_reason': 'stop', 'message': {'content': content}}]}
-        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps(response).encode())) as call:
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch('urllib.request.urlopen', side_effect=lambda *_a,**_kw: io.BytesIO(json.dumps(response).encode())) as call:
             inference_worker.process_regen(*worker.claim_job(('regen',)))
-        self.assertEqual(call.call_count, 1)
+        self.assertEqual(call.call_count, 3)
         self.assertNotIn('response_format', json.loads(call.call_args.args[0].data))
-        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'failed')
         result = next(item for item in self.client.get('/api/cuts/c1/analysis-results').json() if item['title'] == 'Cut summary')
-        self.assertIn('Useful analysis', result['content'])
-        self.assertIn('A suggested view', result['content'])
+        self.assertEqual(result['content'], 'Original')
+        self.assertNotIn('A suggested view', result['content'])
         self.assertNotIn('/api/analysis-results/invented/frame', result['content'])
-        self.assertEqual(result['parent_id'], 'old')
+        self.assertEqual(result['id'], 'old')
 
     def test_summary_only_accepts_plain_text_and_marks_truncated_response(self):
         for finish, expected_suffix in [('stop', ''), ('length', "[The model's response was cut off and may be incomplete.]")]:
@@ -949,7 +931,7 @@ class AnalysisTest(unittest.TestCase):
                 self.assertTrue(content.startswith('Speaker A: Hello.'))
                 self.assertTrue(content.endswith(expected_suffix))
         partial = '{"overview":{"content":"First section"},"spoken_dialogue":{"content":"Voice: hello"}' + "\n\n[The model's response was cut off and may be incomplete.]"
-        rendered = inference_worker.render_relaxed_summary(partial, [])
+        rendered = inference_worker.render_relaxed_summary(partial)
         self.assertIn('First section', rendered)
         self.assertIn('Voice: hello', rendered)
         self.assertIn('response was cut off', rendered)

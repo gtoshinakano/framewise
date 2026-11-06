@@ -1,0 +1,524 @@
+{
+  "cut": {
+    "id": "7dfc47e7-be14-4398-a1a2-dfe3ea7b2d06",
+    "start_time": 157.615375,
+    "end_time": 161.035458,
+    "cut_number": 46,
+    "dialogue": [
+      {
+        "id": "6df65adf-8f1b-484c-8fd9-222fae16a4c8",
+        "start_time": 157.92,
+        "end_time": 158.32,
+        "text": "この",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "4477aac1-49aa-4ac8-9c62-451657f95e8d",
+        "start_time": 158.32,
+        "end_time": 158.72,
+        "text": "絵面",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "ceb51fcc-c48e-4265-886d-ba02878b402d",
+        "start_time": 158.72,
+        "end_time": 158.8,
+        "text": "は",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "83e07903-6a7c-4162-9120-ee7b8ced74d7",
+        "start_time": 158.88,
+        "end_time": 159.36,
+        "text": "完璧",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "bdde8771-a8d4-47e4-b779-a791fb4feb38",
+        "start_time": 159.36,
+        "end_time": 159.44,
+        "text": "に",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "19104bfb-5330-4829-ab39-c63eb05dcf7d",
+        "start_time": 159.44,
+        "end_time": 159.92,
+        "text": "カップル",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "3cf72015-70db-47ca-bd31-e74af84b2287",
+        "start_time": 159.92,
+        "end_time": 160.08,
+        "text": "だ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "9e33b80a-358a-4561-bffe-48b82299105c",
+        "start_time": 160.08,
+        "end_time": 160.16,
+        "text": "よ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "fa3f4116-505f-4d61-ae70-40621a2782b6",
+        "start_time": 160.16,
+        "end_time": 161.44,
+        "text": "な",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "d78113cd-5b04-48e6-a33c-4b23f1774cad",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "A static medium close-up shows Sakuta Azusagawa in a supermarket, facing the back of Mai Sakurajima's head, with bright overhead lighting and blurred produce shelves in the background. Sakuta appears calm with a slight smile while looking toward Mai.",
+        "clear": "Sakuta is confirmed by detection boxes in the first and last frames, and his uniform matches the reference character. The female character's long dark hair is visible in the foreground in both frames, supporting the inference that she is Mai Sakurajima, though her face is not shown. The camera remains static throughout the cut.",
+        "confusing": "The female character's identity as Mai Sakurajima is inferred from hair alone and not visually confirmed, creating ambiguity about her expression and exact location. The background description shifts from a school hallway with a blue '2' sign (video analysis) to a supermarket produce aisle with similar signage (visual frames), suggesting possible scene inconsistency. Portuguese subtitles at 158.78–159.91 s and 160.99 s differ in wording ('namorados' vs 'memorados'), and the transcript links Sakuta to speaking during these intervals despite his face being partially obscured, leaving dialogue attribution uncertain.",
+        "human_review": "Human review is needed to verify the female character's identity and facial features, resolve the location inconsistency between school hallway and supermarket settings, and clarify the dialogue content and subtitle translation.",
+        "recommended_checks": "Review the full video segment from 157.6 s to 161.0 s to confirm background continuity and any cuts; examine frames around 158.8 s where Mai's hair is visible to look for any facial cues confirming her identity; compare the Portuguese subtitle text with the Japanese transcript models to ensure accurate dialogue attribution; verify Sakuta detection IDs across frames to ensure consistent character identification."
+      }
+    },
+    {
+      "id": "0a00cb1d-d817-47c6-9d03-fcd3d56d5126",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 157.615375,
+              "source_end": 159.56970814285714,
+              "width": 640,
+              "height": 360,
+              "fps": 16.37387162826163,
+              "padded_tail": false,
+              "frame_count": 32
+            },
+            "analysis": {
+              "overview": "A medium close-up shot of Sakuta Azusagawa, a young man with short brown hair, wearing a brown school blazer, white shirt, and red tie. He is facing slightly to his right, looking toward an unseen person (Mai Sakurajima, whose dark hair is visible in the foreground). His expression is calm and slightly smiling. The background shows an indoor setting, likely a school hallway or building corridor, with bright lighting and a blue sign with the number '2' visible. The camera is static.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.9,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Maintains a calm, slightly smiling expression while looking toward the person in front of him. His head remains still, and his body posture is stationary.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 157.615375,
+                  "episode_end_seconds": 159.515375
+                }
+              ],
+              "uncertainties": "The person facing Sakuta (Mai Sakurajima) is only partially visible, showing only her dark hair in the foreground. Her actions and expressions are not visible. The background environment is static and unchanging."
+            }
+          },
+          {
+            "source": {
+              "source_start": 159.56970814285714,
+              "source_end": 161.035458,
+              "width": 640,
+              "height": 360,
+              "fps": 16.37387162826163,
+              "padded_tail": false,
+              "frame_count": 25
+            },
+            "analysis": {
+              "overview": "The scene is set inside a brightly lit supermarket. Sakuta Azusagawa, a male character with short brown hair, is shown in a medium close-up, facing forward with a slight smile. His school uniform consists of a brown blazer, white shirt, and red tie. To his left, the back of Mai Sakurajima's head is visible, showing her long dark hair. In the background, a blue sign with the number '2' is visible. The camera then cuts to a wider shot showing Sakuta and Mai from behind as they stand in front of a produce aisle, with another person in a white shirt visible to their left.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 1.0,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Faces forward with a slight smile, looking at Mai Sakurajima (whose back is to the camera).",
+                  "camera": "Apparent static medium close-up shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 159.56970814285714,
+                  "episode_end_seconds": 160.56970814285714
+                },
+                {
+                  "start_seconds": 1.0,
+                  "end_seconds": 1.46575,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Turns his body slightly to his right, now seen from behind, standing next to Mai Sakurajima in a supermarket aisle.",
+                  "camera": "Cuts to a wider shot from behind the characters.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 160.56970814285714,
+                  "episode_end_seconds": 161.035458
+                }
+              ],
+              "uncertainties": "The final frame may contain a hard cut to the next shot, but this is not visually confirmed in the provided frames. The character on the left is identified as Mai Sakurajima, but her full appearance and actions are not visible in the initial frame."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "92960449-4d12-4e07-b899-be65dee87edd",
+      "type": "last_frame",
+      "content": {
+        "composition": "Medium close-up shot featuring two characters in a conversational arrangement. The male character is positioned on the right side of the frame, while the back of the female character's head occupies the left foreground, creating an over-the-shoulder perspective. The background is slightly out of focus, emphasizing the characters.",
+        "setting": "Interior of a brightly lit supermarket or grocery store. Visible elements include shelving units stocked with green produce (possibly vegetables or fruits) and blue signage with numbers, typical of retail environments.",
+        "lighting": "Bright, diffuse overhead lighting consistent with commercial retail spaces. The lighting is even, casting soft shadows and highlighting the characters' faces without harsh contrast.",
+        "camera": "Static medium shot. The camera is positioned at eye level, capturing the upper bodies of the characters. The angle suggests a standard conversational viewpoint.",
+        "visible_characters": [
+          {
+            "appearance": "Male character with short, tousled ash-brown hair and brown eyes. He is wearing a brown school blazer over a white collared shirt with a red tie.",
+            "position": "Right side of the frame, occupying the majority of the right half.",
+            "pose": "Upper body visible from the chest up. Standing posture. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "Calm, slight smile, looking directly at the other character.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box (ID 290d19bd-b44d-4500-ad8e-f1b45fd6057a) matching the visual features of short brown hair, brown eyes, and specific school uniform."
+          },
+          {
+            "appearance": "Female character with very long, straight dark charcoal-black hair. Only the back of her head and hair are visible.",
+            "position": "Left foreground, occupying the left edge of the frame.",
+            "pose": "Only the back of the head is visible. Body orientation is facing the male character. Legs and feet are not visible. Walking is unconfirmed.",
+            "expression": "Unknown, face is obscured.",
+            "identity_evidence": "Contextual description identifies this character as Mai Sakurajima, positioned in the foreground with only her hair visible."
+          }
+        ],
+        "other_visual_details": "The background features blurred shelves with green items, likely produce. There is a blue sign with a red number '2' visible in the background. The overall color palette is warm with browns and greens.",
+        "uncertainties": "The identity of the female character is inferred from context as Mai Sakurajima, but her face is not visible to confirm features. The exact nature of the interaction is visual only; no audio is available to confirm dialogue.",
+        "frame_time": 160.994167,
+        "subtitle_regions": [
+          [
+            409.6,
+            32.4,
+            869.1200000000001,
+            122.4
+          ]
+        ]
+      }
+    },
+    {
+      "id": "3ef991f7-9882-4d31-8c98-3a10f3323cbd",
+      "type": "initial_frame",
+      "content": {
+        "composition": "A medium shot composition featuring a male character on the right side of the frame and the back of a female character's head on the left. The background consists of blurred supermarket shelves, creating depth. The framing emphasizes the interaction between the two characters.",
+        "setting": "An indoor retail environment, specifically a supermarket or convenience store, indicated by the shelving units stocked with goods and promotional signage in the background.",
+        "lighting": "Bright, diffuse overhead lighting typical of a commercial store, casting soft shadows and evenly illuminating the characters' faces.",
+        "camera": "A static medium shot at eye level, focusing on the male character's face while including the foreground silhouette of the female character.",
+        "visible_characters": [
+          {
+            "appearance": "Male with short, tousled ash-brown hair and brown eyes. He wears a brown school blazer over a white collared shirt with a red tie.",
+            "position": "Right side of the frame, occupying the majority of the visual space.",
+            "pose": "Upper body visible from the chest up. Standing posture. Walking is unconfirmed.",
+            "expression": "Neutral to slightly concerned expression with a direct gaze.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box 77ab815f-10c6-42d5-aa7d-3bae016c7538."
+          },
+          {
+            "appearance": "Long, straight dark charcoal-black hair with subtle bluish highlights. Only the back of the head and hair are visible.",
+            "position": "Left foreground, partially obscuring the view.",
+            "pose": "Head and shoulders visible from behind. Standing posture. Walking is unconfirmed.",
+            "expression": "Unknown, face is not visible.",
+            "identity_evidence": "Contextual description identifies this character as Mai Sakurajima, though visual confirmation is limited to hair color and length."
+          }
+        ],
+        "other_visual_details": "Background shelves contain green and white packaged items. Blue and red promotional signs are visible on the shelves. The image has a clean, anime art style.",
+        "uncertainties": "The identity of the female character is inferred from context and hair appearance but not visually confirmed by face. The specific nature of the interaction is unclear from a single frame.",
+        "frame_time": 157.615786,
+        "subtitle_regions": [
+          [
+            445.43999999999994,
+            586.0799999999999,
+            1186.56,
+            668.1600000000001
+          ]
+        ]
+      }
+    },
+    {
+      "id": "31254d22-199a-4d55-bf8b-c3961c0c7335",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 157.615786,
+            "requested_time": 157.615375,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                445.43999999999994,
+                586.0799999999999,
+                1186.56,
+                668.1600000000001
+              ]
+            ],
+            "readings": [
+              {
+                "text": "#2 No primeiro encontro, distúrbios fazem parte\n#2 初デートに 混乱 付ける",
+                "box": [
+                  446.71999999999997,
+                  586.8,
+                  1184.0,
+                  663.84
+                ]
+              }
+            ]
+          },
+          {
+            "time": 158.783625,
+            "requested_time": 158.75540233333334,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                409.6,
+                31.68,
+                870.4000000000001,
+                122.4
+              ],
+              [
+                445.43999999999994,
+                585.36,
+                1185.28,
+                624.96
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Quem vẽ pensa que\nsomos namorados, não é?",
+                "box": [
+                  410.88,
+                  31.68,
+                  870.4000000000001,
+                  123.12
+                ]
+              },
+              {
+                "text": "#2 No primeiro encontro, distúrbios fazem parte",
+                "box": [
+                  446.71999999999997,
+                  586.8,
+                  1184.0,
+                  622.8
+                ]
+              }
+            ]
+          },
+          {
+            "time": 159.909752,
+            "requested_time": 159.89542966666667,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                409.6,
+                31.68,
+                870.4000000000001,
+                122.4
+              ],
+              [
+                445.43999999999994,
+                585.36,
+                1185.28,
+                624.96
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Quem vẽ pensa que\nsomos namorados, não é?",
+                "box": [
+                  410.88,
+                  31.68,
+                  870.4000000000001,
+                  123.12
+                ]
+              },
+              {
+                "text": "#2 No primeiro encontro, distúrbios fazem parte",
+                "box": [
+                  446.71999999999997,
+                  586.8,
+                  1184.0,
+                  622.8
+                ]
+              }
+            ]
+          },
+          {
+            "time": 160.994167,
+            "requested_time": 161.035457,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                409.6,
+                32.4,
+                869.1200000000001,
+                122.4
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Quem vẽ pensa que\nsomos memorados, nãoo é?",
+                "box": [
+                  409.6,
+                  30.959999999999997,
+                  870.4000000000001,
+                  123.83999999999999
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "#2 No primeiro encontro, distúrbios fazem parte\n#2 初デートに 混乱 付ける",
+            "language": "unknown",
+            "first_observed": 157.615786,
+            "last_observed": 157.615786,
+            "observations": [
+              {
+                "time": 157.615786,
+                "box": [
+                  446.71999999999997,
+                  586.8,
+                  1184.0,
+                  663.84
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Quem vẽ pensa que\nsomos namorados, não é?",
+            "language": "pt",
+            "first_observed": 158.783625,
+            "last_observed": 159.909752,
+            "observations": [
+              {
+                "time": 158.783625,
+                "box": [
+                  410.88,
+                  31.68,
+                  870.4000000000001,
+                  123.12
+                ]
+              },
+              {
+                "time": 159.909752,
+                "box": [
+                  410.88,
+                  31.68,
+                  870.4000000000001,
+                  123.12
+                ]
+              }
+            ]
+          },
+          {
+            "text": "#2 No primeiro encontro, distúrbios fazem parte",
+            "language": "pt",
+            "first_observed": 158.783625,
+            "last_observed": 159.909752,
+            "observations": [
+              {
+                "time": 158.783625,
+                "box": [
+                  446.71999999999997,
+                  586.8,
+                  1184.0,
+                  622.8
+                ]
+              },
+              {
+                "time": 159.909752,
+                "box": [
+                  446.71999999999997,
+                  586.8,
+                  1184.0,
+                  622.8
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Quem vẽ pensa que\nsomos memorados, nãoo é?",
+            "language": "pt",
+            "first_observed": 160.994167,
+            "last_observed": 160.994167,
+            "observations": [
+              {
+                "time": 160.994167,
+                "box": [
+                  409.6,
+                  30.959999999999997,
+                  870.4000000000001,
+                  123.83999999999999
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "118b21d9-2e0a-4b93-8a4e-5fd2b215a425",
+    "cut_id": "7dfc47e7-be14-4398-a1a2-dfe3ea7b2d06",
+    "job_id": "b4f5338d-19fd-42e1-aa00-432f9581b132",
+    "cut_start": 157.615375,
+    "cut_end": 161.035458,
+    "frames_json": "[{\"position\": \"first\", \"time\": 157.615786, \"image_size\": [1280, 720], \"boxes\": [[599.0400000000001, 17.28, 1258.24, 720]], \"raw_response\": \"<ref>person</ref><box><468><24><983><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 160.994167, \"image_size\": [1280, 720], \"boxes\": [[591.36, 8.64, 1253.12, 720]], \"raw_response\": \"<ref>person</ref><box><462><12><979><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 11:28:07",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "77ab815f-10c6-42d5-aa7d-3bae016c7538",
+        "run_id": "118b21d9-2e0a-4b93-8a4e-5fd2b215a425",
+        "position": "first",
+        "box_json": "[599.0400000000001, 17.28, 1258.24, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a male character with short, messy brown hair and brown eyes, wearing a brown school blazer, white shirt, and red tie. These physical features and clothing details are identical to the character shown in the reference image for Sakuta Azusagawa (ID 290d19bd-b44d-4500-ad8e-f1b45fd6057a). The target image clearly does not match the female character with long grey hair shown in the reference for Rio Futaba.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "078040cf-303d-462c-b21d-19eb99a20e9a",
+        "run_id": "118b21d9-2e0a-4b93-8a4e-5fd2b215a425",
+        "position": "last",
+        "box_json": "[591.36, 8.64, 1253.12, 720]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a male character with short brown hair, brown eyes, and a specific school uniform consisting of a brown blazer, white shirt, and red tie. These physical features and clothing details are identical to the character shown in the reference image for Sakuta Azusagawa. The character in the other reference image (Rio Futaba) is female with long hair and glasses, which does not match the target.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      }
+    ]
+  }
+}

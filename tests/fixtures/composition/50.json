@@ -1,0 +1,391 @@
+{
+  "cut": {
+    "id": "c21f0709-e335-4224-bdf9-f09b9c3eade3",
+    "start_time": 176.884625,
+    "end_time": 179.345417,
+    "cut_number": 50,
+    "dialogue": [
+      {
+        "id": "9c31b5b8-1d02-4035-8485-1ae4d618f727",
+        "start_time": 178.6,
+        "end_time": 178.84,
+        "text": "。ほら",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "6a24a490-3bd5-467e-8d9d-9f1356c31bf8",
+        "start_time": 178.84,
+        "end_time": 179.08,
+        "text": "ね",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "1347d267-787c-49f7-b15d-ec3b83261259",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "The cut begins with a static medium close‑up of a man in a grocery store produce aisle holding bananas, with fruit shelves in the background; later analysis shows he also holds a carrot in his other hand and moves it toward his face, while the opening description attributes the bananas to his right hand. The man's appearance (dark hair, glasses, white shirt, green tie) is consistent across frames, but the hand assignment and timing of the carrot conflict between the opening frame and the video analysis. Dialogue occurs later with a speaker linked to Mai Sakurajima, and the final frame mirrors the earlier analysis.",
+        "clear": "Direct frame observation at 176.885 s shows the man holding bananas in a static medium close‑up with no carrot visible; video analysis infers he holds bananas in his left hand and a carrot in his right hand, moving the carrot toward his face between 0.2 s and 0.5 s; the final frame confirms he holds both items, and his appearance (dark hair, glasses, white shirt, green tie) is consistently described.",
+        "confusing": "Contradiction over which hand holds the bananas (right hand in opening description vs left hand in video analysis); uncertainty whether the carrot is present at the opening frame and who the second hand belongs to; the speaker linked to Mai Sakurajima in the transcript is not visually confirmed, and the 'Viu?' subtitle at 179.304 s has no clear visual or audio anchor.",
+        "human_review": "Human review is needed to verify the exact hand holding the bananas in the opening frame, confirm the presence and origin of the carrot, and determine whether the speaker linked to Mai Sakurajima corresponds to the visible man or another character.",
+        "recommended_checks": "Re‑examine the original video at 176.885 s to see which hand holds the bananas and whether a carrot is visible; check the segment from 0.2 s to 0.5 s for the carrot’s entry and hand usage; review the transcript and subtitle timings to match the speaker linked to Mai Sakurajima with the visual context and the 'Viu?' subtitle at 179.304 s."
+      }
+    },
+    {
+      "id": "6f8d1b33-77b4-4f12-a130-b3061d273f2f",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 176.884625,
+              "source_end": 178.29079185714286,
+              "width": 640,
+              "height": 360,
+              "fps": 22.75690103023744,
+              "padded_tail": false,
+              "frame_count": 30
+            },
+            "analysis": {
+              "overview": "A man with dark hair and glasses, wearing a white shirt and green tie, stands in a brightly lit grocery store produce section. He holds a bunch of bananas in his left hand. A second hand, wearing a brown sleeve, enters from the left and presents a large orange carrot. The man brings the carrot to his face, partially obscuring his view, then lowers it to examine it. The background shows shelves stocked with various fruits and vegetables, including apples and oranges. The camera remains static throughout the clip.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.0,
+                  "subject": "man",
+                  "visual_action": "holds a bunch of bananas in his left hand, looking forward with a neutral expression.",
+                  "camera": "apparently static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 176.884625,
+                  "episode_end_seconds": 176.884625
+                },
+                {
+                  "start_seconds": 0.2,
+                  "end_seconds": 0.5,
+                  "subject": "second hand",
+                  "visual_action": "enters from the left side of the frame, holding a large orange carrot, and moves it toward the man's face.",
+                  "camera": "apparently static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 177.084625,
+                  "episode_end_seconds": 177.384625
+                },
+                {
+                  "start_seconds": 0.5,
+                  "end_seconds": 0.8,
+                  "subject": "man",
+                  "visual_action": "uses his right hand to bring the carrot to his face, partially covering his eyes and nose, while still holding the bananas in his left hand.",
+                  "camera": "apparently static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 177.384625,
+                  "episode_end_seconds": 177.684625
+                },
+                {
+                  "start_seconds": 0.8,
+                  "end_seconds": 1.3,
+                  "subject": "man",
+                  "visual_action": "lowers the carrot from his face and holds it in front of him with his right hand, examining it while still holding the bananas in his left hand.",
+                  "camera": "apparently static",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 177.684625,
+                  "episode_end_seconds": 178.184625
+                }
+              ],
+              "uncertainties": "The video clip is silent and does not contain any on-screen text. The identity of the person holding the carrot is not confirmed, as the detection system does not assign a name to this individual. The exact timing of the hand's entry and the man's reaction is inferred from the visual sequence, but precise sub-frame timing is not available."
+            }
+          },
+          {
+            "source": {
+              "source_start": 178.29079185714286,
+              "source_end": 179.345417,
+              "width": 640,
+              "height": 360,
+              "fps": 22.75690103023744,
+              "padded_tail": false,
+              "frame_count": 23
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit supermarket produce aisle. A man with dark hair and glasses, wearing a white shirt and green tie, is holding a bunch of bananas in his left hand and a large orange carrot in his right hand. He is initially seen from a close-up, then the camera pulls back to reveal he is standing with two other young people, a girl and a boy, both in school uniforms, who are looking at him. The background shelves are stocked with various fruits and vegetables. The man's expression is neutral and slightly confused as he examines the carrot.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 0.0,
+                  "subject": "man with glasses",
+                  "visual_action": "Holding a bunch of bananas in his left hand and a large orange carrot in his right hand, partially obscuring his face with the carrot.",
+                  "camera": "Apparent static close-up shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 178.29079185714286,
+                  "episode_end_seconds": 178.29079185714286
+                },
+                {
+                  "start_seconds": 0.1,
+                  "end_seconds": 0.2,
+                  "subject": "man with glasses",
+                  "visual_action": "Lowers the carrot from his face, revealing his face. He looks directly at the camera with a neutral expression while holding the banana bunch and carrot.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 178.39079185714286,
+                  "episode_end_seconds": 178.49079185714285
+                },
+                {
+                  "start_seconds": 0.2,
+                  "end_seconds": 0.3,
+                  "subject": "man with glasses",
+                  "visual_action": "Moves the carrot slightly closer to his face, bringing it near his nose and mouth, while still holding the banana bunch in his other hand.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 178.49079185714285,
+                  "episode_end_seconds": 178.59079185714288
+                },
+                {
+                  "start_seconds": 0.3,
+                  "end_seconds": 0.5,
+                  "subject": "man with glasses",
+                  "visual_action": "Holds the carrot steady near his face, looking at it with a neutral expression. The banana bunch remains in his other hand.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 178.59079185714288,
+                  "episode_end_seconds": 178.79079185714286
+                },
+                {
+                  "start_seconds": 0.5,
+                  "end_seconds": 1.0,
+                  "subject": "man with glasses",
+                  "visual_action": "Maintains the position of the carrot near his face, looking at it. His expression remains neutral. The banana bunch is still held in his other hand.",
+                  "camera": "Apparent static shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 178.79079185714286,
+                  "episode_end_seconds": 179.29079185714286
+                },
+                {
+                  "start_seconds": 1.0,
+                  "end_seconds": 1.054625,
+                  "subject": "man with glasses",
+                  "visual_action": "The camera pulls back to a wider shot, revealing the man standing with two other young people. The man is still holding the carrot and bananas, and his expression remains neutral. The girl and boy are standing beside him, looking at him.",
+                  "camera": "Pulls back to a wider shot.",
+                  "uncertainty": "No significant uncertainty",
+                  "episode_start_seconds": 179.29079185714286,
+                  "episode_end_seconds": 179.34541685714285
+                }
+              ],
+              "uncertainties": "The final frame at 1.054625 seconds shows a hard cut to a different shot, indicating the end of the current clip. The man's mouth is not visibly moving, and no speech is audible. The identity of the other two people is not confirmed by the provided context."
+            }
+          }
+        ],
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "324d5d6c-6645-4387-850a-ec34f9274300",
+      "type": "last_frame",
+      "content": {
+        "composition": "A medium close-up shot focuses on a man in the foreground holding produce. The background is a grocery store produce section with shelves of fruit. The man is positioned slightly to the right of the center, with his body angled towards the left. His hands are prominent in the lower center, holding a carrot and bananas. The background shelves create horizontal lines that frame the subject.",
+        "setting": "The interior of a grocery store or supermarket, specifically the produce section. Shelves stocked with various fruits like apples, oranges, and packaged items are visible in the background.",
+        "lighting": "Bright, even, and diffuse lighting typical of a retail environment. There are no harsh shadows, suggesting overhead fluorescent lighting.",
+        "camera": "Static medium close-up shot. The camera is positioned at eye level with the subject.",
+        "visible_characters": [
+          {
+            "appearance": "A man with short, dark hair, wearing rectangular glasses, a white collared shirt, and a green tie.",
+            "position": "Center-right of the frame, occupying the foreground.",
+            "pose": "Standing, upper body visible. His arms are raised, holding a carrot in his right hand and a bunch of bananas in his left. Walking is unconfirmed.",
+            "expression": "His eyes are looking slightly to his left, with a neutral or mildly inquisitive expression. His mouth is obscured by the carrot.",
+            "identity_evidence": "Identified as the man with the white shirt based on visual appearance matching the context description."
+          }
+        ],
+        "other_visual_details": "The man is holding a large orange carrot in his right hand, positioned near his face. In his left hand, he holds a bunch of yellow bananas. The background shelves contain red apples, oranges, and other packaged goods. Price tags are visible on the shelves.",
+        "uncertainties": "The man's full body posture and leg placement are obscured. It is unclear if he is stationary or moving. The specific type of store beyond 'grocery' is not definitively clear.",
+        "frame_time": 179.304111,
+        "subtitle_regions": [
+          [
+            599.0400000000001,
+            649.44,
+            680.96,
+            689.04
+          ]
+        ]
+      }
+    },
+    {
+      "id": "37a36275-e736-40b5-9b31-390e5c18727f",
+      "type": "initial_frame",
+      "content": {
+        "composition": "A medium close-up shot centered on a man holding a bunch of bananas. The background consists of grocery store shelves stocked with various fruits, creating a layered depth of field where the subject is sharp and the background is slightly softer.",
+        "setting": "The interior of a grocery store or supermarket, specifically the produce section. Shelves behind the subject display apples, oranges, and other packaged fruits.",
+        "lighting": "Bright, even, and diffuse artificial lighting typical of a retail environment. There are no harsh shadows on the subject's face, suggesting overhead fluorescent or LED fixtures.",
+        "camera": "Static, eye-level shot. The camera is positioned directly in front of the subject, capturing him from the chest up.",
+        "visible_characters": [
+          {
+            "appearance": "A man with short, dark hair and rectangular glasses. He is wearing a white collared shirt and a dark green tie.",
+            "position": "Centered in the frame, occupying the foreground. He is facing the camera directly.",
+            "pose": "Standing posture, visible from the chest up. His right hand is holding a bunch of yellow bananas up near his chest. Walking is unconfirmed.",
+            "expression": "Neutral to slightly serious expression with a closed mouth and direct eye contact.",
+            "identity_evidence": "Identified as the man with the white shirt based on visual appearance matching the context description."
+          }
+        ],
+        "other_visual_details": "The man is holding a large bunch of yellow bananas with green stems. Behind him, to the left, are oranges and wrapped fruits. To the right, there are red apples in netting. Price tags are visible on the shelf edges.",
+        "uncertainties": "The specific identity of the character is unknown beyond the visual description. The exact nature of his interaction with the bananas (buying, inspecting, holding for someone else) is not clear from a single frame.",
+        "frame_time": 176.885036,
+        "subtitle_regions": [
+          [
+            243.2,
+            407.52,
+            334.08000000000004,
+            445.68
+          ],
+          [
+            972.8,
+            419.03999999999996,
+            1036.8000000000002,
+            456.48
+          ]
+        ]
+      }
+    },
+    {
+      "id": "76ee87e7-6fc8-478f-88d9-ceb41f85913e",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 176.885036,
+            "requested_time": 176.884625,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                243.2,
+                407.52,
+                334.08000000000004,
+                445.68
+              ],
+              [
+                972.8,
+                419.03999999999996,
+                1036.8000000000002,
+                456.48
+              ]
+            ],
+            "readings": [
+              {
+                "text": ".",
+                "box": [
+                  261.12,
+                  417.59999999999997,
+                  293.12,
+                  429.84
+                ]
+              }
+            ]
+          },
+          {
+            "time": 178.136276,
+            "requested_time": 178.1150205,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                243.2,
+                406.79999999999995,
+                334.08000000000004,
+                445.68
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 179.304111,
+            "requested_time": 179.345416,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                599.0400000000001,
+                649.44,
+                680.96,
+                689.04
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Viu?",
+                "box": [
+                  597.76,
+                  647.28,
+                  682.24,
+                  690.48
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": ".",
+            "language": "unknown",
+            "first_observed": 176.885036,
+            "last_observed": 176.885036,
+            "observations": [
+              {
+                "time": 176.885036,
+                "box": [
+                  261.12,
+                  417.59999999999997,
+                  293.12,
+                  429.84
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Viu?",
+            "language": "pt",
+            "first_observed": 179.304111,
+            "last_observed": 179.304111,
+            "observations": [
+              {
+                "time": 179.304111,
+                "box": [
+                  597.76,
+                  647.28,
+                  682.24,
+                  690.48
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "b6fb3cf0-efe1-4c50-8a6c-b3103e17bcb8",
+    "cut_id": "c21f0709-e335-4224-bdf9-f09b9c3eade3",
+    "job_id": "49893717-ce12-4661-8193-6206911b5bff",
+    "cut_start": 176.884625,
+    "cut_end": 179.345417,
+    "frames_json": "[{\"position\": \"first\", \"time\": 176.885036, \"image_size\": [1280, 720], \"boxes\": [[199.68, 0, 986.88, 720]], \"raw_response\": \"<ref>person</ref><box><156><0><771><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 179.304111, \"image_size\": [1280, 720], \"boxes\": [[120.32, 0, 985.6, 720]], \"raw_response\": \"<ref>person</ref><box><94><0><770><1000></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:14:42",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": []
+  }
+}

@@ -1,0 +1,695 @@
+{
+  "cut": {
+    "id": "4d2f3bab-61a0-40d8-a564-33e0cad3323f",
+    "start_time": 223.681375,
+    "end_time": 231.522542,
+    "cut_number": 64,
+    "dialogue": [
+      {
+        "id": "6e73e3ac-434b-482c-907e-eb21f48c298f",
+        "start_time": 224.16,
+        "end_time": 224.24,
+        "text": "。で",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "50351403-fad2-4cc9-82e2-59388df377d6",
+        "start_time": 224.24,
+        "end_time": 224.4,
+        "text": "も",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "b4f6b527-7ac1-4128-b7fa-4674936af365",
+        "start_time": 224.72,
+        "end_time": 224.88,
+        "text": "、お",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "393ae609-d5f5-4ba2-9d22-4720e317c398",
+        "start_time": 224.88,
+        "end_time": 224.96,
+        "text": "と",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "dccc92a7-51a5-4d63-9e41-8203eda9d4f7",
+        "start_time": 225.0,
+        "end_time": 225.08,
+        "text": "今",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "cbc10271-d433-4e0a-a3fa-25b3597f7045",
+        "start_time": 225.08,
+        "end_time": 225.24,
+        "text": "の",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "ede0cf92-f21c-47ac-935a-64de79ce0548",
+        "start_time": 225.24,
+        "end_time": 225.4,
+        "text": "マイ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "78846606-9f17-4924-9b7a-3bdb0b0ac76c",
+        "start_time": 225.4,
+        "end_time": 225.56,
+        "text": "さん",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "404719f3-5c73-486d-b35f-c0bb058ae42a",
+        "start_time": 225.56,
+        "end_time": 225.72,
+        "text": "は",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "0e36ade7-72ce-43a3-ad95-d9898322d14e",
+        "start_time": 225.72,
+        "end_time": 225.96,
+        "text": "それ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "4a582c92-075f-4c10-8af0-1c1658fdc607",
+        "start_time": 225.96,
+        "end_time": 226.2,
+        "text": "くらい",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "2f137d0b-9d27-44d3-aac7-526b332066cc",
+        "start_time": 226.2,
+        "end_time": 226.6,
+        "text": "平気",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "86ec21ab-67bf-44b7-becb-d1e0d3f98e97",
+        "start_time": 226.6,
+        "end_time": 226.68,
+        "text": "だ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "76868af5-4a52-4ca9-91f5-478184c3d6be",
+        "start_time": 226.68,
+        "end_time": 226.76,
+        "text": "よ",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "b0284109-de50-46f8-b119-a17bd83f5dc7",
+        "start_time": 226.84,
+        "end_time": 227.24,
+        "text": "ね",
+        "speaker_label": "SPEAKER_07",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a"
+      },
+      {
+        "id": "4964c090-d79b-44c3-ba9f-5127b7be5ae4",
+        "start_time": 227.56,
+        "end_time": 227.96,
+        "text": "。そう",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "61e9871c-4df9-43a9-a206-9bb077fd00e9",
+        "start_time": 227.96,
+        "end_time": 228.2,
+        "text": "ね",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "f316955b-0971-4c1d-a003-429bfc0c7553",
+        "start_time": 228.68,
+        "end_time": 229.16,
+        "text": "。年下",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "9dbda151-a05b-49f1-99d3-626453c14a5d",
+        "start_time": 229.16,
+        "end_time": 229.24,
+        "text": "の",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "e287eb1b-81e3-4d5f-8399-dfd4240c597f",
+        "start_time": 229.32,
+        "end_time": 229.72,
+        "text": "男の子",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "afc27a7e-fd07-4388-9e0f-e6af67b8acad",
+        "start_time": 229.72,
+        "end_time": 229.88,
+        "text": "に",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "9be0b114-3c5c-4df5-aa01-46804b97ad3e",
+        "start_time": 229.88,
+        "end_time": 230.12,
+        "text": "エッチ",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "ee035016-b988-4110-8546-83b3f343babb",
+        "start_time": 230.12,
+        "end_time": 230.28,
+        "text": "な",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "a4cb20e1-6337-4b98-81e8-6794ee6c1cd5",
+        "start_time": 230.28,
+        "end_time": 230.68,
+        "text": "妄想",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "530e7f93-c166-464e-ba74-39b01631215d",
+        "start_time": 230.68,
+        "end_time": 230.84,
+        "text": "さ",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "b64bf8f7-590d-430f-ab2d-23f1986416e9",
+        "start_time": 230.84,
+        "end_time": 231.0,
+        "text": "れる",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      },
+      {
+        "id": "e67a9ef2-060f-4f0d-9176-a1219333f511",
+        "start_time": 231.0,
+        "end_time": 231.4,
+        "text": "くらい",
+        "speaker_label": "SPEAKER_04",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9"
+      }
+    ]
+  },
+  "results": [
+    {
+      "id": "db4ba888-0c9b-4374-a0f9-d0ca22e2e052",
+      "type": "consistency_summary",
+      "content": {
+        "summary": "A static medium shot captures Mai Sakurajima and Sakuta Azusagawa standing side-by-side in a supermarket produce section, with Sakuta holding a shopping cart and a third person browsing shelves in the background. Dialogue attribution shifts from Sakuta to Mai, with Portuguese subtitle OCR confirming the conversational context.",
+        "clear": "Character identities are consistently verified across opening and ending frames via manual and auto detections. The setting, lighting, and static camera position remain unchanged throughout the cut. Transcript timestamps align with speaker transitions, and OCR subtitles accurately reflect the dialogue content regarding Mai's reaction to younger boys' fantasies.",
+        "confusing": "Minor positional discrepancy: Mai is described as center-right in the opening frame but shifts to center-left by the ending frame. Additionally, the opening frame notes her right hand resting on Sakuta's arm, while the video analysis describes her right hand gesturing then lowering. These are likely natural micro-movements or framing adjustments rather than contradictions.",
+        "human_review": "None required.",
+        "recommended_checks": "Verify the exact arm linkage and hand position at the transition point (around 224s) to ensure animation continuity. Confirm the slight camera or character positional shift between 223.68s and 231.40s to maintain consistent framing in reconstruction."
+      }
+    },
+    {
+      "id": "2814c386-8095-4f2c-a1f0-a51494d037ec",
+      "type": "video_analysis",
+      "content": {
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "windows": [
+          {
+            "source": {
+              "source_start": 223.681375,
+              "source_end": 228.16204185714284,
+              "width": 640,
+              "height": 360,
+              "fps": 7.141794072234415,
+              "padded_tail": false,
+              "frame_count": 30
+            },
+            "analysis": {
+              "overview": "The scene is set in a brightly lit supermarket produce section. In the foreground, a young woman with long dark hair and a school uniform stands beside a young man with brown hair, also in a school uniform, who is pushing a shopping cart. Behind them, another person in a white shirt is seen from the back, browsing shelves. The camera remains static throughout the clip, maintaining a consistent medium shot of the two main characters and the surrounding produce displays.",
+              "events": [
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 4.48,
+                  "subject": "Mai Sakurajima",
+                  "visual_action": "Stands beside Sakuta Azusagawa, initially gesturing with her right hand, then lowering it. Her gaze shifts slightly to her right, and her expression remains neutral to slightly thoughtful.",
+                  "camera": "static",
+                  "uncertainty": "none",
+                  "episode_start_seconds": 223.681375,
+                  "episode_end_seconds": 228.161375
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 4.48,
+                  "subject": "Sakuta Azusagawa",
+                  "visual_action": "Pushes a shopping cart with both hands, maintaining a steady posture. His gaze is directed forward, and his expression is calm and neutral.",
+                  "camera": "static",
+                  "uncertainty": "none",
+                  "episode_start_seconds": 223.681375,
+                  "episode_end_seconds": 228.161375
+                },
+                {
+                  "start_seconds": 0.0,
+                  "end_seconds": 4.48,
+                  "subject": "Person in white shirt",
+                  "visual_action": "Remains stationary, facing away from the camera, browsing items on a shelf.",
+                  "camera": "static",
+                  "uncertainty": "none",
+                  "episode_start_seconds": 223.681375,
+                  "episode_end_seconds": 228.161375
+                }
+              ],
+              "uncertainties": "The video is silent, and no audio cues are available. The camera is static, and no movement is observed. The identities of the characters are confirmed by the provided context, but no further actions or changes are visible beyond the described poses and expressions."
+            },
+            "generation_attempts": 1,
+            "usage": {
+              "prompt_tokens": 6023,
+              "completion_tokens": 419,
+              "total_tokens": 6442
+            }
+          },
+          {
+            "source": {
+              "source_start": 228.16204185714284,
+              "source_end": 231.522542,
+              "width": 640,
+              "height": 360,
+              "fps": 7.141794072234415,
+              "padded_tail": false,
+              "frame_count": 22
+            },
+            "analysis": {
+              "overview": "The scene is set inside a brightly lit supermarket, with refrigerated shelves stocked with produce like lemons and leafy greens visible in the background. Two main characters, Mai Sakurajima and Sakuta Azusagawa, stand side by side in the foreground. Mai, with long dark hair, is positioned slightly to the left, facing right with a neutral expression. Sakuta, with tousled brown hair, stands to her right, holding a shopping cart handle with both hands and looking forward with a slight smile. To the far left, a third person in a white shirt and dark pants is seen from the back, facing away from the camera and looking at the shelves. The camera remains static throughout the clip.",
+              "events": [],
+              "uncertainties": "none"
+            },
+            "generation_attempts": 1,
+            "usage": {
+              "prompt_tokens": 5035,
+              "completion_tokens": 167,
+              "total_tokens": 5202
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 11058,
+          "completion_tokens": 586,
+          "total_tokens": 11644
+        },
+        "limitations": "Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window."
+      }
+    },
+    {
+      "id": "6ca29dad-8b02-4755-bf53-20c70964c5e9",
+      "type": "last_frame",
+      "content": {
+        "composition": "Medium shot featuring two main characters in the foreground, positioned side-by-side. A third character is partially visible on the far left edge. The background consists of supermarket shelving units filled with produce, creating horizontal lines that frame the subjects.",
+        "setting": "Interior of a supermarket, specifically the produce section. Shelves stocked with green apples, yellow citrus fruits, and packaged vegetables are visible behind the characters.",
+        "lighting": "Bright, diffuse artificial lighting typical of a retail environment. Shadows are soft and minimal, suggesting overhead fluorescent fixtures.",
+        "camera": "Static eye-level shot. The camera is positioned slightly to the right of the female character, capturing her in profile and the male character in a three-quarter view.",
+        "visible_characters": [
+          {
+            "appearance": "Female with very long, straight dark charcoal-black hair with subtle bluish highlights. She wears a brown school blazer, white shirt, and red tie.",
+            "position": "Center-left of the frame.",
+            "pose": "Standing upright. Legs and feet are obscured by the frame bottom. Walking is unconfirmed.",
+            "expression": "Neutral to slightly surprised, mouth slightly open.",
+            "identity_evidence": "User-verified box 856c5f89-78d2-46b3-b010-2bd321b81296 matches the reference description for Mai Sakurajima."
+          },
+          {
+            "appearance": "Male with short, tousled ash-brown hair. He wears a brown school blazer, white shirt, and red tie.",
+            "position": "Right side of the frame.",
+            "pose": "Standing upright, holding the handle of a shopping cart. Legs and feet are obscured. Walking is unconfirmed.",
+            "expression": "Calm, slight smile, looking forward.",
+            "identity_evidence": "User-verified box 7a014af1-77a7-4d95-8d6e-70165bdde30a matches the reference description for Sakuta Azusagawa."
+          },
+          {
+            "appearance": "Male with short black hair and glasses. Wearing a white shirt and dark trousers.",
+            "position": "Far left edge of the frame.",
+            "pose": "Standing with back to the camera. Legs and feet obscured. Walking is unconfirmed.",
+            "expression": "Unknown, facing away.",
+            "identity_evidence": "Unnamed character, no identity confirmed."
+          }
+        ],
+        "other_visual_details": "A shopping cart handle is visible in the bottom right corner. Price tags are visible on the shelves. A blue sign with the number '2' hangs from the ceiling in the top left.",
+        "uncertainties": "The exact relationship between the characters is not visually explicit beyond their proximity. The specific type of supermarket is generic.",
+        "frame_time": 231.397822,
+        "subtitle_regions": [
+          [
+            322.56,
+            605.52,
+            958.72,
+            694.0799999999999
+          ]
+        ]
+      }
+    },
+    {
+      "id": "ffb7c789-ea42-4864-8fc3-f4649e16635f",
+      "type": "initial_frame",
+      "content": {
+        "composition": "Medium shot of two students in a supermarket aisle, positioned slightly right of center. A third person is visible on the far left, facing away. The background consists of brightly lit refrigerated shelves stocked with produce. The composition uses the horizontal lines of the shelves to create depth.",
+        "setting": "Interior of a supermarket, specifically the produce or refrigerated section. Shelves are stocked with green apples, yellow citrus fruits, and packaged meat.",
+        "lighting": "Bright, even artificial lighting typical of a retail environment. Soft shadows are cast by the characters onto the shelves behind them.",
+        "camera": "Static, eye-level shot. The camera is positioned slightly to the left of the main subjects, capturing them from the waist up.",
+        "visible_characters": [
+          {
+            "appearance": "Female student with long, straight dark charcoal-black hair and blue-violet eyes. She wears a brown school blazer, white shirt, red tie, and a grey pleated skirt.",
+            "position": "Center-right of the frame, standing next to the male character. She is facing the camera in a three-quarter view.",
+            "pose": "Standing upright. Her left arm is linked through the male character's right arm. Her right hand rests on his arm. Legs and feet are obscured by the frame cut-off. Walking is unconfirmed.",
+            "expression": "Neutral to slightly concerned, with wide eyes looking forward.",
+            "identity_evidence": "Identified as Mai Sakurajima based on user-verified detection box 856c5f89-78d2-46b3-b010-2bd321b81296. Visual features match reference: long dark hair, blue eyes, and specific school uniform."
+          },
+          {
+            "appearance": "Male student with short, tousled ash-brown hair and grey-brown eyes. He wears a brown school blazer, white shirt, red tie, and dark trousers.",
+            "position": "Right side of the frame, standing next to the female character. He is facing the camera in a three-quarter view.",
+            "pose": "Standing upright, holding the handle of a shopping cart with both hands. Legs and feet are obscured by the cart and frame cut-off. Walking is unconfirmed.",
+            "expression": "Neutral, looking forward with a slightly open mouth.",
+            "identity_evidence": "Identified as Sakuta Azusagawa based on user-verified detection box 7a014af1-77a7-4d95-8d6e-70165bdde30a. Visual features match reference: brown hair, grey eyes, and specific school uniform."
+          },
+          {
+            "appearance": "Male figure with short black hair and glasses. He wears a white long-sleeved shirt and dark trousers.",
+            "position": "Far left of the frame, partially cut off. He is facing away from the camera.",
+            "pose": "Standing, facing the shelves. Legs and feet are obscured. Walking is unconfirmed.",
+            "expression": "Unknown, as he is facing away.",
+            "identity_evidence": "Unnamed supporting character. No identity confirmed."
+          }
+        ],
+        "other_visual_details": "A shopping cart is visible in the foreground, held by the male character. The shelves behind the characters are well-stocked with various fruits and packaged goods. Price tags are visible on the shelves.",
+        "uncertainties": "The exact nature of the interaction between the two main characters is unclear from a single frame. The identity of the man on the left is unknown.",
+        "frame_time": 223.681764,
+        "subtitle_regions": [
+          [
+            266.24,
+            452.16,
+            314.88,
+            487.44000000000005
+          ],
+          [
+            288.0,
+            608.4,
+            336.64,
+            645.12
+          ],
+          [
+            463.36,
+            610.56,
+            512.0,
+            646.5600000000001
+          ],
+          [
+            472.32,
+            457.92,
+            518.4000000000001,
+            491.76000000000005
+          ],
+          [
+            1067.52,
+            478.08000000000004,
+            1111.04,
+            506.88
+          ]
+        ]
+      }
+    },
+    {
+      "id": "7f8286a6-56cd-4b97-adc7-4675c149a096",
+      "type": "subtitle_ocr",
+      "content": {
+        "samples": [
+          {
+            "time": 223.681764,
+            "requested_time": 223.681375,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                266.24,
+                452.16,
+                314.88,
+                487.44000000000005
+              ],
+              [
+                288.0,
+                608.4,
+                336.64,
+                645.12
+              ],
+              [
+                463.36,
+                610.56,
+                512.0,
+                646.5600000000001
+              ],
+              [
+                472.32,
+                457.92,
+                518.4000000000001,
+                491.76000000000005
+              ],
+              [
+                1067.52,
+                478.08000000000004,
+                1111.04,
+                506.88
+              ]
+            ],
+            "readings": []
+          },
+          {
+            "time": 226.309397,
+            "requested_time": 226.295097,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                385.28,
+                605.52,
+                898.56,
+                693.36
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Mas a Mai-san adulta não\nse importa com isso, nê?",
+                "box": [
+                  385.28,
+                  606.24,
+                  896.0,
+                  695.52
+                ]
+              }
+            ]
+          },
+          {
+            "time": 228.937019,
+            "requested_time": 228.908819,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                322.56,
+                605.52,
+                958.72,
+                694.8
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Não nada se um garoto mais vovo\npensa em mim de forma indecente.",
+                "box": [
+                  321.28,
+                  605.52,
+                  957.44,
+                  693.36
+                ]
+              }
+            ]
+          },
+          {
+            "time": 231.397822,
+            "requested_time": 231.522541,
+            "selected_for_ocr": true,
+            "image_size": [
+              1280,
+              720
+            ],
+            "regions": [
+              [
+                322.56,
+                605.52,
+                958.72,
+                694.0799999999999
+              ]
+            ],
+            "readings": [
+              {
+                "text": "Não é nada se um garoto mais vovo\npensa em mim de forma indecente.",
+                "box": [
+                  321.28,
+                  605.52,
+                  957.44,
+                  693.36
+                ]
+              }
+            ]
+          }
+        ],
+        "events": [
+          {
+            "text": "Mas a Mai-san adulta não\nse importa com isso, nê?",
+            "language": "pt",
+            "first_observed": 226.309397,
+            "last_observed": 226.309397,
+            "observations": [
+              {
+                "time": 226.309397,
+                "box": [
+                  385.28,
+                  606.24,
+                  896.0,
+                  695.52
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Não nada se um garoto mais vovo\npensa em mim de forma indecente.",
+            "language": "pt",
+            "first_observed": 228.937019,
+            "last_observed": 228.937019,
+            "observations": [
+              {
+                "time": 228.937019,
+                "box": [
+                  321.28,
+                  605.52,
+                  957.44,
+                  693.36
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Não é nada se um garoto mais vovo\npensa em mim de forma indecente.",
+            "language": "pt",
+            "first_observed": 231.397822,
+            "last_observed": 231.397822,
+            "observations": [
+              {
+                "time": 231.397822,
+                "box": [
+                  321.28,
+                  605.52,
+                  957.44,
+                  693.36
+                ]
+              }
+            ]
+          }
+        ],
+        "ocr_requested": true,
+        "ocr_performed": true,
+        "language_note": "Model-estimated language; unknown means uncertain.",
+        "limitations": "Times are sampled observations; predicted subtitle boxes and OCR may be incomplete or incorrect.",
+        "language_model": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M"
+      }
+    }
+  ],
+  "detections": {
+    "id": "22cb4e50-ca01-46ca-9311-6b5b2ea618ba",
+    "cut_id": "4d2f3bab-61a0-40d8-a564-33e0cad3323f",
+    "job_id": "00391724-f421-4433-b36f-7f5b6f3e9c76",
+    "cut_start": 223.681375,
+    "cut_end": 231.522542,
+    "frames_json": "[{\"position\": \"first\", \"time\": 223.681764, \"image_size\": [1280, 720], \"boxes\": [[0, 239.76000000000002, 177.92000000000002, 720], [568.32, 92.16, 825.6, 719.28], [752.64, 54.72, 1081.6, 719.28]], \"raw_response\": \"<ref>person</ref><box><0><333><139><1000>,<444><128><645><999>,<588><76><845><999></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}, {\"position\": \"last\", \"time\": 231.397822, \"image_size\": [1280, 720], \"boxes\": [[0, 239.76000000000002, 176.64000000000001, 720], [322.56, 108.0, 563.2, 719.28], [748.8, 59.760000000000005, 1080.32, 719.28]], \"raw_response\": \"<ref>person</ref><box><0><333><138><1000>,<252><150><440><999>,<585><83><844><999></box>\", \"prompt\": \"Locate all the instances that match the following description: person.\"}]",
+    "model_id": "tencent/WeVisOne-VL-4B",
+    "created_at": "2026-11-05 13:31:32",
+    "model_revision": "6b44a45873b4bbc7dca383922504430dc60eca23",
+    "detections": [
+      {
+        "id": "856c5f89-78d2-46b3-b010-2bd321b81296",
+        "run_id": "22cb4e50-ca01-46ca-9311-6b5b2ea618ba",
+        "position": "first",
+        "box_json": "[568.32, 92.16, 825.6, 719.28]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      },
+      {
+        "id": "7a014af1-77a7-4d95-8d6e-70165bdde30a",
+        "run_id": "22cb4e50-ca01-46ca-9311-6b5b2ea618ba",
+        "position": "first",
+        "box_json": "[752.64, 54.72, 1081.6, 719.28]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinctive features matching the reference: brown, slightly messy hair, grey eyes, and a specific school uniform consisting of a brown blazer, white shirt, and red tie. The facial structure and art style are identical to the reference image of Sakuta Azusagawa.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      },
+      {
+        "id": "c153d21b-424a-4ed9-b2e1-f4e6cb91ec91",
+        "run_id": "22cb4e50-ca01-46ca-9311-6b5b2ea618ba",
+        "position": "last",
+        "box_json": "[322.56, 108.0, 563.2, 719.28]",
+        "character_context_id": "1ab61da1-6b7b-44af-89cb-9ea73ebb83a9",
+        "label_source": "manual",
+        "match_reason": null,
+        "match_model_id": null,
+        "match_model_revision": null,
+        "name": "Mai Sakurajima"
+      },
+      {
+        "id": "6e1f85eb-10b6-4ca5-a612-c10473f3e053",
+        "run_id": "22cb4e50-ca01-46ca-9311-6b5b2ea618ba",
+        "position": "last",
+        "box_json": "[748.8, 59.760000000000005, 1080.32, 719.28]",
+        "character_context_id": "290d19bd-b44d-4500-ad8e-f1b45fd6057a",
+        "label_source": "auto",
+        "match_reason": "The target image displays a character with distinctive brown, spiky hair, grey eyes, and a specific facial structure that perfectly matches the reference image. Both characters are wearing the exact same school uniform consisting of a beige blazer, white shirt, and red tie. The visual features are consistent and distinctive enough to confirm the identity.",
+        "match_model_id": "Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M",
+        "match_model_revision": "4d92249e905871588b9c64fddb8ea6498507fa90",
+        "name": "Sakuta Azusagawa"
+      }
+    ]
+  }
+}
