@@ -11,6 +11,22 @@ function validVideoSettings(config: AnalysisConfig) {
     Number.isFinite(config.video_fps) && config.video_fps > 0 && config.video_fps <= 30
 }
 
+type BatchQueueResult = { queued?: number; skipped?: number; blocked?: { unknown_characters: number[]; not_detected: number[] } }
+
+function cutList(numbers: number[]) {
+  return numbers.slice(0, 8).join(', ') + (numbers.length > 8 ? ` and ${numbers.length - 8} more` : '')
+}
+
+/** Says what was queued and, for the cuts that were held back, which ones need a person first. */
+function fromHereMessage(firstCut: number, result: BatchQueueResult) {
+  const unknown = result.blocked?.unknown_characters ?? []
+  const undetected = result.blocked?.not_detected ?? []
+  const parts = [`Queued ${result.queued ?? 0} cuts from cut ${firstCut}; ${result.skipped ?? 0} already complete were skipped.`]
+  if (unknown.length) parts.push(`Not queued, unknown characters: cut ${cutList(unknown)}.`)
+  if (undetected.length) parts.push(`Not queued, characters not detected yet: cut ${cutList(undetected)}.`)
+  return parts.join(' ')
+}
+
 export default function AnalysisControls({ cut, episodeId, busy, enabled, onStarted, onConfigChange, onPrevious, onNext, jobs }: { jobs: Job[]; cut: Cut; episodeId: string; busy: boolean; enabled: boolean; onStarted: () => Promise<void>; onConfigChange: (config: AnalysisConfig | null) => void; onPrevious?: () => void; onNext?: () => void }) {
   const cutId = cut.id
   const [config, setConfig] = useState<AnalysisConfig | null>(null)
@@ -31,15 +47,19 @@ export default function AnalysisControls({ cut, episodeId, busy, enabled, onStar
   function setFrameCount(count: number) {
     setConfig(current => current && { ...current, frame_count: count, frame_mode: 'uniform' })
   }
-  async function save(run: 'none' | 'cut' | 'next' | 'batch') {
+  async function save(run: 'none' | 'cut' | 'next' | 'batch' | 'from-here') {
     if (!config || working) return
     if (!validVideoSettings(config)) { setError('Enter even dimensions within the listed limits and a frame rate greater than 0 and at most 30.'); return }
     setWorking(true); setError(''); setMessage('')
     try {
       await api(`/cuts/${cutId}/analysis-config`, { method: 'PUT', body: JSON.stringify(config) })
       if (run !== 'none') {
-        const result = await api<{ queued?: number; skipped?: number }>(run === 'batch' ? `/episodes/${episodeId}/visual-analysis` : `/cuts/${cutId}/analyze`, { method: 'POST' })
-        setMessage(run === 'batch' ? `Visual analysis queued for ${result.queued ?? 0} cuts; ${result.skipped ?? 0} already complete were skipped.` : 'Visual analysis queued.')
+        const url = run === 'batch' ? `/episodes/${episodeId}/visual-analysis`
+          : run === 'from-here' ? `/episodes/${episodeId}/visual-analysis?from_cut=${cut.cut_index + 1}&characters_resolved=true`
+          : `/cuts/${cutId}/analyze`
+        const result = await api<BatchQueueResult>(url, { method: 'POST' })
+        setMessage(run === 'batch' ? `Visual analysis queued for ${result.queued ?? 0} cuts; ${result.skipped ?? 0} already complete were skipped.`
+          : run === 'from-here' ? fromHereMessage(cut.cut_index + 1, result) : 'Visual analysis queued.')
         try { await onStarted() } catch { setMessage('Analysis queued, but the episode could not refresh. Refresh the page to see its status.') }
         if (run === 'next') onNext?.()
       } else setMessage('Settings saved for this cut.')
@@ -116,7 +136,7 @@ export default function AnalysisControls({ cut, episodeId, busy, enabled, onStar
       <button className="btn btn-quiet" disabled={working || !onNext} onClick={onNext}>Next <ArrowRight size={14} /></button>
     </div>
     <div className="space-y-2 rounded border hairline p-3"><label className="block"><span className="label">Run one visual stage</span><select className="field" value={selectedStage} onChange={event => setSelectedStage(event.target.value as VisualStage)}><option value="subtitle_ocr">Subtitle detection and OCR</option><option value="initial_frame">Initial frame</option><option value="video_analysis">Video analysis</option><option value="last_frame">Last frame</option></select></label><p className="muted text-[11px]">Runs only this stage. Frame and video stages use subtitle regions saved for the current cut timing when queued; otherwise they use none. Subtitle-only runs do not classify language.</p><button className="btn btn-quiet" disabled={unavailable} onClick={() => void queueStage()}>Queue selected stage</button></div>
-    {config && <div className="space-y-2 rounded border hairline p-3"><strong className="text-xs">Episode processing</strong><p className="muted text-[11px]">First queue visual analysis, then queue text processing after visual jobs finish. Text processing creates a consistency summary and then a cut summary for each ready cut.</p><div className="flex flex-wrap gap-2"><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void save('batch')}>Queue all visual analysis</button><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void queueAllText()}>Queue all text processing</button></div></div>}
+    {config && <div className="space-y-2 rounded border hairline p-3"><strong className="text-xs">Episode processing</strong><p className="muted text-[11px]">First queue visual analysis, then queue text processing after visual jobs finish. Text processing creates a consistency summary and then a cut summary for each ready cut.</p><div className="flex flex-wrap gap-2"><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void save('batch')}>Queue all visual analysis</button><button className="btn btn-quiet" disabled={working || busy || !context || !cut.active} title="Queues subtitle OCR, first and last frame, and video analysis for this cut and every later one whose characters are settled (marked as no characters, or every box assigned). Cuts with unknown or undetected characters are skipped and listed." onClick={() => void save('from-here')}>Queue all possible visual analysis from this cut</button><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void queueAllText()}>Queue all text processing</button></div></div>}
     <button className="btn btn-quiet" disabled={working || !context} onClick={() => void save('none')}>Save preset</button>
   </div>
 }

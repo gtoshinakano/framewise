@@ -256,7 +256,10 @@ def episode_response(episode_id: str):
     episode["cuts"] = [serialize_cut(cut) for cut in db.all_rows("""SELECT c.*, EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL) AS has_analysis_results,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.title='Cut summary' AND a.superseded_by IS NULL) AS has_summary,
         EXISTS(SELECT 1 FROM character_detections d WHERE d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_boxes,
-        EXISTS(SELECT 1 FROM character_detections d WHERE d.character_context_id IS NOT NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_characters
+        EXISTS(SELECT 1 FROM character_detections d WHERE d.character_context_id IS NOT NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_characters,
+        EXISTS(SELECT 1 FROM character_detections d WHERE d.character_context_id IS NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_boxes,
+        EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type') IN ('initial_frame','last_frame','video_analysis')) AS has_visual_results,
+        EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='consistency_summary') AS has_consistency_summary
         FROM cuts c WHERE c.episode_id=? AND c.active=1 ORDER BY c.cut_index""", (episode_id,))]
     episode["archived_cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=0 ORDER BY start_time,cut_index", (episode_id,))]
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
@@ -305,7 +308,7 @@ def serialize_cut(cut: dict):
     cut["active"] = bool(cut["active"])
     cut["analysis_enabled"] = bool(cut["analysis_enabled"])
     cut["no_characters"] = bool(cut.get("no_characters"))
-    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters"):
+    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters", "has_unlabeled_boxes", "has_visual_results", "has_consistency_summary"):
         if flag in cut:
             cut[flag] = bool(cut[flag])
     fallback_first, fallback_last = media.cut_frame_times(cut["start_time"], cut["end_time"])
@@ -1401,13 +1404,31 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[st
 
 
 
+def unsettled_characters(cut, context):
+    """Why a cut's characters still need a person, or None when they are settled.
+
+    A cut marked as having no characters is settled. Otherwise it needs a current detection
+    run whose boxes all have a character assigned.
+    """
+    if cut['no_characters']:
+        return None
+    detections = context.get('character_detections')
+    if detections is None:
+        return 'not_detected'
+    if any(d['character_context_id'] is None for d in detections['detections']):
+        return 'unknown_characters'
+    return None
+
+
 @app.post('/api/episodes/{episode_id}/visual-analysis')
-def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, only_missing: bool = True):
+def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, only_missing: bool = True, characters_resolved: bool = False):
     """Queue one restart-safe visual-only job covering every enabled active cut.
 
     `from_cut` is the cut number shown in the editor (cut_index + 1); earlier cuts are left out.
     With `only_missing` (the default) a stage that already has a current result is not run again, and
     cuts with every stage done are skipped. Pass only_missing=false to redo everything.
+    With `characters_resolved`, a cut is only queued when its characters are settled: it is marked as
+    having none, or its boxes are all assigned to a character. The rest are returned in `blocked`.
 
     A single job lets the worker run each model once across all cuts (see
     single_cut_pipeline.run_batch) instead of reloading models for every cut.
@@ -1421,10 +1442,10 @@ def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, 
         if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
             raise HTTPException(409, 'Wait for media preparation or detection to finish')
         first_index = max(0, from_cut - 1) if from_cut else 0
-        cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index", (episode_id, first_index)).fetchall()
+        cuts = conn.execute("SELECT id,cut_index,no_characters FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index", (episode_id, first_index)).fetchall()
         references = character_detection.reference_snapshots(conn, episode['project_id'])
         already_queued = {row[0] for row in conn.execute("SELECT json_extract(i.value,'$.cut_id') FROM jobs j, json_each(j.payload_json,'$.cuts') i WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running')", (episode_id,))}
-        items, skipped = [], 0
+        items, skipped, blocked = [], 0, {'unknown_characters': [], 'not_detected': []}
         for cut in cuts:
             cut_id = cut['id']
             if cut_id in already_queued:
@@ -1434,6 +1455,11 @@ def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, 
             context['current_results'] = [dict(row) for row in conn.execute('SELECT kind,title,content,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid', (cut_id,))]
             labeled = {d['character_context_id'] for d in context.get('character_detections', {}).get('detections', []) if d['character_context_id']}
             labeled.update(entry['id'] for entry in context['context_items'] if entry['kind'] == 'character')
+            if characters_resolved:
+                problem = unsettled_characters(cut, context)
+                if problem:
+                    blocked[problem].append(cut['cut_index'] + 1)
+                    continue
             base_ids = {result['type']: result['id'] for result in structured_results.list_results(cut_id)}
             subtitles = saved_subtitle_input(conn, base_ids, context['cut'])
             done = set(base_ids) if subtitles else set(base_ids) - {'subtitle_ocr'}  # subtitles for other boundaries don't count
@@ -1455,7 +1481,7 @@ def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, 
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'analyze',?)", (job_id, episode_id, json.dumps(payload, ensure_ascii=False)))
             job_ids.append(job_id)
             worker.sync_episode_status(conn, episode_id)
-    return {'queued': len(items), 'skipped': skipped, 'job_ids': job_ids}
+    return {'queued': len(items), 'skipped': skipped, 'blocked': blocked, 'job_ids': job_ids}
 
 
 class BatchTextInput(BaseModel):

@@ -1,9 +1,13 @@
+import { CUT_FILTERS, matchesAnyFilter, type CutFilterKey } from './cutFilters'
 import { useEffect, useRef, useState, type PointerEvent } from 'react'
 import { AudioLines, BoxSelect, FileText, FileX, Circle, UserCheck, UserX, UserRound, CircleCheck, Clock3, Layers3, LoaderCircle, Scissors } from 'lucide-react'
 import type { Chunk, Cut, TranscriptSegment, Waveform } from './api'
 import type { AnalysisQueueState } from './analysisQueueStates'
 
 type Props = {
+  activeFilters: ReadonlySet<CutFilterKey>
+  onToggleFilter: (key: CutFilterKey) => void
+  onClearFilters: () => void
   duration: number
   waveform: Waveform | null
   hasAudio: boolean
@@ -81,10 +85,9 @@ function blockStyle(item: { start_time: number; end_time: number }, start: numbe
 }
 
 export function Timeline(props: Props) {
-  const { duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, currentTime, seekRevision, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript } = props
+  const { activeFilters, onToggleFilter, onClearFilters, duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, currentTime, seekRevision, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript } = props
   const [windowSeconds, setWindowSeconds] = useState<number | null>(() => duration > 1800 ? 600 : null)
   const [requestedStart, setRequestedStart] = useState(0)
-  const [hideProcessed, setHideProcessed] = useState(false)
   const followPlayhead = useRef(true)
   const overviewDrag = useRef<{ pointerId: number; x: number; start: number; mode: 'pan' | 'seek'; moved: boolean } | null>(null)
   const middleDrag = useRef<{ pointerId: number; x: number; start: number; span: number; width: number; maxStart: number } | null>(null)
@@ -206,10 +209,12 @@ export function Timeline(props: Props) {
     event.stopPropagation()
   }
   const playhead = (currentTime - start) / span * 100
-  const unqueuedCuts = cuts.filter(cut => cut.analysis_enabled && !cut.has_analysis_results && !cutQueueStates.has(cut.id))
-  function selectNextUnqueued() {
+  // With no filter on, "next" means any cut that needs something; otherwise only the cuts the filters show.
+  const needsAction = (cut: typeof cuts[number]) => activeFilters.size ? matchesAnyFilter(cut, activeFilters) : CUT_FILTERS.some(filter => filter.matches(cut))
+  const actionCuts = cuts.filter(needsAction)
+  function selectNextNeedingAction() {
     const selectedIndex = cuts.findIndex(cut => cut.id === selectedCutId)
-    const next = unqueuedCuts.find(cut => cut.cut_index > selectedIndex) || unqueuedCuts[0]
+    const next = actionCuts.find(cut => cuts.indexOf(cut) > selectedIndex) || actionCuts[0]
     if (next) onSelectCut(next)
   }
   return <section className="border-t hairline bg-[#11151d] px-4 py-3">
@@ -221,16 +226,26 @@ export function Timeline(props: Props) {
       <button type="button" disabled={start <= 0} onClick={() => { followPlayhead.current = false; setRequestedStart(Math.max(0, start - span * 0.75)) }} className="btn btn-quiet px-2 py-1.5 text-xs">← Earlier</button>
       <button type="button" disabled={start >= maxStart} onClick={() => { followPlayhead.current = false; setRequestedStart(Math.min(maxStart, start + span * 0.75)) }} className="btn btn-quiet px-2 py-1.5 text-xs">Later →</button>
       <button type="button" onClick={() => { followPlayhead.current = true; center(currentTime) }} className="btn btn-quiet px-2 py-1.5 text-xs">Center playhead</button>
-      <label className="flex cursor-pointer items-center gap-2"><input type="checkbox" checked={hideProcessed} onChange={event => setHideProcessed(event.target.checked)} /> Hide cuts with results</label>
-      <button type="button" className="btn btn-quiet px-2 py-1.5 text-xs" disabled={!unqueuedCuts.length} onClick={selectNextUnqueued}>Next unqueued ({unqueuedCuts.length})</button>
       <span className="muted ml-auto font-mono text-[11px]">{stamp(start)} – {stamp(Math.min(duration, end))}</span>
+    </div>
+    <div role="group" aria-label="Show only cuts that need action" className="mb-3 flex flex-wrap items-center justify-end gap-2 text-xs">
+      <span className="muted">Needs action</span>
+      {CUT_FILTERS.map(filter => {
+        const on = activeFilters.has(filter.key)
+        const count = cuts.filter(filter.matches).length
+        return <button key={filter.key} type="button" aria-pressed={on} title={filter.hint} onClick={() => onToggleFilter(filter.key)} className="btn btn-quiet px-2 py-1.5 text-xs" style={on ? { borderColor: filter.color, boxShadow: `inset 0 0 0 1px ${filter.color}` } : undefined}>
+          <span aria-hidden="true" className="mr-1.5 inline-block h-2 w-2 rounded-full" style={{ background: filter.color }} />{filter.label} ({count})
+        </button>
+      })}
+      {activeFilters.size > 0 && <button type="button" className="btn btn-quiet px-2 py-1.5 text-xs" onClick={onClearFilters}>Show all cuts</button>}
+      <button type="button" className="btn btn-quiet px-2 py-1.5 text-xs" disabled={!actionCuts.length} onClick={selectNextNeedingAction}>Next needing action ({actionCuts.length})</button>
     </div>
     <div ref={zoomSurface} className={panning ? 'timeline-panning' : undefined} onPointerDownCapture={startMiddlePan} onPointerMoveCapture={moveMiddlePan} onPointerUpCapture={endMiddlePan} onPointerCancelCapture={endMiddlePan} onLostPointerCapture={endMiddlePan} onMouseDownCapture={event => { if (event.button === 1) event.preventDefault() }} onAuxClickCapture={event => { if (event.button === 1) event.preventDefault() }}>
     <div className="mb-5 grid grid-cols-[86px_minmax(0,1fr)] items-center gap-3"><span className="muted text-[11px]">Overview</span><div ref={overview} role="slider" aria-label="Video overview" aria-valuemin={0} aria-valuemax={Math.max(duration, 1)} aria-valuenow={Math.min(currentTime, duration)} aria-valuetext={preciseStamp(currentTime)} tabIndex={0} onKeyDown={event => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); seekOverview(Math.max(0, Math.min(duration, currentTime + (event.key === 'ArrowRight' ? 1 : -1) * Math.max(1, span / 10)))) } }} onPointerDown={startOverviewDrag} onPointerMove={moveOverviewDrag} onPointerUp={finishOverviewDrag} onPointerCancel={() => { overviewDrag.current = null }} onLostPointerCapture={() => { overviewDrag.current = null }} className="relative h-5 cursor-crosshair touch-none overflow-hidden rounded bg-[#262c39]"><div className={`absolute inset-y-0 rounded border border-[#ab8df2] bg-[#8d70c266] ${maxStart > 0 ? 'cursor-grab active:cursor-grabbing' : ''}`} style={{ left: `${duration ? start / duration * 100 : 0}%`, width: `${duration ? Math.min(100, span / duration * 100) : 100}%` }} /><div className="pointer-events-none absolute inset-y-0 w-px bg-white" style={{ left: `${duration ? currentTime / duration * 100 : 0}%` }} /></div></div>
     <div className="timeline-grid relative mb-2 flex justify-between border-b hairline pb-2 font-mono text-[10px] text-[#7e8797]">{Array.from({ length: 6 }, (_, index) => <span key={index}>{stamp(start + span * index / 5)}</span>)}</div>
     <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
       <div className="flex h-15 items-center gap-2 text-xs text-[#98a1af]"><Scissors size={16} /> Cuts</div>
-      <div className="relative h-15 overflow-hidden rounded-md bg-[#1b202b]">{cuts.filter(cut => visible(cut) && (!hideProcessed || !cut.has_analysis_results)).map(cut => {
+      <div className="relative h-15 overflow-hidden rounded-md bg-[#1b202b]">{cuts.filter(cut => visible(cut) && (!activeFilters.size || matchesAnyFilter(cut, activeFilters))).map(cut => {
         const queueState = cutQueueStates.get(cut.id)
         const queueLabel = queueState === 'running' ? 'Analysis running' : queueState === 'queued' ? 'Analysis queued' : ''
         return <button key={cut.id} title={`Cut ${cut.cut_index + 1} · ${stamp(cut.start_time)}–${stamp(cut.end_time)}${cut.analysis_enabled ? '' : ' · Analysis disabled'} · ${cut.has_analysis_results ? 'Has analysis results' : 'No analysis results'} · ${cut.has_boxes ? 'Boxes detected' : 'No boxes'} · ${cut.no_characters ? 'No characters' : cut.has_characters ? 'Character detected' : 'No character labels'} · ${cut.has_summary ? 'Has cut summary' : 'No cut summary'}${queueLabel ? ` · ${queueLabel}` : ''}`} aria-label={`Cut ${cut.cut_index + 1}, ${cut.has_analysis_results ? 'has analysis results' : 'no analysis results'}${cut.analysis_enabled ? '' : ', analysis disabled'}${queueLabel ? `, ${queueLabel}` : ''}`} onClick={() => onSelectCut(cut)} onDoubleClick={() => onOpenCutAnalysis(cut)} className={`cut-block ${cut.analysis_enabled ? '' : 'cut-block-disabled'} absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${!cut.analysis_enabled ? selectedCutId === cut.id ? 'bg-[#a05b36] text-white' : 'bg-[#75462f] text-[#ffe1c4]' : selectedCutId === cut.id ? 'bg-[#9476d555] text-white' : 'bg-[#5c497d66] text-[#d4c4ed]'}`} style={blockStyle(cut, start, span)}><span className="flex items-center gap-1">{cut.has_analysis_results ? <CircleCheck size={12} className="shrink-0 text-[#7bdcb2]" aria-hidden="true" /> : <Circle size={12} className="shrink-0 text-[#c5cad3]" aria-hidden="true" />}{cut.has_boxes ? <BoxSelect size={12} className="shrink-0 text-[#4cc9f0]" aria-hidden="true"><title>Boxes detected</title></BoxSelect> : null}{cut.no_characters ? <UserX size={12} className="shrink-0 text-[#c5cad3]" aria-hidden="true"><title>No characters</title></UserX> : cut.has_characters ? <UserCheck size={12} className="shrink-0 text-[#7bdcb2]" aria-hidden="true"><title>Character detected</title></UserCheck> : cut.has_boxes ? <UserRound size={12} className="shrink-0 text-[#e6c58b]" aria-hidden="true"><title>Unlabeled characters</title></UserRound> : null}{cut.has_summary ? <FileText size={12} className="shrink-0 text-[#c3aeff]" aria-hidden="true"><title>Has cut summary</title></FileText> : <FileX size={12} className="shrink-0 text-[#6f7787]" aria-hidden="true"><title>No cut summary</title></FileX>}{queueState === 'running' ? <LoaderCircle size={12} className="shrink-0 animate-spin text-[#f5c678] motion-reduce:animate-none" aria-hidden="true" /> : queueState === 'queued' ? <Clock3 size={12} className="shrink-0 text-[#86d1e1]" aria-hidden="true" /> : null}<span className="truncate">{cut.title || `Cut ${cut.cut_index + 1}`}{!cut.analysis_enabled && ' · Disabled'}</span></span><span className="block truncate text-[9px] opacity-70">{stamp(cut.start_time)}</span>{queueState && <span aria-hidden="true" className={`absolute inset-x-0 bottom-0 h-1 ${queueState === 'running' ? 'bg-[#f5c678]' : 'bg-[#86d1e1]'}`} />}</button>

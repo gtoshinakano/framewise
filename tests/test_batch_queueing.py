@@ -40,7 +40,7 @@ class BatchQueueingTest(unittest.TestCase):
         payload = json.loads(self.jobs('analyze')[0]['payload_json'])
         self.assertEqual([item['cut_id'] for item in payload['cuts']], ['c1', 'c2', 'c3'])
         self.assertEqual(payload['workflow'], 'single_cut_v2')
-        self.assertEqual(main.queue_episode_visual_analysis('e'), {'queued': 0, 'skipped': 0, 'job_ids': []})
+        self.assertEqual(main.queue_episode_visual_analysis('e'), {'queued': 0, 'skipped': 0, 'blocked': {'unknown_characters': [], 'not_detected': []}, 'job_ids': []})
 
     def test_visual_analysis_can_start_from_a_cut_number(self):
         result = main.queue_episode_visual_analysis('e', from_cut=2)  # the editor numbers cuts from 1
@@ -89,6 +89,41 @@ class BatchQueueingTest(unittest.TestCase):
         self.assertEqual(events.count('subtitle-cut'), 2)  # c1 already had subtitles
         self.assertEqual(events.count('frame'), 6)
         self.assertEqual(events.count('video-cut'), 3)
+
+    def test_cuts_report_what_still_needs_human_action(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO context_items(id,project_id,kind,title) VALUES ('hero','p','character','Hero')")
+            conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('r','c1',0,2,'[]','t')")
+            conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('d1','r','first','[1,1,2,2]','hero'),('d2','r','last','[1,1,2,2]',NULL)")
+        for stage in ('video_analysis', 'consistency_summary'):
+            self.seed_result('c1', stage)
+        self.seed_result('c2', 'video_analysis')
+        cuts = {cut['id']: cut for cut in main.episode_response('e')['cuts']}
+        self.assertTrue(cuts['c1']['has_boxes'] and cuts['c1']['has_characters'] and cuts['c1']['has_unlabeled_boxes'])
+        self.assertTrue(cuts['c1']['has_visual_results'] and cuts['c1']['has_consistency_summary'])
+        self.assertFalse(cuts['c2']['has_boxes'] or cuts['c2']['has_unlabeled_boxes'] or cuts['c2']['has_consistency_summary'])
+        self.assertTrue(cuts['c2']['has_visual_results'])
+        self.assertFalse(cuts['c3']['has_visual_results'] or cuts['c3']['has_consistency_summary'])
+
+    def test_characters_must_be_settled_before_cuts_are_queued_from_a_cut(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO cuts(id,episode_id,cut_index,start_time,end_time,first_frame_time,last_frame_time) VALUES ('c4','e',3,6,8,6,7.9)")
+            conn.execute("INSERT INTO context_items(id,project_id,kind,title) VALUES ('hero','p','character','Hero')")
+            conn.execute("UPDATE cuts SET no_characters=1 WHERE id='c1'")                      # marked: settled
+            for run, cut, start, end in (('r2', 'c2', 2, 4), ('r3', 'c3', 4, 6)):
+                conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES (?,?,?,?,'[]','t')", (run, cut, start, end))
+            conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('d2','r2','first','[1,1,2,2]','hero')")  # c2: all named
+            conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('d3','r3','first','[1,1,2,2]',NULL)")    # c3: unknown box
+        result = main.queue_episode_visual_analysis('e', from_cut=2, characters_resolved=True)  # c4 was never detected
+        self.assertEqual(result['blocked'], {'unknown_characters': [3], 'not_detected': [4]})
+        self.assertEqual(result['queued'], 1)
+        queued = [item['cut_id'] for item in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts']]
+        self.assertEqual(queued, ['c2'])                                                          # c1 is before from_cut
+
+    def test_without_the_prerequisite_nothing_is_blocked(self):
+        result = main.queue_episode_visual_analysis('e')
+        self.assertEqual(result['blocked'], {'unknown_characters': [], 'not_detected': []})
+        self.assertEqual(result['queued'], 3)
 
     def test_single_cut_trigger_still_queues_a_one_cut_job(self):
         main.analyze_cut('c2')
