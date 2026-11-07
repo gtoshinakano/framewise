@@ -791,6 +791,8 @@ def main():
     db.init_db()
     from . import local_text_runtime
     local_text_runtime.runtime = local_text_runtime.LocalTextRuntime()
+    anime_runtime = None
+    anime_batch_id = None
     while True:
         try:
             claimed = worker.claim_job(("analyze", "regen", "consistency_summary", "character_detect", "composition_compact"))
@@ -804,12 +806,29 @@ def main():
                 try:
                     kind = db.one("SELECT pipeline FROM jobs WHERE id=?", (job_id,))["pipeline"]
                     job_payload = db.one("SELECT payload_json FROM jobs WHERE id=?", (job_id,))
-                    text_only = kind == 'analyze' and json.loads(job_payload['payload_json']).get('text_only', False)
+                    payload = json.loads(job_payload['payload_json'])
+                    text_only = kind == 'analyze' and payload.get('text_only', False)
+                    anime_batch = kind == 'character_detect' and payload.get('workflow') == 'anime_bulk_v1'
+                    if anime_runtime and (not anime_batch or payload.get('batch_id') != anime_batch_id):
+                        anime_runtime.close()
+                        anime_runtime = None
+                        anime_batch_id = None
                     if kind == 'character_detect' or (kind == 'analyze' and not text_only):
                         local_text_runtime.runtime.stop('Released for visual analysis')
                     if kind == 'composition_compact':
                         from . import composition_compaction
                         composition_compaction.process(job_id, owner)
+                    elif anime_batch:
+                        from . import anime_bulk
+                        if anime_runtime is None:
+                            anime_runtime = anime_bulk.BulkRuntime()
+                            anime_batch_id = payload.get('batch_id')
+                        anime_bulk.process_batch(db.one('SELECT * FROM jobs WHERE id=?', (job_id,)), owner, anime_runtime)
+                        remaining = db.one("SELECT id FROM jobs WHERE pipeline='character_detect' AND status IN ('queued','running') AND json_extract(payload_json,'$.workflow')='anime_bulk_v1' AND json_extract(payload_json,'$.batch_id')=? LIMIT 1", (anime_batch_id,))
+                        if not remaining:
+                            anime_runtime.close()
+                            anime_runtime = None
+                            anime_batch_id = None
                     else:
                         (process_regen if kind == "regen" else process_consistency_summary if kind == 'consistency_summary' else process_character_detection if kind == 'character_detect' else process)(job_id, owner)
                 finally:
@@ -819,10 +838,21 @@ def main():
                     if local_text_runtime.runtime.process and local_text_runtime.runtime.process.poll() is None:
                         local_text_runtime.runtime.publish('loaded', 'Ready')
             else:
+                if anime_runtime is not None:
+                    anime_runtime.close()
+                    anime_runtime = None
+                    anime_batch_id = None
                 local_text_runtime.runtime.reconcile()
                 time.sleep(2)
         except Exception:
             log.exception("Inference worker error")
+            if anime_runtime is not None:
+                try:
+                    anime_runtime.close()
+                except Exception:
+                    log.exception('Could not release bulk anime models')
+                anime_runtime = None
+                anime_batch_id = None
             time.sleep(2)
 
 

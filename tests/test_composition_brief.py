@@ -41,17 +41,11 @@ class CompositionProjectionTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             external_api.CompositionEndSubject.model_validate({'subject':'s','pose':' '.join(['word'] * 13)})
         with self.assertRaises(ValidationError):
-            external_api.CompositionCut.model_validate({'id':'c','cut_number':1,'ready':True,'updated_at':'now',
-                                                        'analysis_rev':'r','duration':1,'dialogue':[utterance]})
+            external_api.CompositionCut.model_validate({'id':'c','cut_number':1,'ready':True,'duration':1,'dialogue':[utterance]})
         with self.assertRaises(ValidationError):
-            external_api.CompositionCut.model_validate({'id':'c','cut_number':1,'ready':True,'updated_at':'now',
-                                                        'analysis_rev':'r','duration':1,
+            external_api.CompositionCut.model_validate({'id':'c','cut_number':1,'ready':True,'duration':1,
                                                         'beats':[{'t0':0,'t1':1,'subject':0,'action':'turns'}]})
-        base = {'id':'c','cut_number':1,'ready':True,'updated_at':'now','analysis_rev':'r','duration':2}
-        with self.assertRaises(ValidationError):
-            external_api.CompositionCut.model_validate({**base,'confidence':{'unknown_section':'high'}})
-        with self.assertRaises(ValidationError):
-            external_api.CompositionCut.model_validate({**base,'unavailable':{'shot':'not-a-code'}})
+        base = {'id':'c','cut_number':1,'ready':True,'duration':2}
         with self.assertRaises(ValidationError):
             external_api.CompositionCut.model_validate({**base,'beats':[{'t0':0,'t1':1,'subject':'A','action':'turns'},
                                                                         {'t0':1,'t1':2,'subject':'A','action':'stops'}]})
@@ -557,20 +551,18 @@ class CompositionApiTest(unittest.TestCase):
         self.assertNotIn('production_brief',cut)
         self.assertNotIn('initial_frame',cut)
         self.assertNotIn('audio_url',cut)
-        self.assertEqual(len(cut['links']),1)
-        self.assertEqual(cut['links'][0]['subject'],0)
-        self.assertEqual(len(cut['links'][0]['first'][0]),4)
+        removed = {'updated_at', 'analysis_rev', 'confidence', 'unavailable', 'links', 'issues'}
+        self.assertTrue(removed.isdisjoint(cut))
+        self.assertNotIn('unavailable_reasons', self.client.get(self.path).json())
         self.assertTrue(any(b['t1'] > 2 for b in cut['beats']))
         selected=self.client.get(self.path+'&fields=shot&include=dialogue_segments').json()['cuts'][0]
         self.assertIn('shot',selected); self.assertNotIn('setting',selected)
         self.assertGreater(len(selected['dialogue_segments']),2)
         self.assertEqual(self.client.get(self.path+'&include=nonsense').status_code,422)
-        links_only = self.client.get(self.path+'&fields=links').json()['cuts'][0]
-        self.assertNotIn('subjects',links_only)
-        self.assertEqual(links_only['links'][0]['character_context_id'],cut['subjects'][0]['character_context_id'])
+        for name in removed:
+            self.assertEqual(self.client.get(self.path+'&fields='+name).status_code, 422)
         actions = self.client.get(self.path+'&fields=beats,end_state').json()['cuts'][0]
         self.assertNotIn('subjects',actions)
-        self.assertEqual(actions['analysis_rev'],cut['analysis_rev'])
         self.assertEqual(actions['beats'][0]['subject'],'Mai Sakurajima')
         self.assertTrue(any(s['subject']=='Mai Sakurajima' for s in actions['end_state']['subjects']))
 
@@ -586,7 +578,9 @@ class CompositionApiTest(unittest.TestCase):
         guide = self.client.get('/api/integration-guide')
         self.assertEqual(guide.status_code,200)
         self.assertIn('view=composition',guide.text)
-        self.assertIn('`sp`',guide.text)
+        self.assertTrue({'updated_at', 'analysis_rev', 'confidence', 'unavailable', 'links', 'issues'}.isdisjoint(models['CompositionCut']['properties']))
+        self.assertNotIn('unavailable_reasons', models['CompositionBrief']['properties'])
+        self.assertNotIn('unavailable', models['BriefCut']['properties'])
 
     def test_oversized_dialogue_is_preserved_in_full(self):
         text = 'An unusually long transcript. ' * 650
@@ -617,7 +611,7 @@ class CompositionApiTest(unittest.TestCase):
         current = db.all_rows("SELECT id,content FROM analysis_results WHERE cut_id=? AND title='Cut summary' AND superseded_by IS NULL",(cut_id,))
         self.assertEqual(current,[{'id':'prior','content':'Prior revision'}])
         cut = self.client.get(self.path).json()['cuts'][0]
-        self.assertEqual(cut['unavailable']['shot'],'sf')
+        self.assertTrue(cut['ready'])
         absolute = self.client.get(self.path+'&fields=start_time,end_time').json()['cuts'][0]
         self.assertEqual(absolute['start_time'],self.data['cut']['start_time'])
         self.assertEqual(absolute['end_time'],self.data['cut']['end_time'])
@@ -629,6 +623,9 @@ class CompositionApiTest(unittest.TestCase):
         result=self.client.get(self.path).json()
         self.assertEqual(result['pending'],[1]); self.assertFalse(result['cuts'][0]['ready'])
         self.assertNotIn('shot',result['cuts'][0])
+        self.assertTrue({'updated_at', 'analysis_rev', 'confidence', 'unavailable', 'links', 'issues'}.isdisjoint(result['cuts'][0]))
+        selected = self.client.get(self.path+'&fields=shot').json()['cuts'][0]
+        self.assertEqual(set(selected), {'id', 'cut_number', 'ready'})
         self.assertEqual(self.client.get(self.path+'&only_ready=true').json()['cuts'],[])
 
     def test_changed_cut_boundaries_make_visual_snapshot_unready(self):
@@ -636,7 +633,7 @@ class CompositionApiTest(unittest.TestCase):
             conn.execute('UPDATE cuts SET end_time=end_time+.1 WHERE id=?',(self.data['cut']['id'],))
         cut=self.client.get(self.path).json()['cuts'][0]
         self.assertFalse(cut['ready'])
-        self.assertEqual(cut['unavailable']['shot'],'vs')
+        self.assertNotIn('unavailable',cut)
         self.assertNotIn('subjects',cut)
 
     def test_incomplete_active_analysis_does_not_mix_revisions(self):
@@ -651,12 +648,10 @@ class CompositionApiTest(unittest.TestCase):
 
     def test_incremental_reads_include_character_relabels(self):
         original = self.client.get(self.path).json()['cuts'][0]
-        selected = self.client.get(self.path+'&fields=shot').json()['cuts'][0]
-        self.assertEqual(original['analysis_rev'],selected['analysis_rev'])
+        timestamp = db.one('SELECT updated_at FROM composition_changes WHERE cut_id=?', (original['id'],))['updated_at']
         with db.connect() as conn:
             conn.execute("UPDATE context_items SET title='Renamed' WHERE id='1ab61da1-6b7b-44af-89cb-9ea73ebb83a9'")
-        changed = self.client.get(self.path+'&updated_since='+original['updated_at']).json()['cuts'][0]
-        self.assertNotEqual(original['analysis_rev'],changed['analysis_rev'])
+        changed = self.client.get(self.path+'&updated_since='+timestamp).json()['cuts'][0]
         self.assertEqual(changed['subjects'][0]['name'],'Renamed')
         self.assertEqual(self.client.get(self.path+'&updated_since=2099-01-01T00:00:00Z').json()['cuts'],[])
 
@@ -678,7 +673,6 @@ class CompositionApiTest(unittest.TestCase):
         with db.connect() as conn:
             conn.execute('UPDATE character_detection_runs SET cut_end=cut_end+.1 WHERE id=?',(self.data['detections']['id'],))
         cut = self.client.get(self.path).json()['cuts'][0]
-        self.assertTrue(cut['links'][0]['stale'])
         self.assertIsNone(cut['subjects'][0]['character_context_id'])
 
     def test_end_state_matches_character_ids_without_assuming_list_order(self):
@@ -690,7 +684,6 @@ class CompositionApiTest(unittest.TestCase):
         cut = self.client.get(self.path).json()['cuts'][0]
         mai = next(s for s in cut['end_state']['subjects'] if s['subject']==0)
         self.assertEqual(mai['expression'],'slight smile')
-        self.assertEqual(cut['unavailable']['end_state'],'ia')
 
     def test_export_can_run_alongside_analysis(self):
         cut = self.data['cut']
@@ -706,7 +699,7 @@ class CompositionApiTest(unittest.TestCase):
         claim=worker.claim_job(('brief_export',)); self.assertEqual(claim[0],job)
         samples=[]
         def extract(source, output, sample, start, end, **kwargs):
-            self.assertEqual(kwargs['exact_size'],(1280,720)); output.write_bytes(b'jpeg')
+            self.assertIsNone(kwargs['width']); self.assertNotIn('exact_size', kwargs); output.write_bytes(b'jpeg')
             samples.append((sample,kwargs['last']))
         with patch('app.brief.media.extract_cut_frame',side_effect=extract): worker.process(*claim)
         self.assertEqual(samples,[(cut['start_time']+.1,False),(cut['end_time']-.1,False)])
@@ -717,7 +710,10 @@ class CompositionApiTest(unittest.TestCase):
             self.assertTrue(manifest['frame'].endswith('-initial.jpg'))
             self.assertTrue(manifest['last_frame'].endswith('-last.jpg'))
             self.assertTrue(manifest['has_speech']); self.assertGreater(manifest['audio_seconds'],0)
-            self.assertEqual(json.loads(z.read('brief.json'))['cuts'][0]['cut_number'],1)
+            exported = json.loads(z.read('brief.json'))
+            self.assertEqual(exported['cuts'][0]['cut_number'],1)
+            self.assertNotIn('unavailable_reasons', exported)
+            self.assertTrue({'updated_at', 'analysis_rev', 'confidence', 'unavailable', 'links', 'issues'}.isdisjoint(exported['cuts'][0]))
 
     def test_compaction_job_is_revision_safe_and_records_provenance(self):
         record = self.client.get(self.path).json()['cuts'][0]
@@ -743,7 +739,6 @@ class CompositionApiTest(unittest.TestCase):
         compact = self.client.get(self.path).json()['cuts'][0]
         self.assertEqual(compact['subjects'][0]['hands'],shortened['subjects.0.hands'])
         self.assertEqual(compact['subjects'][0]['character_context_id'],record['subjects'][0]['character_context_id'])
-        self.assertNotEqual(compact['analysis_rev'],record['analysis_rev'])
 
         # A new source revision while another result is queued must never be
         # overwritten by the old job, even if a model returns valid JSON.
@@ -845,17 +840,11 @@ class CompositionRangeSizeTest(unittest.TestCase):
         self.assertEqual(response.status_code,200,response.text)
         result=response.json()
         self.assertEqual((result['ready_count'],result['pending']),(25,[]))
-        self.assertEqual(result['cuts'][64-44]['unavailable']['beats_partial'],'bp')
         cut48 = result['cuts'][48-44]
-        self.assertEqual(cut48['unavailable']['end_state'],'ep')
         self.assertNotIn('frame_pos',cut48['end_state']['subjects'][0])
-        used = {code for cut in result['cuts'] for code in cut.get('unavailable',{}).values()}
-        self.assertEqual(set(result['unavailable_reasons']),used)
-        cut45 = result['cuts'][1]
-        unlabeled = [link for link in cut45['links'] if link.get('character_context_id') is None and 'subject' not in link]
-        self.assertEqual(len(unlabeled),1)
-        self.assertEqual((len(unlabeled[0]['first']),len(unlabeled[0]['last'])),(2,2))
+        self.assertNotIn('unavailable_reasons', result)
         for cut in result['cuts']:
+            self.assertTrue({'updated_at', 'analysis_rev', 'confidence', 'unavailable', 'links', 'issues'}.isdisjoint(cut))
             self.assertNotIn('production_brief',cut)
             self.assertNotIn('initial_frame',cut)
             self.assertNotIn('audio_url',cut)

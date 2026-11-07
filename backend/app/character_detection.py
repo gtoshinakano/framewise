@@ -43,7 +43,7 @@ def detect_boundary_people(original, cut, scratch, model, on_frame=None):
     return frames
 
 
-def reference_snapshots(conn, project_id):
+def reference_snapshots(conn, project_id, per_character_limit=2):
     """Freeze references and source coordinates for a queued detection job."""
     import json
     rows = conn.execute('''SELECT r.id,r.character_context_id,ci.title,d.position,d.box_json,
@@ -56,7 +56,7 @@ def reference_snapshots(conn, project_id):
     for row in rows:
         item = dict(row)
         cid = item['character_context_id']
-        if counts.get(cid, 0) >= 2:
+        if per_character_limit is not None and counts.get(cid, 0) >= per_character_limit:
             continue
         frames = json.loads(item.pop('frames_json'))
         frame = next((f for f in frames if f['position'] == item['position']), None)

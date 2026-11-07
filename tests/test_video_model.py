@@ -60,8 +60,8 @@ class VideoAdapterTest(unittest.TestCase):
             self.assertIn('user-verified', calls[0][1])
             self.assertIn('This is an intermediate analysis window', calls[0][1])
             self.assertIn('This is the final analysis window', calls[1][1])
-            self.assertIn('Exclude the next-shot frames', calls[1][1])
-            self.assertIn('If the transition is unclear, keep the frames', calls[1][1])
+            self.assertIn('include its visible final frames', calls[1][1])
+            self.assertIn('without changing the cut boundary', calls[1][1])
             self.assertIn('labels_confirmed_by_queue', calls[0][1])
             self.assertIn('do not assume who is present or what they do', calls[0][1].lower())
             rejected = []
@@ -139,9 +139,39 @@ class VideoAdapterTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
     def test_completed_windows_are_reused_without_loading_models(self):
-        windows = [{'source': {'source_start': 20, 'source_end': 28}, 'analysis': {'events': []}},
-                   {'source': {'source_start': 28, 'source_end': 29}, 'analysis': {'events': []}}]
+        windows = [{'source': {'source_start': 20, 'source_end': 28, 'boundary_policy': video_model.BOUNDARY_POLICY, 'source_file': 'missing.mp4'}, 'analysis': {'events': []}},
+                   {'source': {'source_start': 28, 'source_end': 29, 'boundary_policy': video_model.BOUNDARY_POLICY, 'source_file': 'missing.mp4'}, 'analysis': {'events': []}}]
         result = video_model.analyze_video('missing.mp4', {'start_time': 20, 'end_time': 29},
             {'video_width': 640, 'video_height': 360, 'video_fps': 4}, '/missing-model', '/tmp',
             load_window=lambda index, start, end: windows[index])
         self.assertEqual(result['windows'], windows)
+
+    def test_preview_boundaries_replace_older_unbounded_window(self):
+        class Model:
+            device = 'cuda'
+            def to(self, _device): return self
+            def eval(self): return self
+        transformers = SimpleNamespace(AutoProcessor=SimpleNamespace(from_pretrained=lambda *a, **kw: object()), AutoModelForImageTextToText=SimpleNamespace(from_pretrained=lambda *a, **kw: Model()))
+        torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None), bfloat16='bf16')
+        prepared, saved = [], []
+        def prepare(source, clip, start, end, width, height, fps):
+            prepared.append((source.name, start, end))
+            clip.touch()
+            return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps}
+        old = {'source': {'source_start': 20, 'source_end': 21}, 'analysis': {'events': []}}
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            (path / 'model.safetensors.index.json').write_text('{"weight_map":{"w":"weights.safetensors"}}')
+            (path / 'weights.safetensors').touch()
+            with patch.dict(sys.modules, {'torch': torch, 'transformers': transformers}), \
+                 patch.object(video_model.media, 'prepare_analysis_video', side_effect=prepare), \
+                 patch.object(video_model, 'generate_window', return_value=({'events': []}, {}, 1)):
+                result = video_model.analyze_video(path / 'proxy.mp4', {'start_time': 20, 'end_time': 21.2, 'first_frame_time': 20.04, 'last_frame_time': 20.96},
+                    {'video_width': 640, 'video_height': 360, 'video_fps': 4}, path, path,
+                    load_window=lambda *_: old, save_window=lambda index, window: saved.append((index, window)))
+        self.assertEqual(prepared[0][0], 'proxy.mp4')
+        self.assertAlmostEqual(prepared[0][1], 20.04)
+        self.assertAlmostEqual(prepared[0][2], 20.960002)
+        self.assertEqual(result['windows'][0]['source']['boundary_policy'], video_model.BOUNDARY_POLICY)
+        self.assertEqual(result['windows'][0]['source']['source_file'], 'proxy.mp4')
+        self.assertEqual(saved[0][0], 0)

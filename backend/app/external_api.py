@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import db, media
+from . import db, media, structured_results
 
 router = APIRouter(prefix="/api/v1", tags=["External integration v1"])
 
@@ -39,7 +39,7 @@ class Episode(BaseModel):
     created_at: str
 
 
-class Cut(BaseModel):
+class CutMetadata(BaseModel):
     id: str = Field(description="Stable cut UUID. Store this instead of the changing cut_index.")
     episode_id: str
     cut_index: int = Field(description="Zero-based current timeline order; archived cuts have negative indices. CUT1 is index 0.")
@@ -52,6 +52,9 @@ class Cut(BaseModel):
     title: str
     description: str
     notes: str
+
+
+class Cut(CutMetadata):
     results: dict[str, Any] = Field(description="Legacy editable cut results; distinct from analysis_results revisions.")
 
 
@@ -167,18 +170,22 @@ class CutPage(BaseModel):
     next_offset: int | None = Field(description="Pass as offset for the next page; null means no more results.")
 
 
+class CutDetailProject(BaseModel):
+    id: str
+    title: str
+    created_at: str
+
+
 class CutDetail(BaseModel):
-    project: Project
-    episode: Episode
+    project: CutDetailProject
     cut: Cut
-    analysis_results: list[AnalysisResult] = Field(description="Current result revisions.")
+    cut_summary: str | None = Field(description="Text of the current Cut summary, or null if unavailable.")
+    first_frame: dict[str, Any] | None = Field(description="Content of the current structured initial-frame analysis, or null if unavailable.")
+    last_frame: dict[str, Any] | None = Field(description="Content of the current structured last-frame analysis, or null if unavailable.")
     transcript_segments: list[Transcript] = Field(description="Current non-deleted segments overlapping this cut; may extend beyond its boundaries.")
     context_items: list[ContextItem] = Field(description="Project-wide and this episode's context items, including characters.")
-    chunks: list[Chunk] = Field(description="Working chunks overlapping the cut; chunks are not cuts.")
-    previous_cut: Cut | None
-    next_cut: Cut | None
-    voice_samples: list[VoiceSample] = Field(description="All project character voice references; match character_context_id to context or transcript.")
-    links: dict[str, str] = Field(description="Relative API paths for related data and media. Resolve against the server origin.")
+    previous_cut: CutMetadata | None
+    next_cut: CutMetadata | None
 
 
 class ContextProject(BaseModel):
@@ -291,21 +298,19 @@ def cuts(episode_id: str,
 def cut_detail(cut_id: str):
     main = main_api()
     context = main.get_analysis_context(cut_id)
-    episode_id = context["episode"]["id"]
     project_id = context["project"]["id"]
-    return {"project": main.require_project(project_id), "episode": episode_metadata(episode_id), "cut": context["cut"],
-            "analysis_results": main.list_analysis_results(cut_id), "transcript_segments": context["transcript_segments"],
-            "context_items": context["context_items"], "chunks": context["chunks"],
-            "previous_cut": context["previous_cut"], "next_cut": context["next_cut"],
-            "voice_samples": main.list_voice_samples(project_id),
-            "links": {"analysis_results": f"/api/cuts/{cut_id}/analysis-results", "analysis_context": f"/api/cuts/{cut_id}/analysis-context",
-                      "audio": f"/api/v1/cuts/{cut_id}/audio", "first_frame": f"/api/cuts/{cut_id}/frame/first",
-                      "last_frame": f"/api/cuts/{cut_id}/frame/last", "transcript": f"/api/episodes/{episode_id}/transcript",
-                      "voice_samples": f"/api/projects/{project_id}/voice-samples", "original": f"/api/episodes/{episode_id}/media/original",
-                      "proxy": f"/api/episodes/{episode_id}/media/proxy"}}
+    summary = db.one("SELECT content FROM analysis_results WHERE cut_id=? AND title='Cut summary' AND superseded_by IS NULL ORDER BY rowid DESC LIMIT 1", (cut_id,))
+    frames = structured_results.list_results(cut_id)
+    def frame_content(kind):
+        return next((item['content'] for item in frames if item['type'] == kind), None)
+    return {"project": main.require_project(project_id), "cut": context["cut"],
+            "cut_summary": summary['content'] if summary else None,
+            "first_frame": frame_content('initial_frame'), "last_frame": frame_content('last_frame'),
+            "transcript_segments": context["transcript_segments"], "context_items": context["context_items"],
+            "previous_cut": context["previous_cut"], "next_cut": context["next_cut"]}
 
 
-def _wav_stream(path: Path, start_frame: int, frame_count: int, header: bytes):
+def _wav_stream(path: Path, start_frame: int, frame_count: int, header: bytes, padding_frames: int, channels: int, width: int):
     yield header
     with wave.open(str(path), "rb") as source:
         source.setpos(start_frame)
@@ -316,19 +321,25 @@ def _wav_stream(path: Path, start_frame: int, frame_count: int, header: bytes):
                 break
             remaining -= len(block) // (source.getnchannels() * source.getsampwidth())
             yield block
+    silence = (b'\x80' if width == 1 else b'\x00' * width) * channels
+    while padding_frames:
+        count = min(padding_frames, 65536)
+        yield silence * count
+        padding_frames -= count
 
 
 @router.get("/cuts/{cut_id}/audio", summary="Download cut audio with optional margins", response_class=StreamingResponse,
             responses={200: {"content": {"audio/wav": {"schema": {"type": "string", "format": "binary"}}},
                              "headers": {"X-Audio-Start-Seconds": {"description": "Actual sample-aligned episode start time in seconds.", "schema": {"type": "number"}},
                                          "X-Audio-End-Seconds": {"description": "Actual sample-aligned episode end time in seconds.", "schema": {"type": "number"}}},
-                             "description": "PCM WAV; X-Audio-Start-Seconds and X-Audio-End-Seconds report the actual excerpt boundaries."},
+                             "description": "PCM WAV; X-Audio-Start-Seconds and X-Audio-End-Seconds report the source excerpt boundaries, excluding any silence padding."},
                        404: {"description": "Cut, episode audio, or prepared audio not found."},
                        409: {"description": "The cut has no samples in the available prepared audio, or the prepared audio is invalid."},
                        413: {"description": "Excerpt exceeds the WAV format size limit."}})
 def cut_audio(cut_id: str,
               before: Annotated[float, Query(ge=0, le=3600, allow_inf_nan=False, description="Seconds to include before the cut start; clipped to zero.")] = 0,
-              after: Annotated[float, Query(ge=0, le=3600, allow_inf_nan=False, description="Seconds to include after the cut end; clipped to available audio and episode duration.")] = 0):
+              after: Annotated[float, Query(ge=0, le=3600, allow_inf_nan=False, description="Seconds to include after the cut end; clipped to available audio and episode duration.")] = 0,
+              min_duration: Annotated[float, Query(ge=0, le=3600, allow_inf_nan=False, description="Minimum output duration in seconds. Extend after then before the excerpt; pad the end with silence if source audio is too short.")] = 0):
     cut = db.one("SELECT * FROM cuts WHERE id=?", (cut_id,))
     if not cut:
         raise HTTPException(404, "Cut not found")
@@ -346,7 +357,16 @@ def cut_audio(cut_id: str,
             end = min(source.getnframes(), math.ceil(end_time * rate))
             if end <= start:
                 raise HTTPException(409, "Cut has no samples in the available audio")
-            length = (end - start) * source.getnchannels() * source.getsampwidth()
+            minimum_frames = math.ceil(min_duration * rate)
+            needed = max(0, minimum_frames - (end - start))
+            available_end = min(source.getnframes(), math.ceil(episode['duration'] * rate)) if episode['duration'] is not None else source.getnframes()
+            extra_after = min(needed, max(0, available_end - end))
+            end += extra_after
+            needed -= extra_after
+            extra_before = min(needed, start)
+            start -= extra_before
+            padding_frames = needed - extra_before
+            length = (end - start + padding_frames) * source.getnchannels() * source.getsampwidth()
             if length > 0xFFFFFFFF - 36:
                 raise HTTPException(413, "Excerpt exceeds the WAV format size limit")
             channels, width = source.getnchannels(), source.getsampwidth()
@@ -355,7 +375,7 @@ def cut_audio(cut_id: str,
                                  16, 1, channels, rate, rate * block_align, block_align, width * 8, b"data", length)
     except (wave.Error, EOFError) as exc:
         raise HTTPException(409, "Prepared audio is invalid") from exc
-    return StreamingResponse(_wav_stream(path, start, end - start, header), media_type="audio/wav", headers={
+    return StreamingResponse(_wav_stream(path, start, end - start, header, padding_frames, channels, width), media_type="audio/wav", headers={
         "Content-Disposition": f'attachment; filename="cut-{cut_id}.wav"',
         "Content-Length": str(len(header) + length),
         "X-Audio-Start-Seconds": str(start / rate), "X-Audio-End-Seconds": str(end / rate),
@@ -392,7 +412,6 @@ class BriefCut(BaseModel):
     action_beats: BriefSection | None
     lighting: BriefSection | None
     composition: BriefSection | None
-    unavailable: dict[str, str | None]
 
 
 class EpisodeBrief(BaseModel):
@@ -493,50 +512,10 @@ class CompositionEndState(CompositionModel):
     size: Literal['ECU', 'CU', 'MCU', 'MS', 'MWS', 'WS', 'EWS'] | None = None
 
 
-class CompositionLink(CompositionModel):
-    subject: int | None = Field(None, ge=0, description='Zero-based index into this cut’s subjects; resolves its character_context_id.')
-    character_context_id: str | None = Field(None, description='Character ID when no unique opening subject can be referenced; omitted for unknown detections.')
-    label_source: str
-    stale: bool
-    first: list[list[float]] | None = Field(None, description='First-frame boxes grouped by character, source and stale flag; each box is [x1,y1,x2,y2].')
-    last: list[list[float]] | None = Field(None, description='Last-frame boxes grouped independently; list order does not pair unnamed people between frames.')
-
-    @field_validator('first', 'last')
-    @classmethod
-    def valid_boxes(cls, boxes):
-        if boxes is not None and any(len(box) != 4 or not all(math.isfinite(n) for n in box) for box in boxes):
-            raise ValueError('Each box must contain four finite coordinates')
-        return boxes
-
-
-class CompositionConfidence(CompositionModel):
-    shot: Literal['high', 'medium', 'low'] | None = None
-    setting: Literal['high', 'medium', 'low'] | None = None
-    lighting: Literal['high', 'medium', 'low'] | None = None
-    subjects: Literal['high', 'medium', 'low'] | None = None
-    beats: Literal['high', 'medium', 'low'] | None = None
-    end_state: Literal['high', 'medium', 'low'] | None = None
-
-
-class CompositionUnavailable(CompositionModel):
-    shot: Literal['vp', 'vs', 's', 'sf'] | None = None
-    frame: Literal['f'] | None = None
-    audio: Literal['a'] | None = None
-    beats_partial: Literal['bp'] | None = None
-    setting: Literal['sp'] | None = None
-    lighting: Literal['lp'] | None = None
-    subjects: Literal['up'] | None = None
-    end_state: Literal['ep', 'ia'] | None = None
-    subtitles: Literal['op'] | None = None
-    issues: Literal['ip'] | None = None
-
-
 class CompositionCut(CompositionModel):
     id: str
     cut_number: int
     ready: bool
-    updated_at: str
-    analysis_rev: str = Field(description='Opaque revision token; compare for equality rather than interpreting its encoding.')
     duration: float | None = Field(None, description='Cut duration in seconds; beat and utterance times are relative to its start.')
     start_time: float | None = None
     end_time: float | None = None
@@ -550,10 +529,6 @@ class CompositionCut(CompositionModel):
     end_state: CompositionEndState | None = None
     dialogue: list[CompositionUtterance] | None = None
     subtitles: list[CompositionSubtitle] | None = None
-    issues: list[str] | None = Field(None, max_length=2)
-    links: list[CompositionLink] | None = None
-    confidence: CompositionConfidence | None = None
-    unavailable: CompositionUnavailable | None = Field(None, description='Section names mapped to short codes explained by the range unavailable_reasons table.')
     initial_frame: dict[str, Any] | None = None
     last_frame: dict[str, Any] | None = None
     video_analysis: dict[str, Any] | None = None
@@ -580,8 +555,6 @@ class CompositionCut(CompositionModel):
             raise ValueError('Too many beats for the cut duration')
         if duration is not None and any(u.t1 > round(duration, 3) for u in self.dialogue or []):
             raise ValueError('Utterance extends outside the cut')
-        if any(link.subject is not None and (self.subjects is None or link.subject >= len(self.subjects)) for link in self.links or []):
-            raise ValueError('Detection link references a missing subject')
         references = [beat.subject for beat in beats]
         if self.end_state:
             references.extend(item.subject for item in self.end_state.subjects or [])
@@ -596,7 +569,6 @@ class CompositionBrief(CompositionModel):
     to: int
     ready_count: int
     pending: list[int]
-    unavailable_reasons: dict[str, str]
     cuts: list[CompositionCut]
 
 

@@ -2,7 +2,6 @@
 
 Model descriptions remain observations, not verified facts. No model is invoked by a read.
 """
-import base64
 import hashlib
 import json
 import math
@@ -21,11 +20,7 @@ class CompositionError(Exception):
         self.status_code, self.detail = status_code, detail
 
 INCLUDES = {'initial_frame', 'last_frame', 'video_analysis', 'subtitle_ocr', 'consistency_summary', 'dialogue_segments'}
-FIELDS = {'id', 'cut_number', 'duration', 'start_time', 'end_time', 'ready', 'updated_at', 'analysis_rev', 'shot', 'setting', 'lighting', 'subjects', 'beats', 'end_state', 'confidence', 'initial_frame_id', 'last_frame_id', 'dialogue', 'subtitles', 'issues', 'links', 'unavailable'}
-REASONS = {'visual_pending': 'Required visual stages are missing or being updated.', 'visual_stale': 'Visual stages do not have matching cut-boundary snapshots.', 'frame': 'Initial frame unavailable.', 'audio': 'Prepared audio unavailable.', 'beats_partial': 'Some video events or windows could not be represented completely.', 'setting_partial': 'Some setting details could not be condensed safely.', 'lighting_partial': 'Some lighting details could not be condensed safely.', 'subjects_partial': 'Some visible subject details could not be condensed safely.', 'end_state_partial': 'Some final-frame subject details could not be condensed safely.', 'subtitles_partial': 'Some subtitle observation times were invalid or outside this cut.', 'issues_partial': 'A consistency issue could not be condensed safely.', 'shot': 'Shot properties could not be established from saved evidence.', 'summary_failed': 'The latest production brief generation failed; no invalid revision was saved.', 'identity_ambiguous': 'Some people cannot be matched reliably between boundary frames.'}
-REASON_CODES = {'visual_pending':'vp', 'visual_stale':'vs', 'frame':'f', 'audio':'a', 'beats_partial':'bp',
-                'setting_partial':'sp', 'lighting_partial':'lp', 'subjects_partial':'up', 'end_state_partial':'ep',
-                'subtitles_partial':'op', 'issues_partial':'ip', 'shot':'s', 'summary_failed':'sf', 'identity_ambiguous':'ia'}
+FIELDS = {'id', 'cut_number', 'duration', 'start_time', 'end_time', 'ready', 'shot', 'setting', 'lighting', 'subjects', 'beats', 'end_state', 'initial_frame_id', 'last_frame_id', 'dialogue', 'subtitles'}
 
 
 def projection_fingerprint():
@@ -777,14 +772,8 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
         changed = cut['updated_at'] or '1970-01-01T00:00:00.000Z'
         if only_ready and not ready: continue
         if since and datetime.fromisoformat(changed.replace('Z', '+00:00')) < since: continue
-        fingerprint = hashlib.sha256(json.dumps([(key, row['id']) for key,row in sorted(by_type.items())], separators=(',', ':')).encode()).hexdigest()[:16]
-        record = {'id': cut['id'], 'cut_number': cut['cut_index']+1, 'duration': round(cut['end_time']-cut['start_time'], 6), 'ready': ready, 'updated_at': changed, 'analysis_rev': fingerprint}
-        summary_job = one("SELECT status FROM jobs WHERE episode_id=? AND pipeline='regen' AND json_valid(payload_json) AND json_extract(payload_json,'$.production_brief')=1 AND json_extract(payload_json,'$.cut_id')=? ORDER BY rowid DESC LIMIT 1", (episode_id, cut['id']))
-        if not ready:
-            record['unavailable'] = {'shot': 'visual_stale' if stale else 'visual_pending'}
-            if not source_available: record['unavailable']['frame'] = 'frame'
-            if episode['has_audio'] and not audio_available: record['unavailable']['audio'] = 'audio'
-        else:
+        record = {'id': cut['id'], 'cut_number': cut['cut_index']+1, 'duration': round(cut['end_time']-cut['start_time'], 6), 'ready': ready}
+        if ready:
             start, end = cut['start_time'], cut['end_time']
             initial, last_frame = by_type['initial_frame']['content'], by_type['last_frame']['content']
             video = by_type['video_analysis']['content']
@@ -877,41 +866,6 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
             missing_subtitles = set()
             subtitles = subtitle_lines(by_type['subtitle_ocr']['content'].get('events', []), start, end, missing=missing_subtitles)
             if subtitles: record['subtitles'] = subtitles
-            consistency = by_type.get('consistency_summary', {}).get('content', {})
-            confusing = consistency.get('confusing', '')
-            issues, incomplete_issues = issue_phrases(confusing)
-            if issues: record['issues'] = issues
-            if links:
-                grouped = []
-                for link in links:
-                    key = (link['character_context_id'], link['label_source'], link['stale'])
-                    target = next((g for g in grouped if g['_key'] == key), None)
-                    if target is None:
-                        target = {'_key':key, 'label_source':link['label_source'], 'stale':link['stale']}
-                        matching_subjects = [i for i, subject in enumerate(chars) if link['character_context_id'] and subject['character_context_id'] == link['character_context_id']]
-                        if len(matching_subjects) == 1:
-                            target['subject'] = matching_subjects[0]
-                        elif link['character_context_id']:
-                            target['character_context_id'] = link['character_context_id']
-                        grouped.append(target)
-                    if link['position'] in ('first','last'):
-                        boxes = target.setdefault(link['position'], [])
-                        if link['box'] not in boxes: boxes.append(link['box'])
-                record['links'] = [{k:v for k,v in group.items() if k != '_key'} for group in grouped]
-            record['confidence'] = {k: 'low' for k in ('shot', 'setting', 'lighting', 'subjects', 'beats', 'end_state') if k in record}
-            missing = {}
-            if not shot: missing['shot'] = 'shot'
-            if summary_job and summary_job['status'] == 'failed': missing['shot'] = 'summary_failed'
-            if partial: missing['beats_partial'] = 'beats_partial'
-            for name in missing_descriptions: missing[name] = name + '_partial'
-            if missing_subjects: missing['subjects'] = 'subjects_partial'
-            if missing_subtitles: missing['subtitles'] = 'subtitles_partial'
-            if ambiguous: missing['end_state'] = 'identity_ambiguous'
-            elif missing_final: missing['end_state'] = 'end_state_partial'
-            if incomplete_issues: missing['issues'] = 'issues_partial'
-            if not source_available and not (folder/'thumbnails'/f"{cut['id']}_first.jpg").is_file(): missing['frame'] = 'frame'
-            if not audio_available: missing['audio'] = 'audio'
-            if missing: record['unavailable'] = missing
             if apply_compaction:
                 from .composition_compaction import apply_cached
                 record = apply_cached(conn, cut['id'], record)
@@ -919,28 +873,13 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
             for name in includes:
                 if name == 'dialogue_segments': record[name] = segments
                 elif name in by_type: record[name] = by_type[name]
-        if 'unavailable' in record:
-            record['unavailable'] = {key: REASON_CODES[reason] for key, reason in record['unavailable'].items()}
-        # Revision changes when any projected fact or readiness changes, including
-        # transcript edits and detection relabels, and is independent of selection.
-        revision_body = {k:v for k,v in record.items() if k not in {'updated_at','analysis_rev'} and k not in includes}
-        revision = hashlib.sha256(json.dumps({'record': revision_body, 'results': fingerprint}, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).digest()[:8]
-        record['analysis_rev'] = base64.urlsafe_b64encode(revision).decode('ascii').rstrip('=')
         if selected:
-            mandatory = {'id','cut_number','ready','updated_at','analysis_rev'}
+            mandatory = {'id','cut_number','ready'}
             for name in ('start_time','end_time'):
                 if name in selected: record[name] = cut[name]
-            if 'links' in selected and 'subjects' not in selected:
-                # Preserve self-contained links when their subject table is not
-                # among the selected fields.
-                for link in record.get('links', []):
-                    if 'subject' in link:
-                        index = link.pop('subject')
-                        link['character_context_id'] = record['subjects'][index]['character_context_id']
             if 'subjects' not in selected:
                 expand_subject_references(record)
-            record = {k:v for k,v in record.items() if k in selected | mandatory | includes or (not ready and k == 'unavailable')}
+            record = {k:v for k,v in record.items() if k in selected | mandatory | includes}
         records.append(record)
-    used_reasons = {code for record in records for code in record.get('unavailable', {}).values()}
     return {'episode_id': episode_id, 'from': first, 'to': last, 'ready_count': len(cuts)-len(pending), 'pending': pending,
-            'unavailable_reasons': {REASON_CODES[name]: reason for name,reason in REASONS.items() if REASON_CODES[name] in used_reasons}, 'cuts': records}
+            'cuts': records}

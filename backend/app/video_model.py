@@ -11,6 +11,7 @@ from .visual_contracts import VIDEO_INSTRUCTION, validate_video
 MODEL_ID = 'Qwen/Qwen3-VL-8B-Instruct'
 MODEL_REVISION = '0c351dd01ed87e9c1b53cbc748cba10e6187ff3b'
 VIDEO_TOKEN_LIMITS = (2048, 4096)
+BOUNDARY_POLICY = 'ui-frame-range-v1'
 RETRY_INSTRUCTION = ('\nThe previous response could not be parsed as complete JSON. '
     'Start again from the video and return one complete JSON object. '
     'Be concise: combine repeated or sustained actions, omit redundant events, '
@@ -90,20 +91,29 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
     model = processor = torch = None
     windows = []
     start, cut_end = float(cut['start_time']), float(cut['end_time'])
+    first, last = cut.get('first_frame_time'), cut.get('last_frame_time')
+    if first is not None and last is not None:
+        first, last = float(first), float(last)
+        if not all(math.isfinite(value) for value in (first, last)) or not start <= first <= last < cut_end:
+            raise ValueError('Cut preview frame timestamps are invalid; refresh the cut frames before analysis')
+        start, cut_end = first, min(cut_end, last + .000002)
     fps = config['video_fps']
     frame_budget = config.get('video_frame_budget')
     window_seconds = min(max(8.0, 2.0 / fps), 32.0 / fps) if frame_budget else min(8.0, 32.0 / fps)
-    window_count = max(1, math.ceil((cut_end - start - 0.000001) / window_seconds))
+    window_count = max(1, math.ceil((cut_end - start) / window_seconds - 1e-12))
     if frame_budget and window_count * 2 > frame_budget:
         raise ValueError('Frame budget is too small for the requested video frame rate')
     remaining_frames = frame_budget
     window_index = 0
     try:
-        while start < cut_end - 0.000001:
+        while window_index < window_count:
             if cancel_check:
                 cancel_check()
-            end = min(cut_end, start + window_seconds)
+            end = cut_end if window_index == window_count - 1 else min(cut_end, start + window_seconds)
             cached = load_window(window_index, start, end) if load_window else None
+            if cached is not None and (cached.get('source', {}).get('boundary_policy') != BOUNDARY_POLICY
+                                       or cached['source'].get('source_file') != Path(original).name):
+                cached = None
             if cached is not None:
                 if remaining_frames is not None:
                     remaining_frames -= cached['source']['frame_count']
@@ -140,6 +150,8 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
                     raise RuntimeError('Prepared video frame count is outside its allocated budget')
                 metadata['frame_count'] = count
                 remaining_frames -= count
+            metadata['boundary_policy'] = BOUNDARY_POLICY
+            metadata['source_file'] = Path(original).name
             regions = []
             for sample in subtitle_samples or []:
                 if not start <= sample['time'] < end or not sample.get('regions'):
@@ -152,7 +164,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
                 regions.append({'seconds_from_clip_start': round(sample['time'] - start, 3), 'boxes': boxes})
             prompt = VIDEO_INSTRUCTION + f'\nThe real source interval lasts {end-start:.6f} seconds; ignore any duplicated tail frame and do not give times beyond that duration.'
             if end >= cut_end - 0.000001:
-                prompt += ' This is the final analysis window of the current cut; check its final frames for an accidental hard cut to the next shot as instructed.'
+                prompt += ' This is the final analysis window of the current cut; include its visible final frames.'
             else:
                 prompt += ' This is an intermediate analysis window, not the end of the current cut; its end is not evidence of a hard cut.'
             if 'single_sample_time' in metadata:

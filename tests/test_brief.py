@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 import wave
@@ -48,6 +50,7 @@ class BriefTest(unittest.TestCase):
         import io
         with zipfile.ZipFile(io.BytesIO(archive.content)) as z:
             manifest = json.loads(z.read('manifest.json'))
+            self.assertNotIn('unavailable', json.loads(z.read('brief.json'))['cuts'][0])
             self.assertIn('frame', manifest[0]['errors'])
             with wave.open(io.BytesIO(z.read(manifest[0]['audio']))) as w:
                 self.assertEqual(w.getnframes(), 6000)
@@ -63,7 +66,7 @@ class BriefTest(unittest.TestCase):
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET first_frame_time=0.5 WHERE id='c'")
         def extract(source, output, sample, start, end, **kwargs):
-            self.assertEqual((sample, start, end, kwargs['width']), (.3, .25, 1, 480))
+            self.assertEqual((source, sample, start, end, kwargs['width']), (folder / 'original.mp4', .3, .25, 1, None))
             output.write_bytes(b'first frame')
         with patch('app.brief.media.extract_cut_frame', side_effect=extract) as frame:
             worker.process(*worker.claim_job())
@@ -73,6 +76,48 @@ class BriefTest(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(self.client.get(status['download_url']).content)) as z:
             manifest = json.loads(z.read('manifest.json'))
             self.assertEqual(z.read(manifest[0]['frame']), b'first frame')
+
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg and FFprobe are required')
+    def test_exports_use_original_resolution_for_both_boundary_frames(self):
+        folder = media.episode_dir('p', 'e')
+        original = folder / 'original.mp4'
+        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
+                        'testsrc2=s=1600x900:r=4:d=2', '-c:v', 'libx264', '-threads', '1', str(original)], check=True)
+        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', str(original),
+                        '-vf', 'scale=320:180', '-c:v', 'libx264', '-threads', '1', str(folder / 'proxy.mp4')], check=True)
+        for query, expected in (('', ('frame',)), ('&view=composition&include=last_frame', ('frame', 'last_frame'))):
+            with self.subTest(query=query):
+                response = self.client.post('/api/v1/episodes/e/brief/exports?from=1&to=1' + query)
+                self.assertEqual(response.status_code, 200, response.text)
+                job = response.json()['job_id']
+                worker.process(*worker.claim_job(('brief_export',)))
+                status = self.client.get('/api/v1/brief-exports/' + job).json()
+                self.assertEqual(status['status'], 'done')
+                import io
+                with zipfile.ZipFile(io.BytesIO(self.client.get(status['download_url']).content)) as archive:
+                    entry = json.loads(archive.read('manifest.json'))[0]
+                    self.assertEqual(entry['errors'], {})
+                    for position in expected:
+                        image = folder / (position + '.jpg')
+                        image.write_bytes(archive.read(entry[position]))
+                        info = json.loads(subprocess.check_output([
+                            'ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries',
+                            'stream=width,height', '-of', 'json', str(image)]))
+                        self.assertEqual((info['streams'][0]['width'], info['streams'][0]['height']), (1600, 900))
+
+    def test_missing_original_is_reported_instead_of_using_proxy(self):
+        folder = media.episode_dir('p', 'e')
+        (folder / 'proxy.mp4').write_bytes(b'proxy')
+        for query, expected in (('', ('frame',)), ('&view=composition&include=last_frame', ('frame', 'last_frame'))):
+            with self.subTest(query=query):
+                job = self.client.post('/api/v1/episodes/e/brief/exports?from=1&to=1' + query).json()['job_id']
+                worker.process(*worker.claim_job(('brief_export',)))
+                status = self.client.get('/api/v1/brief-exports/' + job).json()
+                import io
+                with zipfile.ZipFile(io.BytesIO(self.client.get(status['download_url']).content)) as archive:
+                    entry = json.loads(archive.read('manifest.json'))[0]
+                    for position in expected:
+                        self.assertEqual(entry['errors'][position], 'Original video unavailable')
 
     def test_previously_queued_export_keeps_its_legacy_frame(self):
         folder = media.episode_dir('p', 'e') / 'analysis'
@@ -104,6 +149,7 @@ class BriefTest(unittest.TestCase):
             conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,context_json) VALUES ('frame','c','first_frame','Frame at 0.750s','Frame','model','{}')")
             conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,context_json) VALUES ('s','c','cut_description','Cut summary','Summary','model',?)", (json.dumps({'brief_sections': sections}),))
         body = self.client.get('/api/v1/episodes/e/brief?from=1&to=1').json()['cuts'][0]
+        self.assertNotIn('unavailable', body)
         self.assertEqual(body['suggested_frame_url'], '/api/cuts/c/frame/first')
         self.assertEqual(body['visible_characters']['main']['content'], 'A person in a coat')
         self.assertEqual(body['action_beats']['confidence'], 'low')

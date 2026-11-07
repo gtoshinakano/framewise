@@ -63,13 +63,15 @@ def prepare_analysis_video(source: Path, output: Path, start: float, end: float,
             run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-loop', '1', '-framerate', str(fps), '-i', str(still),
                  '-frames:v', '2', '-an', '-vf', scaling, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', str(output)])
         return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps, 'padded_tail': True, 'single_sample_time': actual}
-    filters = f'fps={fps},{scaling}'
+    # Trim decoded source timestamps before the fps filter. An output-side -t
+    # alone can let fps inspect and select a frame at or beyond the cut end.
+    filters = f'trim=duration={end - start:.9f},setpts=PTS-STARTPTS,fps={fps},{scaling}'
     padded_tail = end - start < 2 / fps
     if padded_tail:
         # The Qwen video processor needs at least two frames, even for a very
         # short cut. Clone the final sampled frame without reading the next cut.
         filters += ',tpad=stop_mode=clone:stop=1'
-    run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', str(start), '-t', str(end - start), '-i', str(source),
+    run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', f'{start:.9f}', '-t', f'{end - start:.9f}', '-i', str(source),
          '-an', '-vf', filters, *(['-frames:v', str(frame_limit)] if frame_limit is not None else []), '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', str(output)])
     return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps, 'padded_tail': padded_tail}
 
@@ -180,8 +182,8 @@ def detect_cuts_in_range(proxy: Path, start: float, end: float, threshold: float
     return [(left, right) for left, right in zip(starts, starts[1:] + [end])]
 
 
-def extract_cut_frame(source: Path, output: Path, sample_time: float, start: float, end: float, width: int = 480, last: bool = False, quality: int | None = None, seek_tolerance: float = 0, probe_padding: float = 0, timeout: float | None = None, exact_size: tuple[int, int] | None = None):
-    """Extract a real frame inside the cut, returning its presentation timestamp."""
+def extract_cut_frame(source: Path, output: Path, sample_time: float, start: float, end: float, width: int | None = 480, last: bool = False, quality: int | None = None, seek_tolerance: float = 0, probe_padding: float = 0, timeout: float | None = None, exact_size: tuple[int, int] | None = None):
+    """Extract a real frame inside the cut; width=None retains source dimensions."""
     temp = output.with_name(f"{output.stem}.partial.jpg")
     try:
         if last:
@@ -212,9 +214,10 @@ def extract_cut_frame(source: Path, output: Path, sample_time: float, start: flo
         for back in (0, .1, .25, .5, 1, 2, end - start):
             seek = max(start, sample_time - back - seek_tolerance)
             temp.unlink(missing_ok=True)
-            scale = f"scale={exact_size[0]}:{exact_size[1]}:force_original_aspect_ratio=decrease,pad={exact_size[0]}:{exact_size[1]}:(ow-iw)/2:(oh-ih)/2" if exact_size else f"scale=w='min(iw,{width})':h=-2"
-            result = run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-nostats", "-nostdin", "-y", "-ss", str(seek), "-i", str(source),
-                          "-t", str(end - seek), "-frames:v", "1", "-vf", f"showinfo,{scale}",
+            scale = f"scale={exact_size[0]}:{exact_size[1]}:force_original_aspect_ratio=decrease,pad={exact_size[0]}:{exact_size[1]}:(ow-iw)/2:(oh-ih)/2" if exact_size else (f"scale=w='min(iw,{width})':h=-2" if width is not None else None)
+            filters = f"showinfo,{scale}" if scale else "showinfo"
+            result = run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-nostats", "-nostdin", "-y", "-ss", f"{seek:.9f}", "-i", str(source),
+                          "-t", f"{end - seek:.9f}", "-frames:v", "1", "-vf", filters,
                           "-pix_fmt", "yuvj420p", "-threads", "1", *(["-q:v", str(quality)] if quality is not None else []), str(temp)], timeout=timeout)
             if temp.is_file() and temp.stat().st_size:
                 match = re.search(r"Parsed_showinfo[^\n]*\bn:\s*0\s+pts:.*?pts_time:\s*([-+0-9.eE]+)", result.stderr)

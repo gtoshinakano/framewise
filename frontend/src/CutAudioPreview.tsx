@@ -1,5 +1,5 @@
 import { Fragment, useMemo } from 'react'
-import { AudioLines } from 'lucide-react'
+import { AudioLines, Download } from 'lucide-react'
 import type { Cut, TranscriptSegment, Waveform } from './api'
 
 function stamp(seconds: number) {
@@ -23,7 +23,7 @@ export function CutAudioPreview({ cut, waveform, transcript, hasAudio, preparing
     })
   }, [waveform, cut.start_time, duration])
   return <section className="space-y-3 rounded-xl border hairline bg-[#1b202a] p-4" aria-label="Cut audio and transcript">
-    <div><h3 className="flex items-center gap-2 text-xs font-semibold"><AudioLines size={15} className="text-[#bca7ff]" /> Cut audio</h3><p className="muted mt-1 text-[11px]">{stamp(cut.start_time)} → {stamp(cut.end_time)} · Episode time</p></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="flex items-center gap-2 text-xs font-semibold"><AudioLines size={15} className="text-[#bca7ff]" /> Cut audio</h3><p className="muted mt-1 text-[11px]">{stamp(cut.start_time)} → {stamp(cut.end_time)} · Episode time</p></div>{hasAudio && !preparing ? <a href={`/api/v1/cuts/${encodeURIComponent(cut.id)}/audio?min_duration=2`} download target="_blank" rel="noreferrer" className="btn btn-quiet" title="Short cuts include nearby audio or silence to reach two seconds"><Download size={14} /> Download audio</a> : <button type="button" disabled className="btn btn-quiet" title={preparing ? 'Audio is being prepared' : 'This episode has no audio track'}><Download size={14} /> Download audio</button>}</div>
     <div className="relative h-16 overflow-hidden rounded-md bg-[#11151d]">
       {preparing ? <p className="muted flex h-full items-center justify-center text-xs">Preparing audio and waveform…</p> : !hasAudio ? <p className="muted flex h-full items-center justify-center text-xs">This episode has no audio track.</p> : bars.length ? <><svg viewBox="0 0 1000 100" preserveAspectRatio="none" className="h-full w-full" role="img" aria-label="Waveform for this cut">{bars.map((height, index) => <rect key={index} x={index * 10 + 2} y={(100 - height) / 2} width="6" height={height} rx="1" fill="#a58ad9" />)}</svg><span className="pointer-events-none absolute inset-y-0 w-px bg-white" style={{ left: `${duration ? Math.min(100, Math.max(0, time / duration * 100)) : 0}%` }} /></> : <p className="muted flex h-full items-center justify-center text-xs">{waveform ? 'Waveform unavailable. Run Prepare to rebuild it.' : 'Loading waveform…'}</p>}
     </div>

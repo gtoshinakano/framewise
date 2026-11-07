@@ -4,6 +4,8 @@ All times are in seconds on the original episode timeline. Model output can be
 edited by a person; speaker assignments are suggestions.
 """
 import math
+import re
+import unicodedata
 from bisect import bisect_right
 from collections import defaultdict
 
@@ -36,11 +38,22 @@ def restore_aligned_text(text, words):
     for word in words:
         token = word['text']
         # Work in the original string so Unicode case-folding cannot shift offsets.
-        import re
         match = re.search(re.escape(token), text[cursor:], flags=re.IGNORECASE)
         if not match:
             return None
+        start = cursor + match.start()
         end = cursor + match.end()
+        if restored:
+            # Closing punctuation belongs to the preceding timed word. Leave
+            # whitespace and opening punctuation with the next word so the
+            # original transcription can still be reconstructed exactly.
+            while cursor < start:
+                char = text[cursor]
+                category = unicodedata.category(char)
+                if not category.startswith('P') or category in ('Ps', 'Pi'):
+                    break
+                restored[-1]['text'] += char
+                cursor += 1
         restored.append({**word, 'text': text[cursor:end]})
         cursor = end
     if restored:

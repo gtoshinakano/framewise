@@ -51,6 +51,7 @@ def run(job, owner, episode, item):
     payload = json.loads(job['payload_json'])
     stages = set(payload.get('stages') or ('subtitle_ocr', 'initial_frame', 'last_frame', 'video_analysis'))
     original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
+    proxy = original.parent / 'proxy.mp4'
     row = db.one('SELECT * FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job['id'], cut_id))
     if row and row['completed']:
         return
@@ -83,6 +84,9 @@ def run(job, owner, episode, item):
             new_id = structured_results.save_generated(conn, cut_id, job['id'], owner, result_type, data, model_id, prompt,
                 {**config, 'provider': 'local', **(extra or {})}, {'cut': cut, 'model_context_hints': hints, **({'subtitle_source_result_id': item['subtitle_input']['result_id']} if item.get('subtitle_input') and result_type != 'subtitle_ocr' else {}), **({'frame_time': data['frame_time']} if 'frame_time' in data else {})},
                 expected_current=checkpoint.get(result_type, base_ids.get(result_type)))
+            if result_type == 'video_analysis':
+                conn.execute('DELETE FROM analysis_video_windows WHERE job_id=? AND cut_id=? AND window_index>=?',
+                             (job['id'], cut_id, len(data.get('windows', []))))
             checkpoint[result_type] = new_id
             conn.execute('INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) VALUES (?,?,?) ON CONFLICT(job_id,cut_id) DO UPDATE SET evidence_json=excluded.evidence_json',
                          (job['id'], cut_id, json.dumps(checkpoint)))
@@ -162,8 +166,10 @@ def run(job, owner, episode, item):
                         row = db.one('SELECT * FROM analysis_video_windows WHERE job_id=? AND cut_id=? AND window_index=?', (job['id'], cut_id, index))
                         if not row:
                             return None
-                        if row['start_time'] != start or row['end_time'] != end or row['model_revision'] != video_model.MODEL_REVISION:
+                        if row['model_revision'] != video_model.MODEL_REVISION:
                             raise RuntimeError('A saved video window no longer matches this run')
+                        if row['start_time'] != start or row['end_time'] != end:
+                            return None
                         data = json.loads(row['content_json'])
                         if not isinstance(data, dict) or not isinstance(data.get('source'), dict) or 'analysis' not in data:
                             raise RuntimeError('A saved video window is unreadable')
@@ -173,14 +179,15 @@ def run(job, owner, episode, item):
                             conn.execute('BEGIN IMMEDIATE')
                             worker.require_lease(conn, job['id'], owner)
                             check_cut(conn)
-                            conn.execute('INSERT INTO analysis_video_windows(job_id,cut_id,window_index,start_time,end_time,model_revision,content_json) VALUES (?,?,?,?,?,?,?)',
+                            conn.execute('''INSERT INTO analysis_video_windows(job_id,cut_id,window_index,start_time,end_time,model_revision,content_json) VALUES (?,?,?,?,?,?,?)
+                                ON CONFLICT(job_id,cut_id,window_index) DO UPDATE SET start_time=excluded.start_time,end_time=excluded.end_time,model_revision=excluded.model_revision,content_json=excluded.content_json''',
                                 (job['id'], cut_id, index, window['source']['source_start'], window['source']['source_end'], video_model.MODEL_REVISION, json.dumps(window, ensure_ascii=False)))
                     def save_invalid_response(index, start, end, error, response):
                         with db.connect() as conn:
                             worker.require_lease(conn, job['id'], owner)
                             conn.execute('INSERT INTO rejected_video_responses(job_id,cut_id,window_index,start_time,end_time,error,response) VALUES (?,?,?,?,?,?,?)',
                                          (job['id'], cut_id, index, start, end, error, response))
-                    data = video_model.analyze_video(original, cut, config, os.environ.get('QWEN3_VIDEO_MODEL_PATH', '/models/qwen3-vl-8b'), scratch,
+                    data = video_model.analyze_video(proxy if proxy.is_file() else original, cut, config, os.environ.get('QWEN3_VIDEO_MODEL_PATH', '/models/qwen3-vl-8b'), scratch,
                         on_window=lambda start, end: worker.stage(job['id'], owner, episode['id'], f'Analyzing video {start:.1f}–{end:.1f}s'), subtitle_samples=subtitles['samples'], load_window=load_window, save_window=save_window, context_hints=hints, on_invalid_response=save_invalid_response, cancel_check=lambda: inference_worker.check_summary_lease(job['id'], owner))
                     save('video_analysis', data, video_model.MODEL_ID, VIDEO_INSTRUCTION, {'model_revision': video_model.MODEL_REVISION, 'generation_seconds': time.monotonic() - stage_started, 'usage': data.get('usage', {})})
             with db.connect() as conn:

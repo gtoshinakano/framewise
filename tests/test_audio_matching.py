@@ -8,7 +8,18 @@ class AudioMatchingTests(unittest.TestCase):
         words = [{'text': 'Hello'}, {'text': 'world'}]
         result = restore_aligned_text('Hello, world!', words)
         self.assertEqual(''.join(word['text'] for word in result), 'Hello, world!')
+        self.assertEqual([word['text'] for word in result], ['Hello,', ' world!'])
         self.assertIsNone(restore_aligned_text('Different', words))
+
+    def test_punctuation_stays_with_its_word_and_text_is_preserved(self):
+        words = [{'text': word, 'start_time': index, 'end_time': index + .5}
+                 for index, word in enumerate(['Hello', 'world', 'Next', 'yes'])]
+        text = '“Hello,” (world)! Next… ¿yes?'
+        result = restore_aligned_text(text, words)
+        self.assertEqual([word['text'] for word in result], ['“Hello,”', ' (world)!', ' Next…', ' ¿yes?'])
+        self.assertEqual(''.join(word['text'] for word in result), text)
+        self.assertEqual([(word['start_time'], word['end_time']) for word in result],
+                         [(word['start_time'], word['end_time']) for word in words])
 
     def test_assign_words_uses_overlap_and_preserves_unattributed_speech(self):
         words = [{'start_time': 1., 'end_time': 2., 'text': 'hello'},

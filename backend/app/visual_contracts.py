@@ -19,7 +19,7 @@ In events, describe distinct visible changes in time order. Identify the subject
 
 Use approximate start_seconds and end_seconds relative to the start of this clip, within its duration. If timing is unknown, use null for both and explain the limitation; do not use 0 as a placeholder. Each event's camera field describes supported camera movement or says "static" or "unclear". Its uncertainty field states a specific limitation or "none". Summarize only material limitations in uncertainties.
 
-Only in the final window of a cut, check for a clear abrupt switch to a different shot at the end. Exclude the next-shot frames and end events at that boundary. If the transition is unclear, keep the frames and note the uncertainty; ordinary pose or lighting changes are not hard cuts.
+The supplied frames are restricted to the selected cut. Describe the visible frames without changing the cut boundary or discarding its final frames.
 
 Ignore subtitles and all other on-screen writing: do not quote, describe, translate, recreate, or use it to infer identity or action. The video is silent: do not claim to hear speech, identify voices, or infer dialogue or speech from mouth movement.'''
 

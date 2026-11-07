@@ -3,7 +3,7 @@ import unittest
 from contextlib import nullcontext
 from unittest.mock import patch
 
-from app import db, inference_worker, single_cut_pipeline, worker
+from app import db, inference_worker, media, single_cut_pipeline, worker
 import tests.test_analysis as analysis_tests
 
 
@@ -29,6 +29,8 @@ class VisualStageJobsTest(unittest.TestCase):
         self.assertEqual(ocr.call_count, 1)
 
     def test_video_only_uses_queued_subtitle_snapshot_and_leaves_other_results(self):
+        proxy = media.episode_dir('p', 'e') / 'proxy.mp4'
+        proxy.touch()
         old = {'samples': [{'time': 0, 'regions': [[1, 2, 3, 4]], 'image_size': [10, 10]}], 'events': []}
         with db.connect() as conn:
             conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,settings_json,context_json) VALUES ('subs','c1','other','Subtitle OCR',?,?,?)", (json.dumps(old), json.dumps({'structured_type':'subtitle_ocr'}), json.dumps({'cut': {'start_time':0, 'end_time':2}})))
@@ -42,6 +44,7 @@ class VisualStageJobsTest(unittest.TestCase):
             inference_worker.process(*worker.claim_job(('analyze',)))
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         self.assertEqual(video.call_args.kwargs['subtitle_samples'], old['samples'])
+        self.assertEqual(video.call_args.args[0], proxy)
         result = db.one("SELECT context_json FROM analysis_results WHERE job_id=?", (job_id,))
         self.assertEqual(json.loads(result['context_json'])['subtitle_source_result_id'], 'subs')
         self.assertEqual({row['type'] for row in self.client.get('/api/cuts/c1/structured-analysis').json()}, {'subtitle_ocr', 'video_analysis'})

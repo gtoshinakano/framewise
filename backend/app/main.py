@@ -1006,11 +1006,13 @@ def queue_missing_character_detections(episode_id: str):
                 WHERE r.id=(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id ORDER BY r2.rowid DESC LIMIT 1)
                 AND r.cut_start=c.start_time AND r.cut_end=c.end_time AND (r.job_id IS NULL OR j.status='done'))
             ORDER BY c.cut_index''', (episode_id,)).fetchall()
-        references = character_detection.reference_snapshots(conn, episode['project_id']) if cuts else []
+        references = character_detection.reference_snapshots(conn, episode['project_id'], per_character_limit=None) if cuts else []
         job_ids = []
+        batch_id = str(uuid.uuid4())
         for cut in cuts:
             job_id = str(uuid.uuid4())
-            payload = {'cut_id': cut['id'], 'cut': dict(cut), 'references': references}
+            payload = {'cut_id': cut['id'], 'cut': dict(cut), 'references': references,
+                       'workflow': 'anime_bulk_v1', 'batch_id': batch_id}
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, 'character_detect', json.dumps(payload)))
             job_ids.append(job_id)
         if job_ids:
@@ -1079,6 +1081,11 @@ def save_character_reference(detection_id: str):
             return {'id': ref['id']}
         ref_id = str(uuid.uuid4())
         conn.execute('INSERT INTO character_image_references(id,character_context_id,detection_id) VALUES (?,?,?)', (ref_id, detection['character_context_id'], detection_id))
+        # Only the user's explicit Save as reference action promotes vectors
+        # from an unverified detection into the reusable reference index.
+        conn.execute('''INSERT INTO character_reference_embeddings(reference_id,model_id,model_revision,preprocessing,dimensions,embedding)
+                        SELECT ?,model_id,model_revision,preprocessing,dimensions,embedding
+                        FROM character_detection_embeddings WHERE detection_id=?''', (ref_id, detection_id))
         conn.execute("UPDATE character_detections SET label_source='manual' WHERE id=?", (detection_id,))
     return {'id': ref_id}
 

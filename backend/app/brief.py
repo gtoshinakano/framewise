@@ -45,11 +45,7 @@ def make_brief(episode_id, first, last):
             'suggested_frame_url': frame_url, 'audio_url': f"/api/v1/cuts/{cut['id']}/audio" if episode['has_audio'] and audio.is_file() else None,
             'dialogue': transcript, 'visible_characters': {'main': section('main_characters'), 'secondary': section('secondary_characters')},
             'camera': {'position': section('camera_position'), 'movement': section('camera_movement')}, 'setting': section('setting'),
-            'action_beats': section('actions'), 'lighting': section('lighting'), 'composition': section('opening_composition'),
-            'unavailable': {'analysis': None if sections else 'Structured analysis unavailable; rerun visual analysis.',
-                'suggested_frame': None if frame_url else 'First frame unavailable.',
-                'audio': None if episode['has_audio'] and audio.is_file() else 'Prepared audio unavailable.',
-                'dialogue': None if transcript else 'No overlapping current transcript segments.'}})
+            'action_beats': section('actions'), 'lighting': section('lighting'), 'composition': section('opening_composition')})
     return {'episode_id': episode_id, 'from': first, 'to': last, 'cuts': result}
 
 
@@ -103,17 +99,16 @@ def process_export(job, owner, episode, payload):
                 if payload.get('composition'):
                     folder = media.episode_dir(episode['project_id'], episode['id'])
                     source = folder / f"original{episode['original_ext']}"
-                    if not source.is_file(): source = folder / 'proxy.mp4'
                     for position in (('initial', 'last') if payload.get('include_last_frame') else ('initial',)):
                         key = 'frame' if position == 'initial' else 'last_frame'
                         try:
-                            if not source.is_file(): raise ValueError('Source video unavailable')
+                            if not source.is_file(): raise ValueError('Original video unavailable')
                             image = temp / f'{position}.jpg'
                             analyzed_stamp = cut.get('analysis_initial_frame_time' if position == 'initial' else 'analysis_last_frame_time')
                             stamp = analyzed_stamp if analyzed_stamp is not None else cut.get('first_frame_time' if position == 'initial' else 'last_frame_time')
                             if stamp is None: stamp = cut['start_time'] if position == 'initial' else cut['end_time']
-                            media.extract_cut_frame(source, image, stamp, cut['start_time'], cut['end_time'], width=1280,
-                                                    last=position == 'last' and analyzed_stamp is None, seek_tolerance=.000002, exact_size=(1280,720))
+                            media.extract_cut_frame(source, image, stamp, cut['start_time'], cut['end_time'], width=None,
+                                                    last=position == 'last' and analyzed_stamp is None, seek_tolerance=.000002)
                             entry[key] = f'{base}-{position}.jpg'; z.write(image, entry[key])
                         except Exception as exc:
                             entry['errors'][key] = str(exc)[:500]
@@ -135,18 +130,12 @@ def process_export(job, owner, episode, payload):
                             media.extract_cut_frame(spec['source'], image, spec['time'], spec['start'], spec['end'], width=spec['width'], seek_tolerance=spec['seek_tolerance'])
                     else:
                         folder = media.episode_dir(episode['project_id'], episode['id'])
-                        source = folder / 'proxy.mp4'
+                        source = folder / f"original{episode['original_ext']}"
                         if not source.is_file():
-                            source = folder / f"original{episode['original_ext']}"
-                        if source.is_file():
-                            timestamp = payload.get('first_frame_times', {}).get(cut['id'])
-                            timestamp = timestamp if timestamp is not None else cut['start_time']
-                            media.extract_cut_frame(source, image, timestamp, cut['start_time'], cut['end_time'], width=480, seek_tolerance=.000002)
-                        else:
-                            thumbnail = folder / 'thumbnails' / f"{cut['id']}_first.jpg"
-                            if not thumbnail.is_file():
-                                raise ValueError('First frame unavailable')
-                            image.write_bytes(thumbnail.read_bytes())
+                            raise ValueError('Original video unavailable')
+                        timestamp = payload.get('first_frame_times', {}).get(cut['id'])
+                        timestamp = timestamp if timestamp is not None else cut['start_time']
+                        media.extract_cut_frame(source, image, timestamp, cut['start_time'], cut['end_time'], width=None, seek_tolerance=.000002)
                     entry['frame'] = base + '.jpg'; z.write(image, entry['frame'])
                 except Exception as exc:
                     entry['errors']['frame'] = str(exc)[:500]

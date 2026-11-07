@@ -178,6 +178,20 @@ def init_db():
             UNIQUE(character_context_id,detection_id)
         );
         CREATE INDEX IF NOT EXISTS character_reference_character_idx ON character_image_references(character_context_id);
+        CREATE TABLE IF NOT EXISTS character_reference_embeddings (
+            reference_id TEXT NOT NULL REFERENCES character_image_references(id) ON DELETE CASCADE,
+            model_id TEXT NOT NULL, model_revision TEXT NOT NULL, preprocessing TEXT NOT NULL,
+            dimensions INTEGER NOT NULL CHECK(dimensions > 0), embedding BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(reference_id,model_id,model_revision,preprocessing)
+        );
+        CREATE TABLE IF NOT EXISTS character_detection_embeddings (
+            detection_id TEXT NOT NULL REFERENCES character_detections(id) ON DELETE CASCADE,
+            model_id TEXT NOT NULL, model_revision TEXT NOT NULL, preprocessing TEXT NOT NULL,
+            dimensions INTEGER NOT NULL CHECK(dimensions > 0), embedding BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(detection_id,model_id,model_revision,preprocessing)
+        );
         CREATE TABLE IF NOT EXISTS character_voice_samples (
             id TEXT PRIMARY KEY,
             character_context_id TEXT NOT NULL REFERENCES context_items(id) ON DELETE CASCADE,
