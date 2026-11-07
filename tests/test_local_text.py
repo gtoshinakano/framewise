@@ -47,12 +47,14 @@ class LocalTextTest(unittest.TestCase):
              patch.object(local_text_runtime, 'runtime', None), \
              patch.object(local_text_runtime, 'LocalTextRuntime', return_value=runtime), \
              patch.object(worker, 'claim_job', side_effect=[('job', 'owner'), KeyboardInterrupt]), \
-             patch.object(db, 'one', side_effect=[{'pipeline': 'regen'}, {'payload_json': '{}'}]), \
+             patch.object(db, 'one', side_effect=[{'pipeline': 'regen'}, {'payload_json': '{}'}, {'episode_id': 'e'}]), \
+             patch.object(inference_worker, 'start_assistant') as start_assistant, \
              patch.object(inference_worker.threading, 'Thread', side_effect=[job_thread, model_thread]) as threads, \
              patch.object(inference_worker, 'process_regen'), \
              patch.object(inference_worker.log, 'exception') as log_error:
             with self.assertRaises(KeyboardInterrupt):
                 inference_worker.main()
+        start_assistant.assert_called_once_with()
         self.assertIs(threads.call_args_list[1].kwargs['target'], runtime.heartbeat)
         job_thread.start.assert_called_once(); model_thread.start.assert_called_once()
         job_thread.join.assert_called_once(); model_thread.join.assert_called_once()

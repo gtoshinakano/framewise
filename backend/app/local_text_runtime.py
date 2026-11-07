@@ -4,7 +4,9 @@ import json
 import socket
 import subprocess
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -21,6 +23,13 @@ class LocalTextRuntime:
         self.log = None
         self.url = None
         self.failed = False
+        # Cut Assistance streams from a second thread. The lock serialises
+        # load/unload; chat_users keeps the server alive during a chat turn and
+        # gpu_busy keeps chat from loading the model while visual work runs.
+        self.lock = threading.RLock()
+        self.changed = threading.Condition(self.lock)
+        self.chat_users = 0
+        self.gpu_busy = False
         self.publish('unloaded', 'Worker ready')
 
     def publish(self, state, detail=''):
@@ -42,7 +51,14 @@ class LocalTextRuntime:
         row = db.one('SELECT desired_loaded FROM local_text_model_state WHERE id=1')
         return bool(row and row['desired_loaded'])
 
-    def stop(self, detail=''):
+    def stop(self, detail='', wait_for_chat=True):
+        with self.lock:
+            if wait_for_chat:
+                while self.chat_users:
+                    self.changed.wait(1)
+            self._stop(detail)
+
+    def _stop(self, detail=''):
         if self.process:
             self.publish('unloading', detail or 'Releasing GPU memory')
             self.process.terminate()
@@ -89,11 +105,43 @@ class LocalTextRuntime:
             return partial, f'Downloading model: {percent:.1f}% (includes checksum verification)'
         return None, ''
 
+    def begin_gpu_work(self):
+        """Visual work owns the GPU: block new chat loads, then wait for active chat turns."""
+        with self.changed:
+            self.gpu_busy = True
+
+    def end_gpu_work(self):
+        with self.changed:
+            self.gpu_busy = False
+            self.changed.notify_all()
+
+    @contextmanager
+    def chat_session(self, cancel_check=None, on_wait=None):
+        """Hold the text server for one chat turn, waiting while visual work uses the GPU."""
+        with self.changed:
+            while self.gpu_busy:
+                if on_wait:
+                    on_wait('Waiting for the GPU: visual analysis is running')
+                self.changed.wait(0.5)
+                if cancel_check:
+                    cancel_check()
+            self.chat_users += 1
+        try:
+            yield
+        finally:
+            with self.changed:
+                self.chat_users -= 1
+                self.changed.notify_all()
+
     def ensure(self, cancel_check=None, idle_load=False):
+        with self.lock:
+            return self._ensure(cancel_check, idle_load)
+
+    def _ensure(self, cancel_check=None, idle_load=False):
         if self.process and self.process.poll() is None:
             self.publish('loaded', 'Ready')
             return self.url
-        self.stop()
+        self._stop()
         runtime = Path(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'))
         model = self.model_path()
         while not model.is_file():
@@ -135,7 +183,7 @@ class LocalTextRuntime:
                 if cancel_check:
                     cancel_check()
                 if idle_load and (not self.desired() or self.pending_nonlocal_work()):
-                    self.stop('Waiting for queued work'); return None
+                    self._stop('Waiting for queued work'); return None
                 if self.process.poll() is not None:
                     self.log.seek(0); raise RuntimeError('Local model failed to start: ' + self.log.read()[-1000:])
                 try:
@@ -149,9 +197,13 @@ class LocalTextRuntime:
                 self.publish('loading', 'Loading Qwen 3.6 into GPU memory')
                 time.sleep(1)
         except Exception as exc:
-            self.stop(); self.failed = True; self.publish('error', str(exc)); raise
+            self._stop(); self.failed = True; self.publish('error', str(exc)); raise
 
     def reconcile(self):
+        with self.lock:
+            self._reconcile()
+
+    def _reconcile(self):
         want = self.desired()
         if not want:
             self.failed = False

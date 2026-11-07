@@ -3,6 +3,10 @@ import type { AnalysisResult } from './api'
 export function ResultMetrics({ result }: { result: AnalysisResult }) {
   const settings = result.settings || {}
   const usage = settings.usage && typeof settings.usage === 'object' ? settings.usage as Record<string, unknown> : {}
+  if (result.origin === 'assistant_edit') {
+    const edit = settings.assistant_edit && typeof settings.assistant_edit === 'object' ? settings.assistant_edit as Record<string, unknown> : {}
+    return <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#aeb5c1]" aria-label="Generation details"><span>Source: <strong className="text-[#e8ebf1]">Cut Assistance edit (approved)</strong></span><span>Model: <strong className="text-[#e8ebf1]">{result.model_id || 'Unavailable'}</strong></span>{typeof edit.summary === 'string' && edit.summary && <span>Change: {edit.summary}</span>}</div>
+  }
   if (result.origin === 'manual_edit' || result.origin === 'manual') return <div className="text-[11px] text-[#aeb5c1]" aria-label="Generation details">Source: <strong className="text-[#e8ebf1]">Manual</strong></div>
   const visual = ['initial_frame', 'last_frame', 'video_analysis', 'subtitle_ocr'].includes(String(settings.structured_type || '')) || /^(Frame|Object detections|Raw OCR) at /.test(result.title)
   const legacyText = ['Cut summary', 'Consistency summary', 'MiniMax animation prompt', 'Visual evidence and confidence', 'On-screen text and confidence'].includes(result.title)

@@ -816,11 +816,20 @@ def process_character_detection(job_id, owner):
         log.exception('Character detection failed for job %s', job_id)
 
 
+def start_assistant():
+    """Run Cut Assistance chat turns on a thread that shares the local model runtime."""
+    if os.environ.get('ASSISTANT_WORKER', '1') == '0':
+        return None
+    from .assistant import runner
+    return runner.start()
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     db.init_db()
     from . import local_text_runtime
     local_text_runtime.runtime = local_text_runtime.LocalTextRuntime()
+    start_assistant()
     anime_runtime = None
     anime_batch_id = None
     while True:
@@ -845,6 +854,7 @@ def main():
                         anime_runtime = None
                         anime_batch_id = None
                     if kind == 'character_detect' or (kind == 'analyze' and not text_only):
+                        local_text_runtime.runtime.begin_gpu_work()
                         local_text_runtime.runtime.stop('Released for visual analysis')
                     if kind == 'composition_compact':
                         from . import composition_compaction
@@ -864,6 +874,7 @@ def main():
                     else:
                         (process_regen if kind == "regen" else process_consistency_summary if kind == 'consistency_summary' else process_review_answers if kind == 'review_answers' else process_character_detection if kind == 'character_detect' else process)(job_id, owner)
                 finally:
+                    local_text_runtime.runtime.end_gpu_work()
                     done.set()
                     beat.join(timeout=1)
                     model_beat.join(timeout=1)

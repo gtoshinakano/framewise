@@ -27,6 +27,7 @@ services:
       QWEN36_CONTEXT_SIZE: ${QWEN36_CONTEXT_SIZE:-65536}
       QWEN36_THINKING_BUDGET: ${QWEN36_THINKING_BUDGET:-2048}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ASSISTANT_ENDPOINTS: ${ASSISTANT_ENDPOINTS:-}
     volumes:
       - video_data:/data
       - model_cache:/models/cache

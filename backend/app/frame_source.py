@@ -28,8 +28,8 @@ def result_frame_spec(result_id, conn=None):
                               JOIN episodes e ON e.id=c.episode_id WHERE a.id=?''', (result_id,)).fetchone()
         if not row:
             return None
-        # Manual revisions inherit the exact sampled frame from their parent.
-        if row['parent_id'] and row['origin'] in ('manual', 'manual_edit') and row['parent_id'] not in seen and conn.execute('SELECT 1 FROM analysis_results WHERE id=?', (row['parent_id'],)).fetchone():
+        # Manual and approved assistant revisions inherit the exact sampled frame from their parent.
+        if row['parent_id'] and row['origin'] in ('manual', 'manual_edit', 'assistant_edit') and row['parent_id'] not in seen and conn.execute('SELECT 1 FROM analysis_results WHERE id=?', (row['parent_id'],)).fetchone():
             result_id = row['parent_id']
             continue
         # A legacy image without reconstructible metadata remains usable.

@@ -207,6 +207,8 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS character_voice_samples_character_idx ON character_voice_samples(character_context_id);
         """)
+        from .assistant import store as assistant_store
+        assistant_store.init_schema(db)
         voice_columns = {row["name"] for row in db.execute("PRAGMA table_info(character_voice_samples)")}
         if "ranges_json" not in voice_columns:
             db.execute("ALTER TABLE character_voice_samples ADD COLUMN ranges_json TEXT")

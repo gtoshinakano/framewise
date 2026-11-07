@@ -58,6 +58,8 @@ async def composition_error_handler(_request, exc):
     return JSONResponse(status_code=exc.status_code, content={'detail':exc.detail})
 
 app.include_router(storage.router)
+from .assistant.api import router as assistant_router
+app.include_router(assistant_router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
 

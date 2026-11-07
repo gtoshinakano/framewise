@@ -103,6 +103,17 @@ sudo systemctl restart framewise.service
 
 WeVisOne supplies spatial detections, while the separate Qwen model supplies frame descriptions. Both can make mistakes; character matching, motion, and camera movement can also be inaccurate. A sequence of stills does not establish the true action between samples. Review generated analysis and transcripts before using them. The app does not generate images, speech, or video. OCR and confidence assessments are uncalibrated model outputs and need review. See [the integration notes](docs/model-integration.md).
 
+## Cut Assistance chat
+
+The **Cut Assistance** tab in the Cut analysis dialog is a per-cut chat with the local Qwen 3.6 model, an OpenRouter model, or another OpenAI-compatible server. Replies stream with collapsible reasoning, tool calls, token counts, context use and timing. Chats are saved per cut in the History sidebar.
+
+- Chat turns run on a thread in the inference worker, which owns the local model and the OpenRouter key; start the `inference` profile to use it. A local chat keeps the model loaded between turns (use **Unload** in the chat header); visual analysis waits for an active chat reply before releasing the GPU, and chat waits while visual analysis runs.
+- The model reads the cut through tools (`backend/app/assistant/tools.py`): status, results (compact, clip-relative, optional `fields`), transcript, characters, context notes, neighbouring cuts and text search. Skills are Markdown guides in `backend/app/assistant/skills/` (status summary, result explanation, MiniMax H3 prompt, still-image prompt, result correction) that the model loads on demand; the starter chips come from each skill's `examples`.
+- **Fix this H3 prompt**: paste your director's six-section FastH3 OmniRef prompt. The assistant corrects its content from the cut's analysis and keeps every `<Picture N>`/`<Audio N>`/`<Subject N>` reference, record and file name, the app's picture lines and the shot length unchanged. A format checker (`backend/app/assistant/h3_prompt.py`) enforces this before the prompt is shown with Copy and Save to cut.
+- Changes are proposals. **Apply** saves a new revision with origin `assistant_edit` (the previous version stays in history) only if the result has not changed since; **Discard** drops it.
+- To add other local servers (LM Studio, Ollama, vLLM, another llama-server), set `ASSISTANT_ENDPOINTS` in `.env`, for example `ASSISTANT_ENDPOINTS=[{"id":"lmstudio","label":"LM Studio","base_url":"http://192.168.0.10:1234/v1","models":["qwen3-14b"],"context":32768}]`, then restart the inference worker. Optional keys: `api_key_env` (name of an environment variable holding a key) and `template_thinking` (send `chat_template_kwargs.enable_thinking`). The model must support OpenAI-style tool calling.
+- OpenRouter chats send this cut's analysis, transcript and notes to the selected provider and may incur charges.
+
 ## Development
 
 For Docker development with frontend hot reload and automatic API reload, run `COMPOSE_FILE=compose.yml:compose.inference.rocm.yml:compose.dev.yml docker compose up -d` (omit the inference override if you do not use it). Open `http://<APP_BIND_IP>:8080` for Vite hot reload (or use `APP_PORT` if set). Set `APP_BIND_IP` to a LAN-accessible address in `.env` to access Vite from another device. Restart the inference worker after backend changes with `docker compose restart inference-worker`.
