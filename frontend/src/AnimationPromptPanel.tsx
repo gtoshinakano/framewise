@@ -41,7 +41,7 @@ export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStar
   }, [cutId])
   async function saveInstructions() {
     setSavingInstructions(true); setInstructionsError('')
-    try { const value = await api<{ content: string }>(`/cuts/${cutId}/brief-instructions`, { method: 'PUT', body: JSON.stringify({ content: humanInstructions }) }); setSavedInstructions(value.content) }
+    try { const value = await api<{ content: string }>(`/cuts/${cutId}/brief-instructions`, { method: 'PUT', body: JSON.stringify({ content: humanInstructions }) }); setSavedInstructions(value.content); window.dispatchEvent(new Event('framewise:cut-timeline-changed')) }
     catch (err) { setInstructionsError((err as Error).message) } finally { setSavingInstructions(false) }
   }
   const [error, setError] = useState('')

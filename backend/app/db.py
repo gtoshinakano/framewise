@@ -243,6 +243,7 @@ def init_db():
             ('character_detection_runs', 'phase', "TEXT NOT NULL DEFAULT 'complete'"),
             ('character_detection_runs', 'timings_json', 'TEXT'),
             ('cuts', 'no_characters', 'INTEGER NOT NULL DEFAULT 0'),
+            ('cuts', 'created_at', 'TEXT'),
             ('character_detections', 'match_model_id', 'TEXT'),
             ('character_detections', 'match_model_revision', 'TEXT'),
         ):

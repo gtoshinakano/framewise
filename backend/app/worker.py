@@ -299,7 +299,7 @@ def process(job_id: str, owner: str):
                                 used.add(cut_id)
                                 conn.execute('UPDATE cuts SET active=1,cut_index=?,start_time=?,end_time=?,first_frame_time=NULL,last_frame_time=NULL WHERE id=?', (cut['cut_index'] + offset, start, end, cut_id))
                             else:
-                                conn.execute('INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time) VALUES (?,?,?,?,?)', (cut_id, episode_id, cut['cut_index'] + offset, start, end))
+                                conn.execute('INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time,created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)', (cut_id, episode_id, cut['cut_index'] + offset, start, end))
                             affected.append(cut_id)
                     payload['detected_cut_ids'] = affected
                     conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload), job_id))
@@ -341,7 +341,7 @@ def process(job_id: str, owner: str):
                     if cut_id:
                         conn.execute("UPDATE cuts SET active=1,cut_index=?,start_time=?,end_time=?,first_frame_time=NULL,last_frame_time=NULL WHERE id=?", (index, start, end, cut_id))
                     else:
-                        conn.execute("INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time) VALUES (?,?,?,?,?)",
+                        conn.execute("INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time,created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
                                      (str(uuid.uuid4()), episode_id, index, start, end))
             cut_ids = {cut["cut_index"]: cut["id"] for cut in db.all_rows("SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1", (episode_id,))}
             with tempfile.TemporaryDirectory(prefix='framewise-boundaries-') as scratch:

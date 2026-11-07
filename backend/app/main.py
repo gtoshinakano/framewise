@@ -1252,6 +1252,16 @@ def get_cut_analysis_stages(cut_id: str):
     return rows
 
 
+@app.get('/api/cuts/{cut_id}/timeline')
+def get_cut_timeline(cut_id: str):
+    """Return the chronological processing history of one cut with execution-only durations."""
+    from . import cut_timeline
+    result = cut_timeline.build(cut_id)
+    if result is None:
+        raise HTTPException(404, 'Cut not found')
+    return result
+
+
 @app.get('/api/jobs/{job_id}/cuts/{cut_id}/run-details')
 def get_cut_run_details(job_id: str, cut_id: str):
     """Return saved run inputs and outputs for one cut, including reused checkpoints."""
