@@ -189,7 +189,7 @@ def check_summary_lease(job_id, owner):
     if job and job["stage"] == "Cancelled":
         raise SummaryCancelled()
     if not job or job["status"] != "running" or job["lease_owner"] != owner:
-        raise RuntimeError("Job lease was lost")
+        raise worker.LeaseLost("Job lease was lost")
 
 
 def request_json(request, cancel_check=None, timeout=180):

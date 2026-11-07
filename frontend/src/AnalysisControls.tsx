@@ -38,8 +38,8 @@ export default function AnalysisControls({ cut, episodeId, busy, enabled, onStar
     try {
       await api(`/cuts/${cutId}/analysis-config`, { method: 'PUT', body: JSON.stringify(config) })
       if (run !== 'none') {
-        await api(run === 'batch' ? `/episodes/${episodeId}/visual-analysis` : `/cuts/${cutId}/analyze`, { method: 'POST' })
-        setMessage(run === 'batch' ? 'Visual analysis queued for enabled cuts.' : 'Visual analysis queued.')
+        const result = await api<{ queued?: number; skipped?: number }>(run === 'batch' ? `/episodes/${episodeId}/visual-analysis` : `/cuts/${cutId}/analyze`, { method: 'POST' })
+        setMessage(run === 'batch' ? `Visual analysis queued for ${result.queued ?? 0} cuts; ${result.skipped ?? 0} already complete were skipped.` : 'Visual analysis queued.')
         try { await onStarted() } catch { setMessage('Analysis queued, but the episode could not refresh. Refresh the page to see its status.') }
         if (run === 'next') onNext?.()
       } else setMessage('Settings saved for this cut.')

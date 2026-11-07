@@ -3,7 +3,7 @@ import contextlib
 import unittest
 from unittest.mock import MagicMock, patch
 
-from app import anime_bulk, single_cut_pipeline as pipeline
+from app import anime_bulk, inference_worker, single_cut_pipeline as pipeline, worker
 
 
 class FakeCutRun:
@@ -11,7 +11,9 @@ class FakeCutRun:
 
     def __init__(self, name, log, stages=pipeline.ALL_STAGES):
         self.name, self.log, self.stages = name, log, set(stages)
+        self.cut_id, self.cut = name, {'cut_index': 0}
         self.completed = False
+        self.failure = None
         self.item = {}
         self.references = []
         self.subtitles = {'samples': [], 'events': []}
@@ -73,6 +75,30 @@ class BatchPipelineTest(unittest.TestCase):
             pipeline.run_batch(job, 'owner', {}, [{}, {}])
         self.assertEqual(order, ['subtitles', 'frames', 'video'])
         self.assertTrue(all(run.completed for run in runs))
+
+
+class PerCutFailureTest(unittest.TestCase):
+    def test_for_each_records_a_failure_and_keeps_going(self):
+        runs = [FakeCutRun(name, []) for name in ('a', 'b', 'c')]
+        seen = []
+
+        def work(cut_run):
+            seen.append(cut_run.name)
+            if cut_run.name == 'a':
+                raise ValueError('boom')
+
+        pipeline._for_each(runs, work)
+        self.assertEqual(seen, ['a', 'b', 'c'])
+        self.assertIsInstance(runs[0].failure, ValueError)
+        self.assertIsNone(runs[1].failure)
+        pipeline._for_each(runs, work)  # a failed cut is not run again
+        self.assertEqual(seen, ['a', 'b', 'c', 'b', 'c'])
+
+    def test_lease_loss_and_cancellation_still_stop_the_whole_job(self):
+        for error in (worker.LeaseLost('Job lease was lost'), inference_worker.SummaryCancelled()):
+            run = FakeCutRun('a', [])
+            with self.assertRaises(type(error)):
+                pipeline._for_each([run], lambda _run, error=error: (_ for _ in ()).throw(error))
 
 
 class CharacterBatchOrderTest(unittest.TestCase):

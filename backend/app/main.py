@@ -1327,6 +1327,20 @@ def put_cut_analysis_config(cut_id: str, config: AnalysisConfig):
 VISUAL_STAGES = ('subtitle_ocr', 'initial_frame', 'video_analysis', 'last_frame')
 
 
+def saved_subtitle_input(conn, base_result_ids, cut):
+    """The cut's current subtitle result, when it was made for the same boundaries; later stages reuse it."""
+    subtitle_id = base_result_ids.get('subtitle_ocr')
+    row = conn.execute('SELECT content,context_json FROM analysis_results WHERE id=?', (subtitle_id,)).fetchone() if subtitle_id else None
+    if not row:
+        return None
+    source_cut = json_object_or_empty(row['context_json']).get('cut', {})
+    data = json_object_or_empty(row['content'])
+    if (isinstance(source_cut, dict) and source_cut.get('start_time') == cut['start_time']
+            and source_cut.get('end_time') == cut['end_time'] and isinstance(data.get('samples'), list)):
+        return {'result_id': subtitle_id, 'content': data}
+    return None
+
+
 def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[str] | None = None):
     from . import structured_results
     job_id = str(uuid.uuid4())
@@ -1375,13 +1389,9 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[st
                     item['character_references'] = character_detection.select_analysis_references(character_detection.reference_snapshots(conn, project_id), labeled)
                     item['base_result_ids'] = {result['type']: result['id'] for result in structured_results.list_results(cut['id'])}
                     if stages and 'subtitle_ocr' not in stages:
-                        subtitle_id = item['base_result_ids'].get('subtitle_ocr')
-                        row = conn.execute('SELECT content,context_json FROM analysis_results WHERE id=?', (subtitle_id,)).fetchone() if subtitle_id else None
-                        if row:
-                            source_cut = json_object_or_empty(row['context_json']).get('cut', {})
-                            subtitle_data = json_object_or_empty(row['content'])
-                            if (isinstance(source_cut, dict) and source_cut.get('start_time') == context['cut']['start_time'] and source_cut.get('end_time') == context['cut']['end_time'] and isinstance(subtitle_data.get('samples'), list)):
-                                item['subtitle_input'] = {'result_id': subtitle_id, 'content': subtitle_data}
+                        saved_subtitles = saved_subtitle_input(conn, item['base_result_ids'], context['cut'])
+                        if saved_subtitles:
+                            item['subtitle_input'] = saved_subtitles
                 inputs.append(item)
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs, **({'workflow': 'single_cut_v2', 'auto_consistency': False} if cut_id is not None else {}), **({'stages': stages} if stages else {})})))
             worker.sync_episode_status(conn, episode_id)
@@ -1392,8 +1402,12 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[st
 
 
 @app.post('/api/episodes/{episode_id}/visual-analysis')
-def queue_episode_visual_analysis(episode_id: str):
+def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, only_missing: bool = True):
     """Queue one restart-safe visual-only job covering every enabled active cut.
+
+    `from_cut` is the cut number shown in the editor (cut_index + 1); earlier cuts are left out.
+    With `only_missing` (the default) a stage that already has a current result is not run again, and
+    cuts with every stage done are skipped. Pass only_missing=false to redo everything.
 
     A single job lets the worker run each model once across all cuts (see
     single_cut_pipeline.run_batch) instead of reloading models for every cut.
@@ -1406,10 +1420,11 @@ def queue_episode_visual_analysis(episode_id: str):
             raise HTTPException(404, 'Episode not found')
         if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
             raise HTTPException(409, 'Wait for media preparation or detection to finish')
-        cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 ORDER BY cut_index", (episode_id,)).fetchall()
+        first_index = max(0, from_cut - 1) if from_cut else 0
+        cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index", (episode_id, first_index)).fetchall()
         references = character_detection.reference_snapshots(conn, episode['project_id'])
         already_queued = {row[0] for row in conn.execute("SELECT json_extract(i.value,'$.cut_id') FROM jobs j, json_each(j.payload_json,'$.cuts') i WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running')", (episode_id,))}
-        items = []
+        items, skipped = [], 0
         for cut in cuts:
             cut_id = cut['id']
             if cut_id in already_queued:
@@ -1419,9 +1434,20 @@ def queue_episode_visual_analysis(episode_id: str):
             context['current_results'] = [dict(row) for row in conn.execute('SELECT kind,title,content,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid', (cut_id,))]
             labeled = {d['character_context_id'] for d in context.get('character_detections', {}).get('detections', []) if d['character_context_id']}
             labeled.update(entry['id'] for entry in context['context_items'] if entry['kind'] == 'character')
-            items.append({'cut_id': cut_id, 'config': config.model_dump(), 'context': context,
-                          'character_references': character_detection.select_analysis_references(references, labeled),
-                          'base_result_ids': {result['type']: result['id'] for result in structured_results.list_results(cut_id)}})
+            base_ids = {result['type']: result['id'] for result in structured_results.list_results(cut_id)}
+            subtitles = saved_subtitle_input(conn, base_ids, context['cut'])
+            done = set(base_ids) if subtitles else set(base_ids) - {'subtitle_ocr'}  # subtitles for other boundaries don't count
+            missing = [stage for stage in VISUAL_STAGES if stage not in done] if only_missing else list(VISUAL_STAGES)
+            if not missing:
+                skipped += 1
+                continue
+            item = {'cut_id': cut_id, 'config': config.model_dump(), 'context': context, 'base_result_ids': base_ids,
+                    'character_references': character_detection.select_analysis_references(references, labeled)}
+            if len(missing) < len(VISUAL_STAGES):
+                item['stages'] = missing
+                if 'subtitle_ocr' not in missing:
+                    item['subtitle_input'] = subtitles
+            items.append(item)
         job_ids = []
         if items:
             job_id = str(uuid.uuid4())
@@ -1429,7 +1455,7 @@ def queue_episode_visual_analysis(episode_id: str):
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'analyze',?)", (job_id, episode_id, json.dumps(payload, ensure_ascii=False)))
             job_ids.append(job_id)
             worker.sync_episode_status(conn, episode_id)
-    return {'queued': len(items), 'job_ids': job_ids}
+    return {'queued': len(items), 'skipped': skipped, 'job_ids': job_ids}
 
 
 class BatchTextInput(BaseModel):

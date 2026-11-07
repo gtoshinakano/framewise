@@ -13,12 +13,15 @@ work it already saved. Legacy jobs retain their original execution path.
 """
 import gc
 import json
+import logging
 import time
 import os
 import tempfile
 from pathlib import Path
 from . import character_detection, db, frame_model, media, structured_results, subtitle_model, video_model, worker
 from .visual_contracts import FRAME_INSTRUCTION, VIDEO_INSTRUCTION
+
+log = logging.getLogger('framewise.visual_analysis')
 
 
 def release_gpu_models():
@@ -74,6 +77,7 @@ class CutRun:
         self.base_ids = item.get('base_result_ids', {})
         self.subtitles = None
         self.references = []
+        self.failure = None  # set when this cut fails; the other cuts keep going
         row = db.one('SELECT * FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job['id'], self.cut_id))
         self.completed = bool(row and row['completed'])
         self.checkpoint = json.loads(row['evidence_json']) if row else {}
@@ -154,24 +158,50 @@ class CutRun:
 def run_batch(job, owner, episode, items):
     """Run every requested stage for all cuts, loading each model once."""
     payload = json.loads(job['payload_json'])
-    stages = set(payload.get('stages') or ALL_STAGES)
-    runs = [CutRun(job, owner, episode, item, stages, len(items)) for item in items]
+    job_stages = set(payload.get('stages') or ALL_STAGES)
+    # A cut may list its own stages when only part of its analysis is missing.
+    runs = [CutRun(job, owner, episode, item, set(item.get('stages') or job_stages), len(items)) for item in items]
     runs = [cut_run for cut_run in runs if not cut_run.completed]
     if not runs:
         return
     for cut_run in runs:
         cut_run.validate()
-    ensure_models_available(stages)
+    ensure_models_available(set().union(*(cut_run.stages for cut_run in runs)))
     release_gpu_models()
     try:
         with tempfile.TemporaryDirectory(prefix='framewise-cut-analysis-') as scratch:
             _subtitle_stage(runs, scratch)
             _boundary_frame_stages(runs, scratch)
             _video_stage(runs, scratch)
-            for cut_run in runs:
-                cut_run.mark_complete()
     finally:
         release_gpu_models()
+    # Finished cuts are kept even when another cut failed; a retry only redoes the failed ones.
+    for cut_run in runs:
+        if not cut_run.failure:
+            cut_run.mark_complete()
+    failed = [cut_run for cut_run in runs if cut_run.failure]
+    if failed:
+        details = '; '.join(f"cut {cut_run.cut['cut_index'] + 1}: {cut_run.failure}" for cut_run in failed[:5])
+        more = f' (+{len(failed) - 5} more)' if len(failed) > 5 else ''
+        raise RuntimeError(f'{len(failed)} of {len(runs)} cuts failed, the others finished and were kept. {details}{more}')
+
+
+def _for_each(cut_runs, work):
+    """Run work(cut_run) for each cut still healthy. A failure is recorded on that cut and the batch goes on.
+
+    Losing the lease or being cancelled ends the whole job, so those still propagate.
+    """
+    from . import inference_worker
+    for cut_run in cut_runs:
+        if cut_run.failure:
+            continue
+        try:
+            work(cut_run)
+        except (worker.LeaseLost, inference_worker.SummaryCancelled):
+            raise
+        except Exception as exc:
+            cut_run.failure = exc
+            log.exception('Visual analysis failed for cut %s; continuing with the other cuts', cut_run.cut_id)
 
 
 # -- stage 1: subtitle detection and OCR (WeVisOne) -----------------------------
@@ -182,12 +212,11 @@ def _subtitle_stage(runs, scratch):
     if todo:
         model = inference_worker.get_model()
         try:
-            for cut_run in todo:
-                _detect_subtitles(cut_run, scratch, model)
+            _for_each(todo, lambda cut_run: _detect_subtitles(cut_run, scratch, model))
         finally:
             model = None
             release_gpu_models()
-    for cut_run in runs:
+    for cut_run in (run for run in runs if not run.failure):
         cut_run.subtitles = (cut_run.saved('subtitle_ocr')
                              or cut_run.item.get('subtitle_input', {}).get('content')
                              or {'samples': [], 'events': []})
@@ -208,24 +237,25 @@ def _detect_subtitles(cut_run, scratch, model):
 # -- stage 2: first and last frame (Qwen3.5 through one llama-server) -----------
 
 def _boundary_frame_stages(runs, scratch):
-    todo = [cut_run for cut_run in runs if cut_run.needs('initial_frame') or cut_run.needs('last_frame')]
+    todo = [cut_run for cut_run in runs if not cut_run.failure and (cut_run.needs('initial_frame') or cut_run.needs('last_frame'))]
     if not todo:
         return
     crops = {}  # reference id -> cropped image, shared by every cut that uses it
-    for cut_run in todo:
-        cut_run.references = []
-        for ref in cut_run.item.get('character_references', []):
-            if ref['id'] not in crops:
-                source = media.episode_dir(ref['project_id'], ref['episode_id']) / f"original{ref['original_ext']}"
-                crops[ref['id']] = character_detection.crop_frame(source, ref['frame'], ref['cut_start'], ref['cut_end'], ref['box'], scratch, f"analysis-ref-{ref['id']}")
-            cut_run.references.append({**ref, 'image': crops[ref['id']]})
+    _for_each(todo, lambda cut_run: _load_references(cut_run, crops, scratch))
     with frame_model.frame_server(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'),
         os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
         os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'),
         cancel_check=todo[0].cancel_check) as server:
-        for cut_run in todo:
-            _frame_stage(cut_run, 'first', server, scratch)
-            _frame_stage(cut_run, 'last', server, scratch)
+        _for_each(todo, lambda cut_run: (_frame_stage(cut_run, 'first', server, scratch), _frame_stage(cut_run, 'last', server, scratch)))
+
+
+def _load_references(cut_run, crops, scratch):
+    cut_run.references = []
+    for ref in cut_run.item.get('character_references', []):
+        if ref['id'] not in crops:
+            source = media.episode_dir(ref['project_id'], ref['episode_id']) / f"original{ref['original_ext']}"
+            crops[ref['id']] = character_detection.crop_frame(source, ref['frame'], ref['cut_start'], ref['cut_end'], ref['box'], scratch, f"analysis-ref-{ref['id']}")
+        cut_run.references.append({**ref, 'image': crops[ref['id']]})
 
 
 def _frame_stage(cut_run, position, server, scratch):
@@ -271,13 +301,12 @@ def _classify_subtitle_languages(cut_run, server):
 # -- stage 3: video analysis (Qwen3-VL) -----------------------------------------
 
 def _video_stage(runs, scratch):
-    todo = [cut_run for cut_run in runs if cut_run.needs('video_analysis')]
+    todo = [cut_run for cut_run in runs if not cut_run.failure and cut_run.needs('video_analysis')]
     if not todo:
         return
     runtime = video_model.VideoRuntime()
     try:
-        for cut_run in todo:
-            _video_analysis(cut_run, scratch, runtime)
+        _for_each(todo, lambda cut_run: _video_analysis(cut_run, scratch, runtime))
     finally:
         runtime.close()
 

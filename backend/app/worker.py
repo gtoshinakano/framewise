@@ -145,10 +145,14 @@ def sync_episode_status(conn, episode_id: str, error: str | None = None):
         conn.execute("UPDATE episodes SET status='ready',stage='Ready',error=NULL WHERE id=?", (episode_id,))
 
 
+class LeaseLost(RuntimeError):
+    """The job no longer belongs to this worker; nothing else may be written for it."""
+
+
 def require_lease(conn, job_id: str, owner: str):
     active = conn.execute("SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner)).fetchone()
     if not active:
-        raise RuntimeError("Job lease was lost")
+        raise LeaseLost("Job lease was lost")
 
 
 def stage(job_id: str, owner: str, episode_id: str, label: str):

@@ -40,7 +40,55 @@ class BatchQueueingTest(unittest.TestCase):
         payload = json.loads(self.jobs('analyze')[0]['payload_json'])
         self.assertEqual([item['cut_id'] for item in payload['cuts']], ['c1', 'c2', 'c3'])
         self.assertEqual(payload['workflow'], 'single_cut_v2')
-        self.assertEqual(main.queue_episode_visual_analysis('e'), {'queued': 0, 'job_ids': []})
+        self.assertEqual(main.queue_episode_visual_analysis('e'), {'queued': 0, 'skipped': 0, 'job_ids': []})
+
+    def test_visual_analysis_can_start_from_a_cut_number(self):
+        result = main.queue_episode_visual_analysis('e', from_cut=2)  # the editor numbers cuts from 1
+        self.assertEqual(result['queued'], 2)
+        payload = json.loads(self.jobs('analyze')[0]['payload_json'])
+        self.assertEqual([item['cut_id'] for item in payload['cuts']], ['c2', 'c3'])
+
+    def seed_result(self, cut_id, stage, context=None):
+        content = {'samples': [], 'events': []} if stage == 'subtitle_ocr' else {'summary': 'x'}
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,settings_json,context_json) VALUES (?,?,'other',?,?,'model',?,?)",
+                         (str(uuid.uuid4()), cut_id, stage, json.dumps(content), json.dumps({'structured_type': stage}), json.dumps(context or {})))
+
+    def test_only_missing_stages_are_queued_and_finished_cuts_are_skipped(self):
+        c1_bounds = {'cut': {'start_time': 0, 'end_time': 2}}
+        self.seed_result('c1', 'subtitle_ocr', c1_bounds)  # c1 only lacks frames and video
+        for stage in pipeline.ALL_STAGES:                    # c2 is finished
+            self.seed_result('c2', stage, {'cut': {'start_time': 2, 'end_time': 4}})
+        result = main.queue_episode_visual_analysis('e')     # c3 has nothing
+        self.assertEqual((result['queued'], result['skipped']), (2, 1))
+        items = {item['cut_id']: item for item in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts']}
+        self.assertEqual(sorted(items), ['c1', 'c3'])
+        self.assertEqual(set(items['c1']['stages']), {'initial_frame', 'last_frame', 'video_analysis'})
+        self.assertEqual(items['c1']['subtitle_input']['content'], {'samples': [], 'events': []})
+        self.assertNotIn('stages', items['c3'])              # nothing done: every stage runs
+
+    def test_subtitles_made_for_other_boundaries_do_not_count_as_done(self):
+        self.seed_result('c1', 'subtitle_ocr', {'cut': {'start_time': 0, 'end_time': 1.5}})
+        main.queue_episode_visual_analysis('e')
+        item = next(i for i in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts'] if i['cut_id'] == 'c1')
+        self.assertNotIn('stages', item)
+
+    def test_only_missing_can_be_turned_off_to_redo_everything(self):
+        for stage in pipeline.ALL_STAGES:
+            self.seed_result('c2', stage, {'cut': {'start_time': 2, 'end_time': 4}})
+        result = main.queue_episode_visual_analysis('e', only_missing=False)
+        self.assertEqual((result['queued'], result['skipped']), (3, 0))
+
+    def test_batch_runs_only_the_stages_each_cut_still_needs(self):
+        self.seed_result('c1', 'subtitle_ocr', {'cut': {'start_time': 0, 'end_time': 2}})
+        main.queue_episode_visual_analysis('e')
+        job_id, owner = worker.claim_job(('analyze',))
+        events = []
+        self.process_with_fake_models(job_id, owner, events)
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
+        self.assertEqual(events.count('subtitle-cut'), 2)  # c1 already had subtitles
+        self.assertEqual(events.count('frame'), 6)
+        self.assertEqual(events.count('video-cut'), 3)
 
     def test_single_cut_trigger_still_queues_a_one_cut_job(self):
         main.analyze_cut('c2')
@@ -64,11 +112,8 @@ class BatchQueueingTest(unittest.TestCase):
         self.assertEqual(len({p['batch_id'] for p in payloads}), 1)
         self.assertEqual(main.queue_all_character_detection('e')['queued'], 0)
 
-    def test_worker_runs_each_model_once_across_the_queued_cuts(self):
-        main.queue_episode_visual_analysis('e')
-        job_id, owner = worker.claim_job(('analyze',))
-        events = []
-
+    def process_with_fake_models(self, job_id, owner, events, describe=None):
+        """Run a queued analysis job through the real worker with stand-ins for the GPU models."""
         @contextmanager
         def server(*_args, **_kwargs):
             events.append('server-start')
@@ -95,11 +140,15 @@ class BatchQueueingTest(unittest.TestCase):
             events.append('video-cut')
             return {'windows': [], 'usage': {}}
 
+        def default_describe(*_args, **_kwargs):
+            events.append('frame')
+            return {'summary': 'x'}
+
         with patch.object(pipeline, 'ensure_models_available'), patch.object(pipeline, 'release_gpu_models'), \
              patch.object(inference_worker, 'get_model', side_effect=lambda: events.append('subtitle-model') or object()), \
              patch.object(subtitle_model, 'inspect_subtitles', side_effect=lambda *a, **k: events.append('subtitle-cut') or {'samples': [], 'events': []}), \
              patch.object(frame_model, 'frame_server', server), \
-             patch.object(frame_model, 'describe_frame', side_effect=lambda *a, **k: events.append('frame') or {'summary': 'x'}), \
+             patch.object(frame_model, 'describe_frame', side_effect=describe or default_describe), \
              patch.object(frame_model, 'classify_subtitle_languages', return_value=[]), \
              patch.object(video_model, 'VideoRuntime', Runtime), patch.object(video_model, 'analyze_video', analyze), \
              patch.object(pipeline.character_detection, 'crop_frame', return_value=b''), \
@@ -107,11 +156,46 @@ class BatchQueueingTest(unittest.TestCase):
              patch.object(pipeline.structured_results, 'save_generated', save_generated):
             inference_worker.process(job_id, owner)
 
+    def test_worker_runs_each_model_once_across_the_queued_cuts(self):
+        main.queue_episode_visual_analysis('e')
+        job_id, owner = worker.claim_job(('analyze',))
+        events = []
+        self.process_with_fake_models(job_id, owner, events)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         self.assertEqual(db.one('SELECT SUM(completed) AS n FROM analysis_job_cuts WHERE job_id=?', (job_id,))['n'], 3)
         shape = [event for event in events if not event.startswith('save:') and event != 'video-load']
         self.assertEqual(shape, ['subtitle-model'] + ['subtitle-cut'] * 3 + ['server-start'] + ['frame'] * 6 + ['server-stop']
                          + ['video-cut'] * 3 + ['video-close'])
+
+    def test_one_failing_cut_does_not_stop_the_others_and_a_retry_finishes_only_it(self):
+        main.queue_episode_visual_analysis('e')
+        job_id, owner = worker.claim_job(('analyze',))
+        events, calls = [], []
+
+        def describe(_server, _image, _regions, hints, **_kwargs):
+            calls.append(hints['target_frame'])
+            if len(calls) == 3:  # the second cut's first frame, like a truncated model answer
+                raise ValueError('Response was truncated')
+            events.append('frame')
+            return {'summary': 'x'}
+
+        self.process_with_fake_models(job_id, owner, events, describe)
+        job = db.one('SELECT status,error FROM jobs WHERE id=?', (job_id,))
+        self.assertEqual(job['status'], 'failed')
+        self.assertIn('1 of 3 cuts failed', job['error'])
+        self.assertIn('cut 2: Response was truncated', job['error'])
+        done = {row['cut_id'] for row in db.all_rows('SELECT cut_id FROM analysis_job_cuts WHERE job_id=? AND completed=1', (job_id,))}
+        self.assertEqual(len(done), 2)
+        self.assertEqual(events.count('video-cut'), 2)  # the failed cut is skipped by the later stages
+
+        retry_id = main.retry_analysis(job_id)['job_id']
+        retry_job, retry_owner = worker.claim_job(('analyze',))
+        self.assertEqual(retry_job, retry_id)
+        retry_events = []
+        self.process_with_fake_models(retry_id, retry_owner, retry_events)
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (retry_id,))['status'], 'done')
+        self.assertEqual(retry_events.count('video-cut'), 1)  # only the cut that failed is redone
+        self.assertEqual(retry_events.count('frame'), 2)
 
 
 if __name__ == '__main__':
