@@ -38,6 +38,7 @@ class Runtime:
         self.reid = reid
         self.reference_images = {}
         self.prepared_frames = {}
+        self.same_cut_links = {}
         self.detector = Detector()
     def get_detector(self): return self.detector
     def get_reid(self): return self.reid
@@ -105,6 +106,27 @@ class BulkDetectionTest(unittest.TestCase):
         self.assertEqual([item['character_context_id'] for item in run['detections']], ['ctx2', 'ctx2'])
         self.assertIn('track', run['detections'][1]['match_reason'])
 
+    def test_deferred_qwen_review_resumes_and_still_links_the_same_cut_track(self):
+        self.add_references()
+        runtime = Runtime(ReId([[1, 1], [1, 1]]))
+        self.assertEqual(self.client.post('/api/cuts/c2/character-detection').status_code, 200)
+        job_id, owner = worker.claim_job(('character_detect',))
+        frames = [{'position': 'first', 'time': 2, 'image_size': [100, 80]}, {'position': 'last', 'time': 2.5, 'image_size': [100, 80]}]
+        images = [Image.new('RGB', (100, 80), 'red')] * 2
+        reviews = [{'character_id': 'ctx2', 'confidence': 'high', 'reason': 'reviewed'}]
+        with patch.object(anime_bulk, '_extract_frames', return_value=(frames, images)), \
+             patch.object(character_detection, 'crop_frame', return_value=jpeg()), \
+             patch.object(anime_bulk, '_review', side_effect=reviews) as review:
+            self.assertEqual(anime_bulk.process(job_id, owner, runtime, defer_qwen=True), anime_bulk.DEFERRED)
+            self.assertEqual(review.call_count, 0)
+            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'running')
+            anime_bulk.process(job_id, owner, runtime)
+        self.assertEqual(review.call_count, 1)
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
+        run = self.client.get('/api/cuts/c2/character-detections').json()
+        self.assertEqual([item['character_context_id'] for item in run['detections']], ['ctx2', 'ctx2'])
+        self.assertIn('track', run['detections'][1]['match_reason'])
+
     def test_adjacent_cut_reuses_a_unique_appearance_without_another_qwen_call(self):
         self.add_references()
         runtime = Runtime(ReId([[1, 1], [1, 1]]))
@@ -115,7 +137,7 @@ class BulkDetectionTest(unittest.TestCase):
         self.assertIn('preceding cut', run['detections'][0]['match_reason'])
 
     def test_multiple_cut_jobs_share_a_single_detector_batch_and_keep_separate_results(self):
-        jobs = self.client.post('/api/episodes/e/character-detection').json()['job_ids']
+        jobs = self.client.post('/api/episodes/e/character-detection-all').json()['job_ids']
         with db.connect() as conn:
             payloads = [json.loads(conn.execute('SELECT payload_json FROM jobs WHERE id=?', (job_id,)).fetchone()['payload_json']) for job_id in jobs]
         self.assertEqual([payload['workflow'] for payload in payloads], ['anime_bulk_v1', 'anime_bulk_v1'])
@@ -152,7 +174,7 @@ class BulkDetectionTest(unittest.TestCase):
         self.assertEqual(sum(ref['character_context_id'] == 'ctx' for ref in payload['references']), 2)
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='done' WHERE id=?", (single,))
-        bulk = self.client.post('/api/episodes/e/character-detection').json()['job_ids']
+        bulk = self.client.post('/api/episodes/e/character-detection-all').json()['job_ids']
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (bulk[0],))['payload_json'])
         self.assertEqual(sum(ref['character_context_id'] == 'ctx' for ref in payload['references']), 3)
 

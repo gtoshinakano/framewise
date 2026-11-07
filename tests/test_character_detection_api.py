@@ -126,16 +126,16 @@ class CharacterDetectionAPITest(unittest.TestCase):
             conn.execute("INSERT INTO cuts(id,episode_id,cut_index,start_time,end_time,active,analysis_enabled) VALUES ('c3','e',2,4,6,1,0),('c4','e',-1,6,8,0,1),('c5','e',3,8,10,1,1)")
             conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('done','c1',0,2,'[]','test'),('stale','c2',2,3,'[]','test')")
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('failed','e','character_detect','failed')")
-            conn.execute("INSERT INTO character_detection_runs(id,cut_id,job_id,cut_start,cut_end,frames_json,model_id) VALUES ('partial','c5','failed',8,10,'[]','test')")
-        response = self.client.post('/api/episodes/e/character-detection')
+            conn.execute("INSERT INTO character_detection_runs(id,cut_id,job_id,cut_start,cut_end,frames_json,model_id,phase) VALUES ('partial','c5','failed',8,10,'[]','test','boxes')")
+        response = self.client.post('/api/episodes/e/character-detection-all')
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['queued'], 2)
         jobs = db.all_rows("SELECT id,payload_json FROM jobs WHERE status='queued' ORDER BY rowid")
         self.assertEqual([json.loads(job['payload_json'])['cut_id'] for job in jobs], ['c2', 'c5'])
-        self.assertEqual(self.client.post('/api/episodes/e/character-detection').json()['queued'], 0)
+        self.assertEqual(self.client.post('/api/episodes/e/character-detection-all').json()['queued'], 0)
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET analysis_enabled=1 WHERE id='c3'")
-        self.assertEqual(self.client.post('/api/episodes/e/character-detection').json()['queued'], 1)
+        self.assertEqual(self.client.post('/api/episodes/e/character-detection-all').json()['queued'], 1)
         self.assertEqual(worker.claim_job(('character_detect',))[0], jobs[0]['id'])
         self.assertIsNone(worker.claim_job(('character_detect',)))
         response = self.client.get('/api/episodes/e')
@@ -152,7 +152,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
 
     def test_bulk_detection_continues_after_failure_and_requeues_only_failed(self):
         from app import character_detection, single_cut_pipeline
-        response = self.client.post('/api/episodes/e/character-detection')
+        response = self.client.post('/api/episodes/e/character-detection-all')
         self.assertEqual(response.status_code, 200, response.text)
         first, second = response.json()['job_ids']
         frames = [{'position': pos, 'time': time, 'image_size': [100, 80], 'boxes': []} for pos, time in [('first', 2), ('last', 3.9)]]
@@ -165,7 +165,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
             self.assertEqual(claimed, second)
             inference_worker.process_character_detection(claimed, owner)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (second,))['status'], 'done')
-        retry = self.client.post('/api/episodes/e/character-detection').json()
+        retry = self.client.post('/api/episodes/e/character-detection-all').json()
         self.assertEqual(retry['queued'], 1)
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (retry['job_ids'][0],))['payload_json'])
         self.assertEqual(payload['cut_id'], 'c1')
@@ -173,7 +173,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
     def test_bulk_detection_concurrent_requests_do_not_duplicate_jobs(self):
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as pool:
-            responses = list(pool.map(lambda _: self.client.post('/api/episodes/e/character-detection'), range(2)))
+            responses = list(pool.map(lambda _: self.client.post('/api/episodes/e/character-detection-all'), range(2)))
         self.assertEqual([response.status_code for response in responses], [200, 200])
         self.assertEqual(sorted(response.json()['queued'] for response in responses), [0, 2])
         jobs = db.all_rows("SELECT payload_json FROM jobs WHERE pipeline='character_detect' AND status='queued'")

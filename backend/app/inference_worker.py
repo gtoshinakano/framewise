@@ -643,14 +643,14 @@ def process(job_id, owner):
         payload = json.loads(job['payload_json'])
         if payload.get('workflow') == 'single_cut_v2':
             from . import single_cut_pipeline, structured_results, summary_queue
-            item = payload['cuts'][0]
-            single_cut_pipeline.run(job, owner, episode, item)
-            results = structured_results.list_results(item['cut_id'])
-            summary_payload = summary_queue.payload_for(item['cut_id'], item['config'], item['context'], results) if payload.get('auto_consistency', True) else None
+            items = payload['cuts']
+            single_cut_pipeline.run_batch(job, owner, episode, items)
+            summaries = [summary_queue.payload_for(item['cut_id'], item['config'], item['context'], structured_results.list_results(item['cut_id']))
+                         for item in items] if payload.get('auto_consistency', True) else []
             with db.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 worker.require_lease(conn, job_id, owner)
-                if summary_payload is not None:
+                for summary_payload in summaries:
                     summary_queue.insert(conn, job['episode_id'], summary_payload)
                 conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
                 worker.sync_episode_status(conn, job['episode_id'])

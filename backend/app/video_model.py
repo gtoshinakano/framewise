@@ -19,6 +19,43 @@ RETRY_INSTRUCTION = ('\nThe previous response could not be parsed as complete JS
     'Do not repeat the same event to fill time. Finish the object within the output limit.')
 
 
+class VideoRuntime:
+    """Lazily loaded Qwen3-VL weights that several cuts can share.
+
+    `analyze_video` creates a private runtime when none is passed, so a single
+    cut still loads and frees the model by itself. A batch passes one runtime
+    for every cut and calls `close()` once at the end.
+    """
+
+    def __init__(self):
+        self.torch = self.processor = self.model = None
+
+    def load(self, model_path):
+        if self.model is None:
+            import torch
+            from transformers import AutoModelForImageTextToText, AutoProcessor
+            index_path = Path(model_path) / 'model.safetensors.index.json'
+            try:
+                index = json.loads(index_path.read_text())
+                shards = set(index['weight_map'].values())
+                if not shards or any(Path(name).name != name or not (Path(model_path) / name).is_file() for name in shards):
+                    raise ValueError('Model shards are missing')
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise RuntimeError('Qwen3-VL 8B model is missing or incomplete') from exc
+            if not torch.cuda.is_available():
+                raise RuntimeError('Qwen3-VL video analysis requires a compatible GPU')
+            self.torch = torch
+            self.processor = AutoProcessor.from_pretrained(model_path, local_files_only=True)
+            self.model = AutoModelForImageTextToText.from_pretrained(model_path, dtype=torch.bfloat16, local_files_only=True).to('cuda').eval()
+        return self.torch, self.processor, self.model
+
+    def close(self):
+        if self.model is not None:
+            self.model = self.processor = None
+            gc.collect()
+            self.torch.cuda.empty_cache()
+
+
 def video_inputs(processor, clip, fps, prompt):
     """Decode the prepared clip with PyAV, preserving frame timestamps."""
     import av
@@ -81,14 +118,15 @@ def generate_window(processor, model, torch, clip, fps, prompt, duration, start,
     raise RuntimeError(f'Invalid Qwen3-VL video response for {start:.3f}–{start + duration:.3f}s after {len(VIDEO_TOKEN_LIMITS)} attempts: {last_error}')
 
 
-def analyze_video(original, cut, config, model_path, scratch, on_window=None, subtitle_samples=None, load_window=None, save_window=None, context_hints=None, on_invalid_response=None, cancel_check=None):
+def analyze_video(original, cut, config, model_path, scratch, on_window=None, subtitle_samples=None, load_window=None, save_window=None, context_hints=None, on_invalid_response=None, cancel_check=None, runtime=None):
     """Process every cut window, recording both clip-relative and episode times.
 
     Each model invocation is bounded to limit video tokens. Windows partition the
     cut; events spanning a window boundary may be split. No audio is sent to the
     visual model. Clip files are transient and timing metadata is retained.
     """
-    model = processor = torch = None
+    owns_runtime = runtime is None
+    runtime = runtime or VideoRuntime()
     windows = []
     start, cut_end = float(cut['start_time']), float(cut['end_time'])
     first, last = cut.get('first_frame_time'), cut.get('last_frame_time')
@@ -122,22 +160,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
                 continue
             if on_window:
                 on_window(start, end)
-            if model is None:
-                import torch as torch_module
-                from transformers import AutoModelForImageTextToText, AutoProcessor
-                torch = torch_module
-                index_path = Path(model_path) / 'model.safetensors.index.json'
-                try:
-                    index = json.loads(index_path.read_text())
-                    shards = set(index['weight_map'].values())
-                    if not shards or any(Path(name).name != name or not (Path(model_path) / name).is_file() for name in shards):
-                        raise ValueError('Model shards are missing')
-                except (OSError, ValueError, KeyError, TypeError) as exc:
-                    raise RuntimeError('Qwen3-VL 8B model is missing or incomplete') from exc
-                if not torch.cuda.is_available():
-                    raise RuntimeError('Qwen3-VL video analysis requires a compatible GPU')
-                processor = AutoProcessor.from_pretrained(model_path, local_files_only=True)
-                model = AutoModelForImageTextToText.from_pretrained(model_path, dtype=torch.bfloat16, local_files_only=True).to('cuda').eval()
+            torch, processor, model = runtime.load(model_path)
             clip = Path(scratch) / 'video-window.mp4'
             if remaining_frames is None:
                 metadata = media.prepare_analysis_video(Path(original), clip, start, end, config['video_width'], config['video_height'], fps)
@@ -188,7 +211,5 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
         return {'model': MODEL_ID, 'revision': MODEL_REVISION, 'windows': windows, 'usage': usage,
                 'limitations': 'Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window.'}
     finally:
-        if model is not None:
-            del model, processor
-            gc.collect()
-            torch.cuda.empty_cache()
+        if owns_runtime:
+            runtime.close()

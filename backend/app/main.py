@@ -1025,13 +1025,16 @@ def _queue_bulk_character_jobs(episode_id: str, phase: str):
         latest = """(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id AND r2.cut_start=c.start_time AND r2.cut_end=c.end_time ORDER BY r2.rowid DESC LIMIT 1)"""
         if phase == 'boxes':
             need = f"AND {latest} IS NULL"
+        elif phase == 'full':
+            # Boxes and recognition in one pass: anything without a finished run.
+            need = f"AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND r.phase!='complete'))"
         else:
             need = f"""AND EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND r.phase!='complete')"""
         cuts = conn.execute(f"""SELECT c.* FROM cuts c WHERE c.episode_id=? AND c.active=1 AND c.analysis_enabled=1 AND c.no_characters=0
             AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.episode_id=c.episode_id AND j.pipeline='character_detect'
                 AND j.status IN ('queued','running') AND json_extract(j.payload_json,'$.cut_id')=c.id)
             {need} ORDER BY c.cut_index""", (episode_id,)).fetchall()
-        references = character_detection.reference_snapshots(conn, episode['project_id'], per_character_limit=None) if cuts and phase == 'recognize' else []
+        references = character_detection.reference_snapshots(conn, episode['project_id'], per_character_limit=None) if cuts and phase in ('recognize', 'full') else []
         job_ids, batch_id = [], str(uuid.uuid4())
         for cut in cuts:
             job_id = str(uuid.uuid4())
@@ -1048,6 +1051,12 @@ def _queue_bulk_character_jobs(episode_id: str, phase: str):
 def queue_character_boxes(episode_id: str):
     """Step 1: AniRef boxes on first/last frames of cuts without a current detection run."""
     return _queue_bulk_character_jobs(episode_id, 'boxes')
+
+
+@app.post('/api/episodes/{episode_id}/character-detection-all')
+def queue_all_character_detection(episode_id: str):
+    """Steps 1 and 2 together: batched AniRef boxes, then Re-ID and Qwen, sharing models across all cuts."""
+    return _queue_bulk_character_jobs(episode_id, 'full')
 
 
 @app.post('/api/episodes/{episode_id}/character-detection')
@@ -1384,7 +1393,11 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[st
 
 @app.post('/api/episodes/{episode_id}/visual-analysis')
 def queue_episode_visual_analysis(episode_id: str):
-    """Queue one restart-safe visual-only job for each enabled active cut."""
+    """Queue one restart-safe visual-only job covering every enabled active cut.
+
+    A single job lets the worker run each model once across all cuts (see
+    single_cut_pipeline.run_batch) instead of reloading models for every cut.
+    """
     from . import character_detection, structured_results
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -1395,26 +1408,28 @@ def queue_episode_visual_analysis(episode_id: str):
             raise HTTPException(409, 'Wait for media preparation or detection to finish')
         cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 ORDER BY cut_index", (episode_id,)).fetchall()
         references = character_detection.reference_snapshots(conn, episode['project_id'])
-        job_ids = []
+        already_queued = {row[0] for row in conn.execute("SELECT json_extract(i.value,'$.cut_id') FROM jobs j, json_each(j.payload_json,'$.cuts') i WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running')", (episode_id,))}
+        items = []
         for cut in cuts:
             cut_id = cut['id']
-            if conn.execute("SELECT 1 FROM jobs j WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running') AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (episode_id, cut_id)).fetchone():
+            if cut_id in already_queued:
                 continue
             _, config = analysis_config_for_cut(cut_id)
             context = selected_analysis_context(cut_id, config)
             context['current_results'] = [dict(row) for row in conn.execute('SELECT kind,title,content,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid', (cut_id,))]
             labeled = {d['character_context_id'] for d in context.get('character_detections', {}).get('detections', []) if d['character_context_id']}
             labeled.update(entry['id'] for entry in context['context_items'] if entry['kind'] == 'character')
-            item = {'cut_id': cut_id, 'config': config.model_dump(), 'context': context,
-                    'character_references': character_detection.select_analysis_references(references, labeled),
-                    'base_result_ids': {result['type']: result['id'] for result in structured_results.list_results(cut_id)}}
+            items.append({'cut_id': cut_id, 'config': config.model_dump(), 'context': context,
+                          'character_references': character_detection.select_analysis_references(references, labeled),
+                          'base_result_ids': {result['type']: result['id'] for result in structured_results.list_results(cut_id)}})
+        job_ids = []
+        if items:
             job_id = str(uuid.uuid4())
-            payload = {'cuts': [item], 'workflow': 'single_cut_v2', 'auto_consistency': False}
+            payload = {'cuts': items, 'workflow': 'single_cut_v2', 'auto_consistency': False}
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'analyze',?)", (job_id, episode_id, json.dumps(payload, ensure_ascii=False)))
             job_ids.append(job_id)
-        if job_ids:
             worker.sync_episode_status(conn, episode_id)
-    return {'queued': len(job_ids), 'job_ids': job_ids}
+    return {'queued': len(items), 'job_ids': job_ids}
 
 
 class BatchTextInput(BaseModel):
@@ -1625,7 +1640,7 @@ def queue_consistency_summary(cut_id: str):
         payload = summary_queue.payload_for(cut_id, config.model_dump(), context, results)
         with db.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='analyze' AND status IN ('queued','running') AND json_extract(payload_json,'$.workflow')='single_cut_v2' AND json_extract(payload_json,'$.cuts[0].cut_id')=?", (cut['episode_id'], cut_id)).fetchone():
+            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='analyze' AND status IN ('queued','running') AND json_extract(payload_json,'$.workflow')='single_cut_v2' AND EXISTS (SELECT 1 FROM json_each(payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (cut['episode_id'], cut_id)).fetchone():
                 raise ValueError('Wait for this cut analysis to finish before queuing its summary')
             job_id = summary_queue.insert(conn, cut['episode_id'], payload)
             worker.sync_episode_status(conn, cut['episode_id'])

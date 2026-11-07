@@ -20,6 +20,8 @@ from . import anime_matching, anime_models, character_detection, db, frame_model
 
 log = logging.getLogger('framewise.character_detect')
 PHASES = ('boxes', 'embeddings', 'complete')
+SAME_TRACK_REASON = 'Short same-cut track with matching appearance and position'
+DEFERRED = 'deferred'  # process() result: embeddings done, Qwen review still pending
 
 
 @contextlib.contextmanager
@@ -61,6 +63,7 @@ class BulkRuntime:
         self.reference_images = {}
         self.prepared_frames = {}
         self.previous_cut = None
+        self.same_cut_links = {}  # job id -> links found before Qwen review was deferred
         self.qwen_context = None
         self.qwen_url = None
         self.lease_check = None
@@ -97,6 +100,7 @@ class BulkRuntime:
         self.detector = self.reid = None
         self.reference_images.clear()
         self.prepared_frames.clear()
+        self.same_cut_links.clear()
         self.previous_cut = None
         gc.collect()
         try:
@@ -264,6 +268,26 @@ def _target_vectors(job_id, owner, detections, crops, model):
 
 
 
+def _detection_crop(images, detection):
+    """JPEG crop of one detection from its boundary frame (images are [first, last])."""
+    return _crop_jpeg(images[0 if detection['position'] == 'first' else 1], json.loads(detection['box_json']))
+
+
+def _observations(cut, frames, detections, vectors):
+    """Pair each detection with its frame time so boxes can be linked across frames."""
+    times = {frame['position']: frame for frame in frames}
+    return [{'cut_id': cut['id'], 'time': times[d['position']]['time'], 'box': json.loads(d['box_json']),
+             'image_size': times[d['position']]['image_size'], 'embedding': vector} for d, vector in zip(detections, vectors)]
+
+
+def _same_cut_links(detections, observations):
+    """Map each last-frame detection index to the first-frame one it clearly continues."""
+    first = [i for i, d in enumerate(detections) if d['position'] == 'first']
+    last = [i for i, d in enumerate(detections) if d['position'] == 'last']
+    links = anime_matching.match_tracks([observations[i] for i in first], [observations[i] for i in last])
+    return {last[j]: first[i] for j, i in links.items()}
+
+
 def _finish(job_id, owner, episode_id, cut):
     with db.connect() as conn:
         _valid_cut(conn, job_id, owner, episode_id, cut)
@@ -271,8 +295,13 @@ def _finish(job_id, owner, episode_id, cut):
         worker.sync_episode_status(conn, episode_id)
 
 
-def process(job_id, owner, runtime):
-    """Process one restartable cut job. Phases: 'boxes' (AniRef only), 'recognize' (embeddings, then Qwen fallback), or legacy 'full'."""
+def process(job_id, owner, runtime, defer_qwen=False):
+    """Process one restartable cut job. Phases: 'boxes' (AniRef only), 'recognize' (embeddings, then Qwen fallback), or legacy 'full'.
+
+    With defer_qwen, a cut that still has unresolved detections after the
+    embedding step stops there and returns DEFERRED, leaving its lease open.
+    process_batch later calls process again, which resumes at the Qwen step.
+    """
     from . import inference_worker
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
@@ -339,22 +368,18 @@ def process(job_id, owner, runtime):
                             detection['label_source'] = 'auto'
 
             # Step 2: embedding recognition.
+            linked = None
             if phase == 'boxes':
                 if references and any(d['label_source'] is None for d in detections):
                     worker.stage(job_id, owner, episode['id'], 'Comparing character embeddings')
                     reid = runtime.get_reid()
                     with timed('embeddings', timings, cut=cut.get('cut_index'), detections=len(detections)):
-                        crops = [_crop_jpeg(images[0 if d['position'] == 'first' else 1], json.loads(d['box_json'])) for d in detections]
+                        crops = [_detection_crop(images, d) for d in detections]
                         vectors = _target_vectors(job_id, owner, detections, crops, reid)
-                        observations = []
-                        for d, vector in zip(detections, vectors):
-                            frame = next(f for f in frames if f['position'] == d['position'])
-                            observations.append({'cut_id': cut['id'], 'time': frame['time'], 'box': json.loads(d['box_json']),
-                                                 'image_size': frame['image_size'], 'embedding': vector})
+                        observations = _observations(cut, frames, detections, vectors)
                         first_indices = [i for i, d in enumerate(detections) if d['position'] == 'first']
                         last_indices = [i for i, d in enumerate(detections) if d['position'] == 'last']
-                        links = anime_matching.match_tracks([observations[i] for i in first_indices], [observations[i] for i in last_indices])
-                        linked = {last_indices[j]: first_indices[i] for j, i in links.items()}
+                        linked = _same_cut_links(detections, observations)
                         previous = getattr(runtime, 'previous_cut', None)
                         across = {}
                         if (previous and previous['episode_id'] == episode['id'] and
@@ -375,7 +400,7 @@ def process(job_id, owner, runtime):
                             prior = detections[linked[index]] if index in linked else None
                             if not character_id and prior and prior['character_context_id']:
                                 character_id = prior['character_context_id']
-                                reason = 'Short same-cut track with matching appearance and position'
+                                reason = SAME_TRACK_REASON
                             if not character_id and index in across:
                                 character_id = across[index]['character_id']
                                 reason = 'Strong unique appearance match to the preceding cut boundary'
@@ -393,15 +418,31 @@ def process(job_id, owner, runtime):
                     reid = runtime.get_reid()
                     last = [d for d in detections if d['position'] == 'last' and d['character_context_id']]
                     if last:
-                        vecs = _target_vectors(job_id, owner, last, [_crop_jpeg(images[1], json.loads(d['box_json'])) for d in last], reid)
+                        vecs = _target_vectors(job_id, owner, last, [_detection_crop(images, d) for d in last], reid)
                         next_tracks = [{'character_id': d['character_context_id'], 'embedding': v} for d, v in zip(last, vecs)]
                 unresolved = [(i, d) for i, d in enumerate(detections) if d['label_source'] is None]
+                if defer_qwen and unresolved and references:
+                    if linked is not None:
+                        runtime.same_cut_links[job_id] = linked
+                    runtime.previous_cut = {'episode_id': episode['id'], 'end_time': cut['end_time'], 'tracks': next_tracks}
+                    worker.stage(job_id, owner, episode['id'], 'Waiting to review ambiguous characters')
+                    return DEFERRED
                 if unresolved and references:
+                    # A label Qwen gives the first frame also covers the box that clearly continues it.
+                    linked = linked or runtime.same_cut_links.pop(job_id, None)
+                    if linked is None:  # resumed in a new process: rebuild from cached embeddings
+                        vectors = _target_vectors(job_id, owner, detections, [_detection_crop(images, d) for d in detections], runtime.get_reid())
+                        linked = _same_cut_links(detections, _observations(cut, frames, detections, vectors))
                     with timed('qwen_fallback', timings, cut=cut.get('cut_index'), detections=len(unresolved)):
                         for index, detection in unresolved:
                             lease_check()
+                            prior = detections[linked[index]] if index in linked else None
+                            if prior and prior['character_context_id']:
+                                assign(detection, prior['character_context_id'], SAME_TRACK_REASON,
+                                       anime_models.REID_MODEL_ID, runtime.get_reid().revision)
+                                continue
                             worker.stage(job_id, owner, episode['id'], f'Reviewing ambiguous character {index + 1}/{len(detections)}')
-                            crop = _crop_jpeg(images[0 if detection['position'] == 'first' else 1], json.loads(detection['box_json']))
+                            crop = _detection_crop(images, detection)
                             match = _review(runtime, crop, references, lease_check)
                             if match:
                                 assign(detection, match['character_id'], match['reason'], frame_model.MODEL_ID, frame_model.MODEL_REVISION)
@@ -497,7 +538,7 @@ def _detect_batch(claimed, runtime):
 
 
 def process_batch(first_job, first_owner, runtime, batch_size=8):
-    """Run several cut jobs with separate leases and shared GPU models."""
+    """Run several cut jobs with separate leases, one model at a time across all of them."""
     claimed = _claim_batch(first_job, first_owner, batch_size)
     extra_beats = []
     try:
@@ -506,8 +547,11 @@ def process_batch(first_job, first_owner, runtime, batch_size=8):
             thread = threading.Thread(target=worker.heartbeat, args=(job_id, owner, done), daemon=True)
             thread.start()
             extra_beats.append((done, thread))
-        _detect_batch(claimed, runtime)
-        for job_id, owner in claimed:
+        # One pass per model, each over every claimed cut:
+        _detect_batch(claimed, runtime)                      # AniRef boxes
+        deferred = [(job_id, owner) for job_id, owner in claimed
+                    if process(job_id, owner, runtime, defer_qwen=True) == DEFERRED]  # Re-ID embeddings
+        for job_id, owner in deferred:                       # Qwen review of what is left
             process(job_id, owner, runtime)
     finally:
         for done, _ in extra_beats:

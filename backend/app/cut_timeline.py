@@ -71,7 +71,7 @@ def build(cut_id):
 
     columns = 'id,pipeline,status,stage,error,created_at,started_at,finished_at'
     jobs = db.all_rows(f"""SELECT {columns} FROM jobs WHERE pipeline IN ('character_detect','analyze','consistency_summary','review_answers','regen')
-        AND (json_extract(payload_json,'$.cut_id')=? OR json_extract(payload_json,'$.cuts[0].cut_id')=?
+        AND (json_extract(payload_json,'$.cut_id')=? OR EXISTS (SELECT 1 FROM json_each(payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)
              OR id IN (SELECT job_id FROM analysis_job_cuts WHERE cut_id=?)) ORDER BY created_at,rowid""", (cut_id, cut_id, cut_id))
     stage_seconds = {}
     for row in db.all_rows('SELECT job_id,status,started_at,last_seen_at,finished_at FROM analysis_job_stages WHERE cut_id=?', (cut_id,)):
