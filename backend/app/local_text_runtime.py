@@ -57,7 +57,7 @@ class LocalTextRuntime:
         self.publish('unloaded', detail)
 
     def pending_nonlocal_work(self):
-        row = db.one("SELECT pipeline,payload_json FROM jobs WHERE status='queued' AND pipeline IN ('analyze','regen','consistency_summary','character_detect','composition_compact') ORDER BY created_at,rowid LIMIT 1")
+        row = db.one("SELECT pipeline,payload_json FROM jobs WHERE status='queued' AND pipeline IN ('analyze','regen','consistency_summary','review_answers','character_detect','composition_compact') ORDER BY created_at,rowid LIMIT 1")
         if not row:
             return False
         try:

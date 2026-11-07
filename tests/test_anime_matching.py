@@ -1,6 +1,7 @@
 import math
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from app import anime_matching, db
@@ -18,6 +19,16 @@ class AnimeMatchingTest(unittest.TestCase):
         self.assertIsNone(anime_matching.confident_match(ranked))
         self.assertEqual(anime_matching.confident_match(ranked[:1]), 'a')
         self.assertIsNone(anime_matching.confident_match([('a', .79)]))
+
+    def test_confident_match_defaults_and_overrides(self):
+        self.assertEqual(anime_matching.confident_match([('a', .90), ('b', .86)]), 'a')
+        self.assertIsNone(anime_matching.confident_match([('a', .90), ('b', .88)]))
+        self.assertIsNone(anime_matching.confident_match([('a', .84)]))
+        self.assertIsNone(anime_matching.confident_match([('a', .90), ('b', .86)], margin=.08))
+        with unittest.mock.patch.dict('os.environ', {'ANIME_REID_MIN_MARGIN': '0.01', 'ANIME_REID_MIN_SIMILARITY': '0.5'}):
+            self.assertEqual(anime_matching.confident_match([('a', .60), ('b', .58)]), 'a')
+        with unittest.mock.patch.dict('os.environ', {'ANIME_REID_MIN_MARGIN': '2'}), self.assertRaises(ValueError):
+            anime_matching.confident_match([('a', .90)])
 
     def test_invalid_embeddings_fail_instead_of_matching(self):
         for vector in ([], [0, 0], [math.nan, 1], [math.inf, 1]):

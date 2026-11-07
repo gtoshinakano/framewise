@@ -87,6 +87,11 @@ def init_db():
             cut_id TEXT PRIMARY KEY REFERENCES cuts(id) ON DELETE CASCADE,
             content TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS cut_review_drafts (
+            cut_id TEXT PRIMARY KEY REFERENCES cuts(id) ON DELETE CASCADE,
+            job_id TEXT NOT NULL, content TEXT NOT NULL, model_id TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS cut_analysis_configs (
             cut_id TEXT PRIMARY KEY REFERENCES cuts(id) ON DELETE CASCADE,
             config_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -235,6 +240,9 @@ def init_db():
                         db.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (json.dumps(cleaned, ensure_ascii=False), row["id"]))
         for table, column, definition in (
             ('character_detection_runs', 'model_revision', 'TEXT'),
+            ('character_detection_runs', 'phase', "TEXT NOT NULL DEFAULT 'complete'"),
+            ('character_detection_runs', 'timings_json', 'TEXT'),
+            ('cuts', 'no_characters', 'INTEGER NOT NULL DEFAULT 0'),
             ('character_detections', 'match_model_id', 'TEXT'),
             ('character_detections', 'match_model_revision', 'TEXT'),
         ):

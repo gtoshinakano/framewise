@@ -604,6 +604,36 @@ def process_consistency_summary(job_id, owner):
         log.exception('Consistency summary failed for job %s', job_id)
 
 
+def process_review_answers(job_id, owner):
+    from . import review_answers
+    job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
+    if not job:
+        return
+    payload = json.loads(job['payload_json'])
+    cut_id = payload['cut_id']
+    try:
+        worker.stage(job_id, owner, job['episode_id'], 'Drafting review answers')
+        telemetry = {}
+        content, actual_model = review_answers.generate(payload['config'], payload['evidence'],
+            progress=lambda attempt, total: worker.stage(job_id, owner, job['episode_id'], f'Review answers · attempt {attempt}/{total}'),
+            cancel_check=lambda: check_summary_lease(job_id, owner), usage_out=telemetry)
+        with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            worker.require_lease(conn, job_id, owner)
+            review_answers.save_draft(conn, cut_id, job_id, content, actual_model)
+            conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+            worker.sync_episode_status(conn, job['episode_id'])
+    except SummaryCancelled:
+        if payload.get('config', {}).get('text_provider') == 'local':
+            from . import local_text_runtime
+            if local_text_runtime.runtime:
+                local_text_runtime.runtime.stop('Cancelled')
+        log.info('Review answers %s was cancelled', job_id)
+    except Exception as exc:
+        fail_job(job_id, owner, job['episode_id'], exc)
+        log.exception('Review answers failed for job %s', job_id)
+
+
 def process(job_id, owner):
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
@@ -795,7 +825,7 @@ def main():
     anime_batch_id = None
     while True:
         try:
-            claimed = worker.claim_job(("analyze", "regen", "consistency_summary", "character_detect", "composition_compact"))
+            claimed = worker.claim_job(("analyze", "regen", "consistency_summary", "review_answers", "character_detect", "composition_compact"))
             if claimed:
                 job_id, owner = claimed
                 done = threading.Event()
@@ -808,6 +838,7 @@ def main():
                     job_payload = db.one("SELECT payload_json FROM jobs WHERE id=?", (job_id,))
                     payload = json.loads(job_payload['payload_json'])
                     text_only = kind == 'analyze' and payload.get('text_only', False)
+                    job_episode = db.one('SELECT episode_id FROM jobs WHERE id=?', (job_id,))['episode_id']
                     anime_batch = kind == 'character_detect' and payload.get('workflow') == 'anime_bulk_v1'
                     if anime_runtime and (not anime_batch or payload.get('batch_id') != anime_batch_id):
                         anime_runtime.close()
@@ -826,11 +857,12 @@ def main():
                         anime_bulk.process_batch(db.one('SELECT * FROM jobs WHERE id=?', (job_id,)), owner, anime_runtime)
                         remaining = db.one("SELECT id FROM jobs WHERE pipeline='character_detect' AND status IN ('queued','running') AND json_extract(payload_json,'$.workflow')='anime_bulk_v1' AND json_extract(payload_json,'$.batch_id')=? LIMIT 1", (anime_batch_id,))
                         if not remaining:
+                            anime_bulk.clear_episode_frames(db.one('SELECT project_id FROM episodes WHERE id=?', (job_episode,))['project_id'], job_episode)
                             anime_runtime.close()
                             anime_runtime = None
                             anime_batch_id = None
                     else:
-                        (process_regen if kind == "regen" else process_consistency_summary if kind == 'consistency_summary' else process_character_detection if kind == 'character_detect' else process)(job_id, owner)
+                        (process_regen if kind == "regen" else process_consistency_summary if kind == 'consistency_summary' else process_review_answers if kind == 'review_answers' else process_character_detection if kind == 'character_detect' else process)(job_id, owner)
                 finally:
                     done.set()
                     beat.join(timeout=1)

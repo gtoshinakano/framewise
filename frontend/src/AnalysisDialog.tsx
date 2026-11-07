@@ -10,9 +10,9 @@ import { CutAudioPreview } from './CutAudioPreview'
 import { CutRunHistory } from './CutRunHistory'
 import { ConsistencySummary } from './ConsistencySummary'
 
-type DialogProps = { cut: Cut; previousCut?: Cut; nextCut?: Cut; onNavigate: (cut: Cut) => void; episodeId: string; proxyReady: boolean; waveform: Waveform | null; transcript: TranscriptSegment[]; hasAudio: boolean; preparingAudio: boolean; busy: boolean; jobs: Job[]; jobsKey: string; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }
+type DialogProps = { cut: Cut; cuts: Cut[]; previousCut?: Cut; nextCut?: Cut; onNavigate: (cut: Cut) => void; episodeId: string; proxyReady: boolean; waveform: Waveform | null; transcript: TranscriptSegment[]; hasAudio: boolean; preparingAudio: boolean; busy: boolean; jobs: Job[]; jobsKey: string; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }
 
-export default function AnalysisDialog({ cut, previousCut, nextCut, onNavigate, onClose, ...contentProps }: DialogProps) {
+export default function AnalysisDialog({ cut, cuts, previousCut, nextCut, onNavigate, onClose, ...contentProps }: DialogProps) {
   const [tab, setTab] = useState<'results' | 'run'>(() => cut.active && cut.has_analysis_results === false ? 'run' : 'results')
   const panel = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -22,12 +22,23 @@ export default function AnalysisDialog({ cut, previousCut, nextCut, onNavigate, 
     window.addEventListener('keydown', onKey)
     return () => { window.removeEventListener('keydown', onKey); opener?.focus() }
   }, [onClose])
+  const [jump, setJump] = useState(String(cut.cut_index + 1))
+  const [toast, setToast] = useState('')
+  useEffect(() => setJump(String(cut.cut_index + 1)), [cut.id, cut.cut_index])
+  useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer) }, [toast])
+  function goToCut() {
+    const number = Number(jump)
+    const target = jump.trim() !== '' && Number.isInteger(number) ? cuts[number - 1] : undefined
+    if (!target) { setJump(String(cut.cut_index + 1)); setToast(`Cut ${jump.trim() || '(empty)'} does not exist. Enter a number from 1 to ${cuts.length}.`); return }
+    if (target.id !== cut.id) onNavigate(target)
+  }
   const title = cut.title || (cut.active ? `Cut ${cut.cut_index + 1}` : 'Archived cut')
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Analysis for ${title}`} className="flex h-[94vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden rounded-2xl border hairline bg-[#131720] shadow-2xl outline-none">
-      <header className="grid grid-cols-[1fr_auto] items-center gap-3 border-b hairline px-5 py-3 lg:grid-cols-[1fr_auto_1fr]"><div className="min-w-0"><p className="text-[11px] font-semibold uppercase tracking-[.14em] text-[#a58ae8]">Cut analysis</p><h2 className="truncate text-base font-semibold">{title}</h2></div><div className="order-3 col-span-2 flex justify-center lg:order-none lg:col-span-1"><div className="flex gap-1 rounded-lg border hairline p-1" role="tablist">{([['results', 'Results'], ['run', 'Run settings']] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={`rounded-md px-5 py-1.5 text-xs font-semibold ${tab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}</button>)}</div></div><div className="flex items-center justify-end gap-2"><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!previousCut} onClick={() => previousCut && onNavigate(previousCut)} aria-label="Previous cut analysis"><ArrowLeft size={14} /> Previous</button><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!nextCut} onClick={() => nextCut && onNavigate(nextCut)} aria-label="Next cut analysis">Next <ArrowRight size={14} /></button><button onClick={onClose} className="rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#272e3a] hover:text-white" aria-label="Close analysis"><X size={18} /></button></div></header>
+      <header className="grid grid-cols-[1fr_auto] items-center gap-3 border-b hairline px-5 py-3 lg:grid-cols-[1fr_auto_1fr]"><div className="min-w-0"><p className="text-[11px] font-semibold uppercase tracking-[.14em] text-[#a58ae8]">Cut analysis</p><h2 className="truncate text-base font-semibold">{title}</h2></div><div className="order-3 col-span-2 flex justify-center lg:order-none lg:col-span-1"><div className="flex gap-1 rounded-lg border hairline p-1" role="tablist">{([['results', 'Results'], ['run', 'Run settings']] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={`rounded-md px-5 py-1.5 text-xs font-semibold ${tab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}</button>)}</div></div><div className="flex items-center justify-end gap-2"><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!previousCut} onClick={() => previousCut && onNavigate(previousCut)} aria-label="Previous cut analysis"><ArrowLeft size={14} /> Previous</button><input type="number" min={1} max={cuts.length} step={1} value={cut.active ? jump : ''} disabled={!cut.active} onChange={event => setJump(event.target.value)} onBlur={goToCut} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} className="field !w-24 px-2.5 py-2 text-center" aria-label="Go to cut number" /><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!nextCut} onClick={() => nextCut && onNavigate(nextCut)} aria-label="Next cut analysis">Next <ArrowRight size={14} /></button><button onClick={onClose} className="rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#272e3a] hover:text-white" aria-label="Close analysis"><X size={18} /></button></div></header>
       <AnalysisDialogContent key={cut.id} cut={cut} tab={tab} onPrevious={previousCut ? () => onNavigate(previousCut) : undefined} onNext={nextCut ? () => onNavigate(nextCut) : undefined} {...contentProps} />
     </div>
+    {toast && <div role="alert" className="fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-start gap-3 rounded-xl border border-[#63363e] bg-[#2b191f] px-4 py-3 text-sm text-[#ffb6bc] shadow-lg">{toast}<button onClick={() => setToast('')} aria-label="Dismiss"><X size={16} /></button></div>}
   </div>
 }
 

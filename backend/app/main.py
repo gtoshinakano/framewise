@@ -253,7 +253,11 @@ def episode_response(episode_id: str):
     episode = require_episode(episode_id)
     path = media.episode_dir(episode["project_id"], episode_id)
     episode["proxy_ready"] = (path / "proxy.mp4").is_file()
-    episode["cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT c.*, EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL) AS has_analysis_results FROM cuts c WHERE c.episode_id=? AND c.active=1 ORDER BY c.cut_index", (episode_id,))]
+    episode["cuts"] = [serialize_cut(cut) for cut in db.all_rows("""SELECT c.*, EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL) AS has_analysis_results,
+        EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.title='Cut summary' AND a.superseded_by IS NULL) AS has_summary,
+        EXISTS(SELECT 1 FROM character_detections d WHERE d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_boxes,
+        EXISTS(SELECT 1 FROM character_detections d WHERE d.character_context_id IS NOT NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_characters
+        FROM cuts c WHERE c.episode_id=? AND c.active=1 ORDER BY c.cut_index""", (episode_id,))]
     episode["archived_cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=0 ORDER BY start_time,cut_index", (episode_id,))]
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
     # The queued payload can contain every cut's context and may be very large.
@@ -269,7 +273,7 @@ def episode_response(episode_id: str):
             items = payload.get("cuts", [])
         elif job["pipeline"] == "character_detect":
             items = [{"cut_id": payload.get("cut_id"), "context": {"cut": payload.get("cut", {})}}]
-        elif job["pipeline"] in ("regen", "consistency_summary"):
+        elif job["pipeline"] in ("regen", "consistency_summary", "review_answers"):
             items = [{"cut_id": payload.get("cut_id"), "context": payload.get("context", {})}]
         else:
             items = []
@@ -300,8 +304,10 @@ def serialize_cut(cut: dict):
     cut["results"] = json_object_or_empty(cut.pop("results_json"))
     cut["active"] = bool(cut["active"])
     cut["analysis_enabled"] = bool(cut["analysis_enabled"])
-    if "has_analysis_results" in cut:
-        cut["has_analysis_results"] = bool(cut["has_analysis_results"])
+    cut["no_characters"] = bool(cut.get("no_characters"))
+    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters"):
+        if flag in cut:
+            cut[flag] = bool(cut[flag])
     fallback_first, fallback_last = media.cut_frame_times(cut["start_time"], cut["end_time"])
     cut["first_frame_time"] = cut.get("first_frame_time") if cut.get("first_frame_time") is not None else fallback_first
     cut["last_frame_time"] = cut.get("last_frame_time") if cut.get("last_frame_time") is not None else fallback_last
@@ -988,9 +994,25 @@ def queue_character_detection(cut_id: str):
     return {'job_id': job_id}
 
 
-@app.post('/api/episodes/{episode_id}/character-detection')
-def queue_missing_character_detections(episode_id: str):
-    # Each cut uses the existing leased worker and its own retryable job.
+class NoCharactersInput(BaseModel):
+    no_characters: bool
+
+
+@app.put('/api/cuts/{cut_id}/no-characters')
+def set_cut_no_characters(cut_id: str, body: NoCharactersInput):
+    """Mark a cut as having no characters so batch detection skips it."""
+    with db.connect() as conn:
+        cut = conn.execute('SELECT c.episode_id,e.project_id FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE c.id=?', (cut_id,)).fetchone()
+        if not cut:
+            raise HTTPException(404, 'Cut not found')
+        conn.execute('UPDATE cuts SET no_characters=? WHERE id=?', (int(body.no_characters), cut_id))
+    if body.no_characters:
+        from . import anime_bulk
+        anime_bulk.clear_cut_frames({'project_id': cut['project_id'], 'id': cut['episode_id']}, cut_id)
+    return {'cut_id': cut_id, 'no_characters': body.no_characters}
+
+
+def _queue_bulk_character_jobs(episode_id: str, phase: str):
     from . import character_detection
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -999,25 +1021,39 @@ def queue_missing_character_detections(episode_id: str):
             raise HTTPException(404, 'Episode not found')
         if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline!='character_detect' AND status IN ('queued','running')", (episode_id,)).fetchone():
             raise HTTPException(409, 'Wait for the current episode job to finish')
-        cuts = conn.execute('''SELECT c.* FROM cuts c WHERE c.episode_id=? AND c.active=1 AND c.analysis_enabled=1
+        # The latest run for the cut's current boundaries decides what is still missing.
+        latest = """(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id AND r2.cut_start=c.start_time AND r2.cut_end=c.end_time ORDER BY r2.rowid DESC LIMIT 1)"""
+        if phase == 'boxes':
+            need = f"AND {latest} IS NULL"
+        else:
+            need = f"""AND EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND r.phase!='complete')"""
+        cuts = conn.execute(f"""SELECT c.* FROM cuts c WHERE c.episode_id=? AND c.active=1 AND c.analysis_enabled=1 AND c.no_characters=0
             AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.episode_id=c.episode_id AND j.pipeline='character_detect'
                 AND j.status IN ('queued','running') AND json_extract(j.payload_json,'$.cut_id')=c.id)
-            AND NOT EXISTS (SELECT 1 FROM character_detection_runs r LEFT JOIN jobs j ON j.id=r.job_id
-                WHERE r.id=(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id ORDER BY r2.rowid DESC LIMIT 1)
-                AND r.cut_start=c.start_time AND r.cut_end=c.end_time AND (r.job_id IS NULL OR j.status='done'))
-            ORDER BY c.cut_index''', (episode_id,)).fetchall()
-        references = character_detection.reference_snapshots(conn, episode['project_id'], per_character_limit=None) if cuts else []
-        job_ids = []
-        batch_id = str(uuid.uuid4())
+            {need} ORDER BY c.cut_index""", (episode_id,)).fetchall()
+        references = character_detection.reference_snapshots(conn, episode['project_id'], per_character_limit=None) if cuts and phase == 'recognize' else []
+        job_ids, batch_id = [], str(uuid.uuid4())
         for cut in cuts:
             job_id = str(uuid.uuid4())
             payload = {'cut_id': cut['id'], 'cut': dict(cut), 'references': references,
-                       'workflow': 'anime_bulk_v1', 'batch_id': batch_id}
+                       'workflow': 'anime_bulk_v1', 'phase': phase, 'batch_id': batch_id}
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, 'character_detect', json.dumps(payload)))
             job_ids.append(job_id)
         if job_ids:
             worker.sync_episode_status(conn, episode_id)
     return {'queued': len(job_ids), 'job_ids': job_ids}
+
+
+@app.post('/api/episodes/{episode_id}/character-boxes')
+def queue_character_boxes(episode_id: str):
+    """Step 1: AniRef boxes on first/last frames of cuts without a current detection run."""
+    return _queue_bulk_character_jobs(episode_id, 'boxes')
+
+
+@app.post('/api/episodes/{episode_id}/character-detection')
+def queue_missing_character_detections(episode_id: str):
+    """Step 2: embedding recognition, then Qwen fallback, for cuts whose boxes exist but are not complete."""
+    return _queue_bulk_character_jobs(episode_id, 'recognize')
 
 
 @app.get('/api/cuts/{cut_id}/character-detections')
@@ -1163,6 +1199,32 @@ def add_character_detection_box(run_id: str, body: CharacterDetectionBoxInput):
         box_id = str(uuid.uuid4())
         conn.execute('INSERT INTO character_detections(id,run_id,position,box_json) VALUES (?,?,?,?)', (box_id, run_id, body.position, json.dumps(body.box)))
     return {'id': box_id}
+
+
+class CharacterDetectionBoxUpdate(BaseModel):
+    box: tuple[float, float, float, float]
+
+
+@app.put('/api/character-detections/{detection_id}/box')
+def resize_character_detection(detection_id: str, body: CharacterDetectionBoxUpdate):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('''SELECT d.position,r.frames_json FROM character_detections d
+                              JOIN character_detection_runs r ON r.id=d.run_id WHERE d.id=?''', (detection_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Detection not found')
+        if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
+            raise HTTPException(409, 'Remove the saved reference before resizing this box')
+        frame = next((f for f in json.loads(row['frames_json']) if f['position'] == row['position']), None)
+        if not frame:
+            raise HTTPException(400, 'Frame not found')
+        x1, y1, x2, y2 = body.box
+        width, height = frame['image_size']
+        if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+            raise HTTPException(400, 'Box must fit inside the frame')
+        conn.execute('UPDATE character_detections SET box_json=? WHERE id=?', (json.dumps(body.box), detection_id))
+        conn.execute('DELETE FROM character_detection_embeddings WHERE detection_id=?', (detection_id,))
+    return {'ok': True}
 
 
 @app.get("/api/cuts/{cut_id}/analysis-config")
@@ -1562,6 +1624,42 @@ def queue_consistency_summary(cut_id: str):
     return {'job_id': job_id}
 
 
+@app.post('/api/cuts/{cut_id}/review-answers')
+def queue_review_answers(cut_id: str):
+    """Queue a draft of answers to the consistency summary's human-review and suggested-check items."""
+    from . import structured_results, review_answers
+    cut, config = analysis_config_for_cut(cut_id)
+    if not cut['active']:
+        raise HTTPException(400, 'Only active cuts can be reviewed')
+    context = selected_analysis_context(cut_id, config)
+    results = structured_results.list_results(cut_id)
+    saved = db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,))
+    existing = saved['content'] if saved else ''
+    neighbours = {}
+    for label, key in (('previous_cut', 'previous'), ('next_cut', 'next')):
+        neighbour = context.get(label)
+        if neighbour:
+            neighbours[label] = {'summaries': context['neighbor_results'][key], 'results': structured_results.list_results(neighbour['id']),
+                                 'segments': [serialize_transcript(row) for row in db.all_rows("SELECT t.*,c.title AS character_name FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>? ORDER BY t.start_time,t.id", (cut['episode_id'], neighbour['end_time'], neighbour['start_time']))]}
+    try:
+        evidence = review_answers.build_evidence(results, context, existing, neighbours)
+        payload = review_answers.payload_for(cut_id, config.model_dump(), evidence, [item['id'] for item in results], existing)
+        with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            job_id = review_answers.insert(conn, cut['episode_id'], payload)
+            worker.sync_episode_status(conn, cut['episode_id'])
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {'job_id': job_id}
+
+
+@app.get('/api/cuts/{cut_id}/review-answers')
+def get_review_answers(cut_id: str):
+    from . import review_answers
+    analysis_config_for_cut(cut_id)
+    return review_answers.get_draft(cut_id)
+
+
 class BriefInstructionsInput(BaseModel):
     content: str = Field(max_length=50000)
 
@@ -1776,7 +1874,17 @@ def cancel_all_queued_jobs():
             worker.sync_episode_status(conn, episode_id)
     for job in jobs:
         worker.cleanup_voice_upload(job)
+    _sweep_idle_character_frames({job['episode_id'] for job in jobs if job['pipeline'] == 'character_detect'})
     return {"cancelled": len(jobs)}
+
+
+def _sweep_idle_character_frames(episode_ids):
+    """Remove temporary boundary frames once an episode has no pending character jobs."""
+    from . import anime_bulk
+    for episode_id in episode_ids:
+        row = db.one("SELECT project_id FROM episodes WHERE id=?", (episode_id,))
+        if row and not db.one("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='character_detect' AND status IN ('queued','running')", (episode_id,)):
+            anime_bulk.clear_episode_frames(row['project_id'], episode_id)
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -1788,7 +1896,7 @@ def cancel_inference_job(job_id: str):
         if not job:
             raise HTTPException(404, "Job not found")
         payload = json_object_or_empty(job['payload_json'])
-        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "transcribe", "voice_sample", "character_detect", "composition_compact")) or (job["status"] == "running" and (job["pipeline"] in ("regen", "consistency_summary", "composition_compact") or (job['pipeline'] == 'analyze' and (payload.get('text_only') is True or payload.get('workflow') == 'single_cut_v2'))))
+        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "review_answers", "transcribe", "voice_sample", "character_detect", "composition_compact")) or (job["status"] == "running" and (job["pipeline"] in ("regen", "consistency_summary", "review_answers", "composition_compact") or (job['pipeline'] == 'analyze' and (payload.get('text_only') is True or payload.get('workflow') == 'single_cut_v2'))))
         if not cancellable:
             raise HTTPException(409, "This job cannot be cancelled while running")
         message = "Cancelled before processing" if job["status"] == "queued" else "Cancelled during processing"

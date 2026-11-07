@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Check, Copy, RefreshCw, Save, Sparkles } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Check, Copy, Loader2, RefreshCw, Save, Sparkles, Undo2, Wand2 } from 'lucide-react'
 import { api, type AnalysisResult, type Job } from './api'
 import { SummaryRequestEditor } from './SummaryRequestEditor'
 import { ResultMetrics } from './ResultMetrics'
@@ -28,6 +28,11 @@ export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStar
   const [humanInstructions, setHumanInstructions] = useState('')
   const [savedInstructions, setSavedInstructions] = useState('')
   const [instructionsLoaded, setInstructionsLoaded] = useState(false)
+  const [previousAnswers, setPreviousAnswers] = useState<string | null>(null)
+  const [reviewError, setReviewError] = useState('')
+  const [reviewWorking, setReviewWorking] = useState(false)
+  const appliedReviewJob = useRef<string | null | undefined>(undefined)
+  useEffect(() => { appliedReviewJob.current = undefined; setPreviousAnswers(null); setReviewError('') }, [cutId])
   useEffect(() => {
     let active = true
     setInstructionsLoaded(false)
@@ -57,6 +62,33 @@ export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStar
       setDraft({ id: result.id, original: result.content, content: result.content })
       onSaved(result)
     } catch (err) { setError((err as Error).message) } finally { setWorking(false) }
+  }
+  const reviewJobs = jobs.filter(job => job.pipeline === 'review_answers' && job.cuts.some(cut => cut.id === cutId))
+  const activeReview = reviewJobs.find(job => job.status === 'queued' || job.status === 'running')
+  const latestReview = reviewJobs[0]
+  const latestReviewDone = reviewJobs.find(job => job.status === 'done')
+  const reviewFailure = !activeReview && latestReview?.status === 'failed' && latestReview.stage !== 'Cancelled' ? latestReview.error : null
+  useEffect(() => {
+    if (!instructionsLoaded) return
+    const doneId = latestReviewDone?.id ?? null
+    if (appliedReviewJob.current === undefined) { appliedReviewJob.current = doneId; return }
+    if (!doneId || doneId === appliedReviewJob.current) return
+    appliedReviewJob.current = doneId
+    api<{ job_id: string | null; content: string }>(`/cuts/${cutId}/review-answers`).then(draft => {
+      if (draft.job_id !== doneId || !draft.content) return
+      setHumanInstructions(current => { setPreviousAnswers(current); return draft.content })
+    }).catch(err => setReviewError((err as Error).message))
+  }, [latestReviewDone?.id, instructionsLoaded, cutId])
+  async function generateAnswers() {
+    setReviewWorking(true); setReviewError('')
+    try { await api(`/cuts/${cutId}/review-answers`, { method: 'POST' }); await onStarted() }
+    catch (err) { setReviewError((err as Error).message) } finally { setReviewWorking(false) }
+  }
+  async function cancelReview() {
+    if (!activeReview) return
+    setReviewWorking(true); setReviewError('')
+    try { await api(`/jobs/${activeReview.id}/cancel`, { method: 'POST' }); await onStarted() }
+    catch (err) { setReviewError((err as Error).message) } finally { setReviewWorking(false) }
   }
   const cutJobs = jobs.filter(job => job.pipeline === 'regen' && job.cuts.some(cut => cut.id === cutId))
   const activeJob = cutJobs.find(job => job.status === 'queued' || job.status === 'running')
@@ -102,7 +134,14 @@ export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStar
     {changedElsewhere && <div className="text-xs text-[#ffc980]" role="alert">The saved summary changed while you were editing. Copy your draft before loading the latest version. <button type="button" className="underline" onClick={() => setDraft({ id: current?.id, original: visibleSummary(current), content: visibleSummary(current) })}>Load latest</button></div>}
     <button type="button" className="btn btn-primary" disabled={!loaded || working || changedElsewhere || !draft.content.trim() || draft.content === draft.original} onClick={saveSummary}><Save size={14} /> Save summary</button>
     {current && <ResultMetrics result={current} />}
-    <label className="block"><span className="label">Answers to suggested checks and production decisions</span><textarea aria-label="Answers to suggested checks and production decisions" className="field min-h-24 resize-y" maxLength={50000} value={humanInstructions} disabled={!instructionsLoaded || savingInstructions} onChange={event => setHumanInstructions(event.target.value)} placeholder="Record confirmations, corrections, and production decisions for this cut." /></label>
+    <div className="block"><label htmlFor={`answers-${cutId}`} className="label">Answers to suggested checks and production decisions</label>
+      <div className="relative"><textarea id={`answers-${cutId}`} aria-label="Answers to suggested checks and production decisions" className="field min-h-24 resize-y pr-11" maxLength={50000} value={humanInstructions} disabled={!instructionsLoaded || savingInstructions} onChange={event => setHumanInstructions(event.target.value)} placeholder="Record confirmations, corrections, and production decisions for this cut." />
+        <button type="button" className="absolute right-2 top-2 rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#303746] hover:text-white disabled:opacity-50" aria-label="Generate answers from analysis" title="Draft short answers to the Human review and Suggested checks from this cut's results, neighbouring cut summaries, and transcript. Replaces the text (unsaved) when finished." disabled={!instructionsLoaded || reviewWorking || disabled || !!activeReview} onClick={generateAnswers}>{activeReview ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}</button>
+      </div>
+      {activeReview && <div className="mt-1 flex items-center justify-between gap-2"><p role="status" className="text-[11px] text-[#c3aeff]">{activeReview.status === 'queued' ? 'Review answers queued' : activeReview.stage || 'Drafting review answers'}…</p><button type="button" className="btn btn-quiet px-3 py-1 text-[11px]" disabled={reviewWorking} onClick={cancelReview}>Cancel</button></div>}
+      {previousAnswers !== null && <button type="button" className="mt-1 inline-flex items-center gap-1 text-[11px] text-[#c3aeff] underline" onClick={() => { setHumanInstructions(previousAnswers); setPreviousAnswers(null) }}><Undo2 size={12} /> Restore previous answers</button>}
+      {(reviewError || reviewFailure) && <p role="alert" className="mt-1 text-xs text-[#ff9fa7]">{reviewError || reviewFailure}</p>}
+    </div>
     <button type="button" className="btn btn-quiet" disabled={!instructionsLoaded || savingInstructions || humanInstructions === savedInstructions} onClick={saveInstructions}><Save size={14} /> {savingInstructions ? 'Saving answers…' : 'Save answers'}</button>
     {instructionsError && <p role="alert" className="text-xs text-[#ff9fa7]">{instructionsError}</p>}
     {activeJob && <p className="muted text-[11px]">Saved answers will be used the next time you queue a summary. The queued summary keeps its original answers.</p>}

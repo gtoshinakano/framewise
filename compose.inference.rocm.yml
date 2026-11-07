@@ -16,6 +16,8 @@ services:
       ANIREF_MODEL_PATH: /models/aniref/AniRef40000-s-epoch40.pt
       ANIME_REID_MODEL_PATH: /models/anime-reid/dino_v3.onnx
       ANIME_REID_PROVIDER: ${ANIME_REID_PROVIDER:-torch-rocm}
+      ANIME_REID_MIN_SIMILARITY: ${ANIME_REID_MIN_SIMILARITY:-0.85}
+      ANIME_REID_MIN_MARGIN: ${ANIME_REID_MIN_MARGIN:-0.03}
       CAPTION_MODEL_PATH: /models/qwen3-vl-2b
       QWEN3_VIDEO_MODEL_PATH: /models/qwen3-vl-8b
       QWEN35_SERVER_PATH: /models/llamacpp/llama-server

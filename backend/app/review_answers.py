@@ -1,0 +1,125 @@
+"""Draft concise answers to a cut's consistency-summary review items."""
+import json
+import uuid
+
+from . import consistency_summary, db
+
+SUMMARY_TITLE = 'Cut summary'
+FIELDS = ['answers']
+MAX_ANSWERS = 50000
+
+SYSTEM = '''You are a production-direction assistant for a video reconstruction and animation pipeline. You resolve the open review items for ONE video cut so that a final animation brief can be written from decisive, confirmed facts.
+
+## YOUR TASK
+
+You receive a JSON evidence package. Its "review" object contains the Consistency Summary of the current cut, in particular "human_review" (issues needing human judgment) and "recommended_checks" (suggested verification steps). Write the answers a careful human reviewer would enter for those two fields, using only the supplied evidence.
+
+## EVIDENCE AND PRIORITY
+
+All supplied observations are model-generated and may contain errors, except "existing_answers", which are the user's own decisions. Use sources in this priority order:
+
+1. "existing_answers": authoritative. Keep their meaning and wording; never contradict them. Include them in the output when they are still relevant.
+2. The current cut: "current_cut" frame descriptions, video analysis, "transcript", and "review".
+3. "previous_cut" and "next_cut" Cut summaries (continuity of characters, outfits, positions, props, setting, lighting and time of day). These are already-finished summaries; use them to settle continuity questions.
+4. "previous_cut" / "next_cut" video analysis and transcript. These are supplied ONLY when that neighbour has no Cut summary; treat them as weaker, unreviewed evidence.
+
+## RULES
+
+- Address every concrete item in "human_review" and "recommended_checks" with one bullet each. Merge bullets about the same decision. Skip generic disclaimers.
+- State a fact as confirmed only if at least two independent sources agree, or a neighbouring Cut summary or the user's existing answers establish it. Repetition by the same model, or a summary derived from the analysis it summarizes, is not independent confirmation.
+- When evidence supports a choice but does not fully confirm it, give the decisive direction plus the reason in a few words (for example "Use the frame description; the video analysis is vaguer on this point").
+- When evidence cannot settle an item, write "Unresolved: <exactly what is missing>". Do not guess.
+- Never invent actions, characters, identities, timestamps, camera moves or dialogue. Do not infer acoustic properties or emotions without acoustic evidence.
+- Treat normal changes between the opening and ending frames as movement, not a contradiction. Characters may speak while stationary.
+- Do not reproduce or quote subtitle or on-screen text. Do not tell the reader to treat on-screen text as an object to reproduce.
+- Write imperative, final-direction statements for the animation brief, not questions, hedging or meta commentary about the evidence process.
+
+## OUTPUT FORMAT
+
+Return exactly one JSON object with one string field, "answers":
+
+{"answers": "- Topic: statement\\n- Topic: statement"}
+
+- The value is a plain-text list of at most 8 short bullets, each one or two lines, each starting with "- " and a topic label such as Characters, Opening pose, Camera, Action, Dialogue, Setting or Continuity.
+- No preamble, headings, Markdown beyond the "- " bullets, or repetition of the review text.
+- If both "human_review" and "recommended_checks" say "None required." and there are no existing answers, return {"answers": "No review decisions required."}.
+
+Return JSON only.'''
+
+
+def transcript_text(segments):
+    return consistency_summary.build_input([], segments, [])['transcript_text']
+
+
+def _neighbour(label, cut, summaries, results, segments):
+    if not cut:
+        return None
+    entry = {'cut_index': cut.get('cut_index'), 'start_time': cut.get('start_time'), 'end_time': cut.get('end_time')}
+    summary = next((row['content'] for row in summaries if row.get('title') == SUMMARY_TITLE and isinstance(row.get('content'), str) and row['content'].strip()), None)
+    if summary:
+        entry['cut_summary'] = summary
+        return entry
+    video = next((item for item in results if item['type'] == 'video_analysis' and item['content'] is not None), None)
+    entry['cut_summary'] = None
+    entry['video_analysis'] = consistency_summary._as_text(video['content']) if video else 'Unavailable.'
+    entry['transcript'] = transcript_text(segments)
+    return entry
+
+
+def build_evidence(results, context, existing_answers, neighbours):
+    """neighbours maps previous/next to {'summaries','results','segments'} for the adjacent cuts."""
+    by_type = {item['type']: item for item in results}
+    review = by_type.get('consistency_summary')
+    if not review or not isinstance(review['content'], dict):
+        raise ValueError('Generate the consistency summary first')
+    base = consistency_summary.build_input(results, context['transcript_segments'], context['context_items'])
+    evidence = {
+        'review': {key: review['content'].get(key, '') for key in ('human_review', 'recommended_checks', 'confusing', 'clear')},
+        'current_cut': {'visual_evidence_text': base['visual_evidence_text'], 'transcript': base['transcript_text']},
+        'existing_answers': existing_answers.strip() or None,
+    }
+    for label, cut in (('previous_cut', context.get('previous_cut')), ('next_cut', context.get('next_cut'))):
+        data = neighbours.get(label) or {}
+        entry = _neighbour(label, cut, data.get('summaries', []), data.get('results', []), data.get('segments', []))
+        if entry:
+            evidence[label] = entry
+    return evidence
+
+
+def validate_answers(text):
+    text = text.strip()
+    if not text:
+        raise ValueError('answers must not be empty')
+    return text[:MAX_ANSWERS]
+
+
+def payload_for(cut_id, config, evidence, source_result_ids, existing_answers):
+    return {'cut_id': cut_id, 'config': config, 'evidence': evidence, 'source_result_ids': source_result_ids,
+            'existing_answers': existing_answers}
+
+
+def insert(conn, episode_id, payload):
+    if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='review_answers' AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?", (episode_id, payload['cut_id'])).fetchone():
+        raise ValueError('Review answers are already being generated for this cut')
+    job_id = str(uuid.uuid4())
+    conn.execute('INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)', (job_id, episode_id, 'review_answers', json.dumps(payload, ensure_ascii=False)))
+    return job_id
+
+
+def generate(config, evidence, progress=None, cancel_check=None, usage_out=None):
+    from .inference_worker import chat_json
+    output, model = chat_json(config['openrouter_model'], SYSTEM, json.dumps(evidence, ensure_ascii=False), FIELDS, max_tokens=2048,
+                              progress=progress, cancel_check=cancel_check, provider=config.get('text_provider', 'openrouter'),
+                              thinking=config.get('local_thinking', False), usage_out=usage_out)
+    return validate_answers(output['answers']), model
+
+
+def save_draft(conn, cut_id, job_id, content, model_id):
+    conn.execute('INSERT INTO cut_review_drafts(cut_id,job_id,content,model_id) VALUES (?,?,?,?) '
+                 'ON CONFLICT(cut_id) DO UPDATE SET job_id=excluded.job_id,content=excluded.content,model_id=excluded.model_id,created_at=CURRENT_TIMESTAMP',
+                 (cut_id, job_id, content, model_id))
+
+
+def get_draft(cut_id):
+    row = db.one('SELECT job_id,content FROM cut_review_drafts WHERE cut_id=?', (cut_id,))
+    return {'job_id': row['job_id'], 'content': row['content']} if row else {'job_id': None, 'content': ''}
