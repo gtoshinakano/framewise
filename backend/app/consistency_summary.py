@@ -13,7 +13,8 @@ Your goal is to identify issues that could materially affect the reconstruction 
 - Character detections are frame-specific candidates. Automatic identity labels are predictions; manual labels are user-provided assertions.
 - Do not assume a person is visible throughout the cut merely because they appear in the opening and ending frames.
 - Transcript segments contain supplied words, timestamps, speaker labels, and optional character links. These do not independently establish visible speaking behavior.
-- Subtitle OCR is unverified textual reference evidence. It may represent a translation or paraphrase of speech, not a literal transcription.
+- Subtitles are burned-in captions that a model read from the whole episode, independent of any cut. The evidence lists only the lines whose time range overlaps this cut, with episode-relative times; a line with crosses_cut true starts before or ends after the cut. Every subtitle in the episode is in the one language given as subtitles.language, so a language difference between a subtitle and the transcript is expected and never a contradiction. If subtitles.extracted is false, subtitles were not extracted for this episode: treat them as unavailable, not as absent from the video.
+- Subtitle lines are unverified textual reference evidence read by a model; they may be a translation or paraphrase of speech, not a literal transcription, and a line marked confidence low had hard-to-read characters.
 - Never reproduce subtitle text, OCR readings, or other on-screen text in the output.
 - Do not infer acoustic properties, emotions, or vocal delivery without relevant acoustic evidence.
 - Do not invent actions, dialogue, timestamps, character identities, or other missing details.
@@ -32,7 +33,7 @@ Evaluate the evidence in the following priority order:
 
 4. **Dialogue and speakers:** Check transcript segment coverage, speaker ordering, character associations, and timing. Report specific inconsistencies rather than generic warnings about automatic transcription.
 
-5. **Cross-modal consistency:** Where feasible, compare transcript meaning with subtitle OCR meaning. Different languages, wording, or timestamps do not automatically constitute contradictions.
+5. **Cross-modal consistency:** Where feasible, compare transcript meaning with subtitle meaning, using each line's own times. Different languages, wording, or timestamps do not automatically constitute contradictions.
 
 6. **Production impact:** Prioritize uncertainties that could cause incorrect image reconstruction, animation, character appearance, positioning, or dialogue attribution.
 
@@ -84,7 +85,15 @@ def _as_text(value, indent=0):
     return str(value) if value is not None else 'unknown'
 
 
-def build_input(results, transcripts, context_items):
+def subtitle_evidence(subtitles):
+    """Subtitle lines overlapping the cut, in the form the reviewer is told about."""
+    subtitles = subtitles if isinstance(subtitles, dict) else {}
+    lines = [{key: line.get(key) for key in ('start_time', 'end_time', 'text', 'confidence', 'crosses_cut')}
+             for line in subtitles.get('lines') or [] if isinstance(line, dict)]
+    return {'extracted': bool(subtitles.get('extracted')), 'language': subtitles.get('language'), 'lines': lines}
+
+
+def build_input(results, transcripts, context_items, subtitles=None):
     names = {item['id']: item['title'] for item in context_items if item.get('kind') == 'character'}
     result_map = {item['type']: item for item in results}
     parts = []
@@ -97,14 +106,9 @@ def build_input(results, transcripts, context_items):
         character = segment.get('character_context_id')
         identity = f"; linked character {segment.get('character_name') or names.get(character, character)} ({character})" if character else ''
         turns.append(f"{segment['start_time']:.3f}–{segment['end_time']:.3f}s; {speaker}{identity}; {segment.get('origin', 'unknown')}: {segment['text']}")
-    ocr = result_map.get('subtitle_ocr')
-    ocr_data = ocr['content'] if ocr and isinstance(ocr.get('content'), dict) else None
-    subtitle_events = [{key: event.get(key) for key in ('text', 'language', 'first_observed', 'last_observed')}
-                       for event in (ocr_data.get('events', []) if ocr_data else []) if isinstance(event, dict)]
     return {'visual_evidence_text': '\n\n'.join(parts),
             'transcript_text': '\n'.join(turns) if turns else 'No transcript segments available.',
-            'subtitle_ocr': {'events': subtitle_events, 'ocr_performed': ocr_data.get('ocr_performed', False) if ocr_data else False,
-                             'unavailable': ocr_data is None}}
+            'subtitles': subtitle_evidence(subtitles)}
 
 
 def generate(config, evidence, progress=None, cancel_check=None, usage_out=None):

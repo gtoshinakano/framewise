@@ -43,6 +43,11 @@ def probe(path: Path):
     return {"duration": duration, "width": int(video["width"]), "height": int(video["height"]), "has_audio": audio}
 
 
+# Frame rates derived from a frame budget (e.g. 4.505561673375263 fps) have no tidy timebase, and the mp4
+# muxer then fails with "Not yet implemented in FFmpeg". A fixed track timescale avoids that.
+MP4_TIMESCALE = ('-video_track_timescale', '90000')
+
+
 def prepare_analysis_video(source: Path, output: Path, start: float, end: float, width: int = 640, height: int = 360, fps: float = 4, frame_limit: int | None = None):
     """Create a temporary, silent cut clip and return its reproducibility metadata."""
     if source.resolve() == output.resolve():
@@ -61,7 +66,7 @@ def prepare_analysis_video(source: Path, output: Path, start: float, end: float,
             still = Path(scratch) / 'frame.jpg'
             actual = extract_cut_frame(source, still, start, start, end, width=width)
             run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-loop', '1', '-framerate', str(fps), '-i', str(still),
-                 '-frames:v', '2', '-an', '-vf', scaling, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', str(output)])
+                 '-frames:v', '2', '-an', '-vf', scaling, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', *MP4_TIMESCALE, str(output)])
         return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps, 'padded_tail': True, 'single_sample_time': actual}
     # Trim decoded source timestamps before the fps filter. An output-side -t
     # alone can let fps inspect and select a frame at or beyond the cut end.
@@ -72,7 +77,7 @@ def prepare_analysis_video(source: Path, output: Path, start: float, end: float,
         # short cut. Clone the final sampled frame without reading the next cut.
         filters += ',tpad=stop_mode=clone:stop=1'
     run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', f'{start:.9f}', '-t', f'{end - start:.9f}', '-i', str(source),
-         '-an', '-vf', filters, *(['-frames:v', str(frame_limit)] if frame_limit is not None else []), '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', str(output)])
+         '-an', '-vf', filters, *(['-frames:v', str(frame_limit)] if frame_limit is not None else []), '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', *MP4_TIMESCALE, str(output)])
     return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps, 'padded_tail': padded_tail}
 
 

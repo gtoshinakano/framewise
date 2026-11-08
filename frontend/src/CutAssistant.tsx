@@ -205,7 +205,11 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
     try {
       const updated = action === 'apply' ? await assistantApi.apply(proposal.id) : await assistantApi.discard(proposal.id)
       setDetail(current => current ? applyStreamEvent(current, 'proposal', updated) : current)
-      if (action === 'apply') onResultsChanged()
+      if (action === 'apply') {
+        onResultsChanged()
+        // The transcript lives with the episode, not the cut's results, so the editor reloads it separately.
+        if (proposal.target === 'transcript') window.dispatchEvent(new Event('framewise:transcript-changed'))
+      }
       void refreshSessions().catch(() => {})
     } catch (err) {
       setError((err as Error).message)
@@ -407,7 +411,7 @@ function ProposalCard({ proposal, onResolve }: { proposal: AssistantProposal; on
     </div>
     <div className="mt-2 flex flex-wrap items-center gap-2">
       {(changed || !full) && <button type="button" className="!text-[11px] text-[#c3aeff] underline" onClick={() => setFull(!full)}>{full ? `Show changes${proposal.diff_label ? ` vs ${proposal.diff_label}` : ''}` : prompt ? 'Show full prompt' : 'Show full text'}</button>}
-      {proposal.stale && pending && <span className="text-[11px] text-[#ffd59a]">The saved result changed since this was proposed. Ask again to rebase it.</span>}
+      {proposal.stale && pending && <span className="text-[11px] text-[#ffd59a]">{proposal.target === 'transcript' ? 'The transcript' : 'The saved result'} changed since this was proposed. Ask again to rebase it.</span>}
       {pending && <span className="ml-auto flex gap-2">
         <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={working} onClick={() => void act('discard')}><X size={13} /> Discard</button>
         <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={working || proposal.stale} onClick={() => void act('apply')} title={prompt ? `Save as this cut's ${proposal.label}; the previous version stays in history` : 'Save as a new revision'}>{working ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} {prompt ? 'Save to cut' : 'Apply'}</button>

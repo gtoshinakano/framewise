@@ -4,9 +4,12 @@ The worker only calls this for jobs explicitly marked single_cut_v2. A job may
 hold one cut (the per-cut buttons) or every cut of an episode (batch queueing).
 Work always runs stage by stage across all cuts, so each model is loaded once:
 
-    1. subtitle_ocr    - WeVisOne, every cut
-    2. initial/last    - one llama-server (Qwen3.5), both boundary frames of every cut
-    3. video_analysis  - Qwen3-VL, every cut
+    1. initial/last    - one llama-server (Qwen3.5), both boundary frames of every cut
+    2. video_analysis  - Qwen3-VL, every cut
+
+Subtitles are not a stage here. They are extracted once for the whole episode by
+subtitle_pipeline; these stages only learn the subtitle language and where the strip
+sits so they can ignore it.
 
 Each result is checkpointed per cut, so an interrupted or retried job skips the
 work it already saved. Legacy jobs retain their original execution path.
@@ -18,7 +21,7 @@ import time
 import os
 import tempfile
 from pathlib import Path
-from . import character_detection, db, frame_model, media, structured_results, subtitle_model, video_model, worker
+from . import character_detection, db, frame_model, media, structured_results, video_model, worker
 from .visual_contracts import FRAME_INSTRUCTION, VIDEO_INSTRUCTION
 
 log = logging.getLogger('framewise.visual_analysis')
@@ -39,7 +42,7 @@ def release_gpu_models():
 
 
 
-ALL_STAGES = ('subtitle_ocr', 'initial_frame', 'last_frame', 'video_analysis')
+ALL_STAGES = ('initial_frame', 'last_frame', 'video_analysis')
 
 
 def ensure_models_available(stages=None):
@@ -59,10 +62,34 @@ def ensure_models_available(stages=None):
     if stages.intersection(('initial_frame', 'last_frame')) and any(not path.is_file() for path in required):
         raise RuntimeError('Qwen3.5 frame model or llama-server runtime is not available')
 
-SUBTITLE_PROMPT = 'Detect subtitles; OCR only when audio transcript exists.'
 DETECTION_NOTE = ('Boxes are pixel coordinates in the named boundary frame only. When labels_confirmed_by_queue is true, '
                   'the user verified the named boxes when queuing this cut; use those names for the corresponding visible people. '
                   'Otherwise labels are unverified hints. Labels alone do not establish presence, actions, or identity across the entire cut.')
+
+
+def _subtitle_strip(context):
+    """The episode's subtitle language and strip as saved when the job was queued, or None before extraction."""
+    subtitles = context.get('subtitles') if isinstance(context, dict) else None
+    if not isinstance(subtitles, dict):
+        return None
+    strip, language = subtitles.get('strip'), subtitles.get('language')
+    if not language and not strip:
+        return None
+    return {'language': language, 'top': strip['top'] if strip else None, 'bottom': strip['bottom'] if strip else None}
+
+
+def strip_box(strip, width, height):
+    """The strip as a pixel box on a frame of ``width`` x ``height``; None when its position is unknown."""
+    if not strip or strip.get('top') is None:
+        return None
+    return [0, round(strip['top'] * height), width, round(strip['bottom'] * height)]
+
+
+def frame_canvas(episode, width=1280):
+    """Size of a frame extracted from the original at the analysis width."""
+    source_width, source_height = episode['width'] or width, episode['height'] or round(width * 9 / 16)
+    scaled = min(source_width, width)
+    return scaled, max(2, round(source_height * scaled / source_width / 2) * 2)
 
 
 class CutRun:
@@ -75,7 +102,7 @@ class CutRun:
         self.batch_size = batch_size
         self.original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
         self.base_ids = item.get('base_result_ids', {})
-        self.subtitles = None
+        self.strip = _subtitle_strip(self.context)
         self.references = []
         self.failure = None  # set when this cut fails; the other cuts keep going
         row = db.one('SELECT * FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job['id'], self.cut_id))
@@ -123,7 +150,7 @@ class CutRun:
     def save(self, result_type, data, model_id, prompt, extra=None):
         item = self.item
         provenance = {'cut': self.cut, 'model_context_hints': self.hints,
-                      **({'subtitle_source_result_id': item['subtitle_input']['result_id']} if item.get('subtitle_input') and result_type != 'subtitle_ocr' else {}),
+                      **({'subtitle_strip': self.strip} if self.strip else {}),
                       **({'frame_time': data['frame_time']} if 'frame_time' in data else {})}
         with db.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -159,8 +186,9 @@ def run_batch(job, owner, episode, items):
     """Run every requested stage for all cuts, loading each model once."""
     payload = json.loads(job['payload_json'])
     job_stages = set(payload.get('stages') or ALL_STAGES)
-    # A cut may list its own stages when only part of its analysis is missing.
-    runs = [CutRun(job, owner, episode, item, set(item.get('stages') or job_stages), len(items)) for item in items]
+    # A cut may list its own stages when only part of its analysis is missing. Jobs queued before
+    # subtitles became an episode-wide step may still name subtitle_ocr; it no longer exists here.
+    runs = [CutRun(job, owner, episode, item, set(item.get('stages') or job_stages) & set(ALL_STAGES), len(items)) for item in items]
     runs = [cut_run for cut_run in runs if not cut_run.completed]
     if not runs:
         return
@@ -170,7 +198,6 @@ def run_batch(job, owner, episode, items):
     release_gpu_models()
     try:
         with tempfile.TemporaryDirectory(prefix='framewise-cut-analysis-') as scratch:
-            _subtitle_stage(runs, scratch)
             _boundary_frame_stages(runs, scratch)
             _video_stage(runs, scratch)
     finally:
@@ -204,37 +231,7 @@ def _for_each(cut_runs, work):
             log.exception('Visual analysis failed for cut %s; continuing with the other cuts', cut_run.cut_id)
 
 
-# -- stage 1: subtitle detection and OCR (WeVisOne) -----------------------------
-
-def _subtitle_stage(runs, scratch):
-    from . import inference_worker
-    todo = [cut_run for cut_run in runs if cut_run.needs('subtitle_ocr')]
-    if todo:
-        model = inference_worker.get_model()
-        try:
-            _for_each(todo, lambda cut_run: _detect_subtitles(cut_run, scratch, model))
-        finally:
-            model = None
-            release_gpu_models()
-    for cut_run in (run for run in runs if not run.failure):
-        cut_run.subtitles = (cut_run.saved('subtitle_ocr')
-                             or cut_run.item.get('subtitle_input', {}).get('content')
-                             or {'samples': [], 'events': []})
-
-
-def _detect_subtitles(cut_run, scratch, model):
-    from . import inference_worker
-    with cut_run.stage('subtitle_ocr', 'Subtitle detection and OCR'):
-        started = time.monotonic()
-        subtitles = subtitle_model.inspect_subtitles(
-            cut_run.original, cut_run.cut, cut_run.config, bool(cut_run.context['transcript_segments']), scratch, model,
-            on_frame=lambda i, n: cut_run.progress(f'Subtitle frames {i}/{n}'),
-            cancel_check=cut_run.cancel_check)
-        cut_run.save('subtitle_ocr', subtitles, inference_worker.MODEL_ID, SUBTITLE_PROMPT,
-                     {'model_revision': inference_worker.MODEL_REVISION, 'generation_seconds': time.monotonic() - started})
-
-
-# -- stage 2: first and last frame (Qwen3.5 through one llama-server) -----------
+# -- stage 1: first and last frame (Qwen3.5 through one llama-server) -----------
 
 def _boundary_frame_stages(runs, scratch):
     todo = [cut_run for cut_run in runs if not cut_run.failure and (cut_run.needs('initial_frame') or cut_run.needs('last_frame'))]
@@ -267,38 +264,22 @@ def _frame_stage(cut_run, position, server, scratch):
         started = time.monotonic()
         usage = {}
         cut_run.progress(f'Analyzing {label.lower()}')
-        cut, subtitles = cut_run.cut, cut_run.subtitles
+        cut = cut_run.cut
         image = Path(scratch) / 'boundary.jpg'
         first, last = media.cut_frame_times(cut['start_time'], cut['end_time'])
         actual = media.extract_cut_frame(cut_run.original, image, first if position == 'first' else last, cut['start_time'], cut['end_time'], width=1280, last=position == 'last')
-        closest = min(subtitles['samples'], key=lambda value: abs(value['time'] - actual), default=None)
-        regions = closest['regions'] if closest and abs(closest['time'] - actual) < .1 else []
+        box = strip_box(cut_run.strip, *frame_canvas(cut_run.episode))
+        regions = [box] if box else []
         data = frame_model.describe_frame(server, image, regions, {**cut_run.hints, 'target_frame': position},
-                                          cancel_check=cut_run.cancel_check, reference_images=cut_run.references, usage_out=usage)
-        if position == 'first':
-            _classify_subtitle_languages(cut_run, server)
+                                          cancel_check=cut_run.cancel_check, reference_images=cut_run.references, usage_out=usage,
+                                          subtitle_language=(cut_run.strip or {}).get('language'))
         data['frame_time'] = actual
         data['subtitle_regions'] = regions
         cut_run.save(kind, data, frame_model.MODEL_ID, FRAME_INSTRUCTION,
                      {'model_revision': frame_model.MODEL_REVISION, 'image_width': 1280, 'generation_seconds': time.monotonic() - started, 'usage': usage})
 
 
-def _classify_subtitle_languages(cut_run, server):
-    """Reuse the already running frame model to label subtitle languages once per cut."""
-    from . import inference_worker
-    subtitles = cut_run.subtitles
-    if 'subtitle_ocr' not in cut_run.stages or not subtitles.get('events') or subtitles.get('language_model'):
-        return
-    languages = frame_model.classify_subtitle_languages(server, subtitles['events'], cancel_check=cut_run.cancel_check)
-    for event, language in zip(subtitles['events'], languages):
-        event['language'] = language
-    subtitles['language_model'] = frame_model.MODEL_ID
-    subtitles['language_note'] = 'Model-estimated language; unknown means uncertain.'
-    cut_run.save('subtitle_ocr', subtitles, inference_worker.MODEL_ID, SUBTITLE_PROMPT,
-                 {'model_revision': inference_worker.MODEL_REVISION, 'language_model': frame_model.MODEL_ID, 'language_revision': frame_model.MODEL_REVISION})
-
-
-# -- stage 3: video analysis (Qwen3-VL) -----------------------------------------
+# -- stage 2: video analysis (Qwen3-VL) -----------------------------------------
 
 def _video_stage(runs, scratch):
     todo = [cut_run for cut_run in runs if not cut_run.failure and cut_run.needs('video_analysis')]
@@ -349,7 +330,7 @@ def _video_analysis(cut_run, scratch, runtime):
             proxy if proxy.is_file() else cut_run.original, cut_run.cut, cut_run.config,
             os.environ.get('QWEN3_VIDEO_MODEL_PATH', '/models/qwen3-vl-8b'), scratch,
             on_window=lambda start, end: cut_run.progress(f'Analyzing video {start:.1f}–{end:.1f}s'),
-            subtitle_samples=cut_run.subtitles['samples'], load_window=load_window, save_window=save_window,
+            subtitle_strip=cut_run.strip, source_size=(cut_run.episode['width'], cut_run.episode['height']), load_window=load_window, save_window=save_window,
             context_hints=cut_run.hints, on_invalid_response=save_invalid_response, cancel_check=cut_run.cancel_check, runtime=runtime)
         cut_run.save('video_analysis', data, video_model.MODEL_ID, VIDEO_INSTRUCTION,
                      {'model_revision': video_model.MODEL_REVISION, 'generation_seconds': time.monotonic() - started, 'usage': data.get('usage', {})})

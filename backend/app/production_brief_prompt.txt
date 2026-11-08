@@ -213,7 +213,7 @@ Never reproduce, translate, describe, render, or animate burned-in subtitles or 
 
 Do not include subtitle boxes, positions, or appearance in the opening-frame description.
 
-Subtitle OCR may help contextualize or cross-check supplied dialogue, but it is not independent audio evidence.
+Subtitle lines (context.subtitles) may help contextualize or cross-check supplied dialogue, but they are not independent audio evidence. They were read from the whole episode and are all in the one language given by context.subtitles.language, which is certain; never re-guess or translate it.
 
 Do not add visible text to generated images or animations unless explicitly required by a human production instruction.
 

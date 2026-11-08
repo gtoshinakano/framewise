@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import db
-from . import skills, store, tools
+from . import skills, store, tools, transcript_edit
 
 router = APIRouter(tags=['Cut Assistance'])
 WORKER_STALE_SECONDS = 30
@@ -80,6 +80,8 @@ def proposal_stale(conn, proposal):
     if proposal['target'] == 'review_answers':
         row = conn.execute('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (proposal['cut_id'],)).fetchone()
         return (row['content'] if row else '') != proposal['base_content']
+    if proposal['target'] == 'transcript':
+        return transcript_edit.plan_stale(conn, proposal['payload_json'])
     if proposal['base_result_id']:
         row = conn.execute('SELECT superseded_by FROM analysis_results WHERE id=?', (proposal['base_result_id'],)).fetchone()
         return not row or row['superseded_by'] is not None
@@ -97,6 +99,7 @@ def serialize_proposal(conn, row):
     row['content'] = new
     row.pop('base_content')
     row.pop('diff_base', None)
+    row.pop('payload_json', None)
     return row
 
 
@@ -341,11 +344,18 @@ def apply_proposal(proposal_id: str):
         if not conn.execute('SELECT 1 FROM cuts WHERE id=?', (proposal['cut_id'],)).fetchone():
             raise HTTPException(404, 'Cut not found')
         if proposal_stale(conn, proposal):
-            raise HTTPException(409, 'The result changed after this proposal was made; ask the assistant to propose it again')
+            raise HTTPException(409, f"The {'transcript' if proposal['target'] == 'transcript' else 'result'} changed after this proposal was made; ask the assistant to propose it again")
         provenance = {'assistant_edit': {'proposal_id': proposal_id, 'session_id': proposal['session_id'], 'provider': proposal['provider'],
                                          'model': proposal['model_id'], 'summary': proposal['summary']}}
         applied_id = None
-        if proposal['target'] == 'review_answers':
+        if proposal['target'] == 'transcript':
+            # Revisions of the episode's transcript segments, not of an analysis result.
+            try:
+                created = transcript_edit.apply(conn, proposal['payload_json'])
+            except transcript_edit.PlanError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            conn.execute('UPDATE assistant_proposals SET payload_json=? WHERE id=?', (json.dumps({**json.loads(proposal['payload_json']), 'applied_segment_ids': created}), proposal_id))
+        elif proposal['target'] == 'review_answers':
             conn.execute('INSERT INTO cut_brief_instructions(cut_id,content) VALUES (?,?) ON CONFLICT(cut_id) DO UPDATE SET content=excluded.content,updated_at=CURRENT_TIMESTAMP',
                          (proposal['cut_id'], proposal['content']))
         else:

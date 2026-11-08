@@ -13,8 +13,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .. import db
-from . import compact, h3_prompt, skills, store
+from .. import db, subtitle_store
+from . import compact, h3_prompt, skills, store, transcript_edit
+from .transcript_edit import join_text, merged_transcript, transcript_rows  # noqa: F401  (re-exported for callers and tests)
 
 STRUCTURED = ('initial_frame', 'last_frame', 'video_analysis', 'subtitle_ocr', 'consistency_summary')
 TEXT_RESULTS = {
@@ -25,7 +26,7 @@ TEXT_RESULTS = {
 RESULT_TYPES = (*STRUCTURED, 'production_brief', 'review_answers', 'h3_prompt', 'image_prompt')
 LABELS = {'initial_frame': 'initial frame', 'last_frame': 'last frame', 'video_analysis': 'video analysis', 'subtitle_ocr': 'subtitle OCR',
           'consistency_summary': 'consistency summary', 'production_brief': 'production brief', 'review_answers': 'review answers',
-          'h3_prompt': 'H3 prompt', 'image_prompt': 'still image prompt'}
+          'h3_prompt': 'H3 prompt', 'image_prompt': 'still image prompt', 'transcript': 'transcript'}
 TEXT_LIMIT, STRUCTURED_LIMIT = 50000, 5000000
 
 
@@ -218,34 +219,6 @@ def meta(row):
     return {'origin': row.get('origin'), 'model': row.get('model_id'), 'created': (row.get('created_at') or '')[:16]}
 
 
-def transcript_rows(cut):
-    return db.all_rows('''SELECT t.start_time,t.end_time,t.text,t.speaker_label,t.origin,c.title AS character_name FROM transcript_segments t
-                          LEFT JOIN context_items c ON c.id=t.character_context_id
-                          WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>?
-                          ORDER BY t.start_time,t.id''', (cut['episode_id'], cut['end_time'], cut['start_time']))
-
-
-def join_text(left, right):
-    """Join transcript fragments: no space between CJK fragments, one between Latin words."""
-    if left and right and left[-1].isascii() and left[-1].isalnum() and right[0].isascii() and right[0].isalnum():
-        return f'{left} {right}'
-    return left + right
-
-
-def merged_transcript(rows, gap=0.6):
-    """Merge word-level fragments into speaker lines; fewer tokens and easier to quote verbatim."""
-    lines = []
-    for row in rows:
-        last = lines[-1] if lines else None
-        if last and last['speaker_label'] == row['speaker_label'] and last['character_name'] == row['character_name'] \
-                and last['origin'] == row['origin'] and row['start_time'] - last['end_time'] <= gap:
-            last['text'] = join_text(last['text'], row['text'].strip())
-            last['end_time'] = max(last['end_time'], row['end_time'])
-        else:
-            lines.append({**row, 'text': row['text'].strip()})
-    return lines
-
-
 def detection_rows(cut):
     run = db.one('SELECT id,cut_start,cut_end FROM character_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1', (cut['id'],))
     if not run:
@@ -283,8 +256,16 @@ def status(cut_id):
         'results': results,
         'characters': {'boxes': len(detections), 'named': names, 'unlabeled': sum(1 for row in detections if not row['name']), 'stale': stale or None} if stale is not None else 'not detected',
         'transcript_segments': len(transcript_rows(cut)),
+        'subtitle_lines': subtitle_lines(cut),
         'recent_jobs': cut_jobs(cut),
     }
+
+
+def subtitle_lines(cut):
+    """Count of the episode's subtitle lines overlapping the cut, or None when subtitles were never extracted."""
+    with db.connect() as conn:
+        context = subtitle_store.cut_context(conn, cut, cut['episode_id'])
+    return len(context['lines']) if context['extracted'] else None
 
 
 def cut_card(cut_id):
@@ -309,6 +290,7 @@ def cut_card(cut_id):
     else:
         lines.append(f"Character boxes: {characters['boxes']} ({', '.join(characters['named']) or 'none named'}; {characters['unlabeled']} unlabeled{'; stale' if characters.get('stale') else ''}).")
     lines.append(f"Transcript segments overlapping: {data['transcript_segments']}.")
+    lines.append('Subtitle lines overlapping: ' + (str(data['subtitle_lines']) if data['subtitle_lines'] is not None else 'subtitles not extracted for this episode') + '.')
     active = [job for job in data['recent_jobs'] if job['status'] in ('queued', 'running')]
     failed = [job for job in data['recent_jobs'] if job['status'] == 'failed'][:2]
     if active:
@@ -355,14 +337,27 @@ def get_result(ctx, args):
     return {'type': args['type'], **meta(row), 'content': view}
 
 
-@tool('get_transcript', "Transcript segments overlapping this cut (clip-relative times; negative or beyond duration means the segment crosses the cut boundary).",
+@tool('get_transcript', "Transcript lines overlapping this cut (clip-relative times; negative or beyond duration means the line crosses the cut boundary). `line` numbers are what propose_transcript_edit refers to.",
       summary=lambda args, value: f"Read transcript ({len(value.get('segments') or [])} segments)")
 def get_transcript(ctx, args):
     cut = load_cut(ctx.cut_id)
     rows = merged_transcript(transcript_rows(cut))
     return {'cut_duration': round(cut['end_time'] - cut['start_time'], 3),
-            'segments': [{'t': span(clip(row['start_time'], cut), clip(row['end_time'], cut)), 'speaker': row['speaker_label'] or 'unknown',
-                          'character': row['character_name'], 'source': row['origin'], 'text': row['text']} for row in rows] or 'no transcript segments'}
+            'segments': [{'line': number, 't': span(clip(row['start_time'], cut), clip(row['end_time'], cut)), 'speaker': row['speaker_label'] or 'unknown',
+                          'character': row['character_name'], 'source': row['origin'], 'text': row['text']} for number, row in enumerate(rows, 1)] or 'no transcript segments'}
+
+
+@tool('get_subtitles', "Burned-in subtitle lines overlapping this cut (clip-relative times; negative or beyond duration means the line crosses the cut boundary). They were read from the whole episode in a single language that the user stated, independent of any cut. Read-only.",
+      summary=lambda args, value: f"Read subtitles ({len(value.get('lines') or [])} lines)" if isinstance(value.get('lines'), list) else 'Read subtitles')
+def get_subtitles(ctx, args):
+    cut = load_cut(ctx.cut_id)
+    with db.connect() as conn:
+        context = subtitle_store.cut_context(conn, cut, cut['episode_id'])
+    if not context['extracted']:
+        return {'extracted': False, 'lines': 'subtitles have not been extracted for this episode; the user runs that step for the whole video'}
+    return {'extracted': True, 'language': context['language'], 'cut_duration': round(cut['end_time'] - cut['start_time'], 3),
+            'lines': [{'t': span(clip(line['start_time'], cut), clip(line['end_time'], cut)), 'text': line['text'], 'confidence': line['confidence'],
+                       'crosses_cut': line['crosses_cut'] or None} for line in context['lines']] or 'no subtitle overlaps this cut'}
 
 
 @tool('get_characters', 'Characters of this project (exact names, short notes) and the character boxes detected in this cut.',
@@ -630,10 +625,15 @@ def short_diff(old, new, limit=700):
     return text[:limit] + ('…' if len(text) > limit else '')
 
 
-def create_proposal(ctx, result_type, base, content, summary, diff_base=None, diff_label=None, replace_pending=False):
-    """Store a pending proposal; ``diff_base`` overrides what the card compares against."""
+def create_proposal(ctx, result_type, base, content, summary, diff_base=None, diff_label=None, replace_pending=False, before=None, payload=None):
+    """Store a pending proposal; ``diff_base`` overrides what the card compares against.
+
+    Transcript proposals have no base result: ``before`` is the readable current text and ``payload`` the plan applied later.
+    """
     if result_type == 'review_answers':
         title, kind = 'Review answers', 'review_answers'
+    elif result_type == 'transcript':
+        title, kind = 'Transcript', 'transcript'
     elif result_type in TEXT_RESULTS:
         title, kind = (base['title'] if base else TEXT_RESULTS[result_type]['title']), (base['kind'] if base else TEXT_RESULTS[result_type]['kind'])
     else:
@@ -643,10 +643,11 @@ def create_proposal(ctx, result_type, base, content, summary, diff_base=None, di
         if replace_pending and ctx.turn_id:
             # A re-checked draft replaces this turn's earlier unsaved draft of the same kind.
             conn.execute("UPDATE assistant_proposals SET status='discarded',resolved_at=CURRENT_TIMESTAMP WHERE turn_id=? AND target=? AND status='pending'", (ctx.turn_id, result_type))
-        conn.execute('''INSERT INTO assistant_proposals(id,session_id,turn_id,cut_id,target,title,kind,base_result_id,base_content,content,summary,model_id,provider,diff_base,diff_label)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        conn.execute('''INSERT INTO assistant_proposals(id,session_id,turn_id,cut_id,target,title,kind,base_result_id,base_content,content,summary,model_id,provider,diff_base,diff_label,payload_json)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                      (proposal_id, ctx.session_id, ctx.turn_id or None, ctx.cut_id, result_type, title, kind, base['id'] if base else None,
-                      base['content'] if base else '', content, summary[:500], ctx.model, ctx.provider, diff_base, diff_label))
+                      base['content'] if base else (before or ''), content, summary[:500], ctx.model, ctx.provider, diff_base, diff_label,
+                      json.dumps(payload, ensure_ascii=False) if payload is not None else None))
         if ctx.turn_id:
             store.bump(conn, ctx.turn_id)
     return proposal_id
@@ -674,6 +675,61 @@ def propose_result_edit(ctx, args):
     return {'proposal_id': proposal_id, 'status': 'pending_user_approval', 'target': result_type, 'applied': changed,
             'diff': short_diff(pretty(result_type, base_text), pretty(result_type, new)),
             'note': 'Not saved yet. Tell the user to review and apply it on the proposal card.'}
+
+
+# ----------------------------------------------------------------- transcript
+
+LINE_ITEM = {'type': 'object', 'properties': {
+    'text': {'type': 'string'}, 'character': {'type': 'string', 'description': 'Exact character name from get_characters'},
+    'speaker_label': {'type': 'string'}, 'start': {'type': 'number', 'description': 'Clip-relative seconds'}, 'end': {'type': 'number', 'description': 'Clip-relative seconds'}},
+    'required': ['text']}
+TRANSCRIPT_EDIT = {'type': 'object', 'properties': {
+    'op': {'type': 'string', 'enum': ['update', 'rewrite', 'delete', 'insert']},
+    'line': {'type': 'integer', 'description': 'Line number from get_transcript (update, delete, rewrite: first line)'},
+    'to_line': {'type': 'integer', 'description': 'rewrite: last line replaced; update: last line of a speaker-only change (default: line)'},
+    'text': {'type': 'string', 'description': 'update: the full corrected text of the line'},
+    'replacements': {'type': 'array', 'items': {'type': 'object', 'properties': {'find': {'type': 'string'}, 'replace': {'type': 'string'}}, 'required': ['find', 'replace']},
+                     'description': 'update: fix words inside the line (find must be exact text from get_transcript)'},
+    'character': {'type': 'string', 'description': 'update: link the line to this character (exact name)'},
+    'clear_character': {'type': 'boolean', 'description': 'update: remove the character link'},
+    'speaker_label': {'type': 'string', 'description': 'update: set the speaker label (for a voice that is not a character, e.g. Narrator)'},
+    'lines': {'type': 'array', 'items': LINE_ITEM, 'description': 'rewrite / insert: the new lines in time order'}},
+    'required': ['op']}
+
+
+@tool('propose_transcript_edit', "Propose corrections to this cut's audio transcript: fix wrong text, set or fix the speaker character, split/merge/replace lines, remove a bogus line or add a missing one. Lines are the numbered `line`s of get_transcript. The user must apply the proposal; nothing is saved until then. Put every change for the cut into ONE call (a later call in the same turn replaces the earlier unsaved proposal).",
+      {'edits': {'type': 'array', 'items': TRANSCRIPT_EDIT, 'description': 'update: line[, to_line for a speaker change over several lines] + text | replacements | character | clear_character | speaker_label. rewrite: line[, to_line] + lines (replaces those lines; new lines without times share the old time span by text length and inherit the old speaker unless character is given). delete: line. insert: lines with start and end.'},
+       'summary': {'type': 'string', 'description': 'One line describing the change'}},
+      ('edits', 'summary'),
+      summary=lambda args, value: f"Proposed transcript change ({len(args.get('edits') or [])} edit{'s' if len(args.get('edits') or []) != 1 else ''})",
+      limit=5000)
+def propose_transcript_edit(ctx, args):
+    cut = load_cut(ctx.cut_id)
+    if not cut['active']:
+        raise ToolError('Archived cuts have no transcript to edit')
+    episode = db.one('SELECT duration FROM episodes WHERE id=?', (cut['episode_id'],)) or {}
+    rows = transcript_rows(cut)
+    try:
+        plan = transcript_edit.build_plan(cut, episode, rows, transcript_edit.project_characters(cut), args['edits'])
+    except transcript_edit.PlanError as exc:
+        raise ToolError(str(exc)) from exc
+    replaced = db.one("SELECT COUNT(*) AS n FROM assistant_proposals WHERE turn_id=? AND target='transcript' AND status='pending'", (ctx.turn_id,))['n'] if ctx.turn_id else 0
+    proposal_id = create_proposal(ctx, 'transcript', None, plan['after'], args['summary'], replace_pending=True, before=plan['before'],
+                                  payload={'episode_id': plan['episode_id'], 'ops': plan['ops']})
+    # Other lines that carry the same diarization label may be the same speaker; tell the model instead of guessing.
+    lines = transcript_edit.merged_transcript(rows)
+    linked = {op['id'] for op in plan['ops'] if op['op'] == 'revise' and op['character_context_id']}
+    touched = {op['id'] for op in plan['ops'] if op.get('id')}
+    labels = {line['speaker_label'] for line in lines if line['speaker_label'] and set(line['ids']) & linked}
+    siblings = [number for number, line in enumerate(lines, 1) if line['speaker_label'] in labels and not set(line['ids']) & touched and not line['character_name']]
+    out = {'proposal_id': proposal_id, 'status': 'pending_user_approval', 'target': 'transcript', 'changes': plan['changes'], 'warnings': plan['warnings'] or None,
+           'diff': short_diff(plan['before'], plan['after']),
+           'note': 'Not saved yet. Tell the user to review and apply it on the proposal card.'}
+    if siblings:
+        out['unlinked_lines_with_same_voice_label'] = siblings
+    if replaced:
+        out['replaced_earlier_unsaved_proposal'] = True
+    return out
 
 
 # ------------------------------------------------------------------ H3 prompts

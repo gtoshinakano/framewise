@@ -10,7 +10,7 @@ Map the user's words to a result type:
 - "first image", "opening frame", "initial frame" → `initial_frame`
 - "last image", "ending frame" → `last_frame`
 - "video", "motion", "events", "what happens" → `video_analysis`
-- "subtitles", "OCR", "on-screen text" → `subtitle_ocr`
+- "subtitles", "OCR", "on-screen text" → `get_subtitles()` (episode-wide burned-in subtitles, one language; older cuts may also have a `subtitle_ocr` result)
 - "consistency", "conflicts", "review" → `consistency_summary`
 - "brief", "cut summary", "production brief" → `production_brief`
 

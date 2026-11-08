@@ -120,6 +120,49 @@ class VoiceRange(BaseModel):
     end_time: float
 
 
+class SubtitleLine(BaseModel):
+    id: str
+    start_time: float = Field(description="Episode-relative start in seconds, when the subtitle appears on screen.")
+    end_time: float = Field(description="Episode-relative end in seconds, when it disappears. Times resolve to about one eighth of a second.")
+    text: str = Field(description="The burned-in subtitle exactly as read, in the episode's single subtitle language; displayed lines are separated by a newline.")
+    confidence: Literal["high", "low"] = Field(description="high when every character was clear; low when some characters were hard to read.")
+    crosses_cut: bool | None = Field(default=None, description="Only in cut context: true when the line starts before or ends after the cut.")
+
+
+class SubtitleStrip(BaseModel):
+    top: float = Field(description="Top of the subtitle strip as a fraction of the frame height.")
+    bottom: float = Field(description="Bottom of the subtitle strip as a fraction of the frame height.")
+
+
+class CutSubtitles(BaseModel):
+    extracted: bool = Field(description="False until subtitles were extracted for the episode; then empty lines mean no subtitle overlaps this cut.")
+    language: str | None = Field(description="The language of every burned-in subtitle in this episode, as stated by the user; null before any extraction.")
+    strip: SubtitleStrip | None = Field(description="Where the subtitles sit in the frame; null before any extraction.")
+    lines: list[SubtitleLine] = Field(description="Current subtitle lines overlapping this cut. They belong to the episode, not the cut, and may extend beyond its boundaries.")
+
+
+class SubtitleRun(BaseModel):
+    id: str
+    language: str
+    language_code: str | None
+    status: str = Field(description="complete for the current run; failed or running for others in history.")
+    band: dict[str, Any] = Field(description="Detected subtitle strip and how it was found.")
+    diagnostics: dict[str, Any] = Field(description="Scan and reading counts, timings and rejected examples.")
+    model_id: str | None
+    model_revision: str | None
+    error: str | None
+    created_at: str
+    finished_at: str | None
+    line_count: int | None = None
+
+
+class EpisodeSubtitles(BaseModel):
+    language: str | None = Field(description="Saved subtitle language for this episode.")
+    run: SubtitleRun | None = Field(description="The current completed extraction, or null.")
+    lines: list[SubtitleLine] = Field(description="All lines of the current run in time order.")
+    runs: list[SubtitleRun] | None = Field(default=None, description="Every run, newest first; only with history=true.")
+
+
 class VoiceSample(BaseModel):
     id: str
     character_context_id: str
@@ -183,6 +226,7 @@ class CutDetail(BaseModel):
     first_frame: dict[str, Any] | None = Field(description="Content of the current structured initial-frame analysis, or null if unavailable.")
     last_frame: dict[str, Any] | None = Field(description="Content of the current structured last-frame analysis, or null if unavailable.")
     transcript_segments: list[Transcript] = Field(description="Current non-deleted segments overlapping this cut; may extend beyond its boundaries.")
+    subtitles: CutSubtitles = Field(description="Burned-in subtitle lines overlapping this cut, from the episode-wide extraction.")
     context_items: list[ContextItem] = Field(description="Project-wide and this episode's context items, including characters.")
     previous_cut: CutMetadata | None
     next_cut: CutMetadata | None
@@ -223,6 +267,7 @@ class AnalysisContext(BaseModel):
     chunks: list[Chunk]
     context_items: list[ContextItem]
     transcript_segments: list[Transcript] = Field(description="Current non-deleted transcript segments overlapping the cut.")
+    subtitles: CutSubtitles = Field(description="Burned-in subtitle lines overlapping the cut, from the episode-wide extraction.")
 
 
 def main_api():
@@ -256,6 +301,14 @@ def episode_metadata(episode_id: str):
     raw = db.one("SELECT has_audio FROM episodes WHERE id=?", (episode_id,))
     episode["has_audio"] = None if raw["has_audio"] is None else bool(raw["has_audio"])
     return episode
+
+
+@router.get("/episodes/{episode_id}/subtitles", response_model=EpisodeSubtitles, summary="Get the episode's burned-in subtitle track")
+def episode_subtitles(episode_id: str, history: bool = False):
+    """Subtitles extracted from the entire episode as time-ranged lines in one language. Not tied to any cut."""
+    main = main_api()
+    main.require_episode(episode_id)
+    return main.episode_subtitles(episode_id, history)
 
 
 @router.get("/voice-samples/{sample_id}", response_model=VoiceSampleDetail, summary="Get a character voice reference and embedding")
@@ -306,7 +359,7 @@ def cut_detail(cut_id: str):
     return {"project": main.require_project(project_id), "cut": context["cut"],
             "cut_summary": summary['content'] if summary else None,
             "first_frame": frame_content('initial_frame'), "last_frame": frame_content('last_frame'),
-            "transcript_segments": context["transcript_segments"], "context_items": context["context_items"],
+            "transcript_segments": context["transcript_segments"], "subtitles": context["subtitles"], "context_items": context["context_items"],
             "previous_cut": context["previous_cut"], "next_cut": context["next_cut"]}
 
 

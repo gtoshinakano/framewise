@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from . import media
-from .visual_contracts import VIDEO_INSTRUCTION, validate_video
+from .visual_contracts import VIDEO_INSTRUCTION, subtitle_note, validate_video
 
 MODEL_ID = 'Qwen/Qwen3-VL-8B-Instruct'
 MODEL_REVISION = '0c351dd01ed87e9c1b53cbc748cba10e6187ff3b'
@@ -118,7 +118,7 @@ def generate_window(processor, model, torch, clip, fps, prompt, duration, start,
     raise RuntimeError(f'Invalid Qwen3-VL video response for {start:.3f}–{start + duration:.3f}s after {len(VIDEO_TOKEN_LIMITS)} attempts: {last_error}')
 
 
-def analyze_video(original, cut, config, model_path, scratch, on_window=None, subtitle_samples=None, load_window=None, save_window=None, context_hints=None, on_invalid_response=None, cancel_check=None, runtime=None):
+def analyze_video(original, cut, config, model_path, scratch, on_window=None, subtitle_strip=None, source_size=None, load_window=None, save_window=None, context_hints=None, on_invalid_response=None, cancel_check=None, runtime=None):
     """Process every cut window, recording both clip-relative and episode times.
 
     Each model invocation is bounded to limit video tokens. Windows partition the
@@ -175,16 +175,14 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
                 remaining_frames -= count
             metadata['boundary_policy'] = BOUNDARY_POLICY
             metadata['source_file'] = Path(original).name
-            regions = []
-            for sample in subtitle_samples or []:
-                if not start <= sample['time'] < end or not sample.get('regions'):
-                    continue
-                width, height = sample['image_size']
+            boxes = []
+            if subtitle_strip and subtitle_strip.get('top') is not None and source_size and all(source_size):
+                width, height = source_size
                 scale = min(config['video_width'] / width, config['video_height'] / height)
                 offset_x = (config['video_width'] - width * scale) / 2
                 offset_y = (config['video_height'] - height * scale) / 2
-                boxes = [[round(box[0] * scale + offset_x), round(box[1] * scale + offset_y), round(box[2] * scale + offset_x), round(box[3] * scale + offset_y)] for box in sample['regions']]
-                regions.append({'seconds_from_clip_start': round(sample['time'] - start, 3), 'boxes': boxes})
+                boxes = [[round(offset_x), round(subtitle_strip['top'] * height * scale + offset_y),
+                          round(width * scale + offset_x), round(subtitle_strip['bottom'] * height * scale + offset_y)]]
             prompt = VIDEO_INSTRUCTION + f'\nThe real source interval lasts {end-start:.6f} seconds; ignore any duplicated tail frame and do not give times beyond that duration.'
             if end >= cut_end - 0.000001:
                 prompt += ' This is the final analysis window of the current cut; include its visible final frames.'
@@ -192,7 +190,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
                 prompt += ' This is an intermediate analysis window, not the end of the current cut; its end is not evidence of a hard cut.'
             if 'single_sample_time' in metadata:
                 prompt += ' This window contains only one distinct sampled image; do not infer any motion or change.'
-            prompt += '\nPredicted subtitle regions in video canvas pixels at sampled times (may be wrong): ' + json.dumps(regions, ensure_ascii=False)
+            prompt += subtitle_note((subtitle_strip or {}).get('language'), boxes, 'video canvas pixels')
             if context_hints:
                 prompt += '\nContext and character detections: ' + json.dumps(context_hints, ensure_ascii=False)
             reject = (lambda error, raw: on_invalid_response(window_index, start, end, error, raw)) if on_invalid_response else None

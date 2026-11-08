@@ -19,7 +19,7 @@ You receive a JSON evidence package. Its "review" object contains the Consistenc
 All supplied observations are model-generated and may contain errors, except "existing_answers", which are the user's own decisions. Use sources in this priority order:
 
 1. "existing_answers": authoritative. Keep their meaning and wording; never contradict them. Include them in the output when they are still relevant.
-2. The current cut: "current_cut" frame descriptions, video analysis, "transcript", and "review".
+2. The current cut: "current_cut" frame descriptions, video analysis, "transcript", "subtitles" (burned-in lines that overlap the cut, read from the whole episode, all in the one language given by subtitles.language; for comparison only) and "review".
 3. "previous_cut" and "next_cut" Cut summaries (continuity of characters, outfits, positions, props, setting, lighting and time of day). These are already-finished summaries; use them to settle continuity questions.
 4. "previous_cut" / "next_cut" video analysis and transcript. These are supplied ONLY when that neighbour has no Cut summary; treat them as weaker, unreviewed evidence.
 
@@ -72,10 +72,10 @@ def build_evidence(results, context, existing_answers, neighbours):
     review = by_type.get('consistency_summary')
     if not review or not isinstance(review['content'], dict):
         raise ValueError('Generate the consistency summary first')
-    base = consistency_summary.build_input(results, context['transcript_segments'], context['context_items'])
+    base = consistency_summary.build_input(results, context['transcript_segments'], context['context_items'], context.get('subtitles'))
     evidence = {
         'review': {key: review['content'].get(key, '') for key in ('human_review', 'recommended_checks', 'confusing', 'clear')},
-        'current_cut': {'visual_evidence_text': base['visual_evidence_text'], 'transcript': base['transcript_text']},
+        'current_cut': {'visual_evidence_text': base['visual_evidence_text'], 'transcript': base['transcript_text'], 'subtitles': base['subtitles']},
         'existing_answers': existing_answers.strip() or None,
     }
     for label, cut in (('previous_cut', context.get('previous_cut')), ('next_cut', context.get('next_cut'))):

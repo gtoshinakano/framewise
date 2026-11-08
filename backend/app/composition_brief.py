@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import db, media, structured_results
+from . import db, media, structured_results, subtitle_store
 
 
 class CompositionError(Exception):
@@ -750,11 +750,12 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
             cut_id = item.get('cut_id')
             checkpoint = one('SELECT completed FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job['id'], cut_id))
             if cut_id and (not checkpoint or not checkpoint['completed']): updating.add(cut_id)
+    subtitle_run = subtitle_store.current_run(episode_id, conn)
     records, pending = [], []
     for cut in cuts:
         rows = structured_results.list_results(cut['id'], conn=conn)
         by_type = {row['type']: row for row in reversed(rows) if row['content'] is not None}
-        needed = {'initial_frame', 'last_frame', 'video_analysis', 'subtitle_ocr'}
+        needed = {'initial_frame', 'last_frame', 'video_analysis'}
         stale = False
         for name in needed & by_type.keys():
             stored_context = one('SELECT context_json FROM analysis_results WHERE id=?', (by_type[name]['id'],))
@@ -863,8 +864,16 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
             segments = [s for s in all_segments if s['start_time'] < end and s['end_time'] > start]
             dialogue = utterances(all_segments, start, end)
             if dialogue: record['dialogue'] = dialogue
-            missing_subtitles = set()
-            subtitles = subtitle_lines(by_type['subtitle_ocr']['content'].get('events', []), start, end, missing=missing_subtitles)
+            if subtitle_run:
+                # Subtitles belong to the episode: take the lines that overlap this cut, timed from its start.
+                language = subtitle_run['language_code'] or subtitle_run['language']
+                subtitles = [{'text': line['text'], 'lang': language, 't': round(max(0., line['start_time'] - start), 3)}
+                             for line in subtitle_store.lines(episode_id, start, end, subtitle_run['id'], conn)]
+            elif 'subtitle_ocr' in by_type:
+                # Extracted per cut before subtitles became an episode-wide step; kept until a new extraction runs.
+                subtitles = subtitle_lines(by_type['subtitle_ocr']['content'].get('events', []), start, end, missing=set())
+            else:
+                subtitles = []
             if subtitles: record['subtitles'] = subtitles
             if apply_compaction:
                 from .composition_compaction import apply_cached

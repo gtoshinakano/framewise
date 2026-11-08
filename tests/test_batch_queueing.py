@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import (cut_timeline, db, frame_model, inference_worker, main, media, single_cut_pipeline as pipeline,
-                 subtitle_model, video_model, worker)
+                 video_model, worker)
 
 
 class BatchQueueingTest(unittest.TestCase):
@@ -49,29 +49,43 @@ class BatchQueueingTest(unittest.TestCase):
         self.assertEqual([item['cut_id'] for item in payload['cuts']], ['c2', 'c3'])
 
     def seed_result(self, cut_id, stage, context=None):
-        content = {'samples': [], 'events': []} if stage == 'subtitle_ocr' else {'summary': 'x'}
+        content = {'summary': 'x'}
         with db.connect() as conn:
             conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,settings_json,context_json) VALUES (?,?,'other',?,?,'model',?,?)",
                          (str(uuid.uuid4()), cut_id, stage, json.dumps(content), json.dumps({'structured_type': stage}), json.dumps(context or {})))
 
     def test_only_missing_stages_are_queued_and_finished_cuts_are_skipped(self):
-        c1_bounds = {'cut': {'start_time': 0, 'end_time': 2}}
-        self.seed_result('c1', 'subtitle_ocr', c1_bounds)  # c1 only lacks frames and video
+        self.seed_result('c1', 'initial_frame', {'cut': {'start_time': 0, 'end_time': 2}})  # c1 only lacks the last frame and video
         for stage in pipeline.ALL_STAGES:                    # c2 is finished
             self.seed_result('c2', stage, {'cut': {'start_time': 2, 'end_time': 4}})
         result = main.queue_episode_visual_analysis('e')     # c3 has nothing
         self.assertEqual((result['queued'], result['skipped']), (2, 1))
         items = {item['cut_id']: item for item in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts']}
         self.assertEqual(sorted(items), ['c1', 'c3'])
-        self.assertEqual(set(items['c1']['stages']), {'initial_frame', 'last_frame', 'video_analysis'})
-        self.assertEqual(items['c1']['subtitle_input']['content'], {'samples': [], 'events': []})
+        self.assertEqual(set(items['c1']['stages']), {'last_frame', 'video_analysis'})
         self.assertNotIn('stages', items['c3'])              # nothing done: every stage runs
 
-    def test_subtitles_made_for_other_boundaries_do_not_count_as_done(self):
-        self.seed_result('c1', 'subtitle_ocr', {'cut': {'start_time': 0, 'end_time': 1.5}})
+    def test_subtitles_are_not_a_visual_stage_and_old_results_do_not_count(self):
+        self.assertNotIn('subtitle_ocr', main.VISUAL_STAGES)
+        self.assertNotIn('subtitle_ocr', pipeline.ALL_STAGES)
+        self.seed_result('c1', 'subtitle_ocr', {'cut': {'start_time': 0, 'end_time': 2}})  # extracted per cut before the episode-wide step
         main.queue_episode_visual_analysis('e')
         item = next(i for i in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts'] if i['cut_id'] == 'c1')
         self.assertNotIn('stages', item)
+        self.assertNotIn('subtitle_input', item)
+
+    def test_queued_cut_context_carries_the_episode_subtitles_that_overlap_it(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO subtitle_runs(id,episode_id,language,language_code,status,band_json) VALUES ('run','e','Portuguese','pt','complete',?)", (json.dumps({'top': .8, 'bottom': .95}),))
+            conn.executemany("INSERT INTO subtitle_lines(id,run_id,episode_id,line_index,start_time,end_time,text,confidence) VALUES (?,?,?,?,?,?,?,?)",
+                             [('l1', 'run', 'e', 0, 1.5, 2.5, 'Spans the boundary', 'high'), ('l2', 'run', 'e', 1, 3, 3.5, 'Inside c2', 'low')])
+        main.queue_episode_visual_analysis('e')
+        items = {item['cut_id']: item for item in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts']}
+        first, second = items['c1']['context']['subtitles'], items['c2']['context']['subtitles']
+        self.assertEqual((first['language'], first['strip'], first['extracted']), ('Portuguese', {'top': .8, 'bottom': .95}, True))
+        self.assertEqual([(line['text'], line['crosses_cut']) for line in first['lines']], [('Spans the boundary', True)])
+        self.assertEqual([(line['text'], line['crosses_cut']) for line in second['lines']], [('Spans the boundary', True), ('Inside c2', False)])
+        self.assertEqual(items['c3']['context']['subtitles']['lines'], [])
 
     def test_only_missing_can_be_turned_off_to_redo_everything(self):
         for stage in pipeline.ALL_STAGES:
@@ -80,14 +94,13 @@ class BatchQueueingTest(unittest.TestCase):
         self.assertEqual((result['queued'], result['skipped']), (3, 0))
 
     def test_batch_runs_only_the_stages_each_cut_still_needs(self):
-        self.seed_result('c1', 'subtitle_ocr', {'cut': {'start_time': 0, 'end_time': 2}})
+        self.seed_result('c1', 'initial_frame', {'cut': {'start_time': 0, 'end_time': 2}})
         main.queue_episode_visual_analysis('e')
         job_id, owner = worker.claim_job(('analyze',))
         events = []
         self.process_with_fake_models(job_id, owner, events)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
-        self.assertEqual(events.count('subtitle-cut'), 2)  # c1 already had subtitles
-        self.assertEqual(events.count('frame'), 6)
+        self.assertEqual(events.count('frame'), 5)  # c1 already had its initial frame
         self.assertEqual(events.count('video-cut'), 3)
 
     def test_cuts_report_what_still_needs_human_action(self):
@@ -180,11 +193,9 @@ class BatchQueueingTest(unittest.TestCase):
             return {'summary': 'x'}
 
         with patch.object(pipeline, 'ensure_models_available'), patch.object(pipeline, 'release_gpu_models'), \
-             patch.object(inference_worker, 'get_model', side_effect=lambda: events.append('subtitle-model') or object()), \
-             patch.object(subtitle_model, 'inspect_subtitles', side_effect=lambda *a, **k: events.append('subtitle-cut') or {'samples': [], 'events': []}), \
+             patch.object(inference_worker, 'get_model', side_effect=AssertionError('the WeVisOne model belongs to the subtitle step, not to cut analysis')), \
              patch.object(frame_model, 'frame_server', server), \
              patch.object(frame_model, 'describe_frame', side_effect=describe or default_describe), \
-             patch.object(frame_model, 'classify_subtitle_languages', return_value=[]), \
              patch.object(video_model, 'VideoRuntime', Runtime), patch.object(video_model, 'analyze_video', analyze), \
              patch.object(pipeline.character_detection, 'crop_frame', return_value=b''), \
              patch.object(pipeline.media, 'extract_cut_frame', return_value=1.0), \
@@ -199,8 +210,7 @@ class BatchQueueingTest(unittest.TestCase):
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         self.assertEqual(db.one('SELECT SUM(completed) AS n FROM analysis_job_cuts WHERE job_id=?', (job_id,))['n'], 3)
         shape = [event for event in events if not event.startswith('save:') and event != 'video-load']
-        self.assertEqual(shape, ['subtitle-model'] + ['subtitle-cut'] * 3 + ['server-start'] + ['frame'] * 6 + ['server-stop']
-                         + ['video-cut'] * 3 + ['video-close'])
+        self.assertEqual(shape, ['server-start'] + ['frame'] * 6 + ['server-stop'] + ['video-cut'] * 3 + ['video-close'])
 
     def test_one_failing_cut_does_not_stop_the_others_and_a_retry_finishes_only_it(self):
         main.queue_episode_visual_analysis('e')

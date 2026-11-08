@@ -30,7 +30,7 @@ Ground rules
 - Data times are episode-relative seconds unless a tool says clip-relative; prompts and timelines use clip-relative seconds (0 = cut start).
 - Subtitles and OCR text are reference only. Never put them into image or animation prompts.
 - Human review answers and instructions override model output.
-- You cannot change stored data directly. Use `propose_result_edit`; the user applies it. Never claim something is saved.
+- You cannot change stored data directly. Use `propose_result_edit` for results and `propose_transcript_edit` for the audio transcript; the user applies the proposal. Never claim something is saved.
 - Before specialised work, load the matching skill with `load_skill` (once per conversation unless it was already loaded):
 {skills}
 - Reply in the user's language, in concise Markdown. Put prompts meant for copying in a fenced ```text block.
@@ -100,7 +100,7 @@ def history_messages(session_id, current_turn_id, budget_tokens):
                     has_answer = True
             elif row['role'] == 'tool':
                 content = row['content']
-                if elide_tools and row['tool_name'] != 'propose_result_edit':
+                if elide_tools and row['tool_name'] not in ('propose_result_edit', 'propose_transcript_edit'):
                     content = compact.dumps({'elided': True, 'summary': row['tool_summary'] or row['tool_name'], 'note': 'Call the tool again if you need this data.'})
                 out.append({'role': 'tool', 'tool_call_id': row['tool_call_id'], 'name': row['tool_name'], 'content': content})
         if turn_rows and turn_rows[0]['turn_id'] != current_turn_id and not has_answer:

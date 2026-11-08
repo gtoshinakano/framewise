@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ArrowRight, Minus, Plus } from 'lucide-react'
+import { ArrowLeft, ArrowRight } from 'lucide-react'
 import { api, type AnalysisContext, type AnalysisConfig, type Cut, type VisualStage } from './api'
-import { analysisFrameCount, estimatedVideoFrames } from './analysisFrames'
+import { estimatedVideoFrames } from './analysisFrames'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
 import type { Job } from './api'
 
@@ -44,9 +44,6 @@ export default function AnalysisControls({ cut, episodeId, busy, enabled, onStar
     return () => { active = false }
   }, [cutId])
   useEffect(() => { onConfigChange(config) }, [config, onConfigChange])
-  function setFrameCount(count: number) {
-    setConfig(current => current && { ...current, frame_count: count, frame_mode: 'uniform' })
-  }
   async function save(run: 'none' | 'cut' | 'next' | 'batch' | 'from-here') {
     if (!config || working) return
     if (!validVideoSettings(config)) { setError('Enter even dimensions within the listed limits and a frame rate greater than 0 and at most 30.'); return }
@@ -75,6 +72,16 @@ export default function AnalysisControls({ cut, episodeId, busy, enabled, onStar
       await onStarted()
     } catch (err) { setError((err as Error).message) } finally { setWorking(false) }
   }
+  async function queueSummariesFromHere() {
+    if (working) return
+    setWorking(true); setError(''); setMessage('')
+    try {
+      if (config) await api(`/cuts/${cutId}/analysis-config`, { method: 'PUT', body: JSON.stringify(config) })
+      const result = await api<{ queued: number }>(`/episodes/${episodeId}/consistency-summaries?from_cut=${cut.cut_index + 1}`, { method: 'POST' })
+      setMessage(`Consistency summary queued for ${result.queued} cuts from cut ${cut.cut_index + 1}.`)
+      await onStarted()
+    } catch (err) { setError((err as Error).message) } finally { setWorking(false) }
+  }
   async function queueStage() {
     if (!config || working) return
     if (!validVideoSettings(config)) { setError('Enter valid video settings before queueing.'); return }
@@ -97,22 +104,10 @@ export default function AnalysisControls({ cut, episodeId, busy, enabled, onStar
       await onStarted()
     } catch (err) { setError((err as Error).message) } finally { setWorking(false) }
   }
-  const count = config ? analysisFrameCount(config, cut) : 1
   const unavailable = !config || !context || working || busy || !enabled || !validVideoSettings(config)
   return <div className="rounded-xl border hairline bg-[#1b202a] p-4 space-y-4">
     <div><h3 className="text-sm font-semibold">Prepare this cut</h3><p className="muted mt-1 text-[11px]">Review the frames, select the context, then queue and continue.</p></div>
     {config && context && <>
-      <div>
-        <span className="label" id="frame-count-label">Subtitle reference frames</span>
-        <div className="flex flex-wrap items-center gap-2" aria-labelledby="frame-count-label">
-          <button type="button" className="btn btn-quiet px-3 py-2" aria-label="Remove one frame" disabled={count <= 1} onClick={() => setFrameCount(count - 1)}><Minus size={15} /></button>
-          <output className="min-w-8 text-center text-sm font-semibold tabular-nums" aria-live="polite">{count}</output>
-          <button type="button" className="btn btn-quiet px-3 py-2" aria-label="Add one frame" onClick={() => setFrameCount(count + 1)}><Plus size={15} /></button>
-          <button type="button" className="btn btn-quiet text-xs" disabled={config.frame_mode === 'per_second'} onClick={() => setConfig({ ...config, frame_mode: 'per_second' })}>Reset to 1 per second</button>
-        </div>
-        <p className="muted mt-2 text-[11px]">{config.frame_mode === 'per_second' ? 'Default: one frame per second of cut duration, rounded up. ' : 'Custom frame count. '}{count === 1 ? 'Selects the first frame.' : 'Selected frames are evenly spaced from first to last.'} The first and last frames are also checked for subtitles.</p>
-      </div>
-
       <fieldset><legend className="label">Video analysis</legend><div className="grid grid-cols-3 gap-2">
         <label><span className="muted text-[11px]">Width · px</span><input className="field" type="number" min={128} max={1920} step={2} value={config.video_width} onChange={event => setConfig({ ...config, video_width: event.target.valueAsNumber })} /></label>
         <label><span className="muted text-[11px]">Height · px</span><input className="field" type="number" min={128} max={1080} step={2} value={config.video_height} onChange={event => setConfig({ ...config, video_height: event.target.valueAsNumber })} /></label>
@@ -135,8 +130,8 @@ export default function AnalysisControls({ cut, episodeId, busy, enabled, onStar
       <button className="btn btn-quiet" disabled={working || !onPrevious} onClick={onPrevious}><ArrowLeft size={14} /> Previous</button>
       <button className="btn btn-quiet" disabled={working || !onNext} onClick={onNext}>Next <ArrowRight size={14} /></button>
     </div>
-    <div className="space-y-2 rounded border hairline p-3"><label className="block"><span className="label">Run one visual stage</span><select className="field" value={selectedStage} onChange={event => setSelectedStage(event.target.value as VisualStage)}><option value="subtitle_ocr">Subtitle detection and OCR</option><option value="initial_frame">Initial frame</option><option value="video_analysis">Video analysis</option><option value="last_frame">Last frame</option></select></label><p className="muted text-[11px]">Runs only this stage. Frame and video stages use subtitle regions saved for the current cut timing when queued; otherwise they use none. Subtitle-only runs do not classify language.</p><button className="btn btn-quiet" disabled={unavailable} onClick={() => void queueStage()}>Queue selected stage</button></div>
-    {config && <div className="space-y-2 rounded border hairline p-3"><strong className="text-xs">Episode processing</strong><p className="muted text-[11px]">First queue visual analysis, then queue text processing after visual jobs finish. Text processing creates a consistency summary and then a cut summary for each ready cut.</p><div className="flex flex-wrap gap-2"><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void save('batch')}>Queue all visual analysis</button><button className="btn btn-quiet" disabled={working || busy || !context || !cut.active} title="Queues subtitle OCR, first and last frame, and video analysis for this cut and every later one whose characters are settled (marked as no characters, or every box assigned). Cuts with unknown or undetected characters are skipped and listed." onClick={() => void save('from-here')}>Queue all possible visual analysis from this cut</button><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void queueAllText()}>Queue all text processing</button></div></div>}
+    <div className="space-y-2 rounded border hairline p-3"><label className="block"><span className="label">Run one visual stage</span><select className="field" value={selectedStage} onChange={event => setSelectedStage(event.target.value as VisualStage)}><option value="initial_frame">Initial frame</option><option value="video_analysis">Video analysis</option><option value="last_frame">Last frame</option></select></label><p className="muted text-[11px]">Runs only this stage. Subtitles are not a cut stage: extract them once for the whole video from the audio tab, and every stage is told their language and where they sit.</p><button className="btn btn-quiet" disabled={unavailable} onClick={() => void queueStage()}>Queue selected stage</button></div>
+    {config && <div className="space-y-2 rounded border hairline p-3"><strong className="text-xs">Episode processing</strong><p className="muted text-[11px]">First queue visual analysis, then queue text processing after visual jobs finish. Text processing creates a consistency summary and then a cut summary for each ready cut.</p><div className="flex flex-wrap gap-2"><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void save('batch')}>Queue all visual analysis</button><button className="btn btn-quiet" disabled={working || busy || !context || !cut.active} title="Queues first and last frame and video analysis for this cut and every later one whose characters are settled (marked as no characters, or every box assigned). Cuts with unknown or undetected characters are skipped and listed." onClick={() => void save('from-here')}>Queue all possible visual analysis from this cut</button><button className="btn btn-quiet" disabled={working || !context || !cut.active} title="Queues a consistency summary for this cut and every later enabled cut. Nothing is queued unless every one of them already has its initial frame, video, and last frame results." onClick={() => void queueSummariesFromHere()}>Queue all consistency summary from this cut</button><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void queueAllText()}>Queue all text processing</button></div></div>}
     <button className="btn btn-quiet" disabled={working || !context} onClick={() => void save('none')}>Save preset</button>
   </div>
 }

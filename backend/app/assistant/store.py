@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS assistant_proposals (
     target TEXT NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL,
     base_result_id TEXT, base_content TEXT NOT NULL DEFAULT '', content TEXT NOT NULL,
     summary TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending',
-    applied_result_id TEXT, model_id TEXT, provider TEXT, diff_base TEXT, diff_label TEXT,
+    applied_result_id TEXT, model_id TEXT, provider TEXT, diff_base TEXT, diff_label TEXT, payload_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT
 );
 CREATE INDEX IF NOT EXISTS assistant_proposals_session_idx ON assistant_proposals(session_id);
@@ -57,7 +57,7 @@ ACTIVE = ('queued', 'running')
 def init_schema(conn):
     conn.executescript(SCHEMA)
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(assistant_proposals)')}
-    for column in ('diff_base', 'diff_label'):
+    for column in ('diff_base', 'diff_label', 'payload_json'):
         if column not in columns:
             conn.execute(f'ALTER TABLE assistant_proposals ADD COLUMN {column} TEXT')
 

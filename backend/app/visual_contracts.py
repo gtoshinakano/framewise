@@ -3,7 +3,20 @@ import json
 import math
 import re
 
-SUBTITLE_INSTRUCTION = '''The footage may contain burned-in Portuguese or English subtitles. Ignore all on-screen writing as visual content. Never quote, describe, translate, recreate, or animate subtitles or other text. Do not infer identities or speech from subtitles. The video is silent to you: do not claim to hear speech, assign voices, or infer dialogue from lip movement. If a person appears to speak, mark it as a visual observation only and describe uncertainty.'''
+SUBTITLE_INSTRUCTION = '''The footage may contain burned-in subtitles, always in one single language for the whole video; the language and the strip where they appear are given below when known. Ignore all on-screen writing as visual content. Never quote, describe, translate, recreate, or animate subtitles or other text. Do not infer identities or speech from subtitles. The video is silent to you: do not claim to hear speech, assign voices, or infer dialogue from lip movement. If a person appears to speak, mark it as a visual observation only and describe uncertainty.'''
+
+def subtitle_note(language, boxes, space):
+    """Closing sentence for visual prompts: the one subtitle language and where the strip sits, if known."""
+    if not language and not boxes:
+        return ''
+    parts = ['\nSubtitles:']
+    if language:
+        parts.append(f'every burned-in subtitle in this video is in {language}; that is certain.')
+    if boxes:
+        parts.append(f'The subtitle strip is {json.dumps(boxes)} in {space} (detected for the whole video; edges may be imprecise).')
+    parts.append('Treat everything in that strip as subtitles and never read, describe, translate or reproduce it.')
+    return ' '.join(parts)
+
 
 FRAME_INSTRUCTION = '''Analyze this single frame in detail for recreating its visual composition. Return one JSON object with exactly these keys: composition, setting, lighting, camera, visible_characters, other_visual_details, uncertainties. The first four and other_visual_details and uncertainties must be strings. visible_characters must be a list of objects with keys appearance, position, pose, expression and identity_evidence, all strings. For each visible character, use position to describe their location in the frame and apparent body and face orientation relative to the camera: facing camera, facing away, profile, or three-quarter view, including visible left/right direction when clear. Say unknown when the orientation is obscured. Use pose to describe visible leg and foot placement and any posture consistent with a step or walking; if these details are obscured, say so. A single frame cannot establish whether a person is walking or stationary: explicitly state that walking is unconfirmed, and do not treat a walking-like pose as proof of motion. Describe visible detail only. When supplied character detections have labels_confirmed_by_queue set to true, the user has verified each named box: identify the person in the matching target frame by that name in appearance and identity_evidence, citing the user-verified box. Describe that person’s visible pose directly; do not hedge the name merely because it originated in detection. Unnamed boxes and labels without that flag do not confirm identity. Do not infer identity for other people. ''' + SUBTITLE_INSTRUCTION
 

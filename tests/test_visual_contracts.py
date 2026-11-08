@@ -1,6 +1,6 @@
 import json
 import unittest
-from app.visual_contracts import validate_frame, validate_video, SUBTITLE_INSTRUCTION
+from app.visual_contracts import validate_frame, validate_video, subtitle_note, SUBTITLE_INSTRUCTION
 
 
 class VisualContractsTest(unittest.TestCase):
@@ -10,7 +10,16 @@ class VisualContractsTest(unittest.TestCase):
         self.assertEqual(validate_frame('```json\n' + json.dumps(valid) + '\n```'), valid)
         valid['visible_characters'] = ['invented']
         with self.assertRaises(ValueError): validate_frame(json.dumps(valid))
-        self.assertIn('Portuguese or English', SUBTITLE_INSTRUCTION)
+        self.assertIn('one single language', SUBTITLE_INSTRUCTION)
+        self.assertNotIn('Portuguese or English', SUBTITLE_INSTRUCTION)
+
+    def test_subtitle_note_states_the_language_as_certain_and_names_the_strip(self):
+        note = subtitle_note('Japanese', [[0, 540, 1280, 700]], 'image pixels')
+        self.assertIn('every burned-in subtitle in this video is in Japanese; that is certain', note)
+        self.assertIn('[[0, 540, 1280, 700]] in image pixels', note)
+        self.assertIn('never read, describe, translate or reproduce it', note)
+        self.assertEqual(subtitle_note(None, [], 'image pixels'), '')
+        self.assertNotIn('certain', subtitle_note(None, [[0, 1, 2, 3]], 'image pixels'))
 
     def test_video_accepts_overlapping_subject_events_without_reordering(self):
         events = [

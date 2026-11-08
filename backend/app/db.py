@@ -154,6 +154,33 @@ def init_db():
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS transcript_episode_time_idx ON transcript_segments(episode_id,start_time,end_time);
+        CREATE TABLE IF NOT EXISTS subtitle_runs (
+            id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+            language TEXT NOT NULL, language_code TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            band_json TEXT, scan_hash TEXT,
+            model_id TEXT, model_revision TEXT, prompt TEXT,
+            settings_json TEXT NOT NULL DEFAULT '{}', diagnostics_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS subtitle_runs_episode_idx ON subtitle_runs(episode_id,status);
+        CREATE TABLE IF NOT EXISTS subtitle_readings (
+            run_id TEXT NOT NULL REFERENCES subtitle_runs(id) ON DELETE CASCADE,
+            event_index INTEGER NOT NULL,
+            start_time REAL NOT NULL, end_time REAL NOT NULL, rep_time REAL NOT NULL,
+            outcome TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+            legible TEXT NOT NULL DEFAULT 'none', detail TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(run_id,event_index)
+        );
+        CREATE TABLE IF NOT EXISTS subtitle_lines (
+            id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES subtitle_runs(id) ON DELETE CASCADE,
+            episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            line_index INTEGER NOT NULL, start_time REAL NOT NULL, end_time REAL NOT NULL,
+            text TEXT NOT NULL, confidence TEXT NOT NULL, readings INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(run_id,line_index)
+        );
+        CREATE INDEX IF NOT EXISTS subtitle_lines_time_idx ON subtitle_lines(episode_id,start_time,end_time);
         CREATE TABLE IF NOT EXISTS context_items (
             id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             episode_id TEXT REFERENCES episodes(id) ON DELETE CASCADE,
@@ -245,6 +272,7 @@ def init_db():
             ('character_detection_runs', 'phase', "TEXT NOT NULL DEFAULT 'complete'"),
             ('character_detection_runs', 'timings_json', 'TEXT'),
             ('cuts', 'no_characters', 'INTEGER NOT NULL DEFAULT 0'),
+            ('episodes', 'subtitle_language', 'TEXT'),
             ('cuts', 'created_at', 'TEXT'),
             ('character_detections', 'match_model_id', 'TEXT'),
             ('character_detections', 'match_model_revision', 'TEXT'),
@@ -332,6 +360,12 @@ def init_db():
             UPDATE composition_changes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cut_id IN (SELECT id FROM cuts WHERE episode_id IN (NEW.episode_id,OLD.episode_id));
         END;
         CREATE TRIGGER IF NOT EXISTS composition_transcript_delete AFTER DELETE ON transcript_segments BEGIN
+            UPDATE composition_changes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cut_id IN (SELECT id FROM cuts WHERE episode_id=OLD.episode_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS composition_subtitle_run_update AFTER UPDATE OF status ON subtitle_runs BEGIN
+            UPDATE composition_changes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cut_id IN (SELECT id FROM cuts WHERE episode_id=NEW.episode_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS composition_subtitle_run_delete AFTER DELETE ON subtitle_runs BEGIN
             UPDATE composition_changes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cut_id IN (SELECT id FROM cuts WHERE episode_id=OLD.episode_id);
         END;
         CREATE TRIGGER IF NOT EXISTS composition_detection_run_insert AFTER INSERT ON character_detection_runs BEGIN

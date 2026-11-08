@@ -20,8 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import db, media, worker, storage, frame_source, frame_cache
-from .external_api import AnalysisContext, AnalysisResult, ContextItem, Transcript, VoiceSample, router as external_router
+from . import db, media, worker, storage, frame_source, frame_cache, subtitle_store
+from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_GB", "40")) * 1024 ** 3
@@ -265,6 +265,10 @@ def episode_response(episode_id: str):
         FROM cuts c WHERE c.episode_id=? AND c.active=1 ORDER BY c.cut_index""", (episode_id,))]
     episode["archived_cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=0 ORDER BY start_time,cut_index", (episode_id,))]
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
+    with db.connect() as conn:
+        run = subtitle_store.current_run(episode_id, conn)
+        episode["subtitles"] = {"language": episode.get("subtitle_language"),
+                                "run": {**run, "line_count": conn.execute("SELECT COUNT(*) FROM subtitle_lines WHERE run_id=?", (run["id"],)).fetchone()[0]} if run else None}
     # The queued payload can contain every cut's context and may be very large.
     # Keep it in SQLite for the worker and return only job metadata to the UI.
     episode["jobs"] = db.all_rows("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,payload_json FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
@@ -745,6 +749,57 @@ def transcribe_episode(episode_id: str):
         raise HTTPException(409, str(exc)) from exc
 
 
+class SubtitleRunInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    language: str = Field(min_length=2, max_length=60, description="Language of the burned-in subtitles; one language applies to the whole episode.")
+
+
+def episode_subtitles(episode_id: str, history: bool = False):
+    """The saved language, the current run and its lines, plus every run when history is requested."""
+    with db.connect() as conn:
+        run = subtitle_store.current_run(episode_id, conn)
+        payload = {"language": subtitle_store.episode_language(episode_id, conn), "run": run,
+                   "lines": subtitle_store.lines(episode_id, run_id=run["id"], conn=conn) if run else []}
+        if run:
+            run["line_count"] = len(payload["lines"])
+        if history:
+            payload["runs"] = [subtitle_store.serialize_run(row, with_prompt=True) for row in conn.execute("SELECT * FROM subtitle_runs WHERE episode_id=? ORDER BY rowid DESC", (episode_id,))]
+    return payload
+
+
+@app.post("/api/episodes/{episode_id}/subtitles")
+def extract_episode_subtitles(episode_id: str, body: SubtitleRunInput):
+    """Queue one job that extracts the burned-in subtitles of the entire episode, independent of its cuts.
+
+    The language is required: the whole video has one subtitle language and the model is told it as a fact.
+    Run this after audio transcription has finished; the speech times guide where the subtitle strip is looked for.
+    """
+    from . import subtitle_reader
+    episode = require_episode(episode_id)
+    try:
+        language = subtitle_reader.resolve_language(body.language)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not episode["duration"] or not episode["width"]:
+        raise HTTPException(400, "Prepare the video before extracting subtitles")
+    if db.one("SELECT 1 AS found FROM jobs WHERE episode_id=? AND pipeline IN ('transcribe','voice_sample') AND status IN ('queued','running')", (episode_id,)):
+        raise HTTPException(409, "Wait for audio transcription to finish, then extract the subtitles")
+    try:
+        job_id = worker.enqueue(episode_id, "subtitles", {"language": language["name"]})
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    with db.connect() as conn:
+        conn.execute("UPDATE episodes SET subtitle_language=? WHERE id=?", (language["name"], episode_id))
+    return {"job_id": job_id, "language": language["name"]}
+
+
+@app.get("/api/episodes/{episode_id}/subtitles", responses={200: {"model": EpisodeSubtitles}})
+def list_episode_subtitles(episode_id: str, history: bool = False):
+    """Return the subtitle language, the current run and its lines. Lines belong to the episode, not to a cut."""
+    require_episode(episode_id)
+    return episode_subtitles(episode_id, history)
+
+
 @app.get("/api/projects/{project_id}/voice-samples", responses={200: {"model": list[VoiceSample]}})
 def list_voice_samples(project_id: str):
     """List character voice references in the project and whether their audio is available."""
@@ -922,6 +977,15 @@ def delete_transcript_segment(segment_id: str):
     return {"ok": True}
 
 
+def subtitle_context(cut, episode_id):
+    """Subtitle lines overlapping the cut from the episode-wide extraction, with the language they are in."""
+    with db.connect() as conn:
+        context = subtitle_store.cut_context(conn, cut, episode_id)
+    band = context.pop("band")
+    context["strip"] = {"top": band["top"], "bottom": band["bottom"]} if band else None
+    return context
+
+
 @app.get("/api/cuts/{cut_id}/analysis-context", responses={200: {"model": AnalysisContext}})
 def get_analysis_context(cut_id: str):
     """Return cut context with current neighboring results and overlapping transcript segments."""
@@ -945,6 +1009,7 @@ def get_analysis_context(cut_id: str):
         "chunks": db.all_rows("SELECT * FROM chunks WHERE episode_id=? AND start_time<? AND end_time>? ORDER BY chunk_index", (episode["id"], cut["end_time"], cut["start_time"])),
         "context_items": db.all_rows("SELECT * FROM context_items WHERE project_id=? AND (episode_id IS NULL OR episode_id=?) ORDER BY kind,title", (project["id"], episode["id"])),
         "transcript_segments": [serialize_transcript(segment) for segment in db.all_rows("SELECT t.*,c.title AS character_name FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>? ORDER BY t.start_time,t.id", (episode["id"], cut["end_time"], cut["start_time"]))],
+        "subtitles": subtitle_context(cut, episode["id"]),
     }
 
 
@@ -1329,21 +1394,7 @@ def put_cut_analysis_config(cut_id: str, config: AnalysisConfig):
     return config
 
 
-VISUAL_STAGES = ('subtitle_ocr', 'initial_frame', 'video_analysis', 'last_frame')
-
-
-def saved_subtitle_input(conn, base_result_ids, cut):
-    """The cut's current subtitle result, when it was made for the same boundaries; later stages reuse it."""
-    subtitle_id = base_result_ids.get('subtitle_ocr')
-    row = conn.execute('SELECT content,context_json FROM analysis_results WHERE id=?', (subtitle_id,)).fetchone() if subtitle_id else None
-    if not row:
-        return None
-    source_cut = json_object_or_empty(row['context_json']).get('cut', {})
-    data = json_object_or_empty(row['content'])
-    if (isinstance(source_cut, dict) and source_cut.get('start_time') == cut['start_time']
-            and source_cut.get('end_time') == cut['end_time'] and isinstance(data.get('samples'), list)):
-        return {'result_id': subtitle_id, 'content': data}
-    return None
+VISUAL_STAGES = ('initial_frame', 'video_analysis', 'last_frame')
 
 
 def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[str] | None = None):
@@ -1393,10 +1444,6 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[st
                     project_id = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()['project_id']
                     item['character_references'] = character_detection.select_analysis_references(character_detection.reference_snapshots(conn, project_id), labeled)
                     item['base_result_ids'] = {result['type']: result['id'] for result in structured_results.list_results(cut['id'])}
-                    if stages and 'subtitle_ocr' not in stages:
-                        saved_subtitles = saved_subtitle_input(conn, item['base_result_ids'], context['cut'])
-                        if saved_subtitles:
-                            item['subtitle_input'] = saved_subtitles
                 inputs.append(item)
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs, **({'workflow': 'single_cut_v2', 'auto_consistency': False} if cut_id is not None else {}), **({'stages': stages} if stages else {})})))
             worker.sync_episode_status(conn, episode_id)
@@ -1463,9 +1510,7 @@ def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, 
                     blocked[problem].append(cut['cut_index'] + 1)
                     continue
             base_ids = {result['type']: result['id'] for result in structured_results.list_results(cut_id)}
-            subtitles = saved_subtitle_input(conn, base_ids, context['cut'])
-            done = set(base_ids) if subtitles else set(base_ids) - {'subtitle_ocr'}  # subtitles for other boundaries don't count
-            missing = [stage for stage in VISUAL_STAGES if stage not in done] if only_missing else list(VISUAL_STAGES)
+            missing = [stage for stage in VISUAL_STAGES if stage not in base_ids] if only_missing else list(VISUAL_STAGES)
             if not missing:
                 skipped += 1
                 continue
@@ -1473,8 +1518,6 @@ def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, 
                     'character_references': character_detection.select_analysis_references(references, labeled)}
             if len(missing) < len(VISUAL_STAGES):
                 item['stages'] = missing
-                if 'subtitle_ocr' not in missing:
-                    item['subtitle_input'] = subtitles
             items.append(item)
         job_ids = []
         if items:
@@ -1703,6 +1746,50 @@ def queue_consistency_summary(cut_id: str):
     return {'job_id': job_id}
 
 
+@app.post('/api/episodes/{episode_id}/consistency-summaries')
+def queue_episode_consistency_summaries(episode_id: str, from_cut: int | None = None):
+    """Queue a consistency summary for this cut and every later enabled cut, all or nothing.
+
+    `from_cut` is the cut number shown in the editor (cut_index + 1). Every cut in the range must already
+    have its initial frame, video, and last frame results and no pending analysis or summary job; otherwise
+    nothing is queued and the offending cuts are returned in `blocked` with the reason.
+    """
+    from . import structured_results, summary_queue
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not conn.execute('SELECT id FROM episodes WHERE id=?', (episode_id,)).fetchone():
+            raise HTTPException(404, 'Episode not found')
+        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
+            raise HTTPException(409, 'Wait for media preparation or detection to finish')
+        first_index = max(0, from_cut - 1) if from_cut else 0
+        cuts = conn.execute('SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index', (episode_id, first_index)).fetchall()
+        payloads, blocked = [], {'missing_results': [], 'busy': []}
+        for cut in cuts:
+            cut_id, number = cut['id'], cut['cut_index'] + 1
+            if conn.execute("SELECT 1 FROM jobs j WHERE j.episode_id=? AND j.status IN ('queued','running') AND j.pipeline IN ('analyze','regen','consistency_summary') AND (json_extract(j.payload_json,'$.cut_id')=? OR EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?))", (episode_id, cut_id, cut_id)).fetchone():
+                blocked['busy'].append(number); continue
+            _, config = analysis_config_for_cut(cut_id)
+            context = selected_analysis_context(cut_id, config)
+            try:
+                payloads.append(summary_queue.payload_for(cut_id, config.model_dump(), context, structured_results.list_results(cut_id)))
+            except ValueError:
+                blocked['missing_results'].append(number)
+        if not payloads and not any(blocked.values()):
+            raise HTTPException(409, 'There are no enabled cuts to summarize')
+        if any(blocked.values()):
+            def listed(numbers):
+                return ', '.join(map(str, numbers[:8])) + (f' and {len(numbers) - 8} more' if len(numbers) > 8 else '')
+            parts = ['Not every cut is ready for a consistency summary; nothing was queued.']
+            if blocked['missing_results']:
+                parts.append(f"Initial frame, video, or last frame result missing: cut {listed(blocked['missing_results'])}.")
+            if blocked['busy']:
+                parts.append(f"Analysis or summary already queued or running: cut {listed(blocked['busy'])}.")
+            raise HTTPException(409, ' '.join(parts))
+        job_ids = [summary_queue.insert(conn, episode_id, payload) for payload in payloads]
+        worker.sync_episode_status(conn, episode_id)
+    return {'queued': len(job_ids), 'job_ids': job_ids}
+
+
 @app.post('/api/cuts/{cut_id}/review-answers')
 def queue_review_answers(cut_id: str):
     """Queue a draft of answers to the consistency summary's human-review and suggested-check items."""
@@ -1923,7 +2010,7 @@ def analyze_cut(cut_id: str):
 
 
 class VisualStageInput(BaseModel):
-    stage: Literal['subtitle_ocr', 'initial_frame', 'video_analysis', 'last_frame']
+    stage: Literal['initial_frame', 'video_analysis', 'last_frame']
 
 
 @app.post('/api/cuts/{cut_id}/analysis-stages/run')
@@ -1975,7 +2062,7 @@ def cancel_inference_job(job_id: str):
         if not job:
             raise HTTPException(404, "Job not found")
         payload = json_object_or_empty(job['payload_json'])
-        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "review_answers", "transcribe", "voice_sample", "character_detect", "composition_compact")) or (job["status"] == "running" and (job["pipeline"] in ("regen", "consistency_summary", "review_answers", "composition_compact") or (job['pipeline'] == 'analyze' and (payload.get('text_only') is True or payload.get('workflow') == 'single_cut_v2'))))
+        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "review_answers", "transcribe", "voice_sample", "character_detect", "composition_compact", "subtitles")) or (job["status"] == "running" and (job["pipeline"] in ("regen", "consistency_summary", "review_answers", "composition_compact", "subtitles") or (job['pipeline'] == 'analyze' and (payload.get('text_only') is True or payload.get('workflow') == 'single_cut_v2'))))
         if not cancellable:
             raise HTTPException(409, "This job cannot be cancelled while running")
         message = "Cancelled before processing" if job["status"] == "queued" else "Cancelled during processing"

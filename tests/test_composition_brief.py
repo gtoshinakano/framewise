@@ -566,6 +566,30 @@ class CompositionApiTest(unittest.TestCase):
         self.assertEqual(actions['beats'][0]['subject'],'Mai Sakurajima')
         self.assertTrue(any(s['subject']=='Mai Sakurajima' for s in actions['end_state']['subjects']))
 
+    def test_subtitles_come_from_the_episode_track_and_are_not_needed_for_readiness(self):
+        cut = self.data['cut']
+        start = cut['start_time']
+        with db.connect() as conn:
+            conn.execute("DELETE FROM analysis_results WHERE cut_id=? AND json_extract(settings_json,'$.structured_type')='subtitle_ocr'", (cut['id'],))
+        brief = self.client.get(self.path).json()['cuts'][0]
+        self.assertTrue(brief['ready'])                      # a per-cut subtitle result is no longer required
+        self.assertNotIn('subtitles', brief)
+        with db.connect() as conn:
+            conn.execute("INSERT INTO subtitle_runs(id,episode_id,language,language_code,status) VALUES ('run','e','Japanese','ja','complete')")
+            conn.executemany("INSERT INTO subtitle_lines(id,run_id,episode_id,line_index,start_time,end_time,text,confidence) VALUES (?,?,?,?,?,?,?,?)",
+                             [('before', 'run', 'e', 0, start - 5, start - 1, 'Before the cut', 'high'),
+                              ('begins', 'run', 'e', 1, start - 1, start + .5, 'Begins earlier', 'high'),
+                              ('inside', 'run', 'e', 2, start + 1.5, start + 3, 'Inside the cut', 'low')])
+        brief = self.client.get(self.path).json()['cuts'][0]
+        self.assertEqual(brief['subtitles'], [{'text': 'Begins earlier', 'lang': 'ja', 't': 0}, {'text': 'Inside the cut', 'lang': 'ja', 't': 1.5}])
+
+    def test_older_per_cut_subtitles_are_used_until_the_episode_is_extracted(self):
+        brief = self.client.get(self.path).json()['cuts'][0]
+        legacy = next(r['content'] for r in self.data['results'] if r['type'] == 'subtitle_ocr')
+        cut = self.data['cut']
+        expected = composition_brief.subtitle_lines(legacy['events'], cut['start_time'], cut['end_time'])
+        self.assertEqual(brief.get('subtitles', []), expected)
+
     def test_openapi_and_guide_describe_composition_contract(self):
         spec = self.client.get('/openapi.json').json()
         path = spec['paths']['/api/v1/episodes/{episode_id}/brief']['get']

@@ -16,7 +16,6 @@ class FakeCutRun:
         self.failure = None
         self.item = {}
         self.references = []
-        self.subtitles = {'samples': [], 'events': []}
 
     def needs(self, kind):
         return kind in self.stages
@@ -67,13 +66,12 @@ class BatchPipelineTest(unittest.TestCase):
         job = {'id': 'job', 'payload_json': '{}'}
         with patch.object(pipeline, 'CutRun', side_effect=runs), \
              patch.object(pipeline, 'ensure_models_available'), patch.object(pipeline, 'release_gpu_models'), \
-             patch.object(pipeline, '_subtitle_stage', side_effect=lambda *_: order.append('subtitles')), \
              patch.object(pipeline, '_boundary_frame_stages', side_effect=lambda *_: order.append('frames')), \
              patch.object(pipeline, '_video_stage', side_effect=lambda *_: order.append('video')):
             for run in runs:
                 run.validate = lambda: None
             pipeline.run_batch(job, 'owner', {}, [{}, {}])
-        self.assertEqual(order, ['subtitles', 'frames', 'video'])
+        self.assertEqual(order, ['frames', 'video'])  # subtitles are an episode-wide step of their own
         self.assertTrue(all(run.completed for run in runs))
 
 

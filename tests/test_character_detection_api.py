@@ -79,10 +79,9 @@ class CharacterDetectionAPITest(unittest.TestCase):
             conn.execute("INSERT INTO character_image_references(id,character_context_id,detection_id) VALUES ('ref','ctx','box')")
         job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
         _, owner = worker.claim_job(('analyze',))
-        subtitles = {'samples': [], 'events': []}
         frame = {'composition':'','setting':'','lighting':'','camera':'','visible_characters':[], 'other_visual_details':'','uncertainties':''}
         with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
-             patch.object(inference_worker, 'get_model', return_value=object()), patch.object(single_cut_pipeline.subtitle_model, 'inspect_subtitles', return_value=subtitles), \
+             patch.object(inference_worker, 'get_model', side_effect=AssertionError('subtitles are not extracted per cut')), \
              patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source,target,time,*a,**k: time), \
              patch.object(character_detection, 'crop_frame', return_value=b'reference image'), \
              patch.object(frame_model, 'frame_server', return_value=nullcontext('server')), \
