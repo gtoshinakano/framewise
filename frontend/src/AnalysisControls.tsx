@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight } from 'lucide-react'
 import { api, type AnalysisContext, type AnalysisConfig, type Cut, type VisualStage } from './api'
 import { estimatedVideoFrames } from './analysisFrames'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
+import { ANSWERS_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
 import type { Job } from './api'
 
 function validVideoSettings(config: AnalysisConfig) {
@@ -82,6 +83,20 @@ export default function AnalysisControls({ cut, episodeId, busy, enabled, onStar
       await onStarted()
     } catch (err) { setError((err as Error).message) } finally { setWorking(false) }
   }
+  /** Queues production-decision drafts (saved when finished) or Cut summaries for this cut and every later ready one. */
+  async function queueTextFromHere(kind: 'answers' | 'summaries') {
+    if (working) return
+    setWorking(true); setError(''); setMessage('')
+    try {
+      if (config) await api(`/cuts/${cutId}/analysis-config`, { method: 'PUT', body: JSON.stringify(config) })
+      const first = cut.cut_index + 1
+      const result = await api<TextBatchResult>(`/episodes/${episodeId}/${kind === 'answers' ? 'review-answers' : 'cut-summaries'}?from_cut=${first}`, { method: 'POST' })
+      setMessage(kind === 'answers'
+        ? batchQueueMessage('Production decisions draft', first, result, ANSWERS_BATCH_REASONS)
+        : batchQueueMessage('Cut summary', first, result, SUMMARY_BATCH_REASONS, 'they already have a Cut summary'))
+      await onStarted()
+    } catch (err) { setError((err as Error).message) } finally { setWorking(false) }
+  }
   async function queueStage() {
     if (!config || working) return
     if (!validVideoSettings(config)) { setError('Enter valid video settings before queueing.'); return }
@@ -131,7 +146,7 @@ export default function AnalysisControls({ cut, episodeId, busy, enabled, onStar
       <button className="btn btn-quiet" disabled={working || !onNext} onClick={onNext}>Next <ArrowRight size={14} /></button>
     </div>
     <div className="space-y-2 rounded border hairline p-3"><label className="block"><span className="label">Run one visual stage</span><select className="field" value={selectedStage} onChange={event => setSelectedStage(event.target.value as VisualStage)}><option value="initial_frame">Initial frame</option><option value="video_analysis">Video analysis</option><option value="last_frame">Last frame</option></select></label><p className="muted text-[11px]">Runs only this stage. Subtitles are not a cut stage: extract them once for the whole video from the audio tab, and every stage is told their language and where they sit.</p><button className="btn btn-quiet" disabled={unavailable} onClick={() => void queueStage()}>Queue selected stage</button></div>
-    {config && <div className="space-y-2 rounded border hairline p-3"><strong className="text-xs">Episode processing</strong><p className="muted text-[11px]">First queue visual analysis, then queue text processing after visual jobs finish. Text processing creates a consistency summary and then a cut summary for each ready cut.</p><div className="flex flex-wrap gap-2"><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void save('batch')}>Queue all visual analysis</button><button className="btn btn-quiet" disabled={working || busy || !context || !cut.active} title="Queues first and last frame and video analysis for this cut and every later one whose characters are settled (marked as no characters, or every box assigned). Cuts with unknown or undetected characters are skipped and listed." onClick={() => void save('from-here')}>Queue all possible visual analysis from this cut</button><button className="btn btn-quiet" disabled={working || !context || !cut.active} title="Queues a consistency summary for this cut and every later enabled cut. Nothing is queued unless every one of them already has its initial frame, video, and last frame results." onClick={() => void queueSummariesFromHere()}>Queue all consistency summary from this cut</button><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void queueAllText()}>Queue all text processing</button></div></div>}
+    {config && <div className="space-y-2 rounded border hairline p-3"><strong className="text-xs">Episode processing</strong><p className="muted text-[11px]">First queue visual analysis, then queue text processing after visual jobs finish. Text processing creates a consistency summary and then a cut summary for each ready cut.</p><div className="flex flex-wrap gap-2"><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void save('batch')}>Queue all visual analysis</button><button className="btn btn-quiet" disabled={working || busy || !context || !cut.active} title="Queues first and last frame and video analysis for this cut and every later one whose characters are settled (marked as no characters, or every box assigned). Cuts with unknown or undetected characters are skipped and listed." onClick={() => void save('from-here')}>Queue all possible visual analysis from this cut</button><button className="btn btn-quiet" disabled={working || !context || !cut.active} title="Queues a consistency summary for this cut and every later enabled cut. Nothing is queued unless every one of them already has its initial frame, video, and last frame results." onClick={() => void queueSummariesFromHere()}>Queue all consistency summary from this cut</button><button className="btn btn-quiet" disabled={working || !context || !cut.active} title="Drafts answers to the consistency summary's human review and suggested checks for this cut and every later cut that has a consistency summary and something to decide, and saves each draft as that cut's answers. Cuts that are not ready are skipped and listed. Saved answers are kept in the draft, and answers you edit while a draft waits are not overwritten." onClick={() => void queueTextFromHere('answers')}>Queue production decisions draft from this cut</button><button className="btn btn-quiet" disabled={working || !context || !cut.active} title="Queues a Cut summary for this cut and every later cut that has a consistency summary but no Cut summary yet. Cuts whose production decisions are still being drafted, or that are not ready, are skipped and listed." onClick={() => void queueTextFromHere('summaries')}>Queue Cut Summary from this cut</button><button className="btn btn-quiet" disabled={working || busy || !context} onClick={() => void queueAllText()}>Queue all text processing</button></div></div>}
     <button className="btn btn-quiet" disabled={working || !context} onClick={() => void save('none')}>Save preset</button>
   </div>
 }

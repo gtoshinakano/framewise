@@ -87,9 +87,11 @@ export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStar
     if (appliedReviewJob.current === undefined) { appliedReviewJob.current = doneId; return }
     if (!doneId || doneId === appliedReviewJob.current) return
     appliedReviewJob.current = doneId
-    api<{ job_id: string | null; content: string }>(`/cuts/${cutId}/review-answers`).then(draft => {
+    Promise.all([api<{ job_id: string | null; content: string }>(`/cuts/${cutId}/review-answers`), api<{ content: string }>(`/cuts/${cutId}/brief-instructions`)]).then(([draft, saved]) => {
       if (draft.job_id !== doneId || !draft.content) return
-      setHumanInstructions(current => { setPreviousAnswers(current); return draft.content })
+      // A batch draft is saved by the worker; show it as saved so the summary can be queued right away.
+      if (saved.content === draft.content) setSavedInstructions(saved.content)
+      setHumanInstructions(current => { if (current !== draft.content) setPreviousAnswers(current); return draft.content })
     }).catch(err => setReviewError((err as Error).message))
   }, [latestReviewDone?.id, instructionsLoaded, cutId])
   async function generateAnswers() {

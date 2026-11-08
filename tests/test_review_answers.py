@@ -65,6 +65,65 @@ class ReviewAnswersTest(unittest.TestCase):
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         self.assertEqual(self.client.get('/api/cuts/c1/review-answers').json(), {'job_id': job_id, 'content': '- Coat: green'})
 
+    def queue_from(self, number=None):
+        return self.client.post('/api/episodes/e/review-answers' + (f'?from_cut={number}' if number else ''))
+
+    def test_batch_queues_ready_cuts_from_here_and_lists_the_rest(self):
+        self.seed(cuts=('c1',))  # c2 has no consistency summary yet
+        body = self.queue_from(1).json()
+        self.assertEqual((body['queued'], body['blocked']), (1, {'no_consistency': [2], 'busy': [], 'nothing_to_review': []}))
+        payload = self.payload(body['job_ids'][0])
+        self.assertEqual(payload['cut_id'], 'c1')
+        self.assertTrue(payload['auto_save'])
+        later = self.queue_from(2).json()  # earlier cuts are left out
+        self.assertEqual((later['queued'], later['blocked']['no_consistency']), (0, [2]))
+
+    def test_batch_skips_cuts_that_are_busy_or_have_nothing_to_decide(self):
+        self.seed()
+        with db.connect() as conn:
+            conn.execute("UPDATE analysis_results SET content=? WHERE id='c2consistency_summary'", (json.dumps({'human_review': 'None required.', 'recommended_checks': 'None required.'}),))
+        self.assertEqual(self.client.post('/api/cuts/c1/review-answers').status_code, 200)  # a draft is already queued for c1
+        body = self.queue_from().json()
+        self.assertEqual((body['queued'], body['blocked']), (0, {'no_consistency': [], 'busy': [1], 'nothing_to_review': [2]}))
+        self.client.put('/api/cuts/c2/brief-instructions', json={'content': 'Keep the coat green'})  # saved answers are worth keeping
+        self.assertEqual(self.queue_from(2).json()['queued'], 1)
+
+    def test_batch_waits_for_media_work(self):
+        self.seed()
+        with db.connect() as conn:
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json,status) VALUES ('prep','e','prepare','{}','running')")
+        self.assertEqual(self.queue_from().status_code, 409)
+
+    def run_draft(self, job_id):
+        with patch('app.inference_worker.chat_json', return_value=({'answers': '- Coat: green'}, 'model/x')):
+            inference_worker.process_review_answers(*worker.claim_job(('review_answers',)))
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
+
+    def test_batch_job_saves_the_answers_it_drafted(self):
+        self.seed(cuts=('c1',))
+        self.client.put('/api/cuts/c1/brief-instructions', json={'content': 'Coat is green'})
+        job_id = self.queue_from().json()['job_ids'][0]
+        self.run_draft(job_id)
+        self.assertEqual(self.client.get('/api/cuts/c1/brief-instructions').json()['content'], '- Coat: green')
+        self.assertEqual(self.client.get('/api/cuts/c1/review-answers').json()['content'], '- Coat: green')
+        self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job_id,))['stage'], 'Complete')
+        self.assertEqual(self.payload(job_id)['existing_answers'], 'Coat is green')  # the replaced text stays in the job
+
+    def test_batch_job_does_not_overwrite_answers_edited_while_it_waited(self):
+        self.seed(cuts=('c1',))
+        job_id = self.queue_from().json()['job_ids'][0]
+        self.client.put('/api/cuts/c1/brief-instructions', json={'content': 'Typed meanwhile'})
+        self.run_draft(job_id)
+        self.assertEqual(self.client.get('/api/cuts/c1/brief-instructions').json()['content'], 'Typed meanwhile')
+        self.assertEqual(self.client.get('/api/cuts/c1/review-answers').json()['content'], '- Coat: green')  # still offered as a draft
+        self.assertIn('not saved', db.one('SELECT stage FROM jobs WHERE id=?', (job_id,))['stage'])
+
+    def test_single_cut_draft_still_only_stores_a_draft(self):
+        self.seed(cuts=('c1',))
+        job_id = self.client.post('/api/cuts/c1/review-answers').json()['job_id']
+        self.run_draft(job_id)
+        self.assertEqual(self.client.get('/api/cuts/c1/brief-instructions').json()['content'], '')
+
     def test_empty_answer_is_rejected(self):
         with self.assertRaises(ValueError):
             review_answers.validate_answers('  ')

@@ -86,6 +86,12 @@ def build_evidence(results, context, existing_answers, neighbours):
     return evidence
 
 
+def has_review_items(evidence):
+    """False when the consistency summary leaves nothing to decide or check."""
+    review = evidence.get('review', {})
+    return any(str(review.get(key) or '').strip().rstrip('.').lower() not in ('', 'none required') for key in ('human_review', 'recommended_checks'))
+
+
 def validate_answers(text):
     text = text.strip()
     if not text:
@@ -118,6 +124,19 @@ def save_draft(conn, cut_id, job_id, content, model_id):
     conn.execute('INSERT INTO cut_review_drafts(cut_id,job_id,content,model_id) VALUES (?,?,?,?) '
                  'ON CONFLICT(cut_id) DO UPDATE SET job_id=excluded.job_id,content=excluded.content,model_id=excluded.model_id,created_at=CURRENT_TIMESTAMP',
                  (cut_id, job_id, content, model_id))
+
+
+def save_answers(conn, cut_id, content, expected):
+    """Store a draft as the cut's saved answers unless they changed after the job was queued.
+
+    `expected` is the text the job was drafted from. Returns False and leaves the answers alone when
+    they no longer match it, so nothing typed in the meantime is lost.
+    """
+    row = conn.execute('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,)).fetchone()
+    if (row['content'] if row else '') != (expected or ''):
+        return False
+    conn.execute('INSERT INTO cut_brief_instructions(cut_id,content) VALUES (?,?) ON CONFLICT(cut_id) DO UPDATE SET content=excluded.content,updated_at=CURRENT_TIMESTAMP', (cut_id, content))
+    return True
 
 
 def get_draft(cut_id):

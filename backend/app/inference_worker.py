@@ -622,7 +622,9 @@ def process_review_answers(job_id, owner):
             conn.execute('BEGIN IMMEDIATE')
             worker.require_lease(conn, job_id, owner)
             review_answers.save_draft(conn, cut_id, job_id, content, actual_model)
-            conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+            saved = not payload.get('auto_save') or review_answers.save_answers(conn, cut_id, content, payload.get('existing_answers'))
+            stage = 'Complete' if saved else 'Draft ready; the answers were edited meanwhile, so it was not saved'
+            conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
             worker.sync_episode_status(conn, job['episode_id'])
     except SummaryCancelled:
         if payload.get('config', {}).get('text_provider') == 'local':
