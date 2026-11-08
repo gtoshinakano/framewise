@@ -17,6 +17,10 @@ MODEL_ID = 'Qwen/Qwen3.6-35B-A3B:Q4_K_M'
 MODEL_REVISION = 'ggml-org:7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5'
 
 
+class GpuBusy(Exception):
+    """Visual work holds the GPU, so the local chat model cannot be used right now."""
+
+
 class LocalTextRuntime:
     def __init__(self):
         self.process = None
@@ -116,9 +120,14 @@ class LocalTextRuntime:
             self.changed.notify_all()
 
     @contextmanager
-    def chat_session(self, cancel_check=None, on_wait=None):
-        """Hold the text server for one chat turn, waiting while visual work uses the GPU."""
+    def chat_session(self, cancel_check=None, on_wait=None, wait=True):
+        """Hold the text server for one chat turn, waiting while visual work uses the GPU.
+
+        With ``wait=False`` a busy GPU raises ``GpuBusy`` at once, so the caller can answer elsewhere.
+        """
         with self.changed:
+            if self.gpu_busy and not wait:
+                raise GpuBusy()
             while self.gpu_busy:
                 if on_wait:
                     on_wait('Waiting for the GPU: visual analysis is running')

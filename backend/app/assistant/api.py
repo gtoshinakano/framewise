@@ -37,12 +37,14 @@ class MessageInput(BaseModel):
     model: str = Field(min_length=1, max_length=200, pattern=MODEL_PATTERN)
     thinking: bool = True
     skill: str | None = Field(default=None, max_length=60)
+    gpu_fallback: bool = Field(default=False, description='When provider is local and visual work holds the GPU, answer with OpenRouter free instead of waiting.')
 
 
 class RetryInput(BaseModel):
     provider: str | None = Field(default=None, pattern=PROVIDER_PATTERN)
     model: str | None = Field(default=None, min_length=1, max_length=200, pattern=MODEL_PATTERN)
     thinking: bool | None = None
+    gpu_fallback: bool | None = None
 
 
 # ---------------------------------------------------------------- helpers
@@ -203,8 +205,8 @@ def send_message(session_id: str, body: MessageInput):
         conn.execute('BEGIN IMMEDIATE')
         if conn.execute("SELECT 1 FROM assistant_turns WHERE session_id=? AND status IN ('queued','running')", (session_id,)).fetchone():
             raise HTTPException(409, 'Wait for the current reply to finish or stop it first')
-        conn.execute('INSERT INTO assistant_turns(id,session_id,provider,model,thinking,skill) VALUES (?,?,?,?,?,?)',
-                     (turn_id, session_id, body.provider, body.model, int(body.thinking), body.skill))
+        conn.execute('INSERT INTO assistant_turns(id,session_id,provider,model,thinking,skill,gpu_fallback) VALUES (?,?,?,?,?,?,?)',
+                     (turn_id, session_id, body.provider, body.model, int(body.thinking), body.skill, int(body.gpu_fallback)))
         conn.execute("INSERT INTO assistant_messages(id,session_id,turn_id,seq,role,content) VALUES (?,?,?,?,'user',?)",
                      (message_id, session_id, turn_id, store.next_seq(conn, session_id), content))
         title = session['title'] or (content.splitlines()[0][:80] if content else 'New chat')
@@ -241,6 +243,7 @@ def retry_turn(turn_id: str, body: RetryInput | None = None):
     provider = body.provider or turn['provider']
     model = body.model or turn['model']
     thinking = turn['thinking'] if body.thinking is None else int(body.thinking)
+    gpu_fallback = turn['gpu_fallback'] if body.gpu_fallback is None else int(body.gpu_fallback)
     validate_choice(provider, model)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -253,7 +256,7 @@ def retry_turn(turn_id: str, body: RetryInput | None = None):
         conn.execute("DELETE FROM assistant_messages WHERE turn_id=? AND role!='user'", (turn_id,))
         conn.execute("DELETE FROM assistant_proposals WHERE turn_id=? AND status='pending'", (turn_id,))
         store.bump(conn, turn_id, status='queued', stage='Queued', error=None, cancel_requested=0, attempt_count=0, usage_json='{}',
-                   started_at=None, finished_at=None, provider=provider, model=model, thinking=thinking, lease_owner=None, lease_until=None)
+                   started_at=None, finished_at=None, provider=provider, model=model, thinking=thinking, gpu_fallback=gpu_fallback, lease_owner=None, lease_until=None)
         conn.execute('UPDATE assistant_sessions SET provider=?,model=?,thinking=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (provider, model, thinking, turn['session_id']))
     return session_detail(turn['session_id'])
 

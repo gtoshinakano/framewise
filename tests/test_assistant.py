@@ -368,6 +368,147 @@ class RunnerTest(AssistantBase):
         self.assertEqual(tiny[-1]['content'], 'new question')
 
 
+class FakeLocal(providers.Provider):
+    """Stands in for LocalQwen: with ``busy`` set, a session that must not wait raises GpuBusy."""
+    id, label = 'local', 'Local'
+
+    def __init__(self, busy):
+        self.busy, self.waits = busy, []
+
+    @contextmanager
+    def session(self, model, thinking, cancel_check, on_stage, wait_for_gpu=True):
+        self.waits.append(wait_for_gpu)
+        if self.busy and not wait_for_gpu:
+            raise local_text_runtime.GpuBusy()
+        yield providers.Endpoint('http://local', model, context_limit=1000, fixed_model=True)
+
+
+class FakeOpenRouter(providers.Provider):
+    id, label = 'openrouter', 'OpenRouter'
+
+    def __init__(self, ok=True):
+        self.ok, self.models = ok, []
+
+    def available(self):
+        return self.ok, '' if self.ok else 'OPENROUTER_API_KEY is not configured'
+
+    @contextmanager
+    def session(self, model, thinking, cancel_check, on_stage):
+        self.models.append(model)
+        yield providers.Endpoint('http://openrouter', model, context_limit=2000)
+
+
+class GpuFallbackTest(AssistantBase):
+    LOCAL = [{'id': 'local', 'label': 'Local', 'available': True, 'models': [{'id': 'qwen'}], 'free_model': False}]
+
+    def ask(self, fallback, **extra):
+        session_id = self.session()
+        self.worker_online(self.LOCAL)
+        body = {'content': 'Describe the cut', 'provider': 'local', 'model': 'qwen', 'gpu_fallback': fallback, **extra}
+        response = self.client.post(f'/api/assistant/sessions/{session_id}/messages', json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        return session_id, response.json()['turn']
+
+    def run_with(self, local, router, name='local'):
+        endpoints = []
+
+        def fake_stream(endpoint, messages, tool_schemas, *, on_delta, checkpoint, **kwargs):
+            endpoints.append(endpoint)
+            on_delta('Done.', '')
+            return providers.StepResult(content='Done.', usage={'prompt_tokens': 10, 'completion_tokens': 2}, model='free/model:free')
+
+        with patch.object(providers, 'registry', return_value={name: local, 'openrouter': router}), patch.object(providers, 'stream_chat', side_effect=fake_stream):
+            runner.run_turn(*runner.claim_turn())
+        return endpoints
+
+    def finished(self, session_id):
+        return self.client.get(f'/api/assistant/sessions/{session_id}').json()['turns'][0]
+
+    def test_busy_gpu_answers_with_openrouter_free(self):
+        session_id, turn = self.ask(True)
+        self.assertTrue(turn['gpu_fallback'])
+        local, router = FakeLocal(busy=True), FakeOpenRouter()
+        endpoints = self.run_with(local, router)
+        self.assertEqual([endpoint.url for endpoint in endpoints], ['http://openrouter'])
+        self.assertEqual(router.models, ['openrouter/free'])
+        self.assertEqual(local.waits, [False])  # It never queued behind the visual job.
+        done = self.finished(session_id)
+        self.assertEqual(done['status'], 'done', done['error'])
+        self.assertEqual(done['usage']['fallback'], {'reason': 'gpu_busy', 'from': 'local', 'provider': 'openrouter', 'model': 'openrouter/free'})
+        self.assertEqual(done['usage']['model'], 'free/model:free')
+        # The chosen model is kept, so Retry and the next message start from the local model again.
+        self.assertEqual((done['provider'], done['model']), ('local', 'qwen'))
+
+    def test_free_gpu_uses_the_local_model(self):
+        session_id, _ = self.ask(True)
+        local, router = FakeLocal(busy=False), FakeOpenRouter()
+        endpoints = self.run_with(local, router)
+        self.assertEqual([endpoint.url for endpoint in endpoints], ['http://local'])
+        self.assertEqual(router.models, [])
+        self.assertNotIn('fallback', self.finished(session_id)['usage'])
+
+    def test_without_the_option_a_busy_gpu_still_waits(self):
+        session_id, _ = self.ask(False)
+        local, router = FakeLocal(busy=True), FakeOpenRouter()
+        endpoints = self.run_with(local, router)
+        self.assertEqual(local.waits, [True])
+        self.assertEqual([endpoint.url for endpoint in endpoints], ['http://local'])
+        self.assertEqual(router.models, [])
+        self.assertNotIn('fallback', self.finished(session_id)['usage'])
+
+    def test_missing_openrouter_key_keeps_waiting_for_the_gpu(self):
+        session_id, _ = self.ask(True)
+        local, router = FakeLocal(busy=True), FakeOpenRouter(ok=False)
+        endpoints = self.run_with(local, router)
+        self.assertEqual(local.waits, [True])
+        self.assertEqual([endpoint.url for endpoint in endpoints], ['http://local'])
+        self.assertEqual(self.finished(session_id)['status'], 'done')
+
+    def test_only_local_turns_fall_back(self):
+        session_id = self.session()
+        self.worker_online()
+        self.client.post(f'/api/assistant/sessions/{session_id}/messages', json={'content': 'hi', 'provider': 'fake', 'model': 'fake-model', 'gpu_fallback': True})
+        router = FakeOpenRouter()
+        endpoints = self.run_with(FakeProvider(), router, name='fake')
+        self.assertEqual([endpoint.url for endpoint in endpoints], ['http://fake'])
+        self.assertEqual(router.models, [])
+
+    def test_retry_keeps_or_overrides_the_option(self):
+        session_id, turn = self.ask(True)
+        self.client.post(f"/api/assistant/turns/{turn['id']}/cancel")
+        kept = self.client.post(f"/api/assistant/turns/{turn['id']}/retry", json={}).json()['turns'][0]
+        self.assertTrue(kept['gpu_fallback'])
+        self.client.post(f"/api/assistant/turns/{turn['id']}/cancel")
+        off = self.client.post(f"/api/assistant/turns/{turn['id']}/retry", json={'gpu_fallback': False}).json()['turns'][0]
+        self.assertFalse(off['gpu_fallback'])
+
+    def test_option_is_off_unless_requested(self):
+        session_id = self.session()
+        self.worker_online(self.LOCAL)
+        turn = self.client.post(f'/api/assistant/sessions/{session_id}/messages', json={'content': 'hi', 'provider': 'local', 'model': 'qwen'}).json()['turn']
+        self.assertFalse(turn['gpu_fallback'])
+
+    def test_restarted_turn_forgets_the_fallback_of_its_earlier_attempt(self):
+        session_id, turn = self.ask(True)
+        with db.connect() as conn:
+            conn.execute("UPDATE assistant_turns SET status='running',lease_until=1,attempt_count=1,usage_json=? WHERE id=?", (json.dumps({'fallback': {'reason': 'gpu_busy'}}), turn['id']))
+        runner.claim_turn()
+        self.assertEqual(self.finished(session_id)['usage'], {})
+
+    def test_worker_publishes_busy_state_and_fallback_model(self):
+        self.assertEqual(providers.OpenRouter().describe()['fallback_model'], 'openrouter/free')
+        with patch.object(local_text_runtime.LocalTextRuntime, 'publish'):
+            runtime = local_text_runtime.LocalTextRuntime()
+        runtime.publish = lambda *args: None
+        previous, local_text_runtime.runtime = local_text_runtime.runtime, runtime
+        try:
+            self.assertFalse(providers.LocalQwen().describe()['busy'])
+            runtime.begin_gpu_work()
+            self.assertTrue(providers.LocalQwen().describe()['busy'])
+        finally:
+            local_text_runtime.runtime = previous
+
+
 class StreamParserTest(unittest.TestCase):
     def test_think_splitter_handles_tags_across_chunks(self):
         splitter = providers.ThinkSplitter()
@@ -478,6 +619,19 @@ class RuntimeCoordinationTest(unittest.TestCase):
         self.assertIn('Waiting for the GPU', waited[0])
         holder['session'].__exit__(None, None, None)
         self.assertEqual(runtime.chat_users, 0)
+
+    def test_chat_session_can_refuse_to_wait(self):
+        runtime = self.runtime()
+        with runtime.chat_session(wait=False):
+            self.assertEqual(runtime.chat_users, 1)
+        runtime.begin_gpu_work()
+        with self.assertRaises(local_text_runtime.GpuBusy):
+            with runtime.chat_session(wait=False):
+                self.fail('chat must not start while visual work holds the GPU')
+        self.assertEqual(runtime.chat_users, 0)
+        runtime.end_gpu_work()
+        with runtime.chat_session(wait=False):
+            self.assertEqual(runtime.chat_users, 1)
 
 
 if __name__ == '__main__':

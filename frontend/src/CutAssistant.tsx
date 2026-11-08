@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, ArrowDown, ArrowUp, Brain, Check, ChevronRight, Cpu, Gauge, Layers, Loader2, MessageSquarePlus, Pencil, RefreshCw, Send, Sparkles, Square, Timer, Trash2, Wrench, X, Zap } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, Brain, Check, ChevronRight, Cloud, Cpu, Gauge, Layers, Loader2, MessageSquarePlus, Pencil, RefreshCw, Send, Sparkles, Square, Timer, Trash2, Wrench, X, Zap } from 'lucide-react'
 import type { Cut } from './api'
 import { assistantApi, streamUrl, type AssistantConfig, type AssistantProposal, type AssistantSession, type AssistantTurn, type AssistantUsage, type LocalModelStatus, type ProviderInfo, type SessionDetail, type SkillInfo } from './assistantApi'
 import { ACTIVE_STATUSES, activeTurn, applyStreamEvent, compactDiff, contextShare, formatSeconds, formatTokens, groupTurns, prettyArguments, prettyResult, reasoningTokens, starterText, turnElapsed, type Step, type ToolStep, type TurnView } from './assistantFormat'
@@ -10,6 +10,10 @@ const MODEL_STATE: Record<string, string> = { unloaded: 'Unloaded', downloading:
 const storageKey = (cutId: string) => `framewise:assistant:${cutId}`
 const readStored = (cutId: string) => { try { return localStorage.getItem(storageKey(cutId)) } catch { return null } }
 const writeStored = (cutId: string, value: string | null) => { try { if (value) localStorage.setItem(storageKey(cutId), value); else localStorage.removeItem(storageKey(cutId)) } catch { /* storage may be unavailable */ } }
+// On by default: a busy GPU should not stop the conversation. Remembered per browser, not per cut.
+const FALLBACK_KEY = 'framewise:assistant:gpu-fallback'
+const readFallback = () => { try { return localStorage.getItem(FALLBACK_KEY) !== '0' } catch { return true } }
+const writeFallback = (value: boolean) => { try { localStorage.setItem(FALLBACK_KEY, value ? '1' : '0') } catch { /* storage may be unavailable */ } }
 
 function relativeTime(value: string) {
   const time = Date.parse(value.includes('T') ? value : value.replace(' ', 'T') + 'Z')
@@ -37,6 +41,7 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
   const [detail, setDetail] = useState<SessionDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [choice, setChoice] = useState<Choice | null>(null)
+  const [gpuFallback, setGpuFallback] = useState(readFallback)
   const [draft, setDraft] = useState('')
   const [skill, setSkill] = useState<SkillInfo | null>(null)
   const [sending, setSending] = useState(false)
@@ -97,6 +102,9 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
   }, [config, detail?.session])
 
   const provider = config?.providers.find(item => item.id === choice?.provider)
+  const openrouter = config?.providers.find(item => item.id === 'openrouter')
+  const fallbackReady = !!openrouter?.available && !!openrouter.fallback_model
+  const useFallback = !!provider?.managed && gpuFallback
   const running = activeTurn(detail)
   const runningId = running?.id
 
@@ -164,7 +172,7 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
         base = await assistantApi.createSession(cut.id, choice)
         id = base.session.id
       }
-      const result = await assistantApi.send(id, { content, provider: choice.provider, model: choice.model.trim(), thinking: choice.thinking, skill: skillName })
+      const result = await assistantApi.send(id, { content, provider: choice.provider, model: choice.model.trim(), thinking: choice.thinking, skill: skillName, gpu_fallback: useFallback })
       stick.current = true
       setDetail({ ...base, messages: [...base.messages, result.message], turns: [...base.turns, result.turn] })
       if (id !== sessionId) setSessionId(id)
@@ -181,7 +189,7 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
 
   async function retry(turn: AssistantTurn) {
     if (!choice) return
-    try { setDetail(await assistantApi.retry(turn.id, { provider: choice.provider, model: choice.model.trim(), thinking: choice.thinking })); stick.current = true }
+    try { setDetail(await assistantApi.retry(turn.id, { provider: choice.provider, model: choice.model.trim(), thinking: choice.thinking, gpu_fallback: useFallback })); stick.current = true }
     catch (err) { setError((err as Error).message) }
   }
 
@@ -253,7 +261,8 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
           ? <select className="field !w-auto max-w-56 !py-1.5 !text-xs" aria-label="Model" value={choice?.model || ''} onChange={event => choice && setChoice({ ...choice, model: event.target.value })}>{provider.models.map(model => <option key={model.id} value={model.id}>{model.label || model.id}</option>)}</select>
           : <><input className="field !w-56 !py-1.5 !text-xs" aria-label="Model" list={`assistant-models-${cut.id}`} maxLength={200} value={choice?.model || ''} onChange={event => choice && setChoice({ ...choice, model: event.target.value })} placeholder="provider/model" /><datalist id={`assistant-models-${cut.id}`}>{[config?.defaults.openrouter_model, ...(config?.recent_models || [])].filter((value, index, list): value is string => !!value && list.indexOf(value) === index).map(value => <option key={value} value={value} />)}</datalist></>)}
         <label className="flex items-center gap-1.5 rounded-lg border border-[#303640] px-2.5 py-1.5 text-xs" title="Show the model's reasoning. Uses more tokens and time."><input type="checkbox" checked={!!choice?.thinking} disabled={!provider?.thinking} onChange={event => choice && setChoice({ ...choice, thinking: event.target.checked })} /><Brain size={13} /> Thinking</label>
-        {provider?.managed && <LocalModelBadge status={localStatus} working={modelWorking} onToggle={() => void toggleLocalModel()} />}
+        {provider?.managed && <LocalModelBadge status={localStatus} working={modelWorking} busy={!!provider.busy} onToggle={() => void toggleLocalModel()} />}
+        {provider?.managed && <label className={`flex items-center gap-1.5 rounded-lg border border-[#303640] px-2.5 py-1.5 text-xs ${fallbackReady ? '' : 'opacity-60'}`} title={fallbackReady ? 'When visual analysis is using the GPU, answer with OpenRouter free instead of waiting. OpenRouter then receives this cut\'s analysis.' : openrouter?.available ? 'Restart the inference worker to enable the OpenRouter fallback. Until then replies wait for the GPU.' : openrouter?.detail || 'OpenRouter is not available in the inference worker. Replies wait for the GPU. Set OPENROUTER_API_KEY and restart the worker.'}><input type="checkbox" checked={gpuFallback && fallbackReady} disabled={!fallbackReady} onChange={event => { setGpuFallback(event.target.checked); writeFallback(event.target.checked) }} /><Cloud size={13} /> OpenRouter if GPU busy</label>}
         {sessionContext && <ContextMeter used={sessionContext.used} limit={sessionContext.limit} percent={sessionContext.percent} />}
       </header>
       {(workerOffline || (provider && !provider.available)) && <div role="alert" className="flex items-center gap-2 border-b border-[#5b4a2a] bg-[#2a2216] px-4 py-2 text-xs text-[#ffd59a]"><AlertTriangle size={14} /> {workerOffline ? 'The inference worker is offline. Chat replies run there; start it to continue.' : provider?.detail || `${provider?.label} is unavailable.`}</div>}
@@ -276,7 +285,7 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
               ? <button type="button" className="btn btn-danger h-[44px]" onClick={() => void stop()} disabled={running.cancel_requested} title="Stop generating"><Square size={14} /> {running.cancel_requested ? 'Stopping…' : 'Stop'}</button>
               : <button type="button" className="btn btn-primary h-[44px]" onClick={() => void send()} disabled={!canSend} title={sendBlocker || 'Send (Enter)'}>{sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Send</button>}
           </div>
-          <p className="muted mt-1.5 text-[11px]">{sendBlocker && !running ? sendBlocker : 'Enter to send · Shift+Enter for a new line · proposals change saved results only when you apply them'}{provider?.id === 'openrouter' ? ' · OpenRouter receives this cut\'s analysis and may charge for usage' : ''}</p>
+          <p className="muted mt-1.5 text-[11px]">{sendBlocker && !running ? sendBlocker : 'Enter to send · Shift+Enter for a new line · proposals change saved results only when you apply them'}{provider?.id === 'openrouter' ? ' · OpenRouter receives this cut\'s analysis and may charge for usage' : ''}{useFallback && fallbackReady ? ' · if the GPU is busy, OpenRouter free receives this cut\'s analysis' : ''}</p>
         </div>
       </footer>
       {error && <div role="alert" className="fixed bottom-6 left-1/2 z-[60] flex max-w-xl -translate-x-1/2 items-start gap-3 rounded-xl border border-[#63363e] bg-[#2b191f] px-4 py-3 text-sm text-[#ffb6bc] shadow-lg">{error}<button onClick={() => setError('')} aria-label="Dismiss"><X size={16} /></button></div>}
@@ -299,11 +308,11 @@ function SessionItem({ item, selected, onSelect, onRename, onDelete }: { item: A
   </div>
 }
 
-function LocalModelBadge({ status, working, onToggle }: { status: LocalModelStatus | null; working: boolean; onToggle: () => void }) {
+function LocalModelBadge({ status, working, busy, onToggle }: { status: LocalModelStatus | null; working: boolean; busy: boolean; onToggle: () => void }) {
   const state = status?.state || 'checking'
   const tone = state === 'loaded' || state === 'generating' ? 'status-ready' : state === 'loading' || state === 'downloading' || state === 'unloading' ? 'status-processing' : state === 'error' || state === 'worker_offline' ? 'status-failed' : ''
   return <div className="flex items-center gap-1.5 rounded-lg border border-[#303640] py-1 pl-2.5 pr-1 text-xs" title={status?.detail || ''}>
-    <Cpu size={13} /><span className={`status-dot ${tone}`} /><span>{status ? MODEL_STATE[state] || state : 'Checking…'}{status?.desired_loaded && state === 'unloaded' ? ' · waiting for GPU' : ''}</span>
+    <Cpu size={13} /><span className={`status-dot ${tone}`} /><span>{status ? MODEL_STATE[state] || state : 'Checking…'}{busy ? ' · GPU busy' : status?.desired_loaded && state === 'unloaded' ? ' · waiting for GPU' : ''}</span>
     <button type="button" className="rounded-md px-2 py-0.5 !text-[11px] text-[#c3aeff] hover:bg-[#2b2442] disabled:opacity-40" disabled={!status || working || state === 'worker_offline'} onClick={onToggle}>{status?.desired_loaded ? 'Unload' : 'Load'}</button>
   </div>
 }
@@ -337,7 +346,7 @@ function TurnBlock({ view, now, latest, onRetry, onResolve }: { view: TurnView; 
     <div className="flex flex-col gap-2.5 rounded-2xl border border-[#262d39] bg-[#151a23] px-4 py-3">
       {view.steps.map((step, index) => <StepBlock key={step.message.id} step={step} live={live && index === view.steps.length - 1} />)}
       {view.proposals.map(proposal => <ProposalCard key={proposal.id} proposal={proposal} onResolve={onResolve} />)}
-      {live && <p role="status" className="flex items-center gap-2 text-xs text-[#c3aeff]"><Loader2 size={13} className="animate-spin" /> {turn?.status === 'queued' ? 'Queued for the inference worker' : turn?.stage || 'Working'}{elapsed !== null ? ` · ${formatSeconds(elapsed)}` : ''}</p>}
+      {live && <p role="status" className="flex items-center gap-2 text-xs text-[#c3aeff]"><Loader2 size={13} className="animate-spin" /> {turn?.status === 'queued' ? 'Queued for the inference worker' : turn?.stage || 'Working'}{turn?.usage.fallback ? ' · via OpenRouter (GPU busy)' : ''}{elapsed !== null ? ` · ${formatSeconds(elapsed)}` : ''}</p>}
       {turn?.status === 'failed' && <div role="alert" className="flex flex-wrap items-start justify-between gap-2 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]"><span className="flex gap-2"><AlertTriangle size={14} className="mt-0.5 shrink-0" /> {turn.error || 'The reply failed.'}</span>{latest && <button type="button" className="btn btn-quiet !px-2.5 !py-1 !text-[11px]" onClick={() => onRetry(turn)}><RefreshCw size={12} /> Retry</button>}</div>}
       {turn?.status === 'cancelled' && <div className="flex items-center justify-between gap-2 text-xs text-[#aeb5c1]"><span>Stopped.</span>{latest && <button type="button" className="btn btn-quiet !px-2.5 !py-1 !text-[11px]" onClick={() => onRetry(turn)}><RefreshCw size={12} /> Regenerate</button>}</div>}
       {turn && !live && <TurnStats turn={turn} latest={latest} onRetry={onRetry} />}
@@ -434,6 +443,7 @@ function TurnStats({ turn, latest, onRetry }: { turn: AssistantTurn; latest: boo
     <Stat icon={<Timer size={12} />} value={formatSeconds(usage.seconds)} title="Total time for this reply" />
     {typeof usage.first_token_seconds === 'number' && <Stat icon={<Zap size={12} />} label="first token" value={formatSeconds(usage.first_token_seconds)} title="Time until the first token streamed" />}
     {!!usage.load_seconds && <Stat icon={<Cpu size={12} />} label="model load" value={formatSeconds(usage.load_seconds)} />}
+    {usage.fallback && <Stat icon={<Cloud size={12} />} value="OpenRouter · GPU busy" title="The local model was in use for visual analysis, so this reply came from OpenRouter free. Regenerate to try the local model again." />}
     <Stat icon={<ArrowUp size={12} />} label="in" value={formatTokens(usage.prompt_tokens)} title={`Prompt tokens across ${usage.steps ?? 0} request(s)${usage.cached_tokens ? `, ${usage.cached_tokens.toLocaleString()} cached` : ''}`} />
     <Stat icon={<ArrowDown size={12} />} label="out" value={formatTokens(usage.completion_tokens)} title="Generated tokens, including reasoning" />
     {thinking && <Stat icon={<Brain size={12} />} label="thinking" value={`${thinking.estimated ? '~' : ''}${formatTokens(thinking.value)}`} title={thinking.estimated ? 'Estimated from the reasoning text' : 'Reported by the provider'} />}

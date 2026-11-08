@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from . import compact
 
 OPENROUTER_URL = 'https://openrouter.ai/api/v1'
+# Answers a turn that chose the local model while visual work holds the GPU (see ``runner.connect``).
+FALLBACK_MODEL = 'openrouter/free'
 
 
 class ProviderError(RuntimeError):
@@ -84,7 +86,7 @@ class LocalQwen(Provider):
     def describe(self):
         from .. import local_text_runtime
         info = super().describe()
-        info.update(managed=True, context_limit=self.context_limit())
+        info.update(managed=True, context_limit=self.context_limit(), busy=bool(local_text_runtime.runtime and local_text_runtime.runtime.gpu_busy))
         info['models'] = [{'id': local_text_runtime.MODEL_ID, 'label': 'Qwen 3.6 35B A3B · Q4_K_M', 'context': self.context_limit()}]
         return info
 
@@ -102,15 +104,23 @@ class LocalQwen(Provider):
         return True, ''
 
     @contextmanager
-    def session(self, model, thinking, cancel_check, on_stage):
+    def session(self, model, thinking, cancel_check, on_stage, wait_for_gpu=True):
+        """With ``wait_for_gpu=False`` a GPU held by visual work raises ``local_text_runtime.GpuBusy``."""
         from .. import db, local_text_runtime
         runtime = local_text_runtime.runtime
         if runtime is None:
             raise ProviderError('The local model runtime is not available in this worker')
-        # Chat keeps the model resident between turns; the user can unload it.
-        with db.connect() as conn:
-            conn.execute('UPDATE local_text_model_state SET desired_loaded=1 WHERE id=1')
-        with runtime.chat_session(cancel_check, on_stage):
+
+        def keep_loaded():
+            # Chat keeps the model resident between turns; the user can unload it.
+            with db.connect() as conn:
+                conn.execute('UPDATE local_text_model_state SET desired_loaded=1 WHERE id=1')
+
+        if wait_for_gpu:
+            keep_loaded()
+        with runtime.chat_session(cancel_check, on_stage, wait=wait_for_gpu):
+            if not wait_for_gpu:
+                keep_loaded()  # Only once the GPU is ours; a fallback must not queue a model load behind visual work.
             loaded = runtime.process is not None and runtime.process.poll() is None
             if not loaded:
                 on_stage('Loading local model')
@@ -159,6 +169,7 @@ class OpenRouter(Provider):
     def describe(self):
         info = super().describe()
         info['free_model'] = True
+        info['fallback_model'] = FALLBACK_MODEL  # The UI offers the GPU-busy fallback only when the worker publishes this.
         return info
 
     def available(self):

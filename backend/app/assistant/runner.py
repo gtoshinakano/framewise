@@ -6,13 +6,14 @@ bounded number of attempts. An interrupted turn restarts from its user message
 Deltas are flushed to ``assistant_messages`` a few times per second and every
 flush advances ``assistant_turns.version`` so the API stream can forward them.
 """
+import contextlib
 import json
 import logging
 import threading
 import time
 import uuid
 
-from .. import db
+from .. import db, local_text_runtime
 from . import compact, providers, skills, store, tools
 
 log = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ def claim_turn():
             conn.execute("DELETE FROM assistant_messages WHERE turn_id=? AND role!='user'", (row['id'],))
             conn.execute("DELETE FROM assistant_proposals WHERE turn_id=? AND status='pending'", (row['id'],))
         store.bump(conn, row['id'], status='running', stage='Starting', lease_owner=owner, lease_until=now + LEASE_SECONDS,
-                   attempt_count=row['attempt_count'] + 1, started_at=row['started_at'] or now, error=None)
+                   attempt_count=row['attempt_count'] + 1, started_at=row['started_at'] or now, error=None, usage_json='{}')
         return row['id'], owner
 
 
@@ -228,6 +229,33 @@ def merge_usage(total, step, seconds):
     total['total_tokens'] = total.get('prompt_tokens', 0) + total.get('completion_tokens', 0)
 
 
+def connect(stack, run, turn, provider, ctx, usage):
+    """Open the endpoint for this turn on ``stack``.
+
+    A turn that chose the local model and allows ``gpu_fallback`` is answered by OpenRouter free when
+    visual work holds the GPU (and the worker has an OpenRouter key), instead of waiting for it. The
+    decision is made once per turn; the next turn tries the local model again. The turn row keeps the
+    user's choice, so Retry and the next message still start from the local model.
+    """
+    thinking = bool(turn['thinking'])
+    checkpoint = lambda: run.checkpoint(force=True)
+    fallback = providers.registry().get('openrouter') if turn['gpu_fallback'] and provider.id == 'local' else None
+    if fallback is None or not fallback.available()[0]:
+        return stack.enter_context(provider.session(turn['model'], thinking, checkpoint, run.stage))
+    try:
+        return stack.enter_context(provider.session(turn['model'], thinking, checkpoint, run.stage, wait_for_gpu=False))
+    except local_text_runtime.GpuBusy:
+        pass
+    run.local = False
+    ctx.provider, ctx.model = fallback.id, providers.FALLBACK_MODEL
+    usage['fallback'] = {'reason': 'gpu_busy', 'from': provider.id, 'provider': fallback.id, 'model': providers.FALLBACK_MODEL}
+    with db.connect() as conn:
+        run.check(conn)
+        store.bump(conn, turn['id'], usage_json=json.dumps(usage))  # Visible while the reply streams.
+    run.stage('GPU busy · answering with OpenRouter free')
+    return stack.enter_context(fallback.session(providers.FALLBACK_MODEL, thinking, checkpoint, run.stage))
+
+
 def run_turn(turn_id, owner):
     turn = db.one('SELECT * FROM assistant_turns WHERE id=?', (turn_id,))
     session = db.one('SELECT * FROM assistant_sessions WHERE id=?', (turn['session_id'],)) if turn else None
@@ -245,7 +273,8 @@ def run_turn(turn_id, owner):
         if turn['skill']:
             preload_skill(run, ctx, turn['skill'])
         run.stage('Preparing model')
-        with provider.session(turn['model'], bool(turn['thinking']), lambda: run.checkpoint(force=True), run.stage) as endpoint:
+        with contextlib.ExitStack() as stack:
+            endpoint = connect(stack, run, turn, provider, ctx, usage)
             usage['context_limit'] = endpoint.context_limit
             usage['load_seconds'] = endpoint.extra.get('_load_seconds', 0)
             schemas = tools.schemas()

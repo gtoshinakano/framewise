@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS assistant_turns (
     id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES assistant_sessions(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'queued', stage TEXT NOT NULL DEFAULT 'Queued',
     provider TEXT NOT NULL, model TEXT NOT NULL, thinking INTEGER NOT NULL DEFAULT 1,
-    skill TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0,
+    skill TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0, gpu_fallback INTEGER NOT NULL DEFAULT 0,
     lease_owner TEXT, lease_until REAL, attempt_count INTEGER NOT NULL DEFAULT 0,
     error TEXT, usage_json TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -60,6 +60,8 @@ def init_schema(conn):
     for column in ('diff_base', 'diff_label', 'payload_json'):
         if column not in columns:
             conn.execute(f'ALTER TABLE assistant_proposals ADD COLUMN {column} TEXT')
+    if 'gpu_fallback' not in {row['name'] for row in conn.execute('PRAGMA table_info(assistant_turns)')}:
+        conn.execute('ALTER TABLE assistant_turns ADD COLUMN gpu_fallback INTEGER NOT NULL DEFAULT 0')
 
 
 def loads(value, default):
@@ -83,6 +85,7 @@ def serialize_turn(row):
     row['usage'] = loads(row.pop('usage_json', None), {})
     row['thinking'] = bool(row['thinking'])
     row['cancel_requested'] = bool(row['cancel_requested'])
+    row['gpu_fallback'] = bool(row.get('gpu_fallback'))
     for key in ('lease_owner', 'lease_until'):
         row.pop(key, None)
     return row
