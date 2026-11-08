@@ -21,6 +21,8 @@ export type Episode = EpisodeSummary & { project_id: string; original_filename: 
 export type Project = { id: string; title: string; synopsis: string; created_at: string; episodes: EpisodeSummary[] }
 export type ContextItem = { id: string; project_id: string; episode_id: string | null; kind: 'chapter_synopsis' | 'chapter_happenings' | 'character' | 'world' | 'scenario' | 'object' | 'general'; title: string; content: string; created_at: string; updated_at: string }
 export type Waveform = { peaks: number[]; duration: number }
+// A part of the audio picked on the timeline or in the Audio tab, in seconds.
+export type AudioSelection = { start: number; end: number }
 
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, { ...options, headers: { ...(options?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...options?.headers } })

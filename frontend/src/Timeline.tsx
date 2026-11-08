@@ -1,7 +1,7 @@
 import { CUT_FILTERS, matchesAnyFilter, type CutFilterKey } from './cutFilters'
 import { useEffect, useRef, useState, type PointerEvent } from 'react'
 import { AudioLines, BoxSelect, FileText, FileX, Circle, UserCheck, UserX, UserRound, CircleCheck, Clock3, Layers3, LoaderCircle, Scissors } from 'lucide-react'
-import type { Chunk, Cut, TranscriptSegment, Waveform } from './api'
+import type { AudioSelection, Chunk, Cut, TranscriptSegment, Waveform } from './api'
 import type { AnalysisQueueState } from './analysisQueueStates'
 
 type Props = {
@@ -26,6 +26,8 @@ type Props = {
   onOpenCutAnalysis: (cut: Cut) => void
   onSelectChunk: (chunk: Chunk) => void
   onSelectTranscript: (segment: TranscriptSegment) => void
+  audioSelection: AudioSelection | null
+  onSelectAudio: (selection: AudioSelection | null) => void
 }
 
 function stamp(seconds: number) {
@@ -40,8 +42,15 @@ function preciseStamp(seconds: number) {
   return `${stamp(Math.floor(milliseconds / 1000))}.${String(milliseconds % 1000).padStart(3, '0')}`
 }
 
-function WaveformCanvas({ waveform, duration, start, span, currentTime, onSeek, hasAudio, preparing }: Pick<Props, 'waveform' | 'duration' | 'currentTime' | 'onSeek' | 'hasAudio' | 'preparing'> & { start: number; span: number }) {
+function SelectionBand({ selection, start, span }: { selection: AudioSelection | null; start: number; span: number }) {
+  if (!selection || selection.end <= start || selection.start >= start + span) return null
+  const { left, width } = blockStyle({ start_time: selection.start, end_time: selection.end }, start, span)
+  return <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 border-x border-[#7bc5cb] bg-[#7bc5cb33]" style={{ left, width }} />
+}
+
+function WaveformCanvas({ waveform, duration, start, span, currentTime, onSeek, hasAudio, preparing, selection, onSelect }: Pick<Props, 'waveform' | 'duration' | 'currentTime' | 'onSeek' | 'hasAudio' | 'preparing'> & { start: number; span: number; selection: AudioSelection | null; onSelect: (selection: AudioSelection) => void }) {
   const canvas = useRef<HTMLCanvasElement>(null)
+  const selecting = useRef<{ pointerId: number; anchor: number } | null>(null)
   useEffect(() => {
     const element = canvas.current
     if (!element) return
@@ -71,9 +80,27 @@ function WaveformCanvas({ waveform, duration, start, span, currentTime, onSeek, 
     return () => observer.disconnect()
   }, [waveform, duration, start, span])
   const playhead = (currentTime - start) / span * 100
-  return <div className="relative h-16 cursor-crosshair touch-none overflow-hidden rounded-md bg-[#1b202b]" onPointerDown={event => { if (event.button !== 0) return; event.currentTarget.setPointerCapture(event.pointerId); const rect = event.currentTarget.getBoundingClientRect(); onSeek(start + Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * span) }} onPointerMove={event => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const rect = event.currentTarget.getBoundingClientRect(); onSeek(start + Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * span) }}>
+  const timeAt = (event: PointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    return start + Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * span
+  }
+  const tidy = (seconds: number) => Math.round(seconds * 100) / 100
+  const select = (anchor: number, time: number) => onSelect({ start: tidy(Math.min(anchor, time)), end: tidy(Math.max(anchor, time)) })
+  return <div className="relative h-16 cursor-crosshair touch-none overflow-hidden rounded-md bg-[#1b202b]" title="Drag to seek. Shift-drag to select audio to transcribe again." onPointerDown={event => {
+    if (event.button !== 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const time = timeAt(event)
+    if (event.shiftKey) { selecting.current = { pointerId: event.pointerId, anchor: time }; return }
+    onSeek(time)
+  }} onPointerMove={event => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    const drag = selecting.current
+    if (drag?.pointerId === event.pointerId) select(drag.anchor, timeAt(event))
+    else if (!drag) onSeek(timeAt(event))
+  }} onPointerUp={event => { if (selecting.current?.pointerId === event.pointerId) selecting.current = null }} onPointerCancel={() => { selecting.current = null }} onLostPointerCapture={() => { selecting.current = null }}>
     <canvas ref={canvas} className="h-full w-full" />
     {!waveform?.peaks.length && <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[#1b202b] px-2 text-center text-[11px] text-[#a9b1c0]">{preparing ? 'Preparing waveform…' : !waveform ? 'Loading waveform…' : hasAudio ? 'Waveform unavailable. Run Prepare to rebuild it.' : 'No audio track in this video.'}</div>}
+    <SelectionBand selection={selection} start={start} span={span} />
     {playhead >= 0 && playhead <= 100 && <div className="pointer-events-none absolute inset-y-0 w-px bg-[#eee7ff]" style={{ left: `${playhead}%` }} />}
   </div>
 }
@@ -85,7 +112,7 @@ function blockStyle(item: { start_time: number; end_time: number }, start: numbe
 }
 
 export function Timeline(props: Props) {
-  const { activeFilters, onToggleFilter, onClearFilters, duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, currentTime, seekRevision, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript } = props
+  const { activeFilters, onToggleFilter, onClearFilters, duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, currentTime, seekRevision, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript, audioSelection, onSelectAudio } = props
   const [windowSeconds, setWindowSeconds] = useState<number | null>(() => duration > 1800 ? 600 : null)
   const [requestedStart, setRequestedStart] = useState(0)
   const followPlayhead = useRef(true)
@@ -218,7 +245,7 @@ export function Timeline(props: Props) {
     if (next) onSelectCut(next)
   }
   return <section className="border-t hairline bg-[#11151d] px-4 py-3">
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-semibold">Timeline</h2><p className="muted mt-1 text-xs">Scroll to zoom, middle-drag to move the timeline, or drag the waveform to seek</p></div><div className="flex flex-wrap items-center gap-4"><span className="text-xs text-[#e8dfff]">Playhead <output aria-label="Playhead time" className="font-mono tabular-nums">{preciseStamp(currentTime)}</output></span><span className="muted text-xs">{cuts.length} {cuts.length === 1 ? 'cut' : 'cuts'}</span><span className="muted flex flex-wrap items-center gap-1 text-[11px]"><CircleCheck size={13} className="text-[#7bdcb2]" /> Results <Circle size={13} className="ml-2" /> No results <LoaderCircle size={13} className="ml-2 text-[#f5c678]" /> Analyzing <Clock3 size={13} className="ml-2 text-[#86d1e1]" /> Queued</span></div></div>
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-semibold">Timeline</h2><p className="muted mt-1 text-xs">Scroll to zoom, middle-drag to move the timeline, drag the waveform to seek, or Shift-drag it to select audio to transcribe again</p></div><div className="flex flex-wrap items-center gap-4"><span className="text-xs text-[#e8dfff]">Playhead <output aria-label="Playhead time" className="font-mono tabular-nums">{preciseStamp(currentTime)}</output></span><span className="muted text-xs">{cuts.length} {cuts.length === 1 ? 'cut' : 'cuts'}</span><span className="muted flex flex-wrap items-center gap-1 text-[11px]"><CircleCheck size={13} className="text-[#7bdcb2]" /> Results <Circle size={13} className="ml-2" /> No results <LoaderCircle size={13} className="ml-2 text-[#f5c678]" /> Analyzing <Clock3 size={13} className="ml-2 text-[#86d1e1]" /> Queued</span></div></div>
     <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
       <label htmlFor="timeline-zoom" className="muted">Zoom</label>
       <span className="muted" aria-hidden="true">−</span><input id="timeline-zoom" type="range" min="0" max="100" step="1" value={zoomValue} disabled={duration <= 1} onChange={event => setZoom(Number(event.target.value))} aria-valuetext={`${span.toFixed(1)} seconds visible`} className="w-32 accent-[#a58ae8]" /><span className="muted" aria-hidden="true">+</span>
@@ -251,9 +278,9 @@ export function Timeline(props: Props) {
         return <button key={cut.id} title={`Cut ${cut.cut_index + 1} · ${stamp(cut.start_time)}–${stamp(cut.end_time)}${cut.analysis_enabled ? '' : ' · Analysis disabled'} · ${cut.has_analysis_results ? 'Has analysis results' : 'No analysis results'} · ${cut.has_boxes ? 'Boxes detected' : 'No boxes'} · ${cut.no_characters ? 'No characters' : cut.has_characters ? 'Character detected' : 'No character labels'} · ${cut.has_summary ? 'Has cut summary' : 'No cut summary'}${queueLabel ? ` · ${queueLabel}` : ''}`} aria-label={`Cut ${cut.cut_index + 1}, ${cut.has_analysis_results ? 'has analysis results' : 'no analysis results'}${cut.analysis_enabled ? '' : ', analysis disabled'}${queueLabel ? `, ${queueLabel}` : ''}`} onClick={() => onSelectCut(cut)} onDoubleClick={() => onOpenCutAnalysis(cut)} className={`cut-block ${cut.analysis_enabled ? '' : 'cut-block-disabled'} absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${!cut.analysis_enabled ? selectedCutId === cut.id ? 'bg-[#a05b36] text-white' : 'bg-[#75462f] text-[#ffe1c4]' : selectedCutId === cut.id ? 'bg-[#9476d555] text-white' : 'bg-[#5c497d66] text-[#d4c4ed]'}`} style={blockStyle(cut, start, span)}><span className="flex items-center gap-1">{cut.has_analysis_results ? <CircleCheck size={12} className="shrink-0 text-[#7bdcb2]" aria-hidden="true" /> : <Circle size={12} className="shrink-0 text-[#c5cad3]" aria-hidden="true" />}{cut.has_boxes ? <BoxSelect size={12} className="shrink-0 text-[#4cc9f0]" aria-hidden="true"><title>Boxes detected</title></BoxSelect> : null}{cut.no_characters ? <UserX size={12} className="shrink-0 text-[#c5cad3]" aria-hidden="true"><title>No characters</title></UserX> : cut.has_characters ? <UserCheck size={12} className="shrink-0 text-[#7bdcb2]" aria-hidden="true"><title>Character detected</title></UserCheck> : cut.has_boxes ? <UserRound size={12} className="shrink-0 text-[#e6c58b]" aria-hidden="true"><title>Unlabeled characters</title></UserRound> : null}{cut.has_summary ? <FileText size={12} className="shrink-0 text-[#c3aeff]" aria-hidden="true"><title>Has cut summary</title></FileText> : <FileX size={12} className="shrink-0 text-[#6f7787]" aria-hidden="true"><title>No cut summary</title></FileX>}{queueState === 'running' ? <LoaderCircle size={12} className="shrink-0 animate-spin text-[#f5c678] motion-reduce:animate-none" aria-hidden="true" /> : queueState === 'queued' ? <Clock3 size={12} className="shrink-0 text-[#86d1e1]" aria-hidden="true" /> : null}<span className="truncate">{cut.title || `Cut ${cut.cut_index + 1}`}{!cut.analysis_enabled && ' · Disabled'}</span></span><span className="block truncate text-[9px] opacity-70">{stamp(cut.start_time)}</span>{queueState && <span aria-hidden="true" className={`absolute inset-x-0 bottom-0 h-1 ${queueState === 'running' ? 'bg-[#f5c678]' : 'bg-[#86d1e1]'}`} />}</button>
       })}{!cuts.length && <div className="muted flex h-full items-center justify-center text-xs">Run hard-cut detection to create timeline segments</div>}{playhead >= 0 && playhead <= 100 && <div className="pointer-events-none absolute inset-y-0 w-px bg-[#eee7ff]" style={{ left: `${playhead}%` }} />}</div>
       <div className="flex h-16 items-center gap-2 text-xs text-[#98a1af]"><AudioLines size={16} /> Audio</div>
-      <WaveformCanvas waveform={waveform} duration={duration} start={start} span={span} currentTime={currentTime} onSeek={onSeek} hasAudio={hasAudio} preparing={preparing} />
+      <WaveformCanvas waveform={waveform} duration={duration} start={start} span={span} currentTime={currentTime} onSeek={onSeek} hasAudio={hasAudio} preparing={preparing} selection={audioSelection} onSelect={onSelectAudio} />
       <div className="flex h-12 items-center gap-2 text-xs text-[#98a1af]"><AudioLines size={16} /> Speech</div>
-      <div className="relative h-12 overflow-hidden rounded-md bg-[#1b202b]">{transcript.some(visible) ? transcript.filter(visible).map(segment => <button key={segment.id} title={`${segment.speaker_label || 'Speaker'}: ${segment.text}`} onClick={() => onSelectTranscript(segment)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedTranscriptId === segment.id ? 'bg-[#c2828e88] text-white' : 'bg-[#8d506566] text-[#f0c8d0]'}`} style={blockStyle(segment, start, span)}><span className="block truncate">{segment.speaker_label || 'Speaker'}</span><span className="block truncate text-[9px] opacity-70">{segment.text}</span></button>) : <div className="muted flex h-full items-center justify-center text-xs">No speech annotations in this window</div>}</div>
+      <div className="relative h-12 overflow-hidden rounded-md bg-[#1b202b]">{transcript.some(visible) ? transcript.filter(visible).map(segment => <button key={segment.id} title={`${segment.speaker_label || 'Speaker'}: ${segment.text}`} onClick={() => onSelectTranscript(segment)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedTranscriptId === segment.id ? 'bg-[#c2828e88] text-white' : 'bg-[#8d506566] text-[#f0c8d0]'}`} style={blockStyle(segment, start, span)}><span className="block truncate">{segment.speaker_label || 'Speaker'}</span><span className="block truncate text-[9px] opacity-70">{segment.text}</span></button>) : <div className="muted flex h-full items-center justify-center text-xs">No speech annotations in this window</div>}<SelectionBand selection={audioSelection} start={start} span={span} /></div>
       <div className="flex h-12 items-center gap-2 text-xs text-[#98a1af]"><Layers3 size={16} /> Chunks</div>
       <div className="relative h-12 overflow-hidden rounded-md bg-[#1b202b]">{chunks.filter(visible).map(chunk => <button key={chunk.id} title={`Chunk ${chunk.chunk_index + 1} · ${stamp(chunk.start_time)}–${stamp(chunk.end_time)}`} onClick={() => onSelectChunk(chunk)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedChunkId === chunk.id ? 'bg-[#5d9ca777] text-white' : 'bg-[#3e717e66] text-[#bce7e8]'}`} style={blockStyle(chunk, start, span)}><span className="block truncate">{chunk.title || `Chunk ${chunk.chunk_index + 1}`}</span><span className="block truncate text-[9px] opacity-70">{stamp(chunk.start_time)}</span></button>)}</div>
 

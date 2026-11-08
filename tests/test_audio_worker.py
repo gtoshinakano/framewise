@@ -22,7 +22,7 @@ class Vector:
         return [1., 0.]
 
 
-class AudioWorkerTests(unittest.TestCase):
+class AudioWorkerCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_dir, self.old_path, self.old_media_dir = db.DATA_DIR, db.DB_PATH, audio_worker.media.DATA_DIR
@@ -48,6 +48,8 @@ class AudioWorkerTests(unittest.TestCase):
             out.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
             out.writeframes(b'\x01\x00' * round((end - start) * 16000))
 
+
+class AudioWorkerTests(AudioWorkerCase):
     def test_invalid_alignment_retries_smaller_windows_without_losing_text(self):
         window = []
         def clip(_source, _target, start, end):
@@ -183,3 +185,73 @@ class AudioWorkerTests(unittest.TestCase):
         self.assertTrue(audio_worker.media.voice_reference_path('p', sample['id']).is_file())
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job,))['status'], 'done')
         self.assertFalse(upload.exists())
+
+
+class RangeRerunTests(AudioWorkerCase):
+    """Redoing one interval changes that interval only."""
+
+    def setUp(self):
+        super().setUp()
+        class Wide(FakeAnnotation):
+            def __iter__(self):
+                return iter([(types.SimpleNamespace(start=0., end=10.), 'SPEAKER_00')])
+        wide = Wide()
+        self.output = types.SimpleNamespace(speaker_diarization=wide, exclusive_speaker_diarization=wide, speaker_embeddings=[Vector()])
+        model_id = audio_worker.ASR + ' + x'
+        with db.connect() as conn:
+            for row in (('before', 'model', 1, 2, 'Before', 'SPEAKER_04'), ('wrong', 'model', 5, 6, 'Wrnog', 'SPEAKER_09'),
+                        ('hand', 'manual_edit', 6.5, 7, 'Mine', 'SPEAKER_09'), ('after', 'model', 9, 10, 'After', 'SPEAKER_04')):
+                conn.execute("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,speaker_label,origin,model_id) VALUES(?,'e',?,?,?,?,?,?)",
+                             (row[0], *row[2:6], row[1], model_id if row[1] == 'model' else None))
+        stamps = [types.SimpleNamespace(start_time=.5, end_time=1., text='Hello'), types.SimpleNamespace(start_time=2.6, end_time=3., text='there')]
+        self.model = types.SimpleNamespace(transcribe=lambda **kwargs: [types.SimpleNamespace(text='Hello there', language='English', time_stamps=stamps)])
+
+    def run_range(self, **extra):
+        job = worker.enqueue('e', 'transcribe', {'range': {'start_time': 4, 'end_time': 8}, **extra})
+        claimed = worker.claim_job(('transcribe',))
+        qwen = types.SimpleNamespace(Qwen3ASRModel=types.SimpleNamespace(from_pretrained=lambda *a, **kw: self.model))
+        torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False), float32='float32', bfloat16='bf16')
+        with patch.object(audio_worker.media, 'episode_dir', return_value=self.path), patch.object(audio_worker, 'clip_audio') as clipped, patch.object(audio_worker, 'diarize', return_value=self.output), patch.dict('sys.modules', {'qwen_asr': qwen, 'torch': torch}):
+            audio_worker.process(*claimed)
+        return job, clipped
+
+    def current(self):
+        return {row['id']: row for row in db.all_rows("SELECT * FROM transcript_segments WHERE superseded_by IS NULL AND deleted=0")}
+
+    def test_only_untouched_model_output_inside_the_interval_is_replaced(self):
+        job, clipped = self.run_range()
+        # Speakers are heard in the interval plus the audio around it; speech is read from the interval alone.
+        self.assertEqual([call.args[2:] for call in clipped.call_args_list], [(0., 10.), (4., 8.)])
+        current = self.current()
+        self.assertNotIn('wrong', current)
+        self.assertEqual(current['hand']['text'], 'Mine')
+        self.assertEqual({current[i]['text'] for i in ('before', 'after')}, {'Before', 'After'})
+        new = [row for row in current.values() if row['job_id'] == job]
+        # "there" lands on the hand-edited line, so it is not added over it.
+        self.assertEqual([(row['text'], row['speaker_label'], row['origin']) for row in new], [('Hello', 'SPEAKER_04', 'model')])
+        self.assertAlmostEqual(new[0]['start_time'], 4.5)
+        tombstone = db.one("SELECT * FROM transcript_segments WHERE parent_id='wrong'")
+        self.assertEqual((tombstone['deleted'], tombstone['text'], tombstone['job_id']), (1, 'Wrnog', job))
+        self.assertEqual(db.one('SELECT status,stage FROM jobs WHERE id=?', (job,))['stage'], 'Complete · 1 new, 1 replaced, 1 edited by hand kept')
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job,))['status'], 'done')
+
+    def test_replace_manual_also_replaces_hand_edited_lines_but_keeps_history(self):
+        job, _clipped = self.run_range(replace_manual=True)
+        current = self.current()
+        self.assertEqual(sorted(row['text'].strip() for row in current.values()), ['After', 'Before', 'Hello', 'there'])
+        self.assertIsNotNone(db.one("SELECT superseded_by FROM transcript_segments WHERE id='hand'")['superseded_by'])
+        self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job,))['stage'], 'Complete · 2 new, 2 replaced')
+
+    def test_too_short_range_fails_without_changing_the_transcript(self):
+        job = worker.enqueue('e', 'transcribe', {'range': {'start_time': 4, 'end_time': 4.2}})
+        claimed = worker.claim_job(('transcribe',))
+        with patch.object(audio_worker.media, 'episode_dir', return_value=self.path), patch.object(audio_worker, 'clip_audio'), patch.object(audio_worker, 'diarize', return_value=self.output):
+            audio_worker.process(*claimed)
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job,))['status'], 'failed')
+        self.assertEqual(len(self.current()), 4)
+
+    def test_speech_windows_do_not_leave_a_tiny_tail(self):
+        self.assertEqual(audio_worker.speech_windows(0, 25), [(0, 25)])
+        self.assertEqual(audio_worker.speech_windows(0, 25.5), [(0, 25.5)])
+        self.assertEqual(audio_worker.speech_windows(10, 70), [(10, 35), (35, 60), (60, 70)])
+        self.assertEqual(audio_worker.speech_windows(5, 5), [])

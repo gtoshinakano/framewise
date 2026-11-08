@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { AudioLines, History, Plus, Save, Trash2 } from 'lucide-react'
-import { api, type ContextItem, type Job, type SubtitleRun, type TranscriptSegment } from './api'
+import { api, type AudioSelection, type ContextItem, type Job, type SubtitleRun, type TranscriptSegment } from './api'
 import SubtitlePanel from './SubtitlePanel'
+import TranscribeRangePanel from './TranscribeRangePanel'
 
 type Draft = Pick<TranscriptSegment, 'start_time' | 'end_time' | 'text' | 'speaker_label' | 'character_context_id'> & { id?: string; deleted?: boolean; superseded_by?: string | null }
 type VoiceRange = { start_time: number; end_time: number }
@@ -44,7 +45,7 @@ function UploadedPreview({ file }: { file: File }) {
   return url ? <audio className="w-full" controls src={url} aria-label="Uploaded voice preview" /> : null
 }
 
-export default function TranscriptEditor({ episodeId, projectId, duration, currentTime, segments, selectedId, onSelect, onSaved, playRange, processing, hasAudio, subtitleLanguage, subtitleRun, jobs }: {
+export default function TranscriptEditor({ episodeId, projectId, duration, currentTime, segments, selectedId, onSelect, onSaved, playRange, processing, hasAudio, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection }: {
   episodeId: string
   projectId: string
   duration: number
@@ -59,6 +60,8 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
   subtitleLanguage: string | null
   subtitleRun: SubtitleRun | null
   jobs: Job[]
+  audioSelection: AudioSelection | null
+  onAudioSelection: (selection: AudioSelection | null) => void
 }) {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [characters, setCharacters] = useState<ContextItem[]>([])
@@ -170,6 +173,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
     </div>
     <p className="muted mt-2 text-xs leading-5">Review speech against playback and adjust its timing independently of cuts. Current segments are included in cut analysis.</p>
     <button disabled={busy || processing || !hasAudio} onClick={() => queueAudio('/transcribe')} className="btn btn-primary mt-4 w-full"><AudioLines size={14} /> Extract audio &amp; transcribe</button>
+    <TranscribeRangePanel episodeId={episodeId} duration={duration} currentTime={currentTime} segments={segments} selection={audioSelection} onSelectionChange={onAudioSelection} playRange={playRange} hasAudio={hasAudio} busy={processing} jobs={jobs} onQueued={onSaved} />
     <SubtitlePanel episodeId={episodeId} ready={duration > 0} busy={processing} savedLanguage={subtitleLanguage} run={subtitleRun} jobs={jobs} onChanged={onSaved} />
     <div className="mt-5 space-y-3 rounded-lg border hairline p-3">
       <h3 className="text-xs font-semibold">Character voice reference</h3>

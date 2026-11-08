@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import db, media, worker, storage, frame_source, frame_cache, subtitle_store
+from . import db, media, worker, storage, frame_source, frame_cache, subtitle_store, audio_worker
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
 
@@ -217,6 +217,13 @@ class VoiceSampleInput(BaseModel):
 
 class VoicePreviewInput(BaseModel):
     ranges: list[VoiceRange] = Field(min_length=1, max_length=50)
+
+
+class TranscribeRangeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_time: float = Field(ge=0, allow_inf_nan=False, description="Start of the audio to transcribe again, in seconds.")
+    end_time: float = Field(gt=0, allow_inf_nan=False, description="End of the audio to transcribe again, in seconds.")
+    replace_manual: bool = Field(default=False, description="Also replace segments that were edited or added by hand inside the interval. By default only untouched model output is replaced.")
 
 
 class ContextInput(BaseModel):
@@ -747,6 +754,29 @@ def transcribe_episode(episode_id: str):
         return {"job_id": worker.enqueue(episode_id, "transcribe")}
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/episodes/{episode_id}/transcribe-range")
+def transcribe_episode_range(episode_id: str, body: TranscribeRangeInput):
+    """Queue transcription and speaker identification again for one interval of the audio.
+
+    Only the interval changes: its untouched model segments get a deletion revision and the
+    new segments are appended, so the earlier text stays in history. Speakers in the interval
+    are named after the labels the neighbouring speech already uses.
+    """
+    episode = require_episode(episode_id)
+    if not episode["has_audio"] or not episode["duration"]:
+        raise HTTPException(400, "Prepare a video with audio first")
+    if body.end_time > episode["duration"] + 0.2:
+        raise HTTPException(400, "The selected audio ends after the video")
+    start, end = body.start_time, min(body.end_time, episode["duration"])
+    if end - start < audio_worker.MIN_RANGE_SECONDS:
+        raise HTTPException(400, f"Select at least {audio_worker.MIN_RANGE_SECONDS:g} seconds of audio")
+    try:
+        job_id = worker.enqueue(episode_id, "transcribe", {"range": {"start_time": start, "end_time": end}, "replace_manual": body.replace_manual})
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"job_id": job_id, "start_time": start, "end_time": end}
 
 
 class SubtitleRunInput(BaseModel):

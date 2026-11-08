@@ -11,12 +11,16 @@ import wave
 from pathlib import Path
 
 from . import db, media, worker
-from .audio_matching import assign_words, match_voices, overlap_index, restore_aligned_text
+from .audio_matching import assign_words, match_voices, overlap_index, reconcile_speakers, restore_aligned_text
 
 log = logging.getLogger(__name__)
 DIARIZATION = 'pyannote/speaker-diarization-community-1'
 ASR = 'Qwen/Qwen3-ASR-1.7B'
 ALIGNER = 'Qwen/Qwen3-ForcedAligner-0.6B'
+# A re-run diarizes the selected audio plus this much on each side, so the
+# speakers have enough speech to be told apart and lined up with the rest.
+CONTEXT_SECONDS = 20.
+MIN_RANGE_SECONDS = .5
 
 
 def diarize(audio):
@@ -100,6 +104,94 @@ def transcribe_window(model, audio, sample, start, end, turns, depth=0):
                 + transcribe_window(model, audio, sample, midpoint, end, turns, depth + 1))
 
 
+def load_asr():
+    import torch
+    from qwen_asr import Qwen3ASRModel
+    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    dtype = torch.bfloat16 if device != 'cpu' else torch.float32
+    return Qwen3ASRModel.from_pretrained(ASR, dtype=dtype, device_map=device, max_inference_batch_size=1,
+        max_new_tokens=512, forced_aligner=ALIGNER, forced_aligner_kwargs={'dtype': dtype, 'device_map': device})
+
+
+def voice_references(project_id):
+    refs = db.all_rows('SELECT v.character_context_id AS character_id,v.embedding_json FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id WHERE c.project_id=? AND v.model_id=?', (project_id, DIARIZATION))
+    return [{'character_id': r['character_id'], 'embedding': json.loads(r['embedding_json'])} for r in refs]
+
+
+def speech_windows(start, end, size=25.):
+    """Split [start, end] into excerpts of at most ``size`` seconds without a tiny tail."""
+    windows = []
+    while start < end - 1e-6:
+        stop = end if end - start < size + 1. else start + size
+        windows.append((start, stop))
+        start = stop
+    return windows
+
+
+def transcribe_range(job_id, owner, episode, payload, audio, temp):
+    """Redo transcription and speaker identification for one selected interval only.
+
+    The rest of the transcript is untouched. Speakers come from diarizing the
+    interval with some surrounding audio, then take the labels the neighbouring
+    speech already uses so they stay consistent with the full-episode run.
+    """
+    duration = float(episode['duration'])
+    start = max(0., float(payload['range']['start_time']))
+    end = min(duration, float(payload['range']['end_time']))
+    if end - start < MIN_RANGE_SECONDS:
+        raise RuntimeError('The selected audio is too short to transcribe.')
+    replace_manual = payload.get('replace_manual') is True
+    low, high = max(0., start - CONTEXT_SECONDS), min(duration, end + CONTEXT_SECONDS)
+    excerpt = temp / 'excerpt.wav'
+    worker.stage(job_id, owner, episode['id'], f'Identifying voices at {start:.1f}–{end:.1f}s')
+    clip_audio(audio, excerpt, low, high)
+    output = diarize(excerpt)
+    labels = output.speaker_diarization.labels()
+    embeddings = output.speaker_embeddings
+    speakers = {label: embeddings[i].tolist() for i, label in enumerate(labels)} if embeddings is not None else {}
+    matches = match_voices(speakers, voice_references(episode['project_id']))
+    turns = [{'start_time': low + turn.start, 'end_time': low + turn.end, 'speaker': speaker} for turn, speaker in output.exclusive_speaker_diarization]
+    worker.stage(job_id, owner, episode['id'], 'Loading transcription and alignment models')
+    model = load_asr()
+    windows = speech_windows(start, end)
+    words = []
+    for index, (window_start, window_end) in enumerate(windows):
+        worker.stage(job_id, owner, episode['id'], f'Transcribing speech {index + 1}/{len(windows)} at {start:.1f}–{end:.1f}s')
+        words.extend(transcribe_window(model, audio, temp / 'sample.wav', window_start, window_end, turns))
+    model_id = ASR + ' + ' + ALIGNER + ' + ' + DIARIZATION
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        worker.require_lease(conn, job_id, owner)
+        current = [dict(row) for row in conn.execute("SELECT * FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND deleted=0", (episode['id'],))]
+        names = reconcile_speakers(turns, current, matches, (start, end))
+        replaced, kept, protected = 0, 0, []
+        for old in current:
+            # A segment belongs to the interval by its midpoint, so a word cut by
+            # the boundary is neither lost nor duplicated.
+            inside = start <= (old['start_time'] + old['end_time']) / 2 < end
+            if inside and (replace_manual or (old['origin'] == 'model' and (old['model_id'] or '').startswith(ASR))):
+                tombstone = str(uuid.uuid4())
+                conn.execute("""INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,deleted,origin,model_id,job_id,parent_id)
+                    VALUES (?,?,?,?,?,?,?,1,'model',?,?,?)""", (tombstone, episode['id'], old['start_time'], old['end_time'], old['text'], old['speaker_label'], old['character_context_id'], model_id, job_id, old['id']))
+                conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (tombstone, old['id']))
+                replaced += 1
+            else:
+                kept += inside
+                if old['start_time'] < end and old['end_time'] > start:
+                    protected.append((old['start_time'], old['end_time']))
+        overlaps_kept = overlap_index(protected)
+        added = 0
+        for word in words:
+            if overlaps_kept(word['start_time'], word['end_time']):
+                continue
+            name = names.get(word['speaker'], {'label': '', 'character_id': None})
+            conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id) VALUES (?,?,?,?,?,?,?,'model',?,?)",
+                (str(uuid.uuid4()), episode['id'], word['start_time'], word['end_time'], word['text'], name['label'], name['character_id'], model_id, job_id))
+            added += 1
+        note = f', {kept} edited by hand kept' if kept else ''
+        finish(conn, job_id, episode['id'], f'Complete · {added} new, {replaced} replaced{note}')
+
+
 def process(job_id, owner):
     job = db.one('SELECT * FROM jobs WHERE id=? AND status=\'running\' AND lease_owner=?', (job_id, owner))
     if not job:
@@ -160,20 +252,17 @@ def process(job_id, owner):
                     raise
                 terminal = True
                 return
+            if payload.get('range'):
+                transcribe_range(job_id, owner, episode, payload, audio, Path(temp))
+                return
             output = diarize(audio)
             labels = output.speaker_diarization.labels()
             embeddings = output.speaker_embeddings
             speakers = {label: embeddings[i].tolist() for i, label in enumerate(labels)} if embeddings is not None else {}
-            refs = db.all_rows('SELECT v.character_context_id AS character_id,v.embedding_json FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id WHERE c.project_id=? AND v.model_id=?', (episode['project_id'], DIARIZATION))
-            matches = match_voices(speakers, [{'character_id': r['character_id'], 'embedding': json.loads(r['embedding_json'])} for r in refs])
+            matches = match_voices(speakers, voice_references(episode['project_id']))
             turns = [{'start_time': turn.start, 'end_time': turn.end, 'speaker': speaker} for turn, speaker in output.exclusive_speaker_diarization]
             worker.stage(job_id, owner, episode['id'], 'Loading transcription and alignment models')
-            import torch
-            from qwen_asr import Qwen3ASRModel
-            device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-            dtype = torch.bfloat16 if device != 'cpu' else torch.float32
-            model = Qwen3ASRModel.from_pretrained(ASR, dtype=dtype, device_map=device, max_inference_batch_size=1,
-                max_new_tokens=512, forced_aligner=ALIGNER, forced_aligner_kwargs={'dtype': dtype, 'device_map': device})
+            model = load_asr()
             segments = []
             # Cover the entire recording even where diarization missed speech.
             # Short bounded windows also keep forced-alignment inference manageable.
@@ -221,8 +310,8 @@ def process(job_id, owner):
             uploaded.unlink(missing_ok=True)
 
 
-def finish(conn, job_id, episode_id):
-    conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+def finish(conn, job_id, episode_id, stage='Complete'):
+    conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
     worker.sync_episode_status(conn, episode_id)
 
 

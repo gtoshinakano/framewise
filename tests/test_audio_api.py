@@ -46,6 +46,32 @@ class AudioApiTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/jobs/' + job['id'] + '/cancel').status_code, 200)
         self.assertEqual(self.client.post('/api/episodes/e/transcribe').status_code, 200)
 
+    def test_transcribe_range_validation_and_queued_payload(self):
+        endpoint = '/api/episodes/e/transcribe-range'
+        self.assertEqual(self.client.post(endpoint, json={'start_time': 2, 'end_time': 1}).status_code, 400)
+        self.assertEqual(self.client.post(endpoint, json={'start_time': 2, 'end_time': 2.3}).status_code, 400)
+        self.assertEqual(self.client.post(endpoint, json={'start_time': 2, 'end_time': 12}).status_code, 400)
+        self.assertEqual(self.client.post(endpoint, json={'start_time': -1, 'end_time': 3}).status_code, 422)
+        self.assertEqual(self.client.post(endpoint, json={'start_time': 1, 'end_time': 3, 'unknown': 1}).status_code, 422)
+        with db.connect() as conn:
+            conn.execute("UPDATE episodes SET has_audio=0 WHERE id='e'")
+        self.assertEqual(self.client.post(endpoint, json={'start_time': 1, 'end_time': 3}).status_code, 400)
+        with db.connect() as conn:
+            conn.execute("UPDATE episodes SET has_audio=1 WHERE id='e'")
+        self.assertEqual(db.one('SELECT COUNT(*) AS n FROM jobs')['n'], 0)
+        response = self.client.post(endpoint, json={'start_time': 2, 'end_time': 10.1, 'replace_manual': True})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((response.json()['start_time'], response.json()['end_time']), (2, 10))
+        job = db.one('SELECT * FROM jobs WHERE id=?', (response.json()['job_id'],))
+        payload = json.loads(job['payload_json'])
+        self.assertEqual((job['pipeline'], payload['range'], payload['replace_manual']), ('transcribe', {'start_time': 2, 'end_time': 10}, True))
+        # One audio job per episode at a time, and a queued one can be cancelled.
+        self.assertEqual(self.client.post(endpoint, json={'start_time': 1, 'end_time': 3}).status_code, 409)
+        self.assertEqual(self.client.post('/api/jobs/' + job['id'] + '/cancel').status_code, 200)
+        response = self.client.post(endpoint, json={'start_time': 1, 'end_time': 3})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (response.json()['job_id'],))['payload_json'])['replace_manual'])
+
     def test_multiple_ranges_and_upload_validation(self):
         endpoint = '/api/episodes/e/voice-samples'
         ranges = [{'start_time': 1, 'end_time': 2}, {'start_time': 4, 'end_time': 5.5}]
