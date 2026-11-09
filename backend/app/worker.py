@@ -116,10 +116,13 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
         job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND
             (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
             AND (jobs.pipeline='brief_export' OR NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status='running' AND other.id!=jobs.id AND other.pipeline!='brief_export'
+                -- Only a job with a live lease holds the episode. Interrupted jobs (lease
+                -- expired) must not block each other: a bulk batch leaves many at once.
+                AND other.lease_until>?
                 AND NOT ((jobs.pipeline='cutframes' AND other.pipeline IN ('analyze','regen')) OR (other.pipeline='cutframes' AND jobs.pipeline IN ('analyze','regen'))))
             )
             ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
-                     CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid LIMIT 1""", (*pipelines, now)).fetchone()
+                     CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid LIMIT 1""", (*pipelines, now, now)).fetchone()
         claimed = None
         if job:
             owner = str(uuid.uuid4())

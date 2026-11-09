@@ -91,6 +91,54 @@ def describe_frame(server_url, image_path, subtitle_regions=None, character_cont
         raise RuntimeError(f'Frame description failed: {exc}') from exc
 
 
+def assign_characters(server_url, targets, candidates, cancel_check=None):
+    """One request for every unresolved box of a cut.
+
+    targets: [{'key': 'T1', 'image': jpeg, 'candidates': [character_id, ...]}]
+    candidates: {character_id: {'title': name, 'images': [jpeg, ...]}}
+    Returns {key: {'character_id', 'confidence'}}; a character outside a
+    target's own shortlist is rejected as invalid output.
+    """
+    if not targets or not candidates:
+        return {}
+    encode = lambda data: {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(data).decode('ascii')}}
+    content = [{'type': 'text', 'text': 'Labelled reference images of known characters:'}]
+    for character_id, item in candidates.items():
+        for index, image in enumerate(item['images']):
+            content.append({'type': 'text', 'text': f"Reference {index + 1} of {item['title']} (ID {character_id}):"})
+            content.append(encode(image))
+    content.append({'type': 'text', 'text': 'People from one anime shot to identify:'})
+    shortlists = {}
+    for target in targets:
+        content.append({'type': 'text', 'text': f"Target {target['key']}:"})
+        content.append(encode(target['image']))
+        shortlists[target['key']] = [cid for cid in target['candidates'] if cid in candidates]
+    content.append({'type': 'text', 'text': 'For each target choose the character it shows from that target\'s own candidate list, using the reference images, or null when it cannot be identified. Candidate lists: '
+        + json.dumps({key: [{'id': cid, 'name': candidates[cid]['title']} for cid in ids] for key, ids in shortlists.items()}, ensure_ascii=False)
+        + '. Two targets in the same frame are different people. Return only JSON {"assignments":[{"target":"T1","character_id":"<id or null>","confidence":"high|medium|low"}]} with one entry per target. High requires a clearly visible face or hairstyle that matches; clothing alone is not enough. Do not guess from names, text, or narrative.'})
+    request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps({'messages': [{'role': 'user', 'content': content}],
+        'temperature': 0, 'max_tokens': 256 + 64 * len(targets), 'response_format': {'type': 'json_object'}, 'chat_template_kwargs': {'enable_thinking': False}}).encode(), headers={'Content-Type': 'application/json'}, method='POST')
+    try:
+        from .inference_worker import request_json
+        choice = request_json(request, cancel_check, timeout=600)['choices'][0]
+        if choice.get('finish_reason') == 'length':
+            raise ValueError('Response was truncated')
+        result = json.loads(choice['message']['content'])
+        answers = {}
+        for item in result['assignments']:
+            key, character_id, confidence = item['target'], item.get('character_id'), item.get('confidence')
+            if key not in shortlists or confidence not in ('high', 'medium', 'low'):
+                raise ValueError('Invalid character assignment response')
+            if character_id in ('', 'null'):
+                character_id = None
+            if character_id is not None and character_id not in shortlists[key]:
+                raise ValueError('Character outside the target shortlist')
+            answers[key] = {'character_id': character_id, 'confidence': confidence}
+        return answers
+    except (OSError, KeyError, IndexError, ValueError, TypeError) as exc:
+        raise RuntimeError(f'Character assignment failed: {exc}') from exc
+
+
 def match_character(server_url, target_image, references, cancel_check=None):
     """Compare a detected person with labeled crops; confidence is model-reported."""
     if not references:

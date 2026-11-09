@@ -110,10 +110,11 @@ class CharacterBatchOrderTest(unittest.TestCase):
             return anime_bulk.DEFERRED if defer_qwen and job_id != 'j2' else None
 
         with patch.object(anime_bulk, '_claim_batch', return_value=claimed), \
+             patch.object(anime_bulk, '_prepare_frames', side_effect=lambda *_: calls.append(('frames', 'all'))), \
              patch.object(anime_bulk, '_detect_batch', side_effect=lambda *_: calls.append(('aniref', 'all'))), \
              patch.object(anime_bulk, 'process', side_effect=process):
-            anime_bulk.process_batch({'id': 'j1'}, 'o1', object())
-        self.assertEqual(calls, [('aniref', 'all'), ('reid', 'j1'), ('reid', 'j2'), ('reid', 'j3'),
+            anime_bulk.process_batch({'id': 'j1'}, 'o1', anime_bulk.BulkRuntime())
+        self.assertEqual(calls, [('frames', 'all'), ('aniref', 'all'), ('reid', 'j1'), ('reid', 'j2'), ('reid', 'j3'),
                                  ('qwen', 'j1'), ('qwen', 'j3')])
 
 

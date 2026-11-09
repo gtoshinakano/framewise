@@ -1,7 +1,8 @@
 """Matching primitives for the bulk anime-character workflow.
 
-Only explicitly saved character references belong in the persistent index.
-Automatic detections and temporal tracks must never be promoted into it.
+Only user-confirmed labels (manual labels and saved references, see
+anime_gallery) are matching examples. Automatic detections and temporal
+tracks must never be promoted into the gallery.
 """
 import math
 import os
@@ -43,7 +44,7 @@ def rank_references(vector, references):
     return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
 
 
-def _env_fraction(name, default):
+def env_fraction(name, default):
     value = os.environ.get(name)
     if value is None or not value.strip():
         return default
@@ -53,19 +54,22 @@ def _env_fraction(name, default):
     return number
 
 
+_env_fraction = env_fraction
+
+
 def confident_match(ranked, threshold=None, margin=None):
     """Return a match only with both adequate similarity and separation.
 
-    Defaults (0.85 similarity, 0.03 margin) were tuned on labelled DINOv3
-    detections, whose different characters still score close together, so a
-    wide margin rejected nearly all correct matches. They are not calibrated
-    probabilities. Override with ANIME_REID_MIN_SIMILARITY / ANIME_REID_MIN_MARGIN.
-    All other cases need a Qwen review or remain unidentified.
+    The bulk workflow passes the active embedder's calibrated defaults
+    (anime_models.*_DEFAULTS); these fallbacks are the DINOv3 values. They
+    are not calibrated probabilities. ANIME_REID_MIN_SIMILARITY /
+    ANIME_REID_MIN_MARGIN override them. Other cases stay unidentified,
+    with ranked suggestions, unless the optional Qwen review settles them.
     """
     if threshold is None:
-        threshold = _env_fraction('ANIME_REID_MIN_SIMILARITY', 0.85)
+        threshold = env_fraction('ANIME_REID_MIN_SIMILARITY', 0.85)
     if margin is None:
-        margin = _env_fraction('ANIME_REID_MIN_MARGIN', 0.03)
+        margin = env_fraction('ANIME_REID_MIN_MARGIN', 0.03)
     if not ranked or ranked[0][1] < threshold:
         return None
     if len(ranked) > 1 and ranked[0][1] - ranked[1][1] < margin:

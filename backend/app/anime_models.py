@@ -1,11 +1,23 @@
 """Local model adapters for the bulk anime-character workflow.
 
-AniRef uses Ultralytics on the existing ROCm PyTorch runtime. The Re-ID
-preprocessing follows BeUnMerreHuman/Anime-Character-Re-Identification's
-model.py: RGB, 448px grey letterbox, ImageNet normalization, ONNX output.
-Neither adapter downloads weights or silently selects a different model.
+AniRef uses Ultralytics on the existing ROCm PyTorch runtime. Two identity
+embedders are available (``ANIME_REID_BACKEND``):
+
+* ``ccip`` (default): deepghs CCIP, an anime "same character?" model. Its
+  preprocessing follows imgutils.metrics.ccip (RGB, bilinear 384 x 384,
+  CLIP mean/std) except that tall person crops are letterboxed on white
+  instead of stretched, which matched the user's labels better. Its
+  comparator is (1 - cosine) / 2, so plain cosine similarity of the
+  L2-normalised features is equivalent.
+* ``dinov3``: BeUnMerreHuman/Anime-Character-Re-Identification's model.py:
+  RGB, 448px grey letterbox, ImageNet normalization, ONNX output.
+
+Each embedder carries its own model id, preprocessing tag and matching
+defaults, because similarity scales differ between models. No adapter
+downloads weights or silently selects a different model.
 """
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -16,6 +28,30 @@ ANIREF_MODEL_ID = 'SoulflareRC/AniRef40000-s-epoch40'
 ANIREF_MODEL_SHA256 = '0b811109555bb6e13d0c39791aa23d7f48f841163656ced1d42386ed8350fd6c'
 REID_MODEL_ID = 'BeUnMerreHuman/Anime-Character-Re-Identification:DINOv3'
 REID_PREPROCESSING = 'rgb-pad-448-gray128-imagenet-v1'
+CCIP_MODEL_PREFIX = 'deepghs/ccip_onnx:'
+CCIP_DEFAULT_VARIANT = 'ccip-caformer_b36-24'
+CCIP_PREPROCESSING = 'rgb-pad-white-384-clip-v1'
+
+# Matching defaults per embedder, calibrated on labelled episodes of this
+# project (see docs/model-integration.md). A box is labelled when its best
+# character's top-3 score reaches similarity and leads by margin, or, as a
+# second tier, reaches wide[0] and leads by wide[1]: a strong match needs a
+# small lead, a weaker one a clear lead. track/adjacent link boxes of one
+# character inside a cut and across a cut boundary; atypical is the gallery
+# outlier floor.
+DINOV3_DEFAULTS = {'similarity': 0.85, 'margin': 0.03, 'wide': None, 'track': 0.90, 'adjacent': 0.97, 'atypical': 0.70}
+CCIP_DEFAULTS = {'similarity': 0.80, 'margin': 0.03, 'wide': (0.64, 0.10), 'track': 0.85, 'adjacent': 0.95, 'atypical': 0.75}
+
+
+def create_embedder(backend=None):
+    """Return the configured identity embedder (CCIP unless ANIME_REID_BACKEND=dinov3)."""
+    backend = (backend or os.environ.get('ANIME_REID_BACKEND') or 'ccip').strip().lower()
+    if backend == 'dinov3':
+        return AnimeReId(os.environ.get('ANIME_REID_MODEL_PATH', '/models/anime-reid/dino_v3.onnx'))
+    if backend == 'ccip':
+        return CcipEmbedder(os.environ.get('CCIP_MODEL_DIR', '/models/ccip'),
+                            os.environ.get('CCIP_VARIANT') or CCIP_DEFAULT_VARIANT)
+    raise RuntimeError(f'Unknown ANIME_REID_BACKEND {backend!r}; use ccip or dinov3')
 
 
 def file_sha256(path):
@@ -89,6 +125,11 @@ class AniRefDetector:
 
 
 class AnimeReId:
+    model_id = REID_MODEL_ID
+    preprocessing = REID_PREPROCESSING
+    defaults = DINOV3_DEFAULTS
+    label = 'DINOv3 Re-ID'
+
     def __init__(self, path, provider=None):
         path = Path(path)
         if not path.is_file():
@@ -136,6 +177,71 @@ class AnimeReId:
         return vectors
 
 
+class CcipEmbedder:
+    """deepghs CCIP feature extractor; cosine of its features is the CCIP comparator."""
+    preprocessing = CCIP_PREPROCESSING
+    defaults = CCIP_DEFAULTS
+    label = 'CCIP'
+
+    def __init__(self, directory, variant=CCIP_DEFAULT_VARIANT, provider=None):
+        if not variant or '/' in variant or variant.startswith('.'):
+            raise RuntimeError(f'Invalid CCIP variant: {variant!r}')
+        path = Path(directory) / variant / 'model_feat.onnx'
+        if not path.is_file():
+            raise RuntimeError(f'CCIP weights are missing: {path}; run scripts/download-ccip.sh')
+        self.variant = variant
+        self.model_id = CCIP_MODEL_PREFIX + variant
+        self.revision = file_sha256(path)
+        metrics = path.parent / 'metrics.json'
+        # The published "same character" threshold is a difference (1 - cos) / 2.
+        self.published_similarity = 1 - 2 * float(json.loads(metrics.read_text())['threshold']) if metrics.is_file() else None
+        self.provider = provider or os.environ.get('CCIP_PROVIDER') or os.environ.get('ANIME_REID_PROVIDER', 'torch-rocm')
+        if self.provider == 'torch-rocm':
+            self.session = _TorchOnnxSession(path, patch_graph=_squeeze_attnpool_if)
+        else:
+            self.session = _onnx_session(path, self.provider)
+        self.input = self.session.get_inputs()[0]
+
+    def embed(self, images, batch_size=16):
+        import numpy as np
+        from PIL import Image, ImageOps
+        if not images:
+            return []
+        mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)[:, None, None]
+        std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)[:, None, None]
+        vectors = []
+        for offset in range(0, len(images), batch_size):
+            batch = []
+            for image in images[offset:offset + batch_size]:
+                resized = ImageOps.pad(image.convert('RGB'), (384, 384), color=(255, 255, 255))
+                batch.append((np.asarray(resized, dtype=np.float32).transpose(2, 0, 1) / 255.0 - mean) / std)
+            output = self.session.run(None, {self.input.name: np.stack(batch).astype(np.float32)})[0]
+            if output.ndim != 2 or len(output) != len(batch):
+                raise RuntimeError('CCIP returned an unexpected feature shape')
+            vectors.extend(normalize(row) for row in output)
+        return vectors
+
+
+def _squeeze_attnpool_if(graph):
+    """Replace the exporter's ``if shape[0] == 1: squeeze(0)`` guard with the squeeze.
+
+    CCIP's attention pool has a single query token, so that dimension is
+    always 1 and onnxruntime always takes the squeeze branch; onnx2torch
+    cannot convert ``If``. Verified equal to onnxruntime within 1e-6.
+    """
+    import onnx
+    for index, node in enumerate(list(graph.graph.node)):
+        if node.op_type != 'If':
+            continue
+        then = next(attr.g for attr in node.attribute if attr.name == 'then_branch')
+        if len(then.node) != 1 or then.node[0].op_type != 'Squeeze':
+            raise RuntimeError('Unsupported conditional in CCIP graph')
+        graph.graph.initializer.extend(then.initializer)
+        graph.graph.node.remove(node)
+        graph.graph.node.insert(index, onnx.helper.make_node('Squeeze', list(then.node[0].input), list(node.output), name=node.name + '_squeeze'))
+    return graph
+
+
 def _onnx_session(path, provider):
     import onnxruntime as ort
     available = ort.get_available_providers()
@@ -153,7 +259,7 @@ def _onnx_session(path, provider):
 
 class _TorchOnnxSession:
     """Execute the ONNX graph on ROCm through PyTorch when conversion supports it."""
-    def __init__(self, path):
+    def __init__(self, path, patch_graph=None):
         from types import SimpleNamespace
         import onnx
         import torch
@@ -161,6 +267,8 @@ class _TorchOnnxSession:
         if not torch.cuda.is_available() or not torch.version.hip:
             raise RuntimeError('Anime Re-ID requires ROCm PyTorch and an available GPU')
         graph = onnx.load(str(path))
+        if patch_graph:
+            graph = patch_graph(graph)
         initializers = {item.name for item in graph.graph.initializer}
         self.inputs = []
         for item in graph.graph.input:

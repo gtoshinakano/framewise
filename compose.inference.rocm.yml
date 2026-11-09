@@ -16,8 +16,12 @@ services:
       ANIREF_MODEL_PATH: /models/aniref/AniRef40000-s-epoch40.pt
       ANIME_REID_MODEL_PATH: /models/anime-reid/dino_v3.onnx
       ANIME_REID_PROVIDER: ${ANIME_REID_PROVIDER:-torch-rocm}
-      ANIME_REID_MIN_SIMILARITY: ${ANIME_REID_MIN_SIMILARITY:-0.85}
-      ANIME_REID_MIN_MARGIN: ${ANIME_REID_MIN_MARGIN:-0.03}
+      # ccip (default) or dinov3. Empty thresholds use the embedder's calibrated defaults.
+      ANIME_REID_BACKEND: ${ANIME_REID_BACKEND:-ccip}
+      CCIP_MODEL_DIR: /models/ccip
+      CCIP_VARIANT: ${CCIP_VARIANT:-}
+      ANIME_REID_MIN_SIMILARITY: ${ANIME_REID_MIN_SIMILARITY:-}
+      ANIME_REID_MIN_MARGIN: ${ANIME_REID_MIN_MARGIN:-}
       CAPTION_MODEL_PATH: /models/qwen3-vl-2b
       QWEN3_VIDEO_MODEL_PATH: /models/qwen3-vl-8b
       QWEN35_SERVER_PATH: /models/llamacpp/llama-server
@@ -34,6 +38,7 @@ services:
       - ${WEVISONE_MODEL_DIR:-./.models/wevisone-4b}:/models/wevisone-4b:ro
       - ${ANIREF_MODEL_DIR:-./.models/aniref}:/models/aniref:ro
       - ${ANIME_REID_MODEL_DIR:-./.models/anime-reid}:/models/anime-reid:ro
+      - ${CCIP_MODEL_DIR:-./.models/ccip}:/models/ccip:ro
       - ${CAPTION_MODEL_DIR:-./.models/qwen3-vl-2b}:/models/qwen3-vl-2b:ro
       - ${VIDEO_MODEL_DIR:-./.models/qwen3-vl-8b}:/models/qwen3-vl-8b:ro
       - ${FRAME_MODEL_DIR:-./.models/qwen3.5-27b}:/models/qwen3.5-27b:ro

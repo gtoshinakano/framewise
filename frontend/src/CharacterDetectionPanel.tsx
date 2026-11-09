@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type ContextItem, type Job } from './api'
+import { api, jsonBody, type ContextItem, type Job } from './api'
 
 type Frame = { position: 'first' | 'last'; time: number; image_size: [number, number] }
-type Detection = { id: string; position: 'first' | 'last'; box: [number, number, number, number]; character_context_id: string | null; character_name: string | null; label_source: string | null; match_reason: string | null; is_reference: boolean }
+type Candidate = { character_id: string; character_name: string; score: number }
+type Detection = { id: string; position: 'first' | 'last'; box: [number, number, number, number]; character_context_id: string | null; character_name: string | null; label_source: string | null; match_reason: string | null; is_reference: boolean; candidates?: Candidate[]; recognition_use?: number | null; gallery_status?: string | null; gallery_note?: string | null }
 type DetectionRun = { id: string; job_id: string | null; stale: boolean; frames: Frame[]; detections: Detection[] }
 const BOX_COLORS = ['#ff6b8b', '#4cc9f0', '#ffd166', '#7bdcb2', '#c3aeff', '#ff9f5a', '#8ecae6', '#f28482']
 type Box = [number, number, number, number]
@@ -16,6 +17,8 @@ export function CharacterDetectionPanel({ cutId, projectId, jobs, onStarted, noC
   const [characters, setCharacters] = useState<ContextItem[]>([])
   const [references, setReferences] = useState<Reference[]>([])
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [askQwen, setAskQwen] = useState(false)
   const [noChars, setNoChars] = useState(noCharacters)
   useEffect(() => setNoChars(noCharacters), [noCharacters, cutId])
   const [working, setWorking] = useState(false)
@@ -44,6 +47,7 @@ export function CharacterDetectionPanel({ cutId, projectId, jobs, onStarted, noC
     setWorking(true); setError('')
     try { await fn(); await refresh() } catch (reason) { setError((reason as Error).message) } finally { setWorking(false) }
   }
+  const label = (detectionId: string, characterId: string | null) => action(() => api(`/character-detections/${detectionId}`, { method: 'PUT', body: JSON.stringify({ character_context_id: characterId }) }))
   function coords(event: React.PointerEvent<SVGSVGElement>, frame: Frame): [number, number] {
     const rect = event.currentTarget.getBoundingClientRect()
     return [Math.max(0, Math.min(frame.image_size[0], (event.clientX - rect.left) * frame.image_size[0] / rect.width)), Math.max(0, Math.min(frame.image_size[1], (event.clientY - rect.top) * frame.image_size[1] / rect.height))]
@@ -84,11 +88,12 @@ export function CharacterDetectionPanel({ cutId, projectId, jobs, onStarted, noC
     await action(() => api(`/character-detection-runs/${run.id}/boxes`, { method: 'POST', body: JSON.stringify({ position: frame.position, box }) }))
   }
   return <section className="space-y-3 rounded-lg border hairline p-3">
-    <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-xs font-semibold">Characters in this cut</h3><p className="muted mt-1 text-[11px]">Detect people in the first and last frames, then label them before analysis.</p></div><button type="button" className="btn btn-quiet" disabled={working || episodeBusy} onClick={() => void action(async () => { await api(`/cuts/${cutId}/character-detection`, { method: 'POST' }); await onStarted() })}>Detect characters</button></div>
+    <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-xs font-semibold">Characters in this cut</h3><p className="muted mt-1 text-[11px]">Finds people in the first and last frames and names them from the boxes you have labelled. Your own labels and boxes are kept; automatic ones are redone.</p></div><div className="flex items-center gap-2"><label className="flex items-center gap-1 text-[11px]" title="Ask the Qwen vision model once about boxes the embeddings cannot settle. Slower."><input type="checkbox" checked={askQwen} onChange={event => setAskQwen(event.target.checked)} />Ask Qwen</label><button type="button" className="btn btn-quiet" disabled={working || episodeBusy} onClick={() => void action(async () => { setNotice(''); const result = await api<{ queued: number; detail?: string }>(`/cuts/${cutId}/character-detection`, jsonBody({ qwen: askQwen })); if (!result.queued) setNotice(result.detail || 'Nothing to detect in this cut.'); await onStarted() })}>Detect characters</button></div></div>
     <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={noChars} disabled={working} onChange={event => { const value = event.target.checked; void action(async () => { await api(`/cuts/${cutId}/no-characters`, { method: 'PUT', body: JSON.stringify({ no_characters: value }) }); setNoChars(value); await onStarted() }) }} />No characters in this cut (skip in batch detection)</label>
     {active && <p role="status" className="text-xs text-[#c3aeff]">{job?.stage || 'Detection queued'}…</p>}
     {job?.status === 'failed' && <p role="alert" className="text-xs text-[#ff9fa7]">{job.error || 'Character detection failed.'}</p>}
     {error && <p role="alert" className="text-xs text-[#ff9fa7]">{error}</p>}
+    {notice && !active && <p role="status" className="muted text-xs">{notice}</p>}
     {run?.stale && <p className="text-xs text-[#e6c58b]">Cut timing changed. Detect again before using these labels in analysis.</p>}
     {run && <div className="space-y-3">{run.frames.map(frame => {
       const people = run.detections.filter(item => item.position === frame.position)
@@ -116,10 +121,33 @@ export function CharacterDetectionPanel({ cutId, projectId, jobs, onStarted, noC
           })}
           {drawing === frame.position && start && current && <rect x={Math.min(start[0], current[0])} y={Math.min(start[1], current[1])} width={Math.abs(start[0] - current[0])} height={Math.abs(start[1] - current[1])} fill="none" stroke="white" strokeWidth="3" />}</svg></div>
         {!people.length && <p className="muted text-xs">No people detected. You can draw a missing person.</p>}
-        {people.map((person, index) => <div key={person.id} className="rounded border hairline p-2 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm" style={{ background: BOX_COLORS[index % BOX_COLORS.length] }} />Person {index + 1}</span><select className="field min-w-32 flex-1" value={person.character_context_id || ''} disabled={working || !!active || run.stale || person.is_reference} onChange={event => void action(() => api(`/character-detections/${person.id}`, { method: 'PUT', body: JSON.stringify({ character_context_id: event.target.value || null }) }))}><option value="">Unknown</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select>{person.character_context_id && <button type="button" className="btn btn-quiet" disabled={working || !!active || run.stale} onClick={() => void action(() => api(`/character-detections/${person.id}/reference`, { method: person.is_reference ? 'DELETE' : 'POST' }))}>{person.is_reference ? 'Remove reference' : 'Save as reference'}</button>}<button type="button" className="text-[#ff9fa7] hover:underline" disabled={working || !!active || person.is_reference} onClick={() => void action(() => api(`/character-detections/${person.id}`, { method: 'DELETE' }))}>Remove box</button></div>{person.label_source === 'auto' && <p className="mt-1 text-[#e6c58b]">Automatic match · unverified{person.match_reason ? `: ${person.match_reason}` : ''}</p>}</div>)}
+        {people.map((person, index) => <div key={person.id} className="rounded border hairline p-2 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm" style={{ background: BOX_COLORS[index % BOX_COLORS.length] }} />Person {index + 1}</span><select className="field min-w-32 flex-1" value={person.character_context_id || ''} disabled={working || !!active || run.stale || person.is_reference} onChange={event => void label(person.id, event.target.value || null)}><option value="">Unknown</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select>{person.character_context_id && <button type="button" className="btn btn-quiet" disabled={working || !!active || run.stale} onClick={() => void action(() => api(`/character-detections/${person.id}/reference`, { method: person.is_reference ? 'DELETE' : 'POST' }))}>{person.is_reference ? 'Remove reference' : 'Save as reference'}</button>}<button type="button" className="text-[#ff9fa7] hover:underline" disabled={working || !!active || person.is_reference} onClick={() => void action(() => api(`/character-detections/${person.id}`, { method: 'DELETE' }))}>Remove box</button></div>{person.label_source === 'auto' && <p className="mt-1 text-[#e6c58b]">Automatic match · unverified{person.match_reason ? `: ${person.match_reason}` : ''} <button type="button" className="ml-1 text-[#7bdcb2] hover:underline" disabled={working || !!active || run.stale} onClick={() => void label(person.id, person.character_context_id)} title="Mark this label as yours; it then helps recognize this character elsewhere">Confirm</button></p>}<Suggestions person={person} disabled={working || !!active || run.stale} onPick={id => void label(person.id, id)} />{person.label_source === 'manual' && <MatchingUse person={person} disabled={working} onChange={use => void action(() => api(`/character-detections/${person.id}/recognition-use`, { method: 'PUT', body: JSON.stringify({ use }) }))} />}</div>)}
       </div>
     })}</div>}
     {!!references.length && <details><summary className="cursor-pointer text-xs text-[#c3aeff]">Project character references ({references.length})</summary><div className="mt-2 grid grid-cols-2 gap-2">{references.map(ref => <div key={ref.id} className="rounded border hairline p-2"><svg viewBox={`${ref.box[0]} ${ref.box[1]} ${ref.box[2]-ref.box[0]} ${ref.box[3]-ref.box[1]}`} className="h-24 w-full bg-black"><image href={`/api/character-detection-runs/${ref.run_id}/frame/${ref.position}`} width={ref.image_size[0]} height={ref.image_size[1]} /></svg><div className="mt-1 flex justify-between gap-1 text-xs"><span>{ref.character_name}</span><button type="button" disabled={working} className="text-[#ff9fa7] hover:underline" onClick={() => void action(() => api(`/character-references/${ref.id}`, { method: 'DELETE' }))}>Remove</button></div></div>)}</div></details>}
-    <p className="muted text-[11px]">Create character names in project context before labeling. Saved references are reused across the project. Automatic matches are unverified until you queue this cut. Review and correct or clear all named boxes first; Queue cut treats their names as verified. Up to four reference images accompany single-cut frame analysis; video analysis receives text and box hints.</p>
+    <p className="muted text-[11px]">Create character names in project context before labeling. Every box you label (or confirm) becomes a matching example for the whole project; tiny or unidentifiable boxes, such as a hand or a strand of hair, are left out of matching automatically but keep their label for analysis. Automatic matches are unverified until you queue this cut. Review and correct or clear all named boxes first; Queue cut treats their names as verified. Up to four reference images accompany single-cut frame analysis; video analysis receives text and box hints.</p>
   </section>
+}
+
+function Suggestions({ person, disabled, onPick }: { person: Detection; disabled: boolean; onPick: (characterId: string) => void }) {
+  const options = (person.candidates || []).filter(item => person.label_source !== 'auto' || item.character_id !== person.character_context_id)
+  if (person.label_source === 'manual' || !options.length) return null
+  return <div className="mt-1 flex flex-wrap items-center gap-1"><span className="muted text-[11px]">{person.label_source === 'auto' ? 'Or:' : 'Suggestions:'}</span>{options.map(item => <button key={item.character_id} type="button" disabled={disabled} onClick={() => onPick(item.character_id)} className="rounded border border-[#4a4363] px-2 py-0.5 text-[11px] hover:border-[#c3aeff] hover:text-[#c3aeff]" title={`Label as ${item.character_name} (similarity ${item.score.toFixed(2)})`}>{item.character_name} <span className="muted">{item.score.toFixed(2)}</span></button>)}</div>
+}
+
+function MatchingUse({ person, disabled, onChange }: { person: Detection; disabled: boolean; onChange: (use: boolean | null) => void }) {
+  const status = person.gallery_status
+  const forced = person.recognition_use === 1
+  const excluded = person.recognition_use === 0
+  const text = excluded ? 'Not used as a matching example (your choice).'
+    : forced ? 'Always used as a matching example (your choice).'
+    : status === 'used' ? 'Used as a matching example.'
+    : status === 'small' || status === 'atypical' ? `Not used as a matching example: ${person.gallery_note || status}.`
+    : 'Will be checked as a matching example on the next recognition run.'
+  const link = 'ml-1 text-[#c3aeff] hover:underline disabled:opacity-40'
+  return <p className="muted mt-1 text-[11px]">{text}
+    {(forced || excluded) && <button type="button" disabled={disabled} className={link} onClick={() => onChange(null)}>Decide automatically</button>}
+    {!forced && !excluded && (status === 'small' || status === 'atypical') && <button type="button" disabled={disabled} className={link} onClick={() => onChange(true)}>Use anyway</button>}
+    {!forced && !excluded && status !== 'small' && status !== 'atypical' && <button type="button" disabled={disabled} className={link} onClick={() => onChange(false)}>Don’t use for matching</button>}
+  </p>
 }

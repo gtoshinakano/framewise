@@ -1,11 +1,15 @@
-"""Bulk character detection with cached reference embeddings.
+"""Bulk character detection and recognition.
 
 This workflow is isolated from the original per-cut WeVisOne pipeline. It
 stores the same run and detection records so the existing editor can review
 the results. A runtime may be reused for successive jobs from a bulk request.
+
+Recognition compares each unconfirmed box with the gallery of boxes the user
+labelled by hand (``anime_gallery``), never with automatic labels. Manual
+labels are never changed. Qwen is optional (``payload.qwen``) and makes at
+most one request per cut, choosing among the embedding shortlist.
 """
 import contextlib
-import io
 import json
 import logging
 import os
@@ -14,14 +18,23 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import anime_matching, anime_models, character_detection, db, frame_model, media, worker
+from . import anime_gallery, anime_matching, anime_models, db, frame_model, media, worker
 
 log = logging.getLogger('framewise.character_detect')
 PHASES = ('boxes', 'embeddings', 'complete')
 SAME_TRACK_REASON = 'Short same-cut track with matching appearance and position'
+ADJACENT_REASON = 'Strong unique appearance match to the preceding cut boundary'
 DEFERRED = 'deferred'  # process() result: embeddings done, Qwen review still pending
+BATCH_SIZE = 16
+QWEN_MAX_TARGETS = 6
+QWEN_MAX_CHARACTERS = 6
+
+# Kept for callers that crop outside the gallery module.
+_crop_jpeg = anime_gallery.crop_jpeg
+_open_jpeg = anime_gallery.open_jpeg
 
 
 @contextlib.contextmanager
@@ -59,8 +72,11 @@ def clear_episode_frames(project_id, episode_id):
 class BulkRuntime:
     def __init__(self):
         self.detector = None
-        self.reid = None
-        self.reference_images = {}
+        self.embedder = None
+        self.gallery = None
+        self.gallery_project = None
+        self.example_crops = {}
+        self.target_vectors = {}  # detection id -> vector, for the Qwen step of the current batch
         self.prepared_frames = {}
         self.previous_cut = None
         self.same_cut_links = {}  # job id -> links found before Qwen review was deferred
@@ -75,10 +91,24 @@ class BulkRuntime:
                 os.environ.get('ANIREF_DEVICE', '0'))
         return self.detector
 
-    def get_reid(self):
-        if self.reid is None:
-            self.reid = anime_models.AnimeReId(os.environ.get('ANIME_REID_MODEL_PATH', '/models/anime-reid/dino_v3.onnx'))
-        return self.reid
+    def get_embedder(self):
+        if self.embedder is None:
+            self.embedder = anime_models.create_embedder()
+        return self.embedder
+
+    def get_gallery(self, project_id, lease_check=None, timings=None):
+        """Confirmed examples for the project, reloaded once per batch so new labels count."""
+        if self.gallery is None or self.gallery_project != project_id:
+            with timed('gallery', timings, project=project_id):
+                self.gallery = anime_gallery.load(project_id, self.get_embedder, lease_check)
+            self.gallery_project = project_id
+        return self.gallery
+
+    def example_crop(self, item):
+        if item['id'] not in self.example_crops:
+            with tempfile.TemporaryDirectory(prefix='framewise-example-') as scratch:
+                self.example_crops[item['id']] = anime_gallery.extract_crops([item['row']], scratch)[item['id']]
+        return self.example_crops[item['id']]
 
     def get_qwen(self, lease_check):
         self.lease_check = lease_check
@@ -97,8 +127,9 @@ class BulkRuntime:
         if self.qwen_context:
             self.qwen_context.__exit__(None, None, None)
         self.qwen_context = self.qwen_url = None
-        self.detector = self.reid = None
-        self.reference_images.clear()
+        self.detector = self.embedder = self.gallery = None
+        self.example_crops.clear()
+        self.target_vectors.clear()
         self.prepared_frames.clear()
         self.same_cut_links.clear()
         self.previous_cut = None
@@ -111,26 +142,11 @@ class BulkRuntime:
             pass
 
 
-def _crop_jpeg(image, box):
-    crop = image.crop(tuple(box)).convert('RGB')
-    crop.thumbnail((512, 512))
-    buffer = io.BytesIO()
-    crop.save(buffer, format='JPEG', quality=85)
-    return buffer.getvalue()
-
-
-def _open_jpeg(data):
-    from PIL import Image
-    with Image.open(io.BytesIO(data)) as image:
-        return image.convert('RGB')
-
-
 def _valid_cut(conn, job_id, owner, episode_id, cut):
     worker.require_lease(conn, job_id, owner)
     current = conn.execute('SELECT start_time,end_time,active FROM cuts WHERE id=? AND episode_id=?', (cut['id'], episode_id)).fetchone()
     if not current or not current['active'] or current['start_time'] != cut['start_time'] or current['end_time'] != cut['end_time']:
         raise RuntimeError('Cut boundaries changed; run character detection again')
-
 
 
 def _extract_frames(original, cut, cache, saved=None):
@@ -181,73 +197,13 @@ def latest_current_run(cut):
                   (cut['id'], cut['start_time'], cut['end_time']))
 
 
-
-def _references(job, owner, payload, runtime, scratch):
-    references = []
-    for index, ref in enumerate(payload.get('references', [])):
-        # Only user-saved references are eligible, including after deletion.
-        if not db.one('SELECT id FROM character_image_references WHERE id=? AND character_context_id=?',
-                      (ref['id'], ref['character_context_id'])):
-            continue
-        image = runtime.reference_images.get(ref['id'])
-        if image is None:
-            source = media.episode_dir(ref['project_id'], ref['episode_id']) / f"original{ref['original_ext']}"
-            image = character_detection.crop_frame(source, ref['frame'], ref['cut_start'], ref['cut_end'], ref['box'], scratch, f'ref-{index}')
-            runtime.reference_images[ref['id']] = image
-        references.append({**ref, 'image': image})
-    if not references:
-        return []
-    model = runtime.get_reid()
-    missing = []
-    with db.connect() as conn:
-        worker.require_lease(conn, job['id'], owner)
-        for ref in references:
-            vector = anime_matching.read_cached_reference(conn, ref['id'], anime_models.REID_MODEL_ID,
-                                                          model.revision, anime_models.REID_PREPROCESSING)
-            if vector is None:
-                missing.append(ref)
-            else:
-                ref['embedding'] = vector
-    if missing:
-        vectors = model.embed([_open_jpeg(ref['image']) for ref in missing])
-        if len(vectors) != len(missing):
-            raise RuntimeError('Anime Re-ID returned an unexpected number of reference embeddings')
-        with db.connect() as conn:
-            worker.require_lease(conn, job['id'], owner)
-            for ref, vector in zip(missing, vectors):
-                ref['embedding'] = vector
-                if conn.execute('SELECT 1 FROM character_image_references WHERE id=? AND character_context_id=?',
-                                (ref['id'], ref['character_context_id'])).fetchone():
-                    anime_matching.write_cached_reference(conn, ref['id'], anime_models.REID_MODEL_ID,
-                        model.revision, anime_models.REID_PREPROCESSING, vector)
-    # If a reference was removed during embedding, do not match it.
-    return [ref for ref in references if db.one('SELECT id FROM character_image_references WHERE id=? AND character_context_id=?',
-                                                (ref['id'], ref['character_context_id']))]
-
-
-def _review(runtime, image, references, lease_check):
-    ids = list(dict.fromkeys(ref['character_context_id'] for ref in references))
-    results = []
-    server = runtime.get_qwen(lease_check)
-    for offset in range(0, len(ids), 2):
-        lease_check()
-        selected = []
-        for character_id in ids[offset:offset + 2]:
-            selected.extend([ref for ref in references if ref['character_context_id'] == character_id][:2])
-        result = frame_model.match_character(server, image, selected, cancel_check=lease_check)
-        if result and result['confidence'] == 'high' and result['character_id']:
-            results.append(result)
-    return results[0] if len(results) == 1 else None
-
-
-
 def _target_vectors(job_id, owner, detections, crops, model):
     vectors, missing = [None] * len(detections), []
     with db.connect() as conn:
         worker.require_lease(conn, job_id, owner)
         for index, detection in enumerate(detections):
-            vector = anime_matching.read_cached_detection(conn, detection['id'], anime_models.REID_MODEL_ID,
-                                                          model.revision, anime_models.REID_PREPROCESSING)
+            vector = anime_matching.read_cached_detection(conn, detection['id'], model.model_id,
+                                                          model.revision, model.preprocessing)
             if vector is None:
                 missing.append(index)
             else:
@@ -255,17 +211,15 @@ def _target_vectors(job_id, owner, detections, crops, model):
     if missing:
         computed = model.embed([_open_jpeg(crops[index]) for index in missing])
         if len(computed) != len(missing):
-            raise RuntimeError('Anime Re-ID returned an unexpected number of target embeddings')
+            raise RuntimeError('Character embedder returned an unexpected number of target embeddings')
         with db.connect() as conn:
             worker.require_lease(conn, job_id, owner)
             for index, vector in zip(missing, computed):
                 vectors[index] = vector
                 if conn.execute('SELECT 1 FROM character_detections WHERE id=?', (detections[index]['id'],)).fetchone():
-                    anime_matching.write_cached_detection(conn, detections[index]['id'], anime_models.REID_MODEL_ID,
-                        model.revision, anime_models.REID_PREPROCESSING, vector)
+                    anime_matching.write_cached_detection(conn, detections[index]['id'], model.model_id,
+                        model.revision, model.preprocessing, vector)
     return vectors
-
-
 
 
 def _detection_crop(images, detection):
@@ -280,11 +234,12 @@ def _observations(cut, frames, detections, vectors):
              'image_size': times[d['position']]['image_size'], 'embedding': vector} for d, vector in zip(detections, vectors)]
 
 
-def _same_cut_links(detections, observations):
+def _same_cut_links(detections, observations, min_similarity=None):
     """Map each last-frame detection index to the first-frame one it clearly continues."""
     first = [i for i, d in enumerate(detections) if d['position'] == 'first']
     last = [i for i, d in enumerate(detections) if d['position'] == 'last']
-    links = anime_matching.match_tracks([observations[i] for i in first], [observations[i] for i in last])
+    options = {} if min_similarity is None else {'min_similarity': min_similarity}
+    links = anime_matching.match_tracks([observations[i] for i in first], [observations[i] for i in last], **options)
     return {last[j]: first[i] for j, i in links.items()}
 
 
@@ -295,8 +250,171 @@ def _finish(job_id, owner, episode_id, cut):
         worker.sync_episode_status(conn, episode_id)
 
 
+def _frame_size(frames, detection):
+    return next(frame['image_size'] for frame in frames if frame['position'] == detection['position'])
+
+
+class _Labeller:
+    """Assigns automatic labels to one cut's boxes without touching confirmed ones."""
+
+    def __init__(self, job_id, owner, episode, cut, detections):
+        self.job_id, self.owner, self.episode, self.cut = job_id, owner, episode, cut
+        self.detections = detections
+        # A character appears at most once per frame.
+        self.present = {'first': set(), 'last': set()}
+        for detection in detections:
+            if detection['character_context_id']:
+                self.present[detection['position']].add(detection['character_context_id'])
+
+    def free(self, index, character_id):
+        detection = self.detections[index]
+        return detection['label_source'] is None and character_id not in self.present[detection['position']]
+
+    def assign(self, index, character_id, reason, model_id, revision):
+        detection = self.detections[index]
+        if not self.free(index, character_id):
+            return False
+        with db.connect() as conn:
+            _valid_cut(conn, self.job_id, self.owner, self.episode['id'], self.cut)
+            # Do not assign identities whose character was removed.
+            if not conn.execute("SELECT 1 FROM context_items WHERE id=? AND project_id=? AND kind='character'",
+                                (character_id, self.episode['project_id'])).fetchone():
+                return False
+            updated = conn.execute("UPDATE character_detections SET character_context_id=?,label_source='auto',match_reason=?,match_model_id=?,match_model_revision=? WHERE id=? AND label_source IS NULL",
+                (character_id, reason[:2000], model_id, revision, detection['id'])).rowcount
+        if updated:
+            detection['character_context_id'] = character_id
+            detection['label_source'] = 'auto'
+            self.present[detection['position']].add(character_id)
+        return bool(updated)
+
+    def propagate(self, linked, model_id, revision):
+        """Copy a label along each same-cut track, in either direction, until nothing changes."""
+        changed = True
+        while changed:
+            changed = False
+            for last, first in linked.items():
+                for source, target in ((first, last), (last, first)):
+                    character_id = self.detections[source]['character_context_id']
+                    if character_id and self.assign(target, character_id, SAME_TRACK_REASON, model_id, revision):
+                        changed = True
+
+
+def _store_candidates(job_id, owner, detections, candidates):
+    with db.connect() as conn:
+        worker.require_lease(conn, job_id, owner)
+        for index, ranked in candidates.items():
+            conn.execute("UPDATE character_detections SET candidates_json=? WHERE id=? AND (label_source IS NULL OR label_source='auto')",
+                         (json.dumps([{'character_id': cid, 'score': round(score, 3)} for cid, score in ranked[:3]]), detections[index]['id']))
+            detections[index]['candidates_json'] = json.dumps([{'character_id': cid, 'score': round(score, 3)} for cid, score in ranked[:3]])
+
+
+def _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings):
+    """Embed the cut's boxes, match them with the gallery and propagate along tracks.
+
+    Returns (linked, next_tracks) for Qwen review and the next cut.
+    """
+    gallery = runtime.get_gallery(episode['project_id'], lease_check, timings)
+    if not len(gallery) or not detections:
+        return {}, []
+    model = runtime.get_embedder()
+    defaults = model.defaults
+    worker.stage(job_id, owner, episode['id'], f'Matching characters with {model.label}')
+    with timed('embeddings', timings, cut=cut.get('cut_index'), detections=len(detections)):
+        vectors = _target_vectors(job_id, owner, detections, [_detection_crop(images, d) for d in detections], model)
+    observations = _observations(cut, frames, detections, vectors)
+    linked = _same_cut_links(detections, observations, defaults['track'])
+    labeller = _Labeller(job_id, owner, episode, cut, detections)
+    threshold = anime_matching.env_fraction('ANIME_REID_MIN_SIMILARITY', defaults['similarity'])
+    margin = anime_matching.env_fraction('ANIME_REID_MIN_MARGIN', defaults['margin'])
+    candidates, proposals = {}, []
+    for index, detection in enumerate(detections):
+        if detection['label_source'] is not None:
+            continue
+        lease_check()
+        ranked = gallery.rank(vectors[index])
+        candidates[index] = ranked
+        if anime_gallery.box_problem(json.loads(detection['box_json']), _frame_size(frames, detection)):
+            continue  # too small to identify; keep only the suggestions
+        character_id = anime_matching.confident_match(ranked, threshold, margin)
+        if not character_id and defaults.get('wide'):
+            character_id = anime_matching.confident_match(ranked, *defaults['wide'])
+        if character_id:
+            runner_up = f", next {gallery.names.get(ranked[1][0], 'other')} {ranked[1][1]:.2f}" if len(ranked) > 1 else ''
+            proposals.append((ranked[0][1], index, character_id,
+                              f'{model.label} similarity {ranked[0][1]:.2f} to your confirmed labels{runner_up}'))
+    for score, index, character_id, reason in sorted(proposals, key=lambda item: -item[0]):
+        labeller.assign(index, character_id, reason, model.model_id, model.revision)
+    labeller.propagate(linked, model.model_id, model.revision)
+    previous = runtime.previous_cut
+    if previous and previous['episode_id'] == episode['id'] and abs(previous['end_time'] - cut['start_time']) <= .000001:
+        # A previous identity must appear only once on its boundary;
+        # otherwise the source track is already ambiguous.
+        tracks = [track for track in previous['tracks'] if sum(t['character_id'] == track['character_id'] for t in previous['tracks']) == 1]
+        first = [i for i, d in enumerate(detections) if d['position'] == 'first']
+        matches = anime_matching.match_adjacent_appearances(tracks, [observations[i] for i in first], defaults['adjacent'])
+        for j, i in matches.items():
+            labeller.assign(first[j], tracks[i]['character_id'], ADJACENT_REASON, model.model_id, model.revision)
+        labeller.propagate(linked, model.model_id, model.revision)
+    _store_candidates(job_id, owner, detections, candidates)
+    next_tracks = [{'character_id': d['character_context_id'], 'embedding': vectors[i]}
+                   for i, d in enumerate(detections) if d['position'] == 'last' and d['character_context_id']]
+    runtime.target_vectors.update({d['id']: vectors[i] for i, d in enumerate(detections)})
+    return linked, next_tracks
+
+
+def _qwen_review(job_id, owner, runtime, episode, cut, frames, images, detections, linked, lease_check, timings):
+    """One Qwen request for the cut's unresolved boxes, choosing among their embedding shortlists."""
+    gallery = runtime.get_gallery(episode['project_id'], lease_check, timings)
+    model = runtime.get_embedder()
+    labeller = _Labeller(job_id, owner, episode, cut, detections)
+    targets = []
+    for index, detection in enumerate(detections):
+        if detection['label_source'] is not None or not detection.get('candidates_json'):
+            continue
+        if anime_gallery.box_problem(json.loads(detection['box_json']), _frame_size(frames, detection)):
+            continue
+        shortlist = [item['character_id'] for item in json.loads(detection['candidates_json'])
+                     if not labeller.present[detection['position']] & {item['character_id']}]
+        if shortlist:
+            targets.append({'key': f'T{len(targets) + 1}', 'index': index, 'candidates': shortlist[:3]})
+    targets = targets[:QWEN_MAX_TARGETS]
+    if not targets:
+        return
+    target_vectors = [runtime.target_vectors.get(detections[t['index']]['id']) for t in targets]
+    if any(vector is None for vector in target_vectors):
+        target_vectors = _target_vectors(job_id, owner, [detections[t['index']] for t in targets],
+                                         [_detection_crop(images, detections[t['index']]) for t in targets], model)
+    ranking = {}
+    for target in targets:
+        for position, character_id in enumerate(target['candidates']):
+            ranking[character_id] = min(ranking.get(character_id, 9), position)
+    characters = sorted(ranking, key=lambda cid: ranking[cid])[:QWEN_MAX_CHARACTERS]
+    for target in targets:
+        target['candidates'] = [cid for cid in target['candidates'] if cid in characters]
+        target['image'] = _detection_crop(images, detections[target['index']])
+    candidates = {}
+    for character_id in characters:
+        examples = gallery.best_examples(character_id, target_vectors, limit=2)
+        if examples:
+            candidates[character_id] = {'title': gallery.names.get(character_id, character_id),
+                                        'images': [runtime.example_crop(item) for item in examples]}
+    targets = [t for t in targets if any(cid in candidates for cid in t['candidates'])]
+    if not targets:
+        return
+    worker.stage(job_id, owner, episode['id'], f'Asking Qwen about {len(targets)} unresolved {"box" if len(targets) == 1 else "boxes"}')
+    with timed('qwen', timings, cut=cut.get('cut_index'), targets=len(targets)):
+        answers = frame_model.assign_characters(runtime.get_qwen(lease_check), targets, candidates, cancel_check=lease_check)
+    for target in targets:
+        answer = answers.get(target['key'])
+        if answer and answer['confidence'] == 'high' and answer['character_id']:
+            labeller.assign(target['index'], answer['character_id'], 'Qwen chose this among the closest embedding matches',
+                            frame_model.MODEL_ID, frame_model.MODEL_REVISION)
+    labeller.propagate(linked, model.model_id, model.revision)
+
+
 def process(job_id, owner, runtime, defer_qwen=False):
-    """Process one restartable cut job. Phases: 'boxes' (AniRef only), 'recognize' (embeddings, then Qwen fallback), or legacy 'full'.
+    """Process one restartable cut job. Phases: 'boxes' (AniRef only), 'recognize' (gallery matching, optional Qwen), or 'full'.
 
     With defer_qwen, a cut that still has unresolved detections after the
     embedding step stops there and returns DEFERRED, leaving its lease open.
@@ -320,143 +438,76 @@ def process(job_id, owner, runtime, defer_qwen=False):
         cache.mkdir(parents=True, exist_ok=True)
         next_tracks = []
         label = f"cut={cut.get('cut_index')}"
-        with tempfile.TemporaryDirectory(prefix='framewise-anime-') as scratch:
-            run = db.one('SELECT * FROM character_detection_runs WHERE job_id=?', (job_id,))
-            if not run and mode == 'recognize':
-                run = latest_current_run(cut)
-                if not run:
-                    raise RuntimeError('Run Detect Character Boxes for this cut first')
-            if run and mode == 'boxes':
-                _finish(job_id, owner, episode['id'], cut)  # boxes were saved by the batch step
-                return
-            timings = json.loads(run['timings_json'] or '{}') if run else {}
-            prepared = runtime.prepared_frames.pop(job_id, None)
-            with timed('frames', timings if not run else None, **{'cut': cut.get('cut_index')}):
-                frames, images = prepared if prepared else _extract_frames(original, cut, cache, json.loads(run['frames_json']) if run else None)
+        run = db.one('SELECT * FROM character_detection_runs WHERE job_id=?', (job_id,))
+        if not run and mode == 'recognize':
+            run = latest_current_run(cut)
             if not run:
-                worker.stage(job_id, owner, episode['id'], 'Detecting characters with AniRef')
-                detector = runtime.get_detector()
-                with timed('boxes', timings, cut=cut.get('cut_index')):
-                    boxes = detector.detect(images)
-                if len(boxes) != len(frames):
-                    raise RuntimeError('AniRef returned an unexpected number of frames')
-                for frame, frame_boxes in zip(frames, boxes):
-                    frame['boxes'] = frame_boxes
-                run = db.one('SELECT * FROM character_detection_runs WHERE id=?', (_save_run(job, owner, episode, cut, frames, detector, timings),))
-                if mode == 'boxes':
-                    _finish(job_id, owner, episode['id'], cut)
-                    return
-            detections = db.all_rows('SELECT * FROM character_detections WHERE run_id=? ORDER BY rowid', (run['id'],))
-            phase = run['phase']
-            references = []
-            if phase != 'complete' and any(d['label_source'] is None for d in detections) and payload.get('references'):
-                worker.stage(job_id, owner, episode['id'], 'Preparing character references')
-                with timed('references', timings, cut=cut.get('cut_index')):
-                    references = _references(job, owner, payload, runtime, scratch)
+                raise RuntimeError('Run Detect Character Boxes for this cut first')
+        if run and mode == 'boxes':
+            _finish(job_id, owner, episode['id'], cut)  # boxes were saved by the batch step
+            return
+        timings = json.loads(run['timings_json'] or '{}') if run else {}
+        loaded = []
 
-            def assign(detection, character_id, reason, model_id, revision):
-                with db.connect() as conn:
-                    _valid_cut(conn, job_id, owner, episode['id'], cut)
-                    # Do not assign identities whose reference or character was removed.
-                    if conn.execute('''SELECT 1 FROM context_items c JOIN character_image_references r ON r.character_context_id=c.id
-                        WHERE c.id=? AND c.project_id=? AND c.kind='character' AND r.id IN (%s)''' % ','.join('?' * len(references)),
-                        (character_id, episode['project_id'], *(ref['id'] for ref in references))).fetchone():
-                        updated = conn.execute("UPDATE character_detections SET character_context_id=?,label_source='auto',match_reason=?,match_model_id=?,match_model_revision=? WHERE id=? AND label_source IS NULL",
-                            (character_id, reason[:2000], model_id, revision, detection['id'])).rowcount
-                        if updated:
-                            detection['character_context_id'] = character_id
-                            detection['label_source'] = 'auto'
+        def frames_and_images():
+            if not loaded:
+                prepared = runtime.prepared_frames.pop(job_id, None)
+                with timed('frames', timings if not run else None, cut=cut.get('cut_index')):
+                    loaded.append(prepared if prepared else _extract_frames(original, cut, cache, json.loads(run['frames_json']) if run else None))
+            return loaded[0]
 
-            # Step 2: embedding recognition.
-            linked = None
-            if phase == 'boxes':
-                if references and any(d['label_source'] is None for d in detections):
-                    worker.stage(job_id, owner, episode['id'], 'Comparing character embeddings')
-                    reid = runtime.get_reid()
-                    with timed('embeddings', timings, cut=cut.get('cut_index'), detections=len(detections)):
-                        crops = [_detection_crop(images, d) for d in detections]
-                        vectors = _target_vectors(job_id, owner, detections, crops, reid)
-                        observations = _observations(cut, frames, detections, vectors)
-                        first_indices = [i for i, d in enumerate(detections) if d['position'] == 'first']
-                        last_indices = [i for i, d in enumerate(detections) if d['position'] == 'last']
-                        linked = _same_cut_links(detections, observations)
-                        previous = getattr(runtime, 'previous_cut', None)
-                        across = {}
-                        if (previous and previous['episode_id'] == episode['id'] and
-                                abs(previous['end_time'] - cut['start_time']) <= .000001):
-                            # A previous identity must appear only once on its boundary;
-                            # otherwise the source track is already ambiguous.
-                            all_tracks = previous['tracks']
-                            previous_tracks = [track for track in all_tracks if sum(t['character_id'] == track['character_id'] for t in all_tracks) == 1]
-                            matches = anime_matching.match_adjacent_appearances(previous_tracks, [observations[i] for i in first_indices])
-                            across = {first_indices[j]: previous_tracks[i] for j, i in matches.items()}
-                        for index, detection in enumerate(detections):
-                            if detection['label_source'] is not None:
-                                continue
-                            lease_check()
-                            ranked = anime_matching.rank_references(vectors[index], references)
-                            character_id = anime_matching.confident_match(ranked)
-                            reason = f'Anime Re-ID cosine similarity {ranked[0][1]:.3f}' if character_id else ''
-                            prior = detections[linked[index]] if index in linked else None
-                            if not character_id and prior and prior['character_context_id']:
-                                character_id = prior['character_context_id']
-                                reason = SAME_TRACK_REASON
-                            if not character_id and index in across:
-                                character_id = across[index]['character_id']
-                                reason = 'Strong unique appearance match to the preceding cut boundary'
-                            if character_id:
-                                assign(detection, character_id, reason, anime_models.REID_MODEL_ID, reid.revision)
-                        next_tracks = [{'character_id': detections[i]['character_context_id'], 'embedding': vectors[i]}
-                                       for i in last_indices if detections[i]['character_context_id']]
-                _set_phase(job_id, owner, run['id'], 'embeddings', timings)
-                phase = 'embeddings'
-
-            # Step 3: Qwen only for detections the embeddings could not settle.
-            if phase == 'embeddings':
-                if not next_tracks and references:
-                    # Resumed run: rebuild boundary tracks from cached embeddings so the next cut can still link.
-                    reid = runtime.get_reid()
-                    last = [d for d in detections if d['position'] == 'last' and d['character_context_id']]
-                    if last:
-                        vecs = _target_vectors(job_id, owner, last, [_detection_crop(images, d) for d in last], reid)
-                        next_tracks = [{'character_id': d['character_context_id'], 'embedding': v} for d, v in zip(last, vecs)]
-                unresolved = [(i, d) for i, d in enumerate(detections) if d['label_source'] is None]
-                if defer_qwen and unresolved and references:
+        if not run:
+            frames, images = frames_and_images()
+            worker.stage(job_id, owner, episode['id'], 'Detecting characters with AniRef')
+            detector = runtime.get_detector()
+            with timed('boxes', timings, cut=cut.get('cut_index')):
+                boxes = detector.detect(images)
+            if len(boxes) != len(frames):
+                raise RuntimeError('AniRef returned an unexpected number of frames')
+            for frame, frame_boxes in zip(frames, boxes):
+                frame['boxes'] = frame_boxes
+            run = db.one('SELECT * FROM character_detection_runs WHERE id=?', (_save_run(job, owner, episode, cut, frames, detector, timings),))
+            if mode == 'boxes':
+                _finish(job_id, owner, episode['id'], cut)
+                return
+        detections = db.all_rows('SELECT * FROM character_detections WHERE run_id=? ORDER BY rowid', (run['id'],))
+        phase = run['phase']
+        linked = None
+        if phase == 'boxes':
+            if any(d['label_source'] is None for d in detections):
+                frames, images = frames_and_images()
+                linked, next_tracks = _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings)
+            _set_phase(job_id, owner, run['id'], 'embeddings', timings)
+            phase = 'embeddings'
+        if phase == 'embeddings':
+            unresolved = [d for d in detections if d['label_source'] is None and d.get('candidates_json')]
+            if payload.get('qwen') and unresolved:
+                if defer_qwen:
                     if linked is not None:
                         runtime.same_cut_links[job_id] = linked
                     runtime.previous_cut = {'episode_id': episode['id'], 'end_time': cut['end_time'], 'tracks': next_tracks}
-                    worker.stage(job_id, owner, episode['id'], 'Waiting to review ambiguous characters')
+                    worker.stage(job_id, owner, episode['id'], 'Waiting for Qwen review')
                     return DEFERRED
-                if unresolved and references:
-                    # A label Qwen gives the first frame also covers the box that clearly continues it.
-                    linked = linked or runtime.same_cut_links.pop(job_id, None)
-                    if linked is None:  # resumed in a new process: rebuild from cached embeddings
-                        vectors = _target_vectors(job_id, owner, detections, [_detection_crop(images, d) for d in detections], runtime.get_reid())
-                        linked = _same_cut_links(detections, _observations(cut, frames, detections, vectors))
-                    with timed('qwen_fallback', timings, cut=cut.get('cut_index'), detections=len(unresolved)):
-                        for index, detection in unresolved:
-                            lease_check()
-                            prior = detections[linked[index]] if index in linked else None
-                            if prior and prior['character_context_id']:
-                                assign(detection, prior['character_context_id'], SAME_TRACK_REASON,
-                                       anime_models.REID_MODEL_ID, runtime.get_reid().revision)
-                                continue
-                            worker.stage(job_id, owner, episode['id'], f'Reviewing ambiguous character {index + 1}/{len(detections)}')
-                            crop = _detection_crop(images, detection)
-                            match = _review(runtime, crop, references, lease_check)
-                            if match:
-                                assign(detection, match['character_id'], match['reason'], frame_model.MODEL_ID, frame_model.MODEL_REVISION)
-                _set_phase(job_id, owner, run['id'], 'complete', timings)
-            _finish(job_id, owner, episode['id'], cut)
-            clear_cut_frames(episode, cut['id'])
+                frames, images = frames_and_images()
+                linked = linked or runtime.same_cut_links.pop(job_id, None)
+                if linked is None:  # resumed in a new process: rebuild from cached embeddings
+                    model = runtime.get_embedder()
+                    vectors = _target_vectors(job_id, owner, detections, [_detection_crop(images, d) for d in detections], model)
+                    linked = _same_cut_links(detections, _observations(cut, frames, detections, vectors), model.defaults['track'])
+                _qwen_review(job_id, owner, runtime, episode, cut, frames, images, detections, linked, lease_check, timings)
+            _set_phase(job_id, owner, run['id'], 'complete', timings)
+        _finish(job_id, owner, episode['id'], cut)
+        clear_cut_frames(episode, cut['id'])
+        if next_tracks or not payload.get('qwen'):
             runtime.previous_cut = {'episode_id': episode['id'], 'end_time': cut['end_time'], 'tracks': next_tracks}
-            log.info('character-detect %s finished mode=%s total=%.2fs timings_ms=%s', label, mode, time.perf_counter() - started, timings)
+        log.info('character-detect %s finished mode=%s total=%.2fs timings_ms=%s', label, mode, time.perf_counter() - started, timings)
     except Exception as exc:
         runtime.previous_cut = None
         inference_worker.fail_job(job_id, owner, job['episode_id'], exc)
         inference_worker.log.exception('Bulk anime character detection failed for job %s', job_id)
 
-def _claim_batch(first_job, first_owner, limit=8):
+
+def _claim_batch(first_job, first_owner, limit=BATCH_SIZE):
     """Claim related queued cuts atomically while retaining an individual lease each."""
     payload = json.loads(first_job['payload_json'])
     batch_id = payload.get('batch_id')
@@ -480,6 +531,44 @@ def _claim_batch(first_job, first_owner, limit=8):
     return claimed
 
 
+def _prepare_frames(claimed, runtime):
+    """Extract the boundary frames of every claimed cut that still needs them, in parallel."""
+    from . import inference_worker
+    work = []
+    for job_id, owner in claimed:
+        job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
+        if not job:
+            continue
+        payload = json.loads(job['payload_json'])
+        cut = payload['cut']
+        run = db.one('SELECT * FROM character_detection_runs WHERE job_id=?', (job_id,))
+        if not run and payload.get('phase') == 'recognize':
+            run = latest_current_run(cut)
+        if run and (payload.get('phase') == 'boxes' or run['phase'] == 'complete' or not db.one(
+                'SELECT 1 FROM character_detections WHERE run_id=? AND label_source IS NULL LIMIT 1', (run['id'],))):
+            continue  # nothing left to recognize in this cut
+        episode = db.one('SELECT * FROM episodes WHERE id=?', (job['episode_id'],))
+        work.append((job, owner, cut, episode, run))
+
+    def extract(item):
+        job, owner, cut, episode, run = item
+        try:
+            with db.connect() as conn:
+                _valid_cut(conn, job['id'], owner, episode['id'], cut)
+            cache = frame_cache_dir(episode)
+            cache.mkdir(parents=True, exist_ok=True)
+            original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
+            return job['id'], _extract_frames(original, cut, cache, json.loads(run['frames_json']) if run else None), None
+        except Exception as exc:  # noqa: BLE001 - reported per job below
+            return job['id'], None, exc
+
+    with ThreadPoolExecutor(anime_gallery.FRAME_THREADS) as pool:
+        for (job, owner, cut, episode, run), (job_id, result, error) in zip(work, pool.map(extract, work)):
+            if error is not None:
+                inference_worker.fail_job(job_id, owner, episode['id'], error)
+                inference_worker.log.exception('Could not prepare frames for character detection %s', job_id, exc_info=error)
+            else:
+                runtime.prepared_frames[job_id] = result
 
 
 def _detect_batch(claimed, runtime):
@@ -499,12 +588,15 @@ def _detect_batch(claimed, runtime):
             with db.connect() as conn:
                 _valid_cut(conn, job_id, owner, episode['id'], cut)
             worker.stage(job_id, owner, episode['id'], 'Preparing frames for AniRef batch')
-            original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
-            cache = frame_cache_dir(episode)
-            cache.mkdir(parents=True, exist_ok=True)
             timings = {}
+            ready = runtime.prepared_frames.pop(job_id, None)
             with timed('frames', timings, cut=cut.get('cut_index')):
-                frames, images = _extract_frames(original, cut, cache)
+                if ready is None:
+                    cache = frame_cache_dir(episode)
+                    cache.mkdir(parents=True, exist_ok=True)
+                    original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
+                    ready = _extract_frames(original, cut, cache)
+            frames, images = ready
             prepared.append((job, owner, cut, episode, frames, images, timings))
         except Exception as exc:
             inference_worker.fail_job(job_id, owner, job['episode_id'], exc)
@@ -523,6 +615,8 @@ def _detect_batch(claimed, runtime):
     except Exception:
         # Retry cuts individually so a malformed frame does not fail the group.
         inference_worker.log.exception('AniRef batch failed; retrying cuts individually')
+        for job, owner, cut, episode, frames, images, timings in prepared:
+            runtime.prepared_frames[job['id']] = (frames, images)
         return
     for index, (job, owner, cut, episode, frames, images, timings) in enumerate(prepared):
         try:
@@ -537,7 +631,7 @@ def _detect_batch(claimed, runtime):
             inference_worker.log.exception('Could not save anime detection batch result %s', job['id'])
 
 
-def process_batch(first_job, first_owner, runtime, batch_size=8):
+def process_batch(first_job, first_owner, runtime, batch_size=BATCH_SIZE):
     """Run several cut jobs with separate leases, one model at a time across all of them."""
     claimed = _claim_batch(first_job, first_owner, batch_size)
     extra_beats = []
@@ -547,13 +641,18 @@ def process_batch(first_job, first_owner, runtime, batch_size=8):
             thread = threading.Thread(target=worker.heartbeat, args=(job_id, owner, done), daemon=True)
             thread.start()
             extra_beats.append((done, thread))
+        runtime.gallery = None  # reload: labels confirmed since the previous batch now count
+        runtime.target_vectors.clear()
         # One pass per model, each over every claimed cut:
+        _prepare_frames(claimed, runtime)                    # ffmpeg, in parallel
         _detect_batch(claimed, runtime)                      # AniRef boxes
         deferred = [(job_id, owner) for job_id, owner in claimed
-                    if process(job_id, owner, runtime, defer_qwen=True) == DEFERRED]  # Re-ID embeddings
-        for job_id, owner in deferred:                       # Qwen review of what is left
+                    if process(job_id, owner, runtime, defer_qwen=True) == DEFERRED]  # embeddings + gallery
+        for job_id, owner in deferred:                       # optional Qwen review of what is left
             process(job_id, owner, runtime)
     finally:
+        for job_id, _ in claimed:
+            runtime.prepared_frames.pop(job_id, None)
         for done, _ in extra_beats:
             done.set()
         for _, thread in extra_beats:

@@ -276,6 +276,13 @@ def init_db():
             ('cuts', 'created_at', 'TEXT'),
             ('character_detections', 'match_model_id', 'TEXT'),
             ('character_detections', 'match_model_revision', 'TEXT'),
+            # Bulk recognition: ranked suggestions for unconfirmed boxes, the
+            # user's override for using a confirmed box as a matching example
+            # (NULL automatic, 1 always, 0 never), and the worker's verdict.
+            ('character_detections', 'candidates_json', 'TEXT'),
+            ('character_detections', 'recognition_use', 'INTEGER'),
+            ('character_detections', 'gallery_status', 'TEXT'),
+            ('character_detections', 'gallery_note', 'TEXT'),
         ):
             columns = {row['name'] for row in db.execute(f'PRAGMA table_info({table})')}
             if column not in columns:

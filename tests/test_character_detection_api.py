@@ -10,6 +10,17 @@ from app import db, inference_worker, worker
 class CharacterDetectionAPITest(unittest.TestCase):
     setUp = analysis_tests.AnalysisTest.setUp
     tearDown = analysis_tests.AnalysisTest.tearDown
+    def legacy_job(self, cut_id='c1'):
+        """A per-cut WeVisOne job as queued before the button moved to the bulk pipeline."""
+        import uuid
+        from app import character_detection
+        job_id = str(uuid.uuid4())
+        with db.connect() as conn:
+            cut = dict(conn.execute('SELECT * FROM cuts WHERE id=?', (cut_id,)).fetchone())
+            payload = {'cut_id': cut_id, 'cut': cut, 'references': character_detection.reference_snapshots(conn, 'p')}
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut['episode_id'], 'character_detect', json.dumps(payload)))
+        return job_id
+
     def test_database_upgrade_adds_detection_provenance_columns(self):
         with db.connect() as conn:
             conn.execute('ALTER TABLE character_detection_runs DROP COLUMN model_revision')
@@ -22,8 +33,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
 
     def test_detect_label_reference_and_snapshot(self):
         from app import character_detection, single_cut_pipeline
-        queued = self.client.post('/api/cuts/c1/character-detection')
-        self.assertEqual(queued.status_code, 200, queued.text)
+        self.legacy_job()
         job_id, owner = worker.claim_job(('character_detect',))
         frames = [{'position': position, 'time': time, 'image_size': [100, 80], 'boxes': [[5, 4, 40, 60]], 'raw_response': 'raw', 'prompt': 'detect'} for position, time in [('first', 0), ('last', 1.9)]]
         with patch.object(inference_worker, 'get_model', return_value=object()), patch.object(single_cut_pipeline, 'release_gpu_models'), patch.object(character_detection, 'detect_boundary_people', return_value=frames):
@@ -54,8 +64,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
             conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('old','c1',0,2,?,'test')", (json.dumps(frames),))
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('box','old','first','[5,4,40,60]','ctx','manual')")
             conn.execute("INSERT INTO character_image_references(id,character_context_id,detection_id) VALUES ('ref','ctx','box')")
-        response = self.client.post('/api/cuts/c1/character-detection')
-        self.assertEqual(response.status_code, 200, response.text)
+        self.legacy_job()
         job_id, owner = worker.claim_job(('character_detect',))
         with patch.object(inference_worker, 'get_model', return_value=object()), patch.object(single_cut_pipeline, 'release_gpu_models'), \
              patch.object(character_detection, 'detect_boundary_people', return_value=frames), patch.object(character_detection, 'crop_frame', return_value=b'image'), \

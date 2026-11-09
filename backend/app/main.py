@@ -107,6 +107,16 @@ class CharacterDetectionLabelInput(BaseModel):
     character_context_id: str | None = None
 
 
+class BulkCharacterInput(BaseModel):
+    # Ask Qwen (one request per cut) about boxes the embeddings leave unresolved.
+    qwen: bool = False
+
+
+class RecognitionUseInput(BaseModel):
+    # None: decided automatically; True: always a matching example; False: never.
+    use: bool | None = None
+
+
 class CharacterDetectionBoxInput(BaseModel):
     position: Literal['first', 'last']
     box: tuple[float, float, float, float]
@@ -1076,22 +1086,28 @@ def selected_analysis_context(cut_id: str, config: AnalysisConfig):
 
 
 @app.post('/api/cuts/{cut_id}/character-detection')
-def queue_character_detection(cut_id: str):
-    """Queue person localization for both cut boundary frames."""
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        cut = conn.execute('SELECT * FROM cuts WHERE id=?', (cut_id,)).fetchone()
-        if not cut or not cut['active']:
-            raise HTTPException(404, 'Active cut not found')
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (cut['episode_id'],)).fetchone():
-            raise HTTPException(409, 'Wait for the current episode job to finish')
-        job_id = str(uuid.uuid4())
-        from . import character_detection
-        episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (cut['episode_id'],)).fetchone()
-        payload = {'cut_id': cut_id, 'cut': dict(cut), 'references': character_detection.reference_snapshots(conn, episode['project_id'])}
-        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut['episode_id'], 'character_detect', json.dumps(payload)))
-        worker.sync_episode_status(conn, cut['episode_id'])
-    return {'job_id': job_id}
+def queue_character_detection(cut_id: str, body: BulkCharacterInput | None = None):
+    """Detect and recognize characters in one cut with the bulk pipeline.
+
+    A cut with boxes is recognized again like Re-run Recognition: automatic
+    labels are redone and manual labels and drawn boxes are kept. A cut
+    without boxes gets the full pass. An explicit request ignores the
+    "No characters" mark and the analysis switch, which only steer batches.
+    """
+    cut = db.one('SELECT * FROM cuts WHERE id=?', (cut_id,))
+    if not cut or not cut['active']:
+        raise HTTPException(404, 'Active cut not found')
+    if db.one("""SELECT 1 FROM jobs WHERE pipeline='character_detect' AND status IN ('queued','running')
+                 AND json_extract(payload_json,'$.cut_id')=?""", (cut_id,)):
+        raise HTTPException(409, 'Character detection is already queued for this cut')
+    result = _queue_bulk_character_jobs(cut['episode_id'], 'recognize', qwen=bool(body and body.qwen), rerun=True, cut_id=cut_id)
+    if not result['queued']:
+        has_boxes = db.one('''SELECT 1 FROM character_detections d JOIN character_detection_runs r ON r.id=d.run_id
+            WHERE r.cut_id=? AND r.cut_start=? AND r.cut_end=? AND r.rowid=(SELECT max(rowid) FROM character_detection_runs WHERE cut_id=?)''',
+            (cut_id, cut['start_time'], cut['end_time'], cut_id))
+        return {'job_id': None, 'queued': 0, 'detail': 'Every box in this cut already has your label.' if has_boxes
+                else 'No people were found in this cut. Draw a box for anyone missing.'}
+    return {'job_id': result['job_ids'][0], 'queued': 1}
 
 
 class NoCharactersInput(BaseModel):
@@ -1112,8 +1128,16 @@ def set_cut_no_characters(cut_id: str, body: NoCharactersInput):
     return {'cut_id': cut_id, 'no_characters': body.no_characters}
 
 
-def _queue_bulk_character_jobs(episode_id: str, phase: str):
-    from . import character_detection
+def _queue_bulk_character_jobs(episode_id: str, phase: str, qwen: bool = False, rerun: bool = False, cut_id: str | None = None):
+    """Queue one bulk job per cut. The gallery of confirmed labels is read live by the worker.
+
+    With rerun, recognition is redone for every cut that has boxes: automatic
+    labels and suggestions are cleared and the run goes back to 'boxes'.
+    Manual labels (and the boxes the user drew) are never touched, and a cut
+    whose boxes are all manually labelled is skipped. Cuts without a current
+    run get the full pass. With cut_id only that cut is considered, whatever
+    its "No characters" mark or analysis switch.
+    """
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()
@@ -1123,23 +1147,35 @@ def _queue_bulk_character_jobs(episode_id: str, phase: str):
             raise HTTPException(409, 'Wait for the current episode job to finish')
         # The latest run for the cut's current boundaries decides what is still missing.
         latest = """(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id AND r2.cut_start=c.start_time AND r2.cut_end=c.end_time ORDER BY r2.rowid DESC LIMIT 1)"""
-        if phase == 'boxes':
+        if rerun:
+            need = f"""AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detections d WHERE d.run_id={latest}
+                AND (d.label_source IS NULL OR d.label_source!='manual')))"""
+        elif phase == 'boxes':
             need = f"AND {latest} IS NULL"
         elif phase == 'full':
             # Boxes and recognition in one pass: anything without a finished run.
             need = f"AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND r.phase!='complete'))"
         else:
             need = f"""AND EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND r.phase!='complete')"""
-        cuts = conn.execute(f"""SELECT c.* FROM cuts c WHERE c.episode_id=? AND c.active=1 AND c.analysis_enabled=1 AND c.no_characters=0
+        scope = "AND c.id=?" if cut_id else "AND c.analysis_enabled=1 AND c.no_characters=0"
+        cuts = conn.execute(f"""SELECT c.*,{latest} AS current_run FROM cuts c WHERE c.episode_id=? AND c.active=1 {scope}
             AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.episode_id=c.episode_id AND j.pipeline='character_detect'
                 AND j.status IN ('queued','running') AND json_extract(j.payload_json,'$.cut_id')=c.id)
-            {need} ORDER BY c.cut_index""", (episode_id,)).fetchall()
-        references = character_detection.reference_snapshots(conn, episode['project_id'], per_character_limit=None) if cuts and phase in ('recognize', 'full') else []
+            {need} ORDER BY c.cut_index""", (episode_id, *([cut_id] if cut_id else []))).fetchall()
         job_ids, batch_id = [], str(uuid.uuid4())
-        for cut in cuts:
+        for row in cuts:
+            cut = dict(row)
+            run_id = cut.pop('current_run')
+            cut_phase = phase
+            if rerun:
+                cut_phase = 'recognize' if run_id else 'full'
+                if run_id:
+                    conn.execute("""UPDATE character_detections SET character_context_id=NULL,label_source=NULL,match_reason=NULL,
+                        match_model_id=NULL,match_model_revision=NULL,candidates_json=NULL WHERE run_id=? AND label_source='auto'""", (run_id,))
+                    conn.execute("UPDATE character_detections SET candidates_json=NULL WHERE run_id=? AND label_source IS NULL", (run_id,))
+                    conn.execute("UPDATE character_detection_runs SET phase='boxes' WHERE id=?", (run_id,))
             job_id = str(uuid.uuid4())
-            payload = {'cut_id': cut['id'], 'cut': dict(cut), 'references': references,
-                       'workflow': 'anime_bulk_v1', 'phase': phase, 'batch_id': batch_id}
+            payload = {'cut_id': cut['id'], 'cut': cut, 'workflow': 'anime_bulk_v1', 'phase': cut_phase, 'batch_id': batch_id, 'qwen': qwen}
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, 'character_detect', json.dumps(payload)))
             job_ids.append(job_id)
         if job_ids:
@@ -1154,15 +1190,21 @@ def queue_character_boxes(episode_id: str):
 
 
 @app.post('/api/episodes/{episode_id}/character-detection-all')
-def queue_all_character_detection(episode_id: str):
-    """Steps 1 and 2 together: batched AniRef boxes, then Re-ID and Qwen, sharing models across all cuts."""
-    return _queue_bulk_character_jobs(episode_id, 'full')
+def queue_all_character_detection(episode_id: str, body: BulkCharacterInput | None = None):
+    """Steps 1 and 2 together: batched AniRef boxes, then gallery matching (optionally Qwen), sharing models across all cuts."""
+    return _queue_bulk_character_jobs(episode_id, 'full', qwen=bool(body and body.qwen))
 
 
 @app.post('/api/episodes/{episode_id}/character-detection')
-def queue_missing_character_detections(episode_id: str):
-    """Step 2: embedding recognition, then Qwen fallback, for cuts whose boxes exist but are not complete."""
-    return _queue_bulk_character_jobs(episode_id, 'recognize')
+def queue_missing_character_detections(episode_id: str, body: BulkCharacterInput | None = None):
+    """Step 2: match boxes with the gallery of confirmed labels (optionally Qwen) for cuts whose boxes exist but are not complete."""
+    return _queue_bulk_character_jobs(episode_id, 'recognize', qwen=bool(body and body.qwen))
+
+
+@app.post('/api/episodes/{episode_id}/character-detection-rerun')
+def rerun_character_recognition(episode_id: str, body: BulkCharacterInput | None = None):
+    """Redo automatic recognition for the whole episode; manual labels and drawn boxes are kept as they are."""
+    return _queue_bulk_character_jobs(episode_id, 'recognize', qwen=bool(body and body.qwen), rerun=True)
 
 
 @app.get('/api/cuts/{cut_id}/character-detections')
@@ -1177,9 +1219,13 @@ def get_character_detections(cut_id: str):
     run['stale'] = run['cut_start'] != cut['start_time'] or run['cut_end'] != cut['end_time']
     boxes = db.all_rows('''SELECT d.*,c.title AS character_name,EXISTS(SELECT 1 FROM character_image_references r WHERE r.detection_id=d.id) AS is_reference
                            FROM character_detections d LEFT JOIN context_items c ON c.id=d.character_context_id WHERE d.run_id=? ORDER BY d.rowid''', (run['id'],))
+    names = {row['id']: row['title'] for row in db.all_rows("SELECT ci.id,ci.title FROM context_items ci JOIN cuts cu ON cu.id=? JOIN episodes e ON e.id=cu.episode_id WHERE ci.project_id=e.project_id AND ci.kind='character'", (cut_id,))}
     for box in boxes:
         box['box'] = json.loads(box.pop('box_json'))
         box['is_reference'] = bool(box['is_reference'])
+        # Ranked suggestions from the last recognition pass, for one-click labelling.
+        box['candidates'] = [{**item, 'character_name': names[item['character_id']]}
+                             for item in json.loads(box.pop('candidates_json') or '[]') if item['character_id'] in names]
     run['detections'] = boxes
     return run
 
@@ -1197,8 +1243,18 @@ def label_character_detection(detection_id: str, body: CharacterDetectionLabelIn
             raise HTTPException(400, 'Choose a character from this project')
         if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
             raise HTTPException(409, 'Remove the saved reference before changing this label')
-        conn.execute("UPDATE character_detections SET character_context_id=?,label_source=?,match_reason=NULL,match_model_id=NULL,match_model_revision=NULL WHERE id=?", (body.character_context_id, 'manual' if body.character_context_id else None, detection_id))
+        conn.execute("UPDATE character_detections SET character_context_id=?,label_source=?,match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (body.character_context_id, 'manual' if body.character_context_id else None, detection_id))
     return {'ok': True}
+
+
+@app.put('/api/character-detections/{detection_id}/recognition-use')
+def set_recognition_use(detection_id: str, body: RecognitionUseInput):
+    """Override whether a confirmed box is used as a matching example (null restores the automatic choice)."""
+    with db.connect() as conn:
+        value = None if body.use is None else int(body.use)
+        if not conn.execute('UPDATE character_detections SET recognition_use=?,gallery_status=NULL,gallery_note=NULL WHERE id=?', (value, detection_id)).rowcount:
+            raise HTTPException(404, 'Detection not found')
+    return {'ok': True, 'use': body.use}
 
 
 @app.delete('/api/character-detections/{detection_id}')
@@ -1331,7 +1387,7 @@ def resize_character_detection(detection_id: str, body: CharacterDetectionBoxUpd
         width, height = frame['image_size']
         if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
             raise HTTPException(400, 'Box must fit inside the frame')
-        conn.execute('UPDATE character_detections SET box_json=? WHERE id=?', (json.dumps(body.box), detection_id))
+        conn.execute('UPDATE character_detections SET box_json=?,gallery_status=NULL,gallery_note=NULL WHERE id=?', (json.dumps(body.box), detection_id))
         conn.execute('DELETE FROM character_detection_embeddings WHERE detection_id=?', (detection_id,))
     return {'ok': True}
 
