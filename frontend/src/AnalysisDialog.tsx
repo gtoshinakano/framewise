@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { ArrowLeft, ArrowRight, X } from 'lucide-react'
 import { mediaUrl, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type TranscriptSegment, type Waveform } from './api'
 import AnalysisControls from './AnalysisControls'
+import { activeRunFor } from './runState'
+import { useCutStages } from './useCutStages'
 import ResultEditor from './ResultEditor'
 import { CutSummaryPanel, SUMMARY_TITLE } from './AnimationPromptPanel'
 import { DetectionPreview } from './DetectionPreview'
@@ -35,12 +37,31 @@ export default function AnalysisDialog({ cut, cuts, previousCut, nextCut, onNavi
     if (!target) { setJump(String(cut.cut_index + 1)); setToast(`Cut ${jump.trim() || '(empty)'} does not exist. Enter a number from 1 to ${cuts.length}.`); return }
     if (target.id !== cut.id) onNavigate(target)
   }
+  // Stable handlers: the Run tab's memoized panels should not re-render just because the dialog did.
+  const navigation = useRef({ previousCut, nextCut, onNavigate }); navigation.current = { previousCut, nextCut, onNavigate }
+  const goPrevious = useCallback(() => { const { previousCut: target, onNavigate: go } = navigation.current; if (target) go(target) }, [])
+  const goNext = useCallback(() => { const { nextCut: target, onNavigate: go } = navigation.current; if (target) go(target) }, [])
+  // Keyboard: "[" goes to the previous cut and "]" to the next. Ignored while typing in a field, with a modifier held
+  // (browser shortcuts), on key repeat, or while a nested dialog (run details) is open.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return
+      if (event.key !== '[' && event.key !== ']') return
+      const target = event.target as HTMLElement | null
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return
+      if (document.querySelectorAll('[aria-modal="true"]').length > 1) return
+      event.preventDefault()
+      if (event.key === '[') goPrevious(); else goNext()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [goPrevious, goNext])
   const title = cut.title || (cut.active ? `Cut ${cut.cut_index + 1}` : 'Archived cut')
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Analysis for ${title}`} className="flex h-[94vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden rounded-2xl border hairline bg-[#131720] shadow-2xl outline-none">
-      <header className="grid grid-cols-[1fr_auto] items-center gap-3 border-b hairline px-5 py-3 lg:grid-cols-[1fr_auto_1fr]"><div className="min-w-0"><p className="text-[11px] font-semibold uppercase tracking-[.14em] text-[#a58ae8]">Cut analysis</p><h2 className="truncate text-base font-semibold">{title}</h2></div><div className="order-3 col-span-2 flex justify-center lg:order-none lg:col-span-1"><div className="flex gap-1 rounded-lg border hairline p-1" role="tablist">{([['results', 'Results'], ['run', 'Run settings'], ['assistant', 'Assistant']] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={`rounded-md px-5 py-1.5 text-xs font-semibold ${tab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}</button>)}</div></div><div className="flex items-center justify-end gap-2"><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!previousCut} onClick={() => previousCut && onNavigate(previousCut)} aria-label="Previous cut analysis"><ArrowLeft size={14} /> Previous</button><input type="number" min={1} max={cuts.length} step={1} value={cut.active ? jump : ''} disabled={!cut.active} onChange={event => setJump(event.target.value)} onBlur={goToCut} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} className="field !w-24 px-2.5 py-2 text-center" aria-label="Go to cut number" /><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!nextCut} onClick={() => nextCut && onNavigate(nextCut)} aria-label="Next cut analysis">Next <ArrowRight size={14} /></button><button onClick={onClose} className="rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#272e3a] hover:text-white" aria-label="Close analysis"><X size={18} /></button></div></header>
+      <header className="grid grid-cols-[1fr_auto] items-center gap-3 border-b hairline px-5 py-3 lg:grid-cols-[1fr_auto_1fr]"><div className="min-w-0"><p className="text-[11px] font-semibold uppercase tracking-[.14em] text-[#a58ae8]">Cut analysis</p><h2 className="truncate text-base font-semibold">{title}</h2></div><div className="order-3 col-span-2 flex justify-center lg:order-none lg:col-span-1"><div className="flex gap-1 rounded-lg border hairline p-1" role="tablist">{([['results', 'Results'], ['run', 'Run settings'], ['assistant', 'Assistant']] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={`rounded-md px-5 py-1.5 text-xs font-semibold ${tab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}</button>)}</div></div><div className="flex items-center justify-end gap-2"><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!previousCut} onClick={() => previousCut && onNavigate(previousCut)} aria-label="Previous cut analysis" aria-keyshortcuts="[" title="Previous cut (press [ )"><ArrowLeft size={14} /> Previous <kbd className="hidden rounded border border-[#3b4352] px-1 font-mono text-[10px] leading-4 text-[#929aa9] xl:inline">[</kbd></button><input type="number" min={1} max={cuts.length} step={1} value={cut.active ? jump : ''} disabled={!cut.active} onChange={event => setJump(event.target.value)} onBlur={goToCut} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} className="field !w-24 px-2.5 py-2 text-center" aria-label="Go to cut number" /><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!nextCut} onClick={() => nextCut && onNavigate(nextCut)} aria-label="Next cut analysis" aria-keyshortcuts="]" title="Next cut (press ] )"><kbd className="hidden rounded border border-[#3b4352] px-1 font-mono text-[10px] leading-4 text-[#929aa9] xl:inline">]</kbd> Next <ArrowRight size={14} /></button><button onClick={onClose} className="rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#272e3a] hover:text-white" aria-label="Close analysis"><X size={18} /></button></div></header>
       <AnalysisTimeline cutId={cut.id} refreshKey={contentProps.jobsKey} />
-      <AnalysisDialogContent key={cut.id} cut={cut} tab={tab} onPrevious={previousCut ? () => onNavigate(previousCut) : undefined} onNext={nextCut ? () => onNavigate(nextCut) : undefined} {...contentProps} />
+      <AnalysisDialogContent key={cut.id} cut={cut} cuts={cuts} tab={tab} previousId={previousCut?.id} nextId={nextCut?.id} onPrevious={previousCut ? goPrevious : undefined} onNext={nextCut ? goNext : undefined} {...contentProps} />
     </div>
     {toast && <div role="alert" className="fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-start gap-3 rounded-xl border border-[#63363e] bg-[#2b191f] px-4 py-3 text-sm text-[#ffb6bc] shadow-lg">{toast}<button onClick={() => setToast('')} aria-label="Dismiss"><X size={16} /></button></div>}
   </div>
@@ -66,9 +87,9 @@ function PlayheadReadout({ video, start, end }: { video: RefObject<HTMLVideoElem
   return <span className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 font-mono text-xs tabular-nums text-white" title="Playhead position in seconds, counted from the start of this cut" aria-label={`Playhead ${seconds.toFixed(3)} seconds into the cut`}>{seconds.toFixed(3)}<span className="ml-0.5 text-[#aeb5c1]">s</span></span>
 }
 
-type ContentProps = Pick<DialogProps, 'cut' | 'episodeId' | 'proxyReady' | 'waveform' | 'transcript' | 'hasAudio' | 'preparingAudio' | 'busy' | 'jobs' | 'jobsKey' | 'frameVersion' | 'onStarted'> & { tab: DialogTab; onPrevious?: () => void; onNext?: () => void }
+type ContentProps = Pick<DialogProps, 'cut' | 'cuts' | 'episodeId' | 'proxyReady' | 'waveform' | 'transcript' | 'hasAudio' | 'preparingAudio' | 'busy' | 'jobs' | 'jobsKey' | 'frameVersion' | 'onStarted'> & { tab: DialogTab; previousId?: string; nextId?: string; onPrevious?: () => void; onNext?: () => void }
 
-function AnalysisDialogContent({ cut, episodeId, proxyReady, waveform, transcript, hasAudio, preparingAudio, busy, jobs, jobsKey, frameVersion, onStarted, tab, onPrevious, onNext }: ContentProps) {
+function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proxyReady, waveform, transcript, hasAudio, preparingAudio, busy, jobs, jobsKey, frameVersion, onStarted, tab, onPrevious, onNext }: ContentProps) {
   const [results, setResults] = useState<AnalysisResult[]>([])
   const [resultsLoaded, setResultsLoaded] = useState(false)
   const [resultsRevision, setResultsRevision] = useState(0)
@@ -82,6 +103,9 @@ function AnalysisDialogContent({ cut, episodeId, proxyReady, waveform, transcrip
     void player.play().catch(() => {})
   }
   const [editorTarget, setEditorTarget] = useState<HTMLElement | null>(null)
+  const [charactersTarget, setCharactersTarget] = useState<HTMLElement | null>(null)
+  const prefetchIds = useMemo(() => [previousId, nextId], [previousId, nextId])
+  const stages = useCutStages(cut.id, !!activeRunFor(jobs, cut.id), tab === 'run', jobsKey)
   const current = results.find(result => result.title === SUMMARY_TITLE && !result.superseded_by)
   const consistency = results.find(result => result.settings.structured_type === 'consistency_summary' && !result.superseded_by)
   // The chat mounts on first visit and then stays mounted so a streaming reply survives tab switches.
@@ -94,20 +118,23 @@ function AnalysisDialogContent({ cut, episodeId, proxyReady, waveform, transcrip
   }
   return <>
     {assistantMounted && <CutAssistant cut={cut} active={tab === 'assistant'} onResultsChanged={resultsChanged} />}
-    <div className={`${tab === 'assistant' ? 'hidden' : 'grid'} min-h-0 flex-1 gap-5 overflow-y-auto p-5 lg:overflow-hidden ${tab === 'run' ? 'lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.8fr)]' : 'lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]'}`}>
-      <div className={`scrollbar flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-2' : ''}`}>
+    <div className={`${tab === 'assistant' ? 'hidden' : 'grid'} min-h-0 flex-1 gap-5 overflow-y-auto p-5 lg:overflow-hidden ${tab === 'run' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(400px,460px)]' : 'lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]'}`}>
+      <div className={`scrollbar flex flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-2 lg:min-h-0' : 'min-h-0'}`}>
         {/* Both stay mounted so unsaved settings and drafts survive a tab switch. */}
         <div className={tab === 'results' ? 'flex min-h-[30rem] flex-1 flex-col lg:min-h-[26rem]' : 'hidden'}>
           {consistency && <div className="mb-3"><ConsistencySummary cutId={cut.id} result={consistency} disabled={busy || !cut.active} onStarted={onStarted} /></div>}
           <CutSummaryPanel textProvider={config?.text_provider} cutId={cut.id} current={current} loaded={resultsLoaded} jobs={jobs} disabled={busy || !cut.active || !cut.analysis_enabled} onStarted={onStarted} onSaved={result => { setResults(previous => [result, ...previous.filter(item => item.id !== result.parent_id)]); setResultsRevision(value => value + 1) }} />
         </div>
-        <div hidden={tab !== 'run'} className="space-y-4">{cut.active ? <AnalysisControls jobs={jobs} cut={cut} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext} /> : <p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p>}<CutRunHistory cutId={cut.id} jobs={jobs} onChanged={onStarted} /></div>
+        <div hidden={tab !== 'run'}>{cut.active
+          ? <AnalysisControls jobs={jobs} cut={cut} cuts={cuts} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} results={results} stages={stages} prefetchIds={prefetchIds} charactersTarget={charactersTarget} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext}><CutRunHistory cutId={cut.id} jobs={jobs} stages={stages} onChanged={onStarted} /></AnalysisControls>
+          : <div className="space-y-4"><p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p><CutRunHistory cutId={cut.id} jobs={jobs} stages={stages} onChanged={onStarted} /></div>}</div>
       </div>
-      <div className={`scrollbar flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-1' : ''}`}>
-        <div className="shrink-0">{<div className="relative aspect-video overflow-hidden rounded-xl border hairline bg-black">{proxyReady ? <video ref={video} className="h-full w-full" controls preload="metadata" src={mediaUrl(episodeId, 'proxy')} aria-label="Play this cut" onLoadedMetadata={event => { event.currentTarget.currentTime = cut.start_time }} onSeeking={event => { const player = event.currentTarget; if (player.currentTime < cut.start_time) player.currentTime = cut.start_time; else if (player.currentTime > cut.end_time) player.currentTime = cut.end_time }} onPlay={event => { if (event.currentTarget.currentTime >= cut.end_time) event.currentTarget.currentTime = cut.start_time }} onTimeUpdate={event => { const player = event.currentTarget; setPlayTime(Math.max(0, Math.min(cut.end_time - cut.start_time, player.currentTime - cut.start_time))); if (player.currentTime >= cut.end_time && !player.paused) { player.pause(); if (player.currentTime > cut.end_time) player.currentTime = cut.end_time } }} /> : <div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div>}{proxyReady && <PlayheadReadout video={video} start={cut.start_time} end={cut.end_time} />}</div>}</div>
+      <div className={`scrollbar flex flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-1 lg:min-h-0' : 'min-h-0'}`}>
+        <div className={`shrink-0 ${tab === 'run' ? 'mx-auto w-full lg:max-w-[82vh]' : ''}`}>{<div className="relative aspect-video overflow-hidden rounded-xl border hairline bg-black">{proxyReady ? <video ref={video} className="h-full w-full" controls preload="metadata" src={mediaUrl(episodeId, 'proxy')} aria-label="Play this cut" onLoadedMetadata={event => { event.currentTarget.currentTime = cut.start_time }} onSeeking={event => { const player = event.currentTarget; if (player.currentTime < cut.start_time) player.currentTime = cut.start_time; else if (player.currentTime > cut.end_time) player.currentTime = cut.end_time }} onPlay={event => { if (event.currentTarget.currentTime >= cut.end_time) event.currentTarget.currentTime = cut.start_time }} onTimeUpdate={event => { const player = event.currentTarget; if (tab === 'results') setPlayTime(Math.max(0, Math.min(cut.end_time - cut.start_time, player.currentTime - cut.start_time))); if (player.currentTime >= cut.end_time && !player.paused) { player.pause(); if (player.currentTime > cut.end_time) player.currentTime = cut.end_time } }} /> : <div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div>}{proxyReady && <PlayheadReadout video={video} start={cut.start_time} end={cut.end_time} />}</div>}</div>
         {tab === 'results' && <details className="rounded-lg border hairline p-3"><summary className="cursor-pointer text-xs font-semibold text-[#c3aeff]">View analyzed frames and detections</summary><div className="mt-3"><DetectionPreview cut={cut} results={results} frameVersion={frameVersion} /></div></details>}
         {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} time={playTime} onPlaySegment={playSegment} canPlay={proxyReady} />}
         <div hidden={tab !== 'results'} className="scrollbar max-h-56 shrink-0 overflow-y-auto"><ResultEditor cutId={cut.id} refreshKey={`${jobsKey}:${resultsRevision}`} onLoaded={value => { setResults(value); setResultsLoaded(true) }} onChanged={onStarted} editorTarget={editorTarget} /></div>
+        <div ref={setCharactersTarget} className={tab === 'run' ? 'block' : 'hidden'} />
         <div ref={setEditorTarget} className={tab === 'results' ? 'flex flex-1 flex-col' : 'hidden'} />
       </div>
     </div>
