@@ -1,8 +1,9 @@
 import { ResultMetrics } from './ResultMetrics'
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { History, Layers3, Plus, Save, Trash2, WandSparkles, X } from 'lucide-react'
+import { AlignLeft, AudioLines, BoxSelect, Captions, FileText, History, Image as ImageIcon, Layers3, LayoutTemplate, ListTree, Plus, Save, Sparkles, StickyNote, Trash2, Video, WandSparkles, X, type LucideIcon } from 'lucide-react'
 import { api, type AnalysisContext, type AnalysisResult, type ResultKind } from './api'
+import { resultAccent } from './RunUi'
 
 const kinds: { value: ResultKind; label: string }[] = [
   { value: 'first_frame', label: 'First frame' },
@@ -14,6 +15,25 @@ const kinds: { value: ResultKind; label: string }[] = [
   { value: 'generation_prompt', label: 'Generation prompt' },
   { value: 'other', label: 'Other' },
 ]
+
+const KIND_ICON: Record<ResultKind, LucideIcon> = {
+  first_frame: ImageIcon, last_frame: ImageIcon, camera_movement: Video, composition: LayoutTemplate,
+  cut_description: AlignLeft, audio_visual_match: AudioLines, generation_prompt: WandSparkles, other: StickyNote,
+}
+
+/** Icon, colour and name for the kind of content a result holds, so the list reads without opening anything. */
+function lookOf(result: Pick<AnalysisResult, 'kind' | 'title' | 'settings'>): { icon: LucideIcon; color: string; label: string } {
+  const type = String(result.settings?.structured_type ?? '')
+  const accent = resultAccent(result.settings, result.title)
+  if (type === 'consistency_summary') return { icon: Sparkles, ...accent }
+  if (result.title === 'Cut summary') return { icon: FileText, ...accent }
+  if (type === 'initial_frame' || type === 'last_frame') return { icon: ImageIcon, ...accent }
+  if (type === 'video_analysis') return { icon: Video, ...accent }
+  if (type === 'subtitle_ocr' || /^Raw OCR at /.test(result.title)) return { icon: Captions, color: '#e2709c', label: 'Subtitle text' }
+  if (/^Object detections at /.test(result.title)) return { icon: BoxSelect, color: '#f0a64a', label: 'Object detections' }
+  if (/^Frame at /.test(result.title)) return { icon: ImageIcon, color: '#6aa8ff', label: 'Frame' }
+  return { icon: KIND_ICON[result.kind] ?? StickyNote, color: '#8b95a7', label: kinds.find(kind => kind.value === result.kind)?.label ?? 'Result' }
+}
 
 type Draft = Pick<AnalysisResult, 'kind' | 'title' | 'content'> & { id?: string; superseded_by?: string | null; origin?: string; model_id?: string | null; settings?: Record<string, unknown> }
 
@@ -37,6 +57,10 @@ export default function ResultEditor({ cutId, refreshKey, onLoaded, onChanged, e
   }, [cutId])
   useEffect(() => { setDraft(null); setHistory(false); setContextOpen(false); setContext(null); void load(false) }, [cutId, load])
   useEffect(() => { void load(history) }, [refreshKey])
+  useEffect(() => {
+    // Stacked layout: the editor opens below the lists, so scroll to it. From lg up it is already in view.
+    if (draft && editorTarget && window.matchMedia('(max-width: 1023.98px)').matches) editorTarget.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [draft === null, editorTarget])
   async function toggleHistory() { const next = !history; setHistory(next); await load(next) }
   async function toggleContext() {
     if (contextOpen) { setContextOpen(false); return }
@@ -63,16 +87,28 @@ export default function ResultEditor({ cutId, refreshKey, onLoaded, onChanged, e
       setDraft(value); await load(history); await onChanged?.()
     } catch (err) { setError((err as Error).message) } finally { setBusy(false) }
   }
-  return <div className="rounded-xl border hairline bg-[#1b202a] p-4">
-    <div className="flex items-center justify-between gap-2"><p className="flex items-center gap-2 text-xs font-semibold"><WandSparkles size={14} className="text-[#bca7ff]" /> Analysis fields</p><button onClick={() => setDraft({ kind: 'first_frame', title: '', content: '' })} className="rounded-md p-1 text-[#c3aeff] hover:bg-[#343047]" title="Add analysis field" aria-label="Add analysis field"><Plus size={16} /></button></div>
-    <p className="muted mt-2 text-[11px] leading-5">Review and edit findings. Model runs add findings without replacing your existing work.</p>
-    {error && <p className="mt-3 text-xs text-[#ff9fa7]">{error}</p>}
-    {results.length > 0 ? <div className="mt-4 space-y-1">{results.map(result => <div key={result.id} className="flex items-center gap-2 rounded-lg border border-[#333a45] bg-[#232a35] p-2">
-      <button onClick={() => setDraft(result)} className={`min-w-0 flex-1 rounded-md px-2 py-1 text-left ${draft?.id === result.id ? 'bg-[#322a48] ring-1 ring-[#a58ae8]' : 'hover:bg-[#303746]'}`}><strong className="block truncate text-[11px]">{result.title || kinds.find(kind => kind.value === result.kind)?.label}</strong><span className="muted mt-1 block truncate text-[10px]">{result.content}</span>{result.superseded_by && <span className="muted text-[10px]">Historical revision</span>}</button>
-      {!result.superseded_by && <button onClick={() => remove(result)} disabled={busy} className="shrink-0 rounded-md p-1.5 text-[#98a1af] hover:bg-[#3a2229] hover:text-[#ff9fa7]" title="Delete this result" aria-label={`Delete ${result.title || result.kind}`}><Trash2 size={14} /></button>}</div>)}</div> : <p className="muted mt-4 text-[11px]">No analysis fields yet.</p>}
-    <button onClick={toggleHistory} className="muted mt-3 flex items-center gap-1 text-[11px] hover:text-white"><History size={12} /> {history ? 'Hide history' : 'Show history'}</button>
-    <button onClick={toggleContext} className="muted mt-3 flex items-center gap-1 text-[11px] hover:text-white"><Layers3 size={12} /> {contextOpen ? 'Hide input context' : 'Review input context'}</button>
+  return <section aria-label="Analysis fields" className="shrink-0 border-t hairline pt-3">
+    <div className="flex items-center justify-between gap-2"><h4 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[.1em] text-[#aeb5c1]" title="Review and edit findings. Model runs add findings without replacing your existing work."><ListTree size={13} className="text-[#bca7ff]" aria-hidden /> Analysis fields <span className="font-normal normal-case tracking-normal text-[#929aa9]">{results.length}</span></h4><button onClick={() => setDraft({ kind: 'first_frame', title: '', content: '' })} className="rounded-md p-1 text-[#c3aeff] hover:bg-[#343047]" title="Add analysis field" aria-label="Add analysis field"><Plus size={15} /></button></div>
+    {error && <p className="mt-2 text-xs text-[#ff9fa7]">{error}</p>}
+    {results.length > 0 ? <ul className="mt-1.5 space-y-px">{results.map(result => {
+      const look = lookOf(result)
+      const Icon = look.icon
+      const name = result.title || look.label
+      const selected = draft?.id === result.id
+      return <li key={result.id} className="group flex items-center gap-0.5">
+        <button type="button" onClick={() => setDraft(result)} title={`${name} · ${look.label}${result.superseded_by ? ' · earlier revision' : ''}`} aria-current={selected || undefined} className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-xs ${selected ? 'bg-[#322a48] ring-1 ring-[#a58ae8]' : 'hover:bg-[#262d3a]'} ${result.superseded_by ? 'opacity-60' : ''}`}>
+          <Icon size={14} style={{ color: look.color }} className="shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{name}</span>
+          {result.superseded_by && <span className="shrink-0 rounded bg-white/5 px-1 text-[9px] uppercase tracking-wide text-[#929aa9]">older</span>}
+        </button>
+        {!result.superseded_by && <button onClick={() => remove(result)} disabled={busy} className="shrink-0 rounded-md p-1 text-[#98a1af] opacity-40 hover:bg-[#3a2229] hover:text-[#ff9fa7] hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100" title="Delete this result" aria-label={`Delete ${result.title || result.kind}`}><Trash2 size={13} /></button>}
+      </li>
+    })}</ul> : <p className="muted mt-2 text-[11px]">No analysis fields yet.</p>}
+    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+      <button onClick={toggleHistory} className="muted flex items-center gap-1 text-[10px] hover:text-white"><History size={11} /> {history ? 'Hide history' : 'Show history'}</button>
+      <button onClick={toggleContext} className="muted flex items-center gap-1 text-[10px] hover:text-white"><Layers3 size={11} /> {contextOpen ? 'Hide input context' : 'Review input context'}</button>
+    </div>
     {contextOpen && <div className="mt-3 space-y-3 rounded-lg border border-[#3c4654] bg-[#151a22] p-3 text-[11px] leading-5">{context ? <><div><strong className="text-[#c3aeff]">Project synopsis</strong><p className="muted">{context.project.synopsis || 'None entered'}</p></div><div><strong className="text-[#c3aeff]">Working context</strong><p className="muted">{context.context_items.length ? context.context_items.map(item => `${item.title} (${item.kind.replaceAll('_', ' ')})`).join(', ') : 'No context items'}</p></div><div><strong className="text-[#c3aeff]">Adjacent cuts</strong><p className="muted">Previous: {context.previous_cut?.title || context.previous_cut?.description || 'None'} · Next: {context.next_cut?.title || context.next_cut?.description || 'None'}</p><p className="muted">Neighbor results: {context.neighbor_results.previous.length + context.neighbor_results.next.length}</p></div><div><strong className="text-[#c3aeff]">Audio in this cut</strong><p className="muted">{context.transcript_segments.length ? context.transcript_segments.map(segment => `${segment.speaker_label || 'Speaker'}: ${segment.text}`).join(' · ') : 'No transcript segments in this cut'}</p></div></> : <p className="muted">Loading context…</p>}</div>}
     {draft && editorTarget && createPortal(<div className="flex flex-1 flex-col gap-3 rounded-xl border hairline bg-[#1b202a] p-4"><div className="flex items-center justify-between"><strong className="text-xs">{draft.id ? 'Edit result' : 'New result'}</strong><button onClick={() => setDraft(null)} aria-label="Close result editor" className="muted"><X size={14} /></button></div><label className="block"><span className="label">Field</span><select className="field" disabled={!!draft.id} value={draft.kind} onChange={event => setDraft({ ...draft, kind: event.target.value as ResultKind })}>{kinds.map(kind => <option key={kind.value} value={kind.value}>{kind.label}</option>)}</select></label><label className="block"><span className="label">Title</span><input className="field" maxLength={200} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} placeholder="Optional label" /></label><label className="flex flex-1 flex-col"><span className="label">Content</span><textarea className="field min-h-32 flex-1 resize-y" maxLength={structured ? 5000000 : 50000} value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} placeholder="Describe what you see or want to generate…" /></label>{structured && <p className={invalidJson ? "text-[10px] text-[#ff9fa7]" : "muted text-[10px]"}>{invalidJson ? "Enter a valid JSON object before saving." : "Structured result · JSON object"}</p>}{draft.id && 'settings' in draft && <ResultMetrics result={draft as AnalysisResult} />}{draft.id && <p className="muted text-[10px]">Source: {draft.origin}{draft.model_id ? ` · ${draft.model_id}` : ''}. Saving creates a new revision.</p>}<button onClick={save} disabled={busy || !draft.content.trim() || invalidJson || !!draft.superseded_by} className="btn btn-primary w-full"><Save size={14} /> {draft.id ? 'Save revision' : 'Add result'}</button>{draft.id && !draft.superseded_by && <button onClick={() => remove(draft)} disabled={busy} className="btn btn-danger w-full"><Trash2 size={14} /> Delete result</button>}{draft.superseded_by && <p className="muted text-[10px]">Historical revision. Select the current version to edit.</p>}</div>, editorTarget)}
-  </div>
+  </section>
 }

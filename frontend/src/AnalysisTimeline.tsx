@@ -6,7 +6,7 @@ type TimelineEvent = { kind: string; label: string; status: string; at: string |
 type TimelineData = { events: TimelineEvent[]; total_seconds: number }
 
 // One colour per kind of processing, so done and pending work can be told apart at a glance.
-const KINDS: Record<string, { color: string; icon: typeof Check }> = {
+export const KINDS: Record<string, { color: string; icon: typeof Check }> = {
   created: { color: '#8b95a7', icon: Clapperboard },
   character_boxes: { color: '#f0a64a', icon: Square },
   character_identity: { color: '#e2709c', icon: UserRoundCheck },

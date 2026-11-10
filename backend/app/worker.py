@@ -103,6 +103,11 @@ def cleanup_voice_upload(job):
         log.exception('Could not clean up voice upload for job %s', job['id'])
 
 
+# Local text jobs of one episode may run side by side (two llama-server slots); every other
+# pipeline still holds its episode alone.
+TEXT_PIPELINES = ('regen', 'consistency_summary', 'review_answers')
+
+
 def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
     now = time.time()
     placeholders = ",".join("?" for _ in pipelines)
@@ -119,6 +124,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
                 -- Only a job with a live lease holds the episode. Interrupted jobs (lease
                 -- expired) must not block each other: a bulk batch leaves many at once.
                 AND other.lease_until>?
+                AND NOT (jobs.pipeline IN ('regen','consistency_summary','review_answers') AND other.pipeline IN ('regen','consistency_summary','review_answers'))
                 AND NOT ((jobs.pipeline='cutframes' AND other.pipeline IN ('analyze','regen')) OR (other.pipeline='cutframes' AND jobs.pipeline IN ('analyze','regen'))))
             )
             ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,

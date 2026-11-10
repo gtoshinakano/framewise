@@ -577,6 +577,7 @@ class CompositionCut(CompositionModel):
     shot: CompositionShot | None = None
     setting: str | None = None
     lighting: str | None = None
+    background: str | None = Field(None, description='Unmarked background people in the opening frame: count, outfits, where they stand.')
     subjects: list[CompositionSubject] | None = None
     beats: list[CompositionBeat] | None = None
     end_state: CompositionEndState | None = None

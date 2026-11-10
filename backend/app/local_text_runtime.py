@@ -17,6 +17,14 @@ MODEL_ID = 'Qwen/Qwen3.6-35B-A3B:Q4_K_M'
 MODEL_REVISION = 'ggml-org:7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5'
 
 
+def text_job_concurrency():
+    """Text jobs that may run at once; the llama-server gets one slot for each."""
+    try:
+        return max(1, int(os.environ.get('TEXT_JOB_CONCURRENCY', '2')))
+    except ValueError:
+        return 2
+
+
 class GpuBusy(Exception):
     """Visual work holds the GPU, so the local chat model cannot be used right now."""
 
@@ -33,6 +41,7 @@ class LocalTextRuntime:
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
         self.chat_users = 0
+        self.held = threading.local()  # chat sessions held by the calling thread
         self.gpu_busy = False
         self.publish('unloaded', 'Worker ready')
 
@@ -58,7 +67,8 @@ class LocalTextRuntime:
     def stop(self, detail='', wait_for_chat=True):
         with self.lock:
             if wait_for_chat:
-                while self.chat_users:
+                # A thread cancelling its own job must not wait for the session it holds itself.
+                while self.chat_users > getattr(self.held, 'count', 0):
                     self.changed.wait(1)
             self._stop(detail)
 
@@ -135,11 +145,13 @@ class LocalTextRuntime:
                 if cancel_check:
                     cancel_check()
             self.chat_users += 1
+            self.held.count = getattr(self.held, 'count', 0) + 1
         try:
             yield
         finally:
             with self.changed:
                 self.chat_users -= 1
+                self.held.count -= 1
                 self.changed.notify_all()
 
     def ensure(self, cancel_check=None, idle_load=False):
@@ -184,7 +196,7 @@ class LocalTextRuntime:
         self.publish('loading', 'Loading Qwen 3.6 into GPU memory')
         try:
             self.process = subprocess.Popen([str(runtime), '-m', str(model), '--host', '127.0.0.1', '--port', str(port),
-                '--n-gpu-layers', '99', '--ctx-size', os.environ.get('QWEN36_CONTEXT_SIZE', '65536'), '--parallel', '1', '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048')],
+                '--n-gpu-layers', '99', '--ctx-size', os.environ.get('QWEN36_CONTEXT_SIZE', '65536'), '--parallel', str(text_job_concurrency()), '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048')],
                 stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT, env=env)
             self.url = f'http://127.0.0.1:{port}'
             deadline = time.monotonic() + 600

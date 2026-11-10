@@ -77,9 +77,6 @@ class Runtime(anime_bulk.BulkRuntime):
             raise AssertionError('the embedder should not be loaded')
         return self.stub
 
-    def get_qwen(self, lease_check):
-        return 'server'
-
 
 class BulkDetectionTest(unittest.TestCase):
     setUp = analysis_tests.AnalysisTest.setUp
@@ -111,7 +108,7 @@ class BulkDetectionTest(unittest.TestCase):
     def fake_crops(self, rows, scratch, lease_check=None):
         return {row['id']: jpeg(self.colors[row['id']]) for row in rows}
 
-    def run_episode(self, runtime, first, last, path='character-detection-all', body=None, review=None):
+    def run_episode(self, runtime, first, last, path='character-detection-all', body=None):
         response = self.client.post(f'/api/episodes/e/{path}', json=body or {})
         self.assertEqual(response.status_code, 200, response.text)
         job_id, owner = worker.claim_job(('character_detect',))
@@ -123,15 +120,14 @@ class BulkDetectionTest(unittest.TestCase):
                      {'position': 'last', 'time': cut['end_time'] - .5, 'image_size': [100, 80]}],
                     [frame_image(first), frame_image(last)])
         with patch.object(anime_bulk, '_extract_frames', side_effect=frames), \
-             patch.object(anime_gallery, 'extract_crops', side_effect=self.fake_crops), \
-             patch.object(anime_bulk.frame_model, 'assign_characters', side_effect=review or AssertionError('Qwen must not be called')) as qwen:
+             patch.object(anime_gallery, 'extract_crops', side_effect=self.fake_crops):
             anime_bulk.process_batch(db.one('SELECT * FROM jobs WHERE id=?', (job_id,)), owner, runtime)
         self.assertEqual({row['status'] for row in db.all_rows("SELECT status FROM jobs WHERE pipeline='character_detect'")}, {'done'})
-        return {cut: self.client.get(f'/api/cuts/{cut}/character-detections').json() for cut in ('c1', 'c2')}, qwen
+        return {cut: self.client.get(f'/api/cuts/{cut}/character-detections').json() for cut in ('c1', 'c2')}
 
     def test_gallery_match_labels_boxes_and_stores_suggestions(self):
         self.standard_gallery()
-        runs, qwen = self.run_episode(Runtime(Embedder(), [[LEFT, RIGHT], []]), [(LEFT, RED), (RIGHT, BLUE)], [])
+        runs = self.run_episode(Runtime(Embedder(), [[LEFT, RIGHT], []]), [(LEFT, RED), (RIGHT, BLUE)], [])
         detections = runs['c2']['detections']
         self.assertEqual([d['character_context_id'] for d in detections], ['ctx', 'ctx2'])
         self.assertEqual({d['label_source'] for d in detections}, {'auto'})
@@ -139,36 +135,21 @@ class BulkDetectionTest(unittest.TestCase):
         self.assertIn('CCIP similarity', detections[0]['match_reason'])
         self.assertEqual(detections[0]['candidates'][0]['character_name'], 'Hero')
         self.assertEqual([c['character_id'] for c in detections[1]['candidates']], ['ctx2', 'ctx'])
-        self.assertEqual(qwen.call_count, 0)
         # Gallery vectors are cached with the model, and the examples are marked as used.
         self.assertEqual(len(db.all_rows("SELECT * FROM character_detection_embeddings WHERE detection_id LIKE 'red%'")), 3)
         self.assertEqual({row['gallery_status'] for row in db.all_rows("SELECT gallery_status FROM character_detections WHERE label_source='manual'")}, {'used'})
 
-    def test_ambiguous_box_keeps_suggestions_and_qwen_is_off_by_default(self):
+    def test_ambiguous_box_keeps_suggestions_for_the_user_to_pick(self):
         self.standard_gallery()
-        runs, qwen = self.run_episode(Runtime(Embedder(), [[LEFT], []]), [(LEFT, PURPLE)], [])
+        runs = self.run_episode(Runtime(Embedder(), [[LEFT], []]), [(LEFT, PURPLE)], [])
         detection = runs['c2']['detections'][0]
         self.assertIsNone(detection['character_context_id'])
         self.assertEqual({c['character_id'] for c in detection['candidates']}, {'ctx', 'ctx2'})
-        self.assertEqual(qwen.call_count, 0)
         self.assertEqual(db.one("SELECT phase FROM character_detection_runs WHERE cut_id='c2'")['phase'], 'complete')
-
-    def test_optional_qwen_asks_once_per_cut_within_the_shortlist(self):
-        self.standard_gallery()
-        answers = {'T1': {'character_id': 'ctx', 'confidence': 'high'}, 'T2': {'character_id': None, 'confidence': 'low'}}
-        runs, qwen = self.run_episode(Runtime(Embedder(), [[LEFT, RIGHT], []]), [(LEFT, PURPLE), (RIGHT, (140, 0, 160))], [],
-                                      body={'qwen': True}, review=lambda server, targets, candidates, cancel_check=None: answers)
-        self.assertEqual(qwen.call_count, 2)  # one request for each of the two cuts
-        targets, candidates = qwen.call_args_list[0].args[1:3]
-        self.assertEqual([t['key'] for t in targets], ['T1', 'T2'])
-        self.assertEqual(set(candidates), {'ctx', 'ctx2'})
-        detections = runs['c2']['detections']
-        self.assertEqual([d['character_context_id'] for d in detections], ['ctx', None])
-        self.assertEqual(detections[0]['match_model_id'], anime_bulk.frame_model.MODEL_ID)
 
     def test_a_character_is_assigned_once_per_frame(self):
         self.standard_gallery()
-        runs, _ = self.run_episode(Runtime(Embedder(), [[LEFT, RIGHT], []]), [(LEFT, RED), (RIGHT, (200, 0, 30))], [])
+        runs = self.run_episode(Runtime(Embedder(), [[LEFT, RIGHT], []]), [(LEFT, RED), (RIGHT, (200, 0, 30))], [])
         labels = [d['character_context_id'] for d in runs['c2']['detections']]
         self.assertEqual(labels.count('ctx'), 1)
         self.assertEqual(labels.count(None), 1)
@@ -183,7 +164,7 @@ class BulkDetectionTest(unittest.TestCase):
             conn.execute("UPDATE cuts SET no_characters=1 WHERE id='c1'")
         self.colors['mine-last'] = PURPLE
         with patch.object(anime_matching, 'confident_match', return_value=None):
-            runs, _ = self.run_episode(Runtime(Embedder()), [(LEFT, PURPLE)], [(LEFT, PURPLE)], path='character-detection')
+            runs = self.run_episode(Runtime(Embedder()), [(LEFT, PURPLE)], [(LEFT, PURPLE)], path='character-detection')
         first, last = runs['c2']['detections']
         self.assertEqual((first['character_context_id'], first['label_source']), ('ctx2', 'auto'))
         self.assertIn('track', first['match_reason'])
@@ -195,7 +176,7 @@ class BulkDetectionTest(unittest.TestCase):
         purple = Embedder().embed([Image.new('RGB', (4, 4), PURPLE)])[0]
         runtime.previous_cut = {'episode_id': 'e', 'end_time': 0, 'tracks': [{'character_id': 'ctx2', 'embedding': purple}]}
         with patch.object(anime_matching, 'confident_match', return_value=None):
-            runs, _ = self.run_episode(runtime, [(LEFT, PURPLE)], [])
+            runs = self.run_episode(runtime, [(LEFT, PURPLE)], [])
         detection = runs['c1']['detections'][0]
         self.assertEqual(detection['character_context_id'], 'ctx2')
         self.assertIn('preceding cut', detection['match_reason'])
@@ -213,10 +194,11 @@ class BulkDetectionTest(unittest.TestCase):
             conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('done','c1',0,2,?,'test')", (json.dumps(frames),))
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('all-mine','done','first',?,'ctx','manual')", (json.dumps(LEFT),))
         self.colors.update({'mine': RED, 'mine-odd': RED, 'all-mine': RED})
-        queued = self.client.post('/api/episodes/e/character-detection-rerun', json={'qwen': False})
+        queued = self.client.post('/api/episodes/e/character-detection-rerun', json={})
         self.assertEqual(queued.json()['queued'], 1)
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (queued.json()['job_ids'][0],))['payload_json'])
-        self.assertEqual((payload['cut_id'], payload['phase'], payload['qwen']), ('c2', 'recognize', False))
+        self.assertEqual((payload['cut_id'], payload['phase']), ('c2', 'recognize'))
+        self.assertNotIn('qwen', payload)
         self.assertNotIn('references', payload)
         reset = db.one("SELECT * FROM character_detections WHERE id='old-auto'")
         self.assertEqual((reset['character_context_id'], reset['label_source'], reset['match_reason']), (None, None, None))
@@ -261,11 +243,10 @@ class BulkDetectionTest(unittest.TestCase):
 
     def test_without_confirmed_labels_boxes_are_found_but_the_embedder_never_loads(self):
         runtime = Runtime(None, [[LEFT], [LEFT]])
-        runs, qwen = self.run_episode(runtime, [(LEFT, RED)], [(LEFT, RED)], body={'qwen': True})
+        runs = self.run_episode(runtime, [(LEFT, RED)], [(LEFT, RED)])
         self.assertEqual([len(runs[cut]['detections']) for cut in ('c1', 'c2')], [2, 2])
         self.assertTrue(all(d['character_context_id'] is None for d in runs['c2']['detections']))
         self.assertEqual(runtime.embedder_loads, 0)
-        self.assertEqual(qwen.call_count, 0)
 
     def test_multiple_cut_jobs_share_a_single_detector_batch_and_keep_separate_results(self):
         jobs = self.client.post('/api/episodes/e/character-detection-all').json()['job_ids']
@@ -303,10 +284,10 @@ class BulkDetectionTest(unittest.TestCase):
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('mine','cur','first',?,'ctx','manual')", (json.dumps(LEFT),))
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('old-auto','cur','first',?,'ctx','auto')", (json.dumps(RIGHT),))
         self.colors['mine'] = RED
-        response = self.client.post('/api/cuts/c2/character-detection', json={'qwen': True})
+        response = self.client.post('/api/cuts/c2/character-detection', json={})
         self.assertEqual(response.status_code, 200, response.text)
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (response.json()['job_id'],))['payload_json'])
-        self.assertEqual((payload['workflow'], payload['phase'], payload['qwen'], payload['cut_id']), ('anime_bulk_v1', 'recognize', True, 'c2'))
+        self.assertEqual((payload['workflow'], payload['phase'], payload['cut_id']), ('anime_bulk_v1', 'recognize', 'c2'))
         self.assertEqual(len(db.all_rows("SELECT id FROM jobs WHERE pipeline='character_detect'")), 1)  # only this cut
         self.assertEqual(self.client.post('/api/cuts/c2/character-detection').status_code, 409)
         job_id, owner = worker.claim_job(('character_detect',))

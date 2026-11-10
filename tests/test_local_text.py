@@ -48,6 +48,7 @@ class LocalTextTest(unittest.TestCase):
              patch.object(local_text_runtime, 'LocalTextRuntime', return_value=runtime), \
              patch.object(worker, 'claim_job', side_effect=[('job', 'owner'), KeyboardInterrupt]), \
              patch.object(db, 'one', side_effect=[{'pipeline': 'regen'}, {'payload_json': '{}'}, {'episode_id': 'e'}]), \
+             patch.object(local_text_runtime, 'text_job_concurrency', return_value=1), \
              patch.object(inference_worker, 'start_assistant') as start_assistant, \
              patch.object(inference_worker.threading, 'Thread', side_effect=[job_thread, model_thread]) as threads, \
              patch.object(inference_worker, 'process_regen'), \
@@ -59,6 +60,30 @@ class LocalTextTest(unittest.TestCase):
         job_thread.start.assert_called_once(); model_thread.start.assert_called_once()
         job_thread.join.assert_called_once(); model_thread.join.assert_called_once()
         log_error.assert_not_called()
+
+    def test_text_jobs_of_one_episode_can_run_together_but_other_jobs_still_wait(self):
+        with db.connect() as conn:
+            for job_id, pipeline in (('t1', 'consistency_summary'), ('t2', 'review_answers'), ('t3', 'regen'), ('v1', 'analyze')):
+                conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,'e',?,'{}')", (job_id, pipeline))
+        first, _ = worker.claim_job(worker.TEXT_PIPELINES)
+        second, _ = worker.claim_job(worker.TEXT_PIPELINES)
+        self.assertEqual({first, second}, {'t1', 't2'})
+        self.assertIsNone(worker.claim_job(('analyze',)))  # a visual job still waits for the episode to be idle
+
+    def test_text_server_gets_one_slot_per_concurrent_job(self):
+        with patch.dict(os.environ, {'TEXT_JOB_CONCURRENCY': '3'}):
+            self.assertEqual(local_text_runtime.text_job_concurrency(), 3)
+        with patch.dict(os.environ, {'TEXT_JOB_CONCURRENCY': 'x'}):
+            self.assertEqual(local_text_runtime.text_job_concurrency(), 2)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('TEXT_JOB_CONCURRENCY', None)
+            self.assertEqual(local_text_runtime.text_job_concurrency(), 2)
+
+    def test_a_thread_cancelling_its_own_chat_session_does_not_wait_for_itself(self):
+        runtime = local_text_runtime.LocalTextRuntime()
+        with runtime.chat_session():
+            runtime.stop('Cancelled')  # would hang forever if it waited for its own session
+        self.assertEqual(runtime.chat_users, 0)
 
     def test_visual_batch_is_separate_and_duplicate_safe(self):
         response = self.client.post('/api/episodes/e/visual-analysis')

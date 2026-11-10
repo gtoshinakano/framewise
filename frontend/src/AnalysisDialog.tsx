@@ -6,7 +6,7 @@ import { activeRunFor } from './runState'
 import { useCutStages } from './useCutStages'
 import ResultEditor from './ResultEditor'
 import { CutSummaryPanel, SUMMARY_TITLE } from './AnimationPromptPanel'
-import { DetectionPreview } from './DetectionPreview'
+import { FrameTools, FramesDialog } from './DetectionPreview'
 import { CutAudioPreview } from './CutAudioPreview'
 import { CutRunHistory } from './CutRunHistory'
 import AnalysisTimeline from './AnalysisTimeline'
@@ -95,7 +95,6 @@ function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proxy
   const [resultsRevision, setResultsRevision] = useState(0)
   const [config, setConfig] = useState<AnalysisConfig | null>(null)
   const video = useRef<HTMLVideoElement>(null)
-  const [playTime, setPlayTime] = useState(0)
   function playSegment(time: number) {
     const player = video.current
     if (!player) return
@@ -103,6 +102,7 @@ function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proxy
     void player.play().catch(() => {})
   }
   const [editorTarget, setEditorTarget] = useState<HTMLElement | null>(null)
+  const [framesOpen, setFramesOpen] = useState(false)
   const [charactersTarget, setCharactersTarget] = useState<HTMLElement | null>(null)
   const prefetchIds = useMemo(() => [previousId, nextId], [previousId, nextId])
   const stages = useCutStages(cut.id, !!activeRunFor(jobs, cut.id), tab === 'run', jobsKey)
@@ -111,6 +111,7 @@ function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proxy
   // The chat mounts on first visit and then stays mounted so a streaming reply survives tab switches.
   const [assistantMounted, setAssistantMounted] = useState(tab === 'assistant')
   useEffect(() => { if (tab === 'assistant') { setAssistantMounted(true); video.current?.pause() } }, [tab])
+  const onSummarySaved = useCallback((result: AnalysisResult) => { setResults(previous => [result, ...previous.filter(item => item.id !== result.parent_id)]); setResultsRevision(value => value + 1) }, [])
   function resultsChanged() {
     setResultsRevision(value => value + 1)
     window.dispatchEvent(new Event('framewise:cut-timeline-changed'))
@@ -118,25 +119,22 @@ function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proxy
   }
   return <>
     {assistantMounted && <CutAssistant cut={cut} active={tab === 'assistant'} onResultsChanged={resultsChanged} />}
-    <div className={`${tab === 'assistant' ? 'hidden' : 'grid'} min-h-0 flex-1 gap-5 overflow-y-auto p-5 lg:overflow-hidden ${tab === 'run' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(400px,460px)]' : 'lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]'}`}>
-      <div className={`scrollbar flex flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-2 lg:min-h-0' : 'min-h-0'}`}>
+    <div className={`${tab === 'assistant' ? 'hidden' : 'grid'} min-h-0 flex-1 gap-5 overflow-y-auto p-5 lg:overflow-hidden ${tab === 'run' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(400px,460px)]' : 'lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)] 2xl:grid-cols-[19rem_minmax(0,1fr)]'}`}>
+      <div className={`scrollbar flex flex-col gap-3 ${tab === 'run' ? 'lg:order-2 lg:min-h-0 lg:overflow-y-auto lg:pr-1' : 'order-2 min-h-0 lg:overflow-hidden'}`}>
         {/* Both stay mounted so unsaved settings and drafts survive a tab switch. */}
-        <div className={tab === 'results' ? 'flex min-h-[30rem] flex-1 flex-col lg:min-h-[26rem]' : 'hidden'}>
-          {consistency && <div className="mb-3"><ConsistencySummary cutId={cut.id} result={consistency} disabled={busy || !cut.active} onStarted={onStarted} /></div>}
-          <CutSummaryPanel textProvider={config?.text_provider} cutId={cut.id} current={current} loaded={resultsLoaded} jobs={jobs} disabled={busy || !cut.active || !cut.analysis_enabled} onStarted={onStarted} onSaved={result => { setResults(previous => [result, ...previous.filter(item => item.id !== result.parent_id)]); setResultsRevision(value => value + 1) }} />
+        <div className={tab === 'results' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+          <CutSummaryPanel editorSlot={<div ref={setEditorTarget} className="editor-overlay" />} review={<ConsistencySummary cutId={cut.id} result={consistency} loaded={resultsLoaded} jobs={jobs} disabled={busy || !cut.active} onStarted={onStarted} extra={<ResultEditor cutId={cut.id} refreshKey={`${jobsKey}:${resultsRevision}`} onLoaded={value => { setResults(value); setResultsLoaded(true) }} onChanged={onStarted} editorTarget={editorTarget} />} />} textProvider={config?.text_provider} cutId={cut.id} current={current} loaded={resultsLoaded} jobs={jobs} disabled={busy || !cut.active || !cut.analysis_enabled} onStarted={onStarted} onSaved={onSummarySaved} />
         </div>
         <div hidden={tab !== 'run'}>{cut.active
           ? <AnalysisControls jobs={jobs} cut={cut} cuts={cuts} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} results={results} stages={stages} prefetchIds={prefetchIds} charactersTarget={charactersTarget} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext}><CutRunHistory cutId={cut.id} jobs={jobs} stages={stages} onChanged={onStarted} /></AnalysisControls>
           : <div className="space-y-4"><p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p><CutRunHistory cutId={cut.id} jobs={jobs} stages={stages} onChanged={onStarted} /></div>}</div>
       </div>
-      <div className={`scrollbar flex flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-1 lg:min-h-0' : 'min-h-0'}`}>
-        <div className={`shrink-0 ${tab === 'run' ? 'mx-auto w-full lg:max-w-[82vh]' : ''}`}>{<div className="relative aspect-video overflow-hidden rounded-xl border hairline bg-black">{proxyReady ? <video ref={video} className="h-full w-full" controls preload="metadata" src={mediaUrl(episodeId, 'proxy')} aria-label="Play this cut" onLoadedMetadata={event => { event.currentTarget.currentTime = cut.start_time }} onSeeking={event => { const player = event.currentTarget; if (player.currentTime < cut.start_time) player.currentTime = cut.start_time; else if (player.currentTime > cut.end_time) player.currentTime = cut.end_time }} onPlay={event => { if (event.currentTarget.currentTime >= cut.end_time) event.currentTarget.currentTime = cut.start_time }} onTimeUpdate={event => { const player = event.currentTarget; if (tab === 'results') setPlayTime(Math.max(0, Math.min(cut.end_time - cut.start_time, player.currentTime - cut.start_time))); if (player.currentTime >= cut.end_time && !player.paused) { player.pause(); if (player.currentTime > cut.end_time) player.currentTime = cut.end_time } }} /> : <div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div>}{proxyReady && <PlayheadReadout video={video} start={cut.start_time} end={cut.end_time} />}</div>}</div>
-        {tab === 'results' && <details className="rounded-lg border hairline p-3"><summary className="cursor-pointer text-xs font-semibold text-[#c3aeff]">View analyzed frames and detections</summary><div className="mt-3"><DetectionPreview cut={cut} results={results} frameVersion={frameVersion} /></div></details>}
-        {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} time={playTime} onPlaySegment={playSegment} canPlay={proxyReady} />}
-        <div hidden={tab !== 'results'} className="scrollbar max-h-56 shrink-0 overflow-y-auto"><ResultEditor cutId={cut.id} refreshKey={`${jobsKey}:${resultsRevision}`} onLoaded={value => { setResults(value); setResultsLoaded(true) }} onChanged={onStarted} editorTarget={editorTarget} /></div>
+      <div className={`scrollbar flex flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-1 lg:min-h-0' : 'order-1 min-h-0'}`}>
+        <div className={`shrink-0 ${tab === 'run' ? 'mx-auto w-full lg:max-w-[82vh]' : 'mx-auto w-full max-w-sm lg:max-w-none'}`}>{<div className="relative aspect-video overflow-hidden rounded-xl border hairline bg-black">{proxyReady ? <video ref={video} className="h-full w-full" controls preload="metadata" src={mediaUrl(episodeId, 'proxy')} aria-label="Play this cut" onLoadedMetadata={event => { event.currentTarget.currentTime = cut.start_time }} onSeeking={event => { const player = event.currentTarget; if (player.currentTime < cut.start_time) player.currentTime = cut.start_time; else if (player.currentTime > cut.end_time) player.currentTime = cut.end_time }} onPlay={event => { if (event.currentTarget.currentTime >= cut.end_time) event.currentTarget.currentTime = cut.start_time }} onTimeUpdate={event => { const player = event.currentTarget; if (player.currentTime >= cut.end_time && !player.paused) { player.pause(); if (player.currentTime > cut.end_time) player.currentTime = cut.end_time } }} /> : <div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div>}{proxyReady && <PlayheadReadout video={video} start={cut.start_time} end={cut.end_time} />}{tab === 'results' && <FrameTools cut={cut} results={results} frameVersion={frameVersion} onPreview={() => setFramesOpen(true)} />}</div>}</div>
+        {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} onPlaySegment={playSegment} canPlay={proxyReady} />}
         <div ref={setCharactersTarget} className={tab === 'run' ? 'block' : 'hidden'} />
-        <div ref={setEditorTarget} className={tab === 'results' ? 'flex flex-1 flex-col' : 'hidden'} />
       </div>
     </div>
+    {framesOpen && <FramesDialog cut={cut} results={results} frameVersion={frameVersion} onClose={() => setFramesOpen(false)} />}
   </>
 }

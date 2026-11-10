@@ -11,7 +11,7 @@ The still recreates the **first frame of this cut**. It becomes the first frame 
 ## Gather (only what you need)
 1. The prompt to fix: the one the user pasted in this conversation. If none was pasted, `get_result(type="image_prompt")`; if that is missing too, draft a new prompt.
 2. `get_result(type="production_brief")`: the Opening Frame section is the main source.
-3. `get_result(type="initial_frame")`: composition, camera, setting, lighting and visible_characters (appearance, position, pose, expression, identity_evidence).
+3. `get_result(type="initial_frame")`: composition, camera, setting, lighting and visible_characters (character, appearance, position, pose, expression, action; marked characters only) and background_people (unmarked people, one line). Older results may also carry other_visual_details and uncertainties.
 4. `get_result(type="review_answers")`: human corrections override model output.
 5. `get_characters()` for exact character names and canonical appearance notes of the visible characters.
 

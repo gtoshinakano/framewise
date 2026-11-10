@@ -11,10 +11,11 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
-from .visual_contracts import FRAME_INSTRUCTION, subtitle_note, validate_frame
+from .visual_contracts import FRAME_INSTRUCTION, LAST_FRAME_INSTRUCTION, frame_schema, person_context, previous_notes, resolve_frame, subtitle_note
 
 MODEL_ID = 'Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M'
 MODEL_REVISION = '4d92249e905871588b9c64fddb8ea6498507fa90'
+FRAME_MAX_TOKENS = 3072  # detailed outfits make answers longer; the cap only stops a runaway
 
 
 @contextmanager
@@ -60,25 +61,54 @@ def frame_server(runtime, model, projector, startup_timeout=300, cancel_check=No
                     process.wait()
 
 
-def describe_frame(server_url, image_path, subtitle_regions=None, character_context=None, cancel_check=None, reference_images=None, usage_out=None, subtitle_language=None):
-    """Return validated structured observations from a still, never audio."""
+def _context_note(context):
+    """Series notes worth sending with a frame: selected context items except character notes, and the user's extra text, never box data."""
+    if not isinstance(context, dict):
+        return ''
+    lines = [f"- {item.get('kind', 'note')} {item.get('title', '')}: {str(item.get('description', ''))[:300]}" for item in context.get('selected_context') or [] if isinstance(item, dict) and item.get('kind') != 'character']  # character notes carry outfits that get copied into the answer; the marked list has the names
+    extra = str(context.get('additional_context') or '').strip()
+    return ('Series notes (background only, not evidence of what is visible):\n' + '\n'.join(lines) if lines else '') + (('\n' if lines else '') + 'Extra notes: ' + extra[:1000] if extra else '')
+
+
+def _chat_body(messages, schema, max_tokens):
+    response_format = {'type': 'json_schema', 'json_schema': {'name': 'frame', 'strict': True, 'schema': schema}} if schema else {'type': 'json_object'}
+    return {'messages': messages, 'temperature': 0, 'max_tokens': max_tokens, 'response_format': response_format, 'chat_template_kwargs': {'enable_thinking': False}}
+
+
+def describe_frame(server_url, image_path, subtitle_regions=None, character_context=None, cancel_check=None, usage_out=None, subtitle_language=None,
+                   people=(), frame_label='first frame', previous=None):
+    """Return a validated frame description from a still, never audio.
+
+    ``people`` are the user-marked characters of this frame (``ref``, ``name``, ``box``, ids); the model
+    only sees their short handles and the stored result carries the real records. With ``previous`` (the
+    first frame's stored result) the answer lists only the changes from it.
+    """
+    people = list(people)
+    changes = previous is not None
     image = base64.b64encode(Path(image_path).read_bytes()).decode('ascii')
-    prompt = FRAME_INSTRUCTION + subtitle_note(subtitle_language, subtitle_regions, 'image pixels')
-    if character_context:
-        prompt += '\nContext and character detections: ' + json.dumps(character_context, ensure_ascii=False) + '. Named boxes marked labels_confirmed_by_queue are user-verified identity assignments: use the supplied name for the corresponding person in the target_frame. Other labels are unverified hints. Boxes apply only to their named frame; do not infer unseen people or actions.'
-    content = [{'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image}}, {'type': 'text', 'text': prompt}]
-    if reference_images:
-        content.append({'type': 'text', 'text': 'The first image is the target frame. The following labeled crops are reference examples only; do not describe them as part of the target scene. Identity is uncertain unless visually supported.'})
-        for ref in reference_images:
-            content.append({'type': 'text', 'text': 'Reference character ' + ref['title'] + ' (ID ' + ref['character_context_id'] + '):'})
-            content.append({'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(ref['image']).decode('ascii')}})
-    request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps({
-        'messages': [{'role': 'user', 'content': content}],
-        'temperature': 0, 'max_tokens': 4096, 'response_format': {'type': 'json_object'}, 'chat_template_kwargs': {'enable_thinking': False}
-    }).encode(), headers={'Content-Type': 'application/json'}, method='POST')
+    parts = [f'This image is the {frame_label} of the cut.', person_context(people, frame_label, changes)]
+    if changes:
+        parts.append('First frame, already recorded (do not repeat it):\n' + json.dumps(previous_notes(previous), ensure_ascii=False))
+    note = _context_note(character_context)
+    if note:
+        parts.append(note)
+    parts.append(subtitle_note(subtitle_language, subtitle_regions, 'image pixels').strip())
+    # The fixed instruction goes first so the server can reuse its cached prefix between cuts.
+    messages = [{'role': 'system', 'content': LAST_FRAME_INSTRUCTION if changes else FRAME_INSTRUCTION},
+                {'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image}},
+                                             {'type': 'text', 'text': '\n\n'.join(part for part in parts if part)}]}]
+    schema = frame_schema([person['ref'] for person in people])
     try:
         from .inference_worker import request_json
-        payload = request_json(request, cancel_check, timeout=600)
+        def ask(body):
+            request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'}, method='POST')
+            return request_json(request, cancel_check, timeout=600)
+        try:
+            payload = ask(_chat_body(messages, schema, FRAME_MAX_TOKENS))
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (400, 422, 500):
+                raise
+            payload = ask(_chat_body(messages, None, FRAME_MAX_TOKENS))  # a server that cannot build the grammar still answers in plain JSON
         if usage_out is not None and isinstance(payload.get('usage'), dict):
             for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
                 if isinstance(payload['usage'].get(key), int):
@@ -86,57 +116,9 @@ def describe_frame(server_url, image_path, subtitle_regions=None, character_cont
         choice = payload['choices'][0]
         if choice.get('finish_reason') == 'length':
             raise ValueError('Response was truncated')
-        return validate_frame(choice['message']['content'])
+        return resolve_frame(choice['message']['content'], people, changes=changes)
     except (OSError, KeyError, IndexError, ValueError, TypeError) as exc:
         raise RuntimeError(f'Frame description failed: {exc}') from exc
-
-
-def assign_characters(server_url, targets, candidates, cancel_check=None):
-    """One request for every unresolved box of a cut.
-
-    targets: [{'key': 'T1', 'image': jpeg, 'candidates': [character_id, ...]}]
-    candidates: {character_id: {'title': name, 'images': [jpeg, ...]}}
-    Returns {key: {'character_id', 'confidence'}}; a character outside a
-    target's own shortlist is rejected as invalid output.
-    """
-    if not targets or not candidates:
-        return {}
-    encode = lambda data: {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(data).decode('ascii')}}
-    content = [{'type': 'text', 'text': 'Labelled reference images of known characters:'}]
-    for character_id, item in candidates.items():
-        for index, image in enumerate(item['images']):
-            content.append({'type': 'text', 'text': f"Reference {index + 1} of {item['title']} (ID {character_id}):"})
-            content.append(encode(image))
-    content.append({'type': 'text', 'text': 'People from one anime shot to identify:'})
-    shortlists = {}
-    for target in targets:
-        content.append({'type': 'text', 'text': f"Target {target['key']}:"})
-        content.append(encode(target['image']))
-        shortlists[target['key']] = [cid for cid in target['candidates'] if cid in candidates]
-    content.append({'type': 'text', 'text': 'For each target choose the character it shows from that target\'s own candidate list, using the reference images, or null when it cannot be identified. Candidate lists: '
-        + json.dumps({key: [{'id': cid, 'name': candidates[cid]['title']} for cid in ids] for key, ids in shortlists.items()}, ensure_ascii=False)
-        + '. Two targets in the same frame are different people. Return only JSON {"assignments":[{"target":"T1","character_id":"<id or null>","confidence":"high|medium|low"}]} with one entry per target. High requires a clearly visible face or hairstyle that matches; clothing alone is not enough. Do not guess from names, text, or narrative.'})
-    request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps({'messages': [{'role': 'user', 'content': content}],
-        'temperature': 0, 'max_tokens': 256 + 64 * len(targets), 'response_format': {'type': 'json_object'}, 'chat_template_kwargs': {'enable_thinking': False}}).encode(), headers={'Content-Type': 'application/json'}, method='POST')
-    try:
-        from .inference_worker import request_json
-        choice = request_json(request, cancel_check, timeout=600)['choices'][0]
-        if choice.get('finish_reason') == 'length':
-            raise ValueError('Response was truncated')
-        result = json.loads(choice['message']['content'])
-        answers = {}
-        for item in result['assignments']:
-            key, character_id, confidence = item['target'], item.get('character_id'), item.get('confidence')
-            if key not in shortlists or confidence not in ('high', 'medium', 'low'):
-                raise ValueError('Invalid character assignment response')
-            if character_id in ('', 'null'):
-                character_id = None
-            if character_id is not None and character_id not in shortlists[key]:
-                raise ValueError('Character outside the target shortlist')
-            answers[key] = {'character_id': character_id, 'confidence': confidence}
-        return answers
-    except (OSError, KeyError, IndexError, ValueError, TypeError) as exc:
-        raise RuntimeError(f'Character assignment failed: {exc}') from exc
 
 
 def match_character(server_url, target_image, references, cancel_check=None):

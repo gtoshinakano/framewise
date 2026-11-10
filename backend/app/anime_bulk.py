@@ -6,8 +6,8 @@ the results. A runtime may be reused for successive jobs from a bulk request.
 
 Recognition compares each unconfirmed box with the gallery of boxes the user
 labelled by hand (``anime_gallery``), never with automatic labels. Manual
-labels are never changed. Qwen is optional (``payload.qwen``) and makes at
-most one request per cut, choosing among the embedding shortlist.
+labels are never changed. Boxes the gallery cannot settle keep their top-3
+``candidates_json`` so the user picks one on screen; no vision model is asked.
 """
 import contextlib
 import json
@@ -21,16 +21,13 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import anime_gallery, anime_matching, anime_models, db, frame_model, media, worker
+from . import anime_gallery, anime_matching, anime_models, db, media, worker
 
 log = logging.getLogger('framewise.character_detect')
 PHASES = ('boxes', 'embeddings', 'complete')
 SAME_TRACK_REASON = 'Short same-cut track with matching appearance and position'
 ADJACENT_REASON = 'Strong unique appearance match to the preceding cut boundary'
-DEFERRED = 'deferred'  # process() result: embeddings done, Qwen review still pending
 BATCH_SIZE = 16
-QWEN_MAX_TARGETS = 6
-QWEN_MAX_CHARACTERS = 6
 
 # Kept for callers that crop outside the gallery module.
 _crop_jpeg = anime_gallery.crop_jpeg
@@ -75,14 +72,8 @@ class BulkRuntime:
         self.embedder = None
         self.gallery = None
         self.gallery_project = None
-        self.example_crops = {}
-        self.target_vectors = {}  # detection id -> vector, for the Qwen step of the current batch
         self.prepared_frames = {}
         self.previous_cut = None
-        self.same_cut_links = {}  # job id -> links found before Qwen review was deferred
-        self.qwen_context = None
-        self.qwen_url = None
-        self.lease_check = None
 
     def get_detector(self):
         if self.detector is None:
@@ -104,34 +95,10 @@ class BulkRuntime:
             self.gallery_project = project_id
         return self.gallery
 
-    def example_crop(self, item):
-        if item['id'] not in self.example_crops:
-            with tempfile.TemporaryDirectory(prefix='framewise-example-') as scratch:
-                self.example_crops[item['id']] = anime_gallery.extract_crops([item['row']], scratch)[item['id']]
-        return self.example_crops[item['id']]
-
-    def get_qwen(self, lease_check):
-        self.lease_check = lease_check
-        if self.qwen_url is None:
-            context = frame_model.frame_server(
-                os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'),
-                os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
-                os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'),
-                cancel_check=lambda: self.lease_check())
-            self.qwen_url = context.__enter__()
-            self.qwen_context = context
-        return self.qwen_url
-
     def close(self):
         import gc
-        if self.qwen_context:
-            self.qwen_context.__exit__(None, None, None)
-        self.qwen_context = self.qwen_url = None
         self.detector = self.embedder = self.gallery = None
-        self.example_crops.clear()
-        self.target_vectors.clear()
         self.prepared_frames.clear()
-        self.same_cut_links.clear()
         self.previous_cut = None
         gc.collect()
         try:
@@ -312,7 +279,7 @@ def _store_candidates(job_id, owner, detections, candidates):
 def _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings):
     """Embed the cut's boxes, match them with the gallery and propagate along tracks.
 
-    Returns (linked, next_tracks) for Qwen review and the next cut.
+    Returns (linked, next_tracks) for the next cut.
     """
     gallery = runtime.get_gallery(episode['project_id'], lease_check, timings)
     if not len(gallery) or not detections:
@@ -359,67 +326,11 @@ def _recognize(job_id, owner, runtime, episode, cut, frames, images, detections,
     _store_candidates(job_id, owner, detections, candidates)
     next_tracks = [{'character_id': d['character_context_id'], 'embedding': vectors[i]}
                    for i, d in enumerate(detections) if d['position'] == 'last' and d['character_context_id']]
-    runtime.target_vectors.update({d['id']: vectors[i] for i, d in enumerate(detections)})
     return linked, next_tracks
 
 
-def _qwen_review(job_id, owner, runtime, episode, cut, frames, images, detections, linked, lease_check, timings):
-    """One Qwen request for the cut's unresolved boxes, choosing among their embedding shortlists."""
-    gallery = runtime.get_gallery(episode['project_id'], lease_check, timings)
-    model = runtime.get_embedder()
-    labeller = _Labeller(job_id, owner, episode, cut, detections)
-    targets = []
-    for index, detection in enumerate(detections):
-        if detection['label_source'] is not None or not detection.get('candidates_json'):
-            continue
-        if anime_gallery.box_problem(json.loads(detection['box_json']), _frame_size(frames, detection)):
-            continue
-        shortlist = [item['character_id'] for item in json.loads(detection['candidates_json'])
-                     if not labeller.present[detection['position']] & {item['character_id']}]
-        if shortlist:
-            targets.append({'key': f'T{len(targets) + 1}', 'index': index, 'candidates': shortlist[:3]})
-    targets = targets[:QWEN_MAX_TARGETS]
-    if not targets:
-        return
-    target_vectors = [runtime.target_vectors.get(detections[t['index']]['id']) for t in targets]
-    if any(vector is None for vector in target_vectors):
-        target_vectors = _target_vectors(job_id, owner, [detections[t['index']] for t in targets],
-                                         [_detection_crop(images, detections[t['index']]) for t in targets], model)
-    ranking = {}
-    for target in targets:
-        for position, character_id in enumerate(target['candidates']):
-            ranking[character_id] = min(ranking.get(character_id, 9), position)
-    characters = sorted(ranking, key=lambda cid: ranking[cid])[:QWEN_MAX_CHARACTERS]
-    for target in targets:
-        target['candidates'] = [cid for cid in target['candidates'] if cid in characters]
-        target['image'] = _detection_crop(images, detections[target['index']])
-    candidates = {}
-    for character_id in characters:
-        examples = gallery.best_examples(character_id, target_vectors, limit=2)
-        if examples:
-            candidates[character_id] = {'title': gallery.names.get(character_id, character_id),
-                                        'images': [runtime.example_crop(item) for item in examples]}
-    targets = [t for t in targets if any(cid in candidates for cid in t['candidates'])]
-    if not targets:
-        return
-    worker.stage(job_id, owner, episode['id'], f'Asking Qwen about {len(targets)} unresolved {"box" if len(targets) == 1 else "boxes"}')
-    with timed('qwen', timings, cut=cut.get('cut_index'), targets=len(targets)):
-        answers = frame_model.assign_characters(runtime.get_qwen(lease_check), targets, candidates, cancel_check=lease_check)
-    for target in targets:
-        answer = answers.get(target['key'])
-        if answer and answer['confidence'] == 'high' and answer['character_id']:
-            labeller.assign(target['index'], answer['character_id'], 'Qwen chose this among the closest embedding matches',
-                            frame_model.MODEL_ID, frame_model.MODEL_REVISION)
-    labeller.propagate(linked, model.model_id, model.revision)
-
-
-def process(job_id, owner, runtime, defer_qwen=False):
-    """Process one restartable cut job. Phases: 'boxes' (AniRef only), 'recognize' (gallery matching, optional Qwen), or 'full'.
-
-    With defer_qwen, a cut that still has unresolved detections after the
-    embedding step stops there and returns DEFERRED, leaving its lease open.
-    process_batch later calls process again, which resumes at the Qwen step.
-    """
+def process(job_id, owner, runtime):
+    """Process one restartable cut job. Phases: 'boxes' (AniRef only), 'recognize' (gallery matching), or 'full'."""
     from . import inference_worker
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
@@ -472,34 +383,17 @@ def process(job_id, owner, runtime, defer_qwen=False):
                 return
         detections = db.all_rows('SELECT * FROM character_detections WHERE run_id=? ORDER BY rowid', (run['id'],))
         phase = run['phase']
-        linked = None
         if phase == 'boxes':
             if any(d['label_source'] is None for d in detections):
                 frames, images = frames_and_images()
-                linked, next_tracks = _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings)
+                _, next_tracks = _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings)
             _set_phase(job_id, owner, run['id'], 'embeddings', timings)
             phase = 'embeddings'
         if phase == 'embeddings':
-            unresolved = [d for d in detections if d['label_source'] is None and d.get('candidates_json')]
-            if payload.get('qwen') and unresolved:
-                if defer_qwen:
-                    if linked is not None:
-                        runtime.same_cut_links[job_id] = linked
-                    runtime.previous_cut = {'episode_id': episode['id'], 'end_time': cut['end_time'], 'tracks': next_tracks}
-                    worker.stage(job_id, owner, episode['id'], 'Waiting for Qwen review')
-                    return DEFERRED
-                frames, images = frames_and_images()
-                linked = linked or runtime.same_cut_links.pop(job_id, None)
-                if linked is None:  # resumed in a new process: rebuild from cached embeddings
-                    model = runtime.get_embedder()
-                    vectors = _target_vectors(job_id, owner, detections, [_detection_crop(images, d) for d in detections], model)
-                    linked = _same_cut_links(detections, _observations(cut, frames, detections, vectors), model.defaults['track'])
-                _qwen_review(job_id, owner, runtime, episode, cut, frames, images, detections, linked, lease_check, timings)
             _set_phase(job_id, owner, run['id'], 'complete', timings)
         _finish(job_id, owner, episode['id'], cut)
         clear_cut_frames(episode, cut['id'])
-        if next_tracks or not payload.get('qwen'):
-            runtime.previous_cut = {'episode_id': episode['id'], 'end_time': cut['end_time'], 'tracks': next_tracks}
+        runtime.previous_cut = {'episode_id': episode['id'], 'end_time': cut['end_time'], 'tracks': next_tracks}
         log.info('character-detect %s finished mode=%s total=%.2fs timings_ms=%s', label, mode, time.perf_counter() - started, timings)
     except Exception as exc:
         runtime.previous_cut = None
@@ -642,14 +536,11 @@ def process_batch(first_job, first_owner, runtime, batch_size=BATCH_SIZE):
             thread.start()
             extra_beats.append((done, thread))
         runtime.gallery = None  # reload: labels confirmed since the previous batch now count
-        runtime.target_vectors.clear()
         # One pass per model, each over every claimed cut:
         _prepare_frames(claimed, runtime)                    # ffmpeg, in parallel
         _detect_batch(claimed, runtime)                      # AniRef boxes
-        deferred = [(job_id, owner) for job_id, owner in claimed
-                    if process(job_id, owner, runtime, defer_qwen=True) == DEFERRED]  # embeddings + gallery
-        for job_id, owner in deferred:                       # optional Qwen review of what is left
-            process(job_id, owner, runtime)
+        for job_id, owner in claimed:
+            process(job_id, owner, runtime)                  # embeddings + gallery
     finally:
         for job_id, _ in claimed:
             runtime.prepared_frames.pop(job_id, None)

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db, media, structured_results, subtitle_store
+from .visual_contracts import full_last_frame
 
 
 class CompositionError(Exception):
@@ -20,7 +21,7 @@ class CompositionError(Exception):
         self.status_code, self.detail = status_code, detail
 
 INCLUDES = {'initial_frame', 'last_frame', 'video_analysis', 'subtitle_ocr', 'consistency_summary', 'dialogue_segments'}
-FIELDS = {'id', 'cut_number', 'duration', 'start_time', 'end_time', 'ready', 'shot', 'setting', 'lighting', 'subjects', 'beats', 'end_state', 'initial_frame_id', 'last_frame_id', 'dialogue', 'subtitles'}
+FIELDS = {'id', 'cut_number', 'duration', 'start_time', 'end_time', 'ready', 'shot', 'setting', 'lighting', 'background', 'subjects', 'beats', 'end_state', 'initial_frame_id', 'last_frame_id', 'dialogue', 'subtitles'}
 
 
 def projection_fingerprint():
@@ -402,6 +403,9 @@ def subjects(frame, detections, boundary='first', missing=None):
         evidence = person.get('identity_evidence', '')
         evidence = evidence if isinstance(evidence, str) else ''
         matches = [d for d in first if d['position'] == boundary and d['id'] in evidence]
+        if not matches and person.get('character_context_id'):
+            # Results written since the frame prompt rewrite name the character, not the box.
+            matches = [d for d in first if d['position'] == boundary and d.get('character_context_id') == person['character_context_id']]
         pos = person.get('position', '').lower()
         horizontal = horizontal_position(pos)
         if not matches and re.search(r'\b(?:user.verified|confirmed|identified as)\b', evidence, re.I):
@@ -776,7 +780,9 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
         record = {'id': cut['id'], 'cut_number': cut['cut_index']+1, 'duration': round(cut['end_time']-cut['start_time'], 6), 'ready': ready}
         if ready:
             start, end = cut['start_time'], cut['end_time']
-            initial, last_frame = by_type['initial_frame']['content'], by_type['last_frame']['content']
+            initial = by_type['initial_frame']['content']
+            # A last frame written as changes from the first is read back as full states.
+            last_frame = full_last_frame(initial, by_type['last_frame']['content'])
             video = by_type['video_analysis']['content']
             stored = one('SELECT context_json FROM analysis_results WHERE id=?', (by_type['initial_frame']['id'],))
             try:
@@ -808,6 +814,9 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
                 value = setting_phrase(initial.get(name, ''), limit, omitted)
                 if value: record[name] = value
                 if omitted: missing_descriptions.add(name)
+            background = initial.get('background_people')
+            if isinstance(background, str) and background.strip().lower().rstrip('.') not in ('', 'none', 'unchanged'):
+                record['background'] = ' '.join(background.split()[:60])
             missing_subjects = set()
             chars = subjects(initial, links, missing=missing_subjects)
             if chars: record['subjects'] = chars

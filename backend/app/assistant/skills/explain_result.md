@@ -15,7 +15,7 @@ Map the user's words to a result type:
 - "brief", "cut summary", "production brief" → `production_brief`
 
 ## Steps
-1. `get_result(type=...)`. For frames, request `fields` only when the user asks about one aspect (e.g. `["visible_characters"]` for "who is in the first image").
+1. `get_result(type=...)`. For frames, request `fields` only when the user asks about one aspect (e.g. `["visible_characters"]` for "who is in the first image"). A last frame with `mode: "changes"` lists only what differs from the first frame: `unchanged` means the first frame still holds, `new_in_frame` marks a newcomer, `left_frame` names who is gone.
 2. If the user asks whether the result is right, compare with one other result (for example the video analysis overview or the consistency summary) instead of guessing.
 
 ## Answer format

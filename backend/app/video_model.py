@@ -56,6 +56,14 @@ class VideoRuntime:
             self.torch.cuda.empty_cache()
 
 
+def without_character_notes(hints):
+    """Prompt hints minus character descriptions (they invite copied outfits); names stay."""
+    if not isinstance(hints, dict) or not isinstance(hints.get('selected_context'), list):
+        return hints
+    return {**hints, 'selected_context': [{key: value for key, value in item.items() if key != 'description'} if isinstance(item, dict) and item.get('kind') == 'character' else item
+                                          for item in hints['selected_context']]}
+
+
 def video_inputs(processor, clip, fps, prompt):
     """Decode the prepared clip with PyAV, preserving frame timestamps."""
     import av
@@ -122,8 +130,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
     """Process every cut window, recording both clip-relative and episode times.
 
     Each model invocation is bounded to limit video tokens. Windows partition the
-    cut; events spanning a window boundary may be split. No audio is sent to the
-    visual model. Clip files are transient and timing metadata is retained.
+    cut; events spanning a window boundary may be split. Clip files are transient and timing metadata is retained.
     """
     owns_runtime = runtime is None
     runtime = runtime or VideoRuntime()
@@ -132,7 +139,8 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
     first, last = cut.get('first_frame_time'), cut.get('last_frame_time')
     if first is not None and last is not None:
         first, last = float(first), float(last)
-        if not all(math.isfinite(value) for value in (first, last)) or not start <= first <= last < cut_end:
+        # Stored times are rounded to microseconds, so allow that much float noise at the edges.
+        if not all(math.isfinite(value) for value in (first, last)) or not start - .000002 <= first <= last < cut_end:
             raise ValueError('Cut preview frame timestamps are invalid; refresh the cut frames before analysis')
         start, cut_end = first, min(cut_end, last + .000002)
     fps = config['video_fps']
@@ -183,16 +191,15 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
                 offset_y = (config['video_height'] - height * scale) / 2
                 boxes = [[round(offset_x), round(subtitle_strip['top'] * height * scale + offset_y),
                           round(width * scale + offset_x), round(subtitle_strip['bottom'] * height * scale + offset_y)]]
-            prompt = VIDEO_INSTRUCTION + f'\nThe real source interval lasts {end-start:.6f} seconds; ignore any duplicated tail frame and do not give times beyond that duration.'
-            if end >= cut_end - 0.000001:
-                prompt += ' This is the final analysis window of the current cut; include its visible final frames.'
-            else:
-                prompt += ' This is an intermediate analysis window, not the end of the current cut; its end is not evidence of a hard cut.'
+            final = end >= cut_end - 0.000001
+            prompt = VIDEO_INSTRUCTION + f'\nWindow: {end-start:.6f} seconds, ' + (
+                'the final window of the cut; include its visible final frames.' if final
+                else 'an intermediate window; its end is not evidence of a hard cut.') + ' Ignore any duplicated tail frame and give no times beyond that duration.'
             if 'single_sample_time' in metadata:
-                prompt += ' This window contains only one distinct sampled image; do not infer any motion or change.'
+                prompt += ' It holds only one distinct image: infer no motion or change.'
             prompt += subtitle_note((subtitle_strip or {}).get('language'), boxes, 'video canvas pixels')
             if context_hints:
-                prompt += '\nContext and character detections: ' + json.dumps(context_hints, ensure_ascii=False)
+                prompt += '\nContext and character detections: ' + json.dumps(without_character_notes(context_hints), ensure_ascii=False)
             reject = (lambda error, raw: on_invalid_response(window_index, start, end, error, raw)) if on_invalid_response else None
             output, usage, attempts = generate_window(processor, model, torch, clip, config['video_fps'], prompt, end - start, start, reject, cancel_check)
             result = {'source': metadata, 'analysis': output, 'generation_attempts': attempts}
@@ -207,7 +214,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
             start, window_index = end, window_index + 1
         usage = {key: sum(window.get('usage', {}).get(key, 0) for window in windows) for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')} if windows and all('usage' in window for window in windows) else {}
         return {'model': MODEL_ID, 'revision': MODEL_REVISION, 'windows': windows, 'usage': usage,
-                'limitations': 'Visual analysis uses a silent video; window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window.'}
+                'limitations': 'Window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window.'}
     finally:
         if owns_runtime:
             runtime.close()

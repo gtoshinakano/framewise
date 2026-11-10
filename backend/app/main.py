@@ -107,11 +107,6 @@ class CharacterDetectionLabelInput(BaseModel):
     character_context_id: str | None = None
 
 
-class BulkCharacterInput(BaseModel):
-    # Ask Qwen (one request per cut) about boxes the embeddings leave unresolved.
-    qwen: bool = False
-
-
 class RecognitionUseInput(BaseModel):
     # None: decided automatically; True: always a matching example; False: never.
     use: bool | None = None
@@ -1086,7 +1081,7 @@ def selected_analysis_context(cut_id: str, config: AnalysisConfig):
 
 
 @app.post('/api/cuts/{cut_id}/character-detection')
-def queue_character_detection(cut_id: str, body: BulkCharacterInput | None = None):
+def queue_character_detection(cut_id: str):
     """Detect and recognize characters in one cut with the bulk pipeline.
 
     A cut with boxes is recognized again like Re-run Recognition: automatic
@@ -1100,7 +1095,7 @@ def queue_character_detection(cut_id: str, body: BulkCharacterInput | None = Non
     if db.one("""SELECT 1 FROM jobs WHERE pipeline='character_detect' AND status IN ('queued','running')
                  AND json_extract(payload_json,'$.cut_id')=?""", (cut_id,)):
         raise HTTPException(409, 'Character detection is already queued for this cut')
-    result = _queue_bulk_character_jobs(cut['episode_id'], 'recognize', qwen=bool(body and body.qwen), rerun=True, cut_id=cut_id)
+    result = _queue_bulk_character_jobs(cut['episode_id'], 'recognize', rerun=True, cut_id=cut_id)
     if not result['queued']:
         has_boxes = db.one('''SELECT 1 FROM character_detections d JOIN character_detection_runs r ON r.id=d.run_id
             WHERE r.cut_id=? AND r.cut_start=? AND r.cut_end=? AND r.rowid=(SELECT max(rowid) FROM character_detection_runs WHERE cut_id=?)''',
@@ -1128,7 +1123,7 @@ def set_cut_no_characters(cut_id: str, body: NoCharactersInput):
     return {'cut_id': cut_id, 'no_characters': body.no_characters}
 
 
-def _queue_bulk_character_jobs(episode_id: str, phase: str, qwen: bool = False, rerun: bool = False, cut_id: str | None = None):
+def _queue_bulk_character_jobs(episode_id: str, phase: str, rerun: bool = False, cut_id: str | None = None):
     """Queue one bulk job per cut. The gallery of confirmed labels is read live by the worker.
 
     With rerun, recognition is redone for every cut that has boxes: automatic
@@ -1175,7 +1170,7 @@ def _queue_bulk_character_jobs(episode_id: str, phase: str, qwen: bool = False, 
                     conn.execute("UPDATE character_detections SET candidates_json=NULL WHERE run_id=? AND label_source IS NULL", (run_id,))
                     conn.execute("UPDATE character_detection_runs SET phase='boxes' WHERE id=?", (run_id,))
             job_id = str(uuid.uuid4())
-            payload = {'cut_id': cut['id'], 'cut': cut, 'workflow': 'anime_bulk_v1', 'phase': cut_phase, 'batch_id': batch_id, 'qwen': qwen}
+            payload = {'cut_id': cut['id'], 'cut': cut, 'workflow': 'anime_bulk_v1', 'phase': cut_phase, 'batch_id': batch_id}
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, 'character_detect', json.dumps(payload)))
             job_ids.append(job_id)
         if job_ids:
@@ -1190,21 +1185,21 @@ def queue_character_boxes(episode_id: str):
 
 
 @app.post('/api/episodes/{episode_id}/character-detection-all')
-def queue_all_character_detection(episode_id: str, body: BulkCharacterInput | None = None):
+def queue_all_character_detection(episode_id: str):
     """Steps 1 and 2 together: batched AniRef boxes, then gallery matching (optionally Qwen), sharing models across all cuts."""
-    return _queue_bulk_character_jobs(episode_id, 'full', qwen=bool(body and body.qwen))
+    return _queue_bulk_character_jobs(episode_id, 'full')
 
 
 @app.post('/api/episodes/{episode_id}/character-detection')
-def queue_missing_character_detections(episode_id: str, body: BulkCharacterInput | None = None):
+def queue_missing_character_detections(episode_id: str):
     """Step 2: match boxes with the gallery of confirmed labels (optionally Qwen) for cuts whose boxes exist but are not complete."""
-    return _queue_bulk_character_jobs(episode_id, 'recognize', qwen=bool(body and body.qwen))
+    return _queue_bulk_character_jobs(episode_id, 'recognize')
 
 
 @app.post('/api/episodes/{episode_id}/character-detection-rerun')
-def rerun_character_recognition(episode_id: str, body: BulkCharacterInput | None = None):
+def rerun_character_recognition(episode_id: str):
     """Redo automatic recognition for the whole episode; manual labels and drawn boxes are kept as they are."""
-    return _queue_bulk_character_jobs(episode_id, 'recognize', qwen=bool(body and body.qwen), rerun=True)
+    return _queue_bulk_character_jobs(episode_id, 'recognize', rerun=True)
 
 
 @app.get('/api/cuts/{cut_id}/character-detections')

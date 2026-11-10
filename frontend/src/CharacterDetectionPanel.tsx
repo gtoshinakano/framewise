@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useState } from 'react'
 import { Bookmark, BookmarkMinus, CheckCircle2, ChevronDown, Info, Loader2, PencilLine, ScanFace, Trash2, UserX, XCircle } from 'lucide-react'
-import { api, jsonBody, type ContextItem, type Job } from './api'
+import { api, type ContextItem, type Job } from './api'
 import { cachedCharacters, cachedReferences, invalidateReferences, loadCharacters, loadReferences, type CharacterReference } from './runCache'
 import { ActionButton, Elapsed, Skeleton, StatusChip } from './RunUi'
 import type { CharacterSummary } from './runState'
@@ -22,7 +22,6 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
   const [references, setReferences] = useState<CharacterReference[]>(() => cachedReferences(projectId) ?? [])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [askQwen, setAskQwen] = useState(false)
   const [noChars, setNoChars] = useState(noCharacters)
   useEffect(() => setNoChars(noCharacters), [noCharacters, cutId])
   const [working, setWorking] = useState(false)
@@ -82,7 +81,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
   async function detect() {
     setDetecting(true); setNotice(''); setError('')
     try {
-      const result = await api<{ queued: number; detail?: string }>(`/cuts/${cutId}/character-detection`, jsonBody({ qwen: askQwen }))
+      const result = await api<{ queued: number; detail?: string }>(`/cuts/${cutId}/character-detection`, { method: 'POST' })
       if (!result.queued) setNotice(result.detail || 'Nothing to detect in this cut.')
       void onStarted()
     } catch (reason) { setError((reason as Error).message) } finally { setDetecting(false) }
@@ -139,7 +138,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
           <input type="checkbox" className="m-0 h-3.5 w-3.5 cursor-pointer accent-[#e6c58b]" checked={noChars} disabled={working} onChange={event => void toggleNoCharacters(event.target.checked)} />
           {noChars && <UserX size={12} aria-hidden />}{noChars ? 'No characters in this shot · skipped' : 'No characters in this shot'}
         </label></h3><p className="muted mt-1 text-[11px]">Finds people in the first and last frames and names them from your labelled boxes. Your labels and drawn boxes are kept.</p></div>
-      <div className="flex items-center gap-2"><label className="flex items-center gap-1.5 text-[11px] text-[#c8cfda]" title="Ask the Qwen vision model once about boxes the embeddings cannot settle. Slower."><input type="checkbox" checked={askQwen} onChange={event => setAskQwen(event.target.checked)} />Qwen (slower)</label><ActionButton icon={<ScanFace size={14} />} pending={detecting || !!active} disabled={working || episodeBusy} onClick={() => void detect()} title="Find and name the people in this cut's first and last frames">{active ? 'Detecting' : 'Detect characters'}</ActionButton></div>
+      <div className="flex items-center gap-2"><ActionButton icon={<ScanFace size={14} />} pending={detecting || !!active} disabled={working || episodeBusy} onClick={() => void detect()} title="Find and name the people in this cut's first and last frames">{active ? 'Detecting' : 'Detect characters'}</ActionButton></div>
     </div>
     {noChars && <p role="status" className="flex items-start gap-2 rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#e6c58b]"><UserX size={14} className="mt-0.5 shrink-0" aria-hidden />Marked as no characters. These frames are dimmed, their boxes are disabled, and they are ignored by batch detection and cut analysis. Untick the chip to edit them again.</p>}
     {active && <p role="status" className="flex items-center gap-2 rounded-lg border border-[#4a4363] bg-[#221c33] px-3 py-2 text-xs text-[#c3aeff]"><Loader2 size={14} className="animate-spin" aria-hidden />{job?.stage || 'Detection queued'}… <span className="ml-auto"><Elapsed since={job?.started_at} /></span></p>}

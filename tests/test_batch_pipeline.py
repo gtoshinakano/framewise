@@ -99,23 +99,43 @@ class PerCutFailureTest(unittest.TestCase):
                 pipeline._for_each([run], lambda _run, error=error: (_ for _ in ()).throw(error))
 
 
+class ParallelForEachTest(unittest.TestCase):
+    def test_cuts_run_at_the_same_time_and_a_failure_stays_on_its_cut(self):
+        import threading
+        runs = [FakeCutRun(name, []) for name in 'abcd']
+        barrier = threading.Barrier(4, timeout=5)
+
+        def work(run):
+            barrier.wait()  # only passes when all four cuts are running together
+            if run.name == 'b':
+                raise ValueError('truncated')
+        pipeline._for_each(runs, work, parallel=4)
+        self.assertEqual([bool(run.failure) for run in runs], [False, True, False, False])
+
+    def test_lease_loss_in_a_parallel_batch_still_ends_the_job(self):
+        runs = [FakeCutRun(name, []) for name in 'abc']
+
+        def work(run):
+            if run.name == 'a':
+                raise worker.LeaseLost('Job lease was lost')
+        with self.assertRaises(worker.LeaseLost):
+            pipeline._for_each(runs, work, parallel=3)
+
+
 class CharacterBatchOrderTest(unittest.TestCase):
     def test_each_model_runs_over_every_cut_before_the_next_model(self):
         calls = []
         claimed = [('j1', 'o1'), ('j2', 'o2'), ('j3', 'o3')]
 
-        def process(job_id, owner, runtime, defer_qwen=False):
-            calls.append(('qwen' if not defer_qwen else 'reid', job_id))
-            # j2 has nothing left for Qwen to review.
-            return anime_bulk.DEFERRED if defer_qwen and job_id != 'j2' else None
+        def process(job_id, owner, runtime):
+            calls.append(('reid', job_id))
 
         with patch.object(anime_bulk, '_claim_batch', return_value=claimed), \
              patch.object(anime_bulk, '_prepare_frames', side_effect=lambda *_: calls.append(('frames', 'all'))), \
              patch.object(anime_bulk, '_detect_batch', side_effect=lambda *_: calls.append(('aniref', 'all'))), \
              patch.object(anime_bulk, 'process', side_effect=process):
             anime_bulk.process_batch({'id': 'j1'}, 'o1', anime_bulk.BulkRuntime())
-        self.assertEqual(calls, [('frames', 'all'), ('aniref', 'all'), ('reid', 'j1'), ('reid', 'j2'), ('reid', 'j3'),
-                                 ('qwen', 'j1'), ('qwen', 'j3')])
+        self.assertEqual(calls, [('frames', 'all'), ('aniref', 'all'), ('reid', 'j1'), ('reid', 'j2'), ('reid', 'j3')])
 
 
 if __name__ == '__main__':

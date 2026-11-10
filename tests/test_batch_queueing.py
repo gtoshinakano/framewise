@@ -217,14 +217,15 @@ class BatchQueueingTest(unittest.TestCase):
         job_id, owner = worker.claim_job(('analyze',))
         events, calls = [], []
 
-        def describe(_server, _image, _regions, hints, **_kwargs):
-            calls.append(hints['target_frame'])
+        def describe(_server, _image, _regions, hints, **kwargs):
+            calls.append(kwargs['frame_label'])
             if len(calls) == 3:  # the second cut's first frame, like a truncated model answer
                 raise ValueError('Response was truncated')
             events.append('frame')
             return {'summary': 'x'}
 
-        self.process_with_fake_models(job_id, owner, events, describe)
+        with patch.object(pipeline, 'FRAME_PARALLEL', 1):  # the fake fails on the third call, so keep the order fixed
+            self.process_with_fake_models(job_id, owner, events, describe)
         job = db.one('SELECT status,error FROM jobs WHERE id=?', (job_id,))
         self.assertEqual(job['status'], 'failed')
         self.assertIn('1 of 3 cuts failed', job['error'])

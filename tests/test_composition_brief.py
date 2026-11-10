@@ -180,6 +180,20 @@ class CompositionProjectionTest(unittest.TestCase):
         links[0]['stale'] = True
         self.assertIsNone(composition_brief.subjects(frame, links)[1]['character_context_id'])
 
+    def test_new_format_frames_link_by_character_and_changes_read_back_as_states(self):
+        from app.visual_contracts import full_last_frame, resolve_frame
+        mai = {'ref': 'B1', 'detection_id': 'first-box', 'character_context_id': 'mai', 'name': 'Mai', 'box': None}
+        base = {'composition': 'MS', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'background_people': 'none', 'notes': 'none'}
+        initial = resolve_frame(json.dumps({**base, 'visible_characters': [{'box': 'B1', 'appearance': 'red blazer', 'position': 'left foreground', 'pose': 'sitting at a desk', 'expression': 'calm', 'action': 'reading'}]}), [mai])
+        last = resolve_frame(json.dumps({**base, 'composition': 'unchanged', 'visible_characters': [{'box': 'B1', 'appearance': 'unchanged', 'position': 'unchanged', 'pose': 'standing', 'expression': 'unchanged', 'action': 'unchanged'}]}),
+                             [{**mai, 'detection_id': 'last-box', 'new': False}], changes=True)
+        links = lambda pos, id_: [{'id': id_, 'position': pos, 'box': [0, 0, 300, 700], 'frame_width': 1280, 'character_context_id': 'mai', 'name': 'Mai', 'label_source': 'manual', 'stale': False, 'verified': True}]
+        first = composition_brief.subjects(initial, links('first', 'first-box'))[0]
+        self.assertEqual((first['name'], first['identity'], first['outfit_visible']), ('Mai', 'confirmed', 'red blazer'))
+        final = composition_brief.subjects(full_last_frame(initial, last), links('last', 'last-box'), boundary='last')[0]
+        self.assertEqual((final['name'], final['pose'], final['outfit_visible']), ('Mai', 'standing', 'red blazer'))
+        self.assertFalse(composition_brief.unchanged(first['pose'], final['pose'], 'pose'))
+
     def test_detection_citation_is_not_reused_across_boundary_frames(self):
         frame = {'visible_characters':[{'position':'center','pose':'standing',
                                         'identity_evidence':'Matches first-frame box first-id.'}]}

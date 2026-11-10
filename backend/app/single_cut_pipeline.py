@@ -17,14 +17,20 @@ work it already saved. Legacy jobs retain their original execution path.
 import gc
 import json
 import logging
+import threading
 import time
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from . import character_detection, db, frame_model, media, structured_results, video_model, worker
-from .visual_contracts import FRAME_INSTRUCTION, VIDEO_INSTRUCTION
+from .visual_contracts import FRAME_INSTRUCTION, LAST_FRAME_INSTRUCTION, VIDEO_INSTRUCTION
 
 log = logging.getLogger('framewise.visual_analysis')
+
+# Cuts described at once by the frame model. The llama-server gets one slot per cut, so the
+# dense 27B model decodes several frames per pass instead of one.
+FRAME_PARALLEL = max(1, int(os.environ.get('FRAME_PARALLEL', '4')))
 
 
 def release_gpu_models():
@@ -103,7 +109,6 @@ class CutRun:
         self.original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
         self.base_ids = item.get('base_result_ids', {})
         self.strip = _subtitle_strip(self.context)
-        self.references = []
         self.failure = None  # set when this cut fails; the other cuts keep going
         row = db.one('SELECT * FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job['id'], self.cut_id))
         self.completed = bool(row and row['completed'])
@@ -213,15 +218,18 @@ def run_batch(job, owner, episode, items):
         raise RuntimeError(f'{len(failed)} of {len(runs)} cuts failed, the others finished and were kept. {details}{more}')
 
 
-def _for_each(cut_runs, work):
+def _for_each(cut_runs, work, parallel=1):
     """Run work(cut_run) for each cut still healthy. A failure is recorded on that cut and the batch goes on.
 
-    Losing the lease or being cancelled ends the whole job, so those still propagate.
+    Losing the lease or being cancelled ends the whole job, so those still propagate. With
+    ``parallel`` > 1 that many cuts run at once; the first lease or cancel error is raised once
+    the cuts already started have stopped.
     """
     from . import inference_worker
-    for cut_run in cut_runs:
+
+    def run(cut_run):
         if cut_run.failure:
-            continue
+            return
         try:
             work(cut_run)
         except (worker.LeaseLost, inference_worker.SummaryCancelled):
@@ -230,6 +238,28 @@ def _for_each(cut_runs, work):
             cut_run.failure = exc
             log.exception('Visual analysis failed for cut %s; continuing with the other cuts', cut_run.cut_id)
 
+    if parallel <= 1 or len(cut_runs) <= 1:
+        for cut_run in cut_runs:
+            run(cut_run)
+        return
+    stop = threading.Event()
+
+    def guarded(cut_run):
+        if stop.is_set():
+            return
+        try:
+            run(cut_run)
+        except BaseException:
+            stop.set()  # lease lost or cancelled: queued cuts are skipped
+            raise
+
+    with ThreadPoolExecutor(max_workers=parallel, thread_name_prefix='frame-describe') as pool:
+        futures = [pool.submit(guarded, cut_run) for cut_run in cut_runs]
+        errors = [future.exception() for future in futures]
+    for error in errors:
+        if error:
+            raise error
+
 
 # -- stage 1: first and last frame (Qwen3.5 through one llama-server) -----------
 
@@ -237,22 +267,63 @@ def _boundary_frame_stages(runs, scratch):
     todo = [cut_run for cut_run in runs if not cut_run.failure and (cut_run.needs('initial_frame') or cut_run.needs('last_frame'))]
     if not todo:
         return
-    crops = {}  # reference id -> cropped image, shared by every cut that uses it
-    _for_each(todo, lambda cut_run: _load_references(cut_run, crops, scratch))
     with frame_model.frame_server(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'),
         os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
         os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'),
-        cancel_check=todo[0].cancel_check) as server:
-        _for_each(todo, lambda cut_run: (_frame_stage(cut_run, 'first', server, scratch), _frame_stage(cut_run, 'last', server, scratch)))
+        cancel_check=todo[0].cancel_check, parallel=FRAME_PARALLEL) as server:
+        _for_each(todo, lambda cut_run: (_frame_stage(cut_run, 'first', server, scratch), _frame_stage(cut_run, 'last', server, scratch)), parallel=FRAME_PARALLEL)
 
 
-def _load_references(cut_run, crops, scratch):
-    cut_run.references = []
-    for ref in cut_run.item.get('character_references', []):
-        if ref['id'] not in crops:
-            source = media.episode_dir(ref['project_id'], ref['episode_id']) / f"original{ref['original_ext']}"
-            crops[ref['id']] = character_detection.crop_frame(source, ref['frame'], ref['cut_start'], ref['cut_end'], ref['box'], scratch, f"analysis-ref-{ref['id']}")
-        cut_run.references.append({**ref, 'image': crops[ref['id']]})
+def marked_people(cut_run, position, first_ids=None):
+    """The characters the user marked in one boundary frame, with the short handles the frame model sees.
+
+    Only boxes that carry a character count: unnamed boxes are left out, and a cut marked as having no
+    characters sends none at all, so the model is not asked about detector noise. Boxes are scaled to a
+    0-1000 grid of the whole frame, and ``first_ids`` (the first frame's characters) flags newcomers.
+    """
+    if cut_run.cut.get('no_characters'):
+        return []
+    detections = cut_run.context.get('character_detections') or {}
+    size = next((frame.get('image_size') for frame in detections.get('frames', []) if frame.get('position') == position), None)
+    boxes = [d for d in detections.get('detections', []) if d.get('position') == position and d.get('character_context_id')]
+    def left_edge(detection):
+        box = detection.get('box')
+        return box[0] if isinstance(box, list) and box else 0
+    people = []
+    for number, detection in enumerate(sorted(boxes, key=left_edge), 1):
+        box = detection.get('box')
+        grid = None
+        if isinstance(box, list) and len(box) == 4 and isinstance(size, list) and len(size) >= 2 and size[0] and size[1]:
+            grid = [round(box[0] * 1000 / size[0]), round(box[1] * 1000 / size[1]), round(box[2] * 1000 / size[0]), round(box[3] * 1000 / size[1])]
+        people.append({'ref': f'B{number}', 'detection_id': detection['id'], 'character_context_id': detection['character_context_id'],
+                       'name': detection.get('character_name') or 'unnamed', 'box': grid,
+                       **({'new': detection['character_context_id'] not in first_ids} if first_ids is not None else {})})
+    return people
+
+
+def _first_frame_result(cut_run):
+    """The first-frame result a last frame can be compared with, as (content, id), or (None, None).
+
+    It must be in the current format and describe this cut as it is now; otherwise the last frame is
+    described in full so it never refers to a first frame it cannot be read against.
+    """
+    result_id = cut_run.checkpoint.get('initial_frame')
+    if result_id:
+        row = db.one('SELECT id,content,context_json FROM analysis_results WHERE id=? AND cut_id=?', (result_id, cut_run.cut_id))
+    else:
+        current = next((item for item in structured_results.list_results(cut_run.cut_id) if item['type'] == 'initial_frame'), None)
+        row = db.one('SELECT id,content,context_json FROM analysis_results WHERE id=?', (current['id'],)) if current else None
+    if not row:
+        return None, None
+    try:
+        content, source = json.loads(row['content']), (json.loads(row['context_json'] or '{}').get('cut') or {})
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(content, dict) or content.get('mode') != 'full':
+        return None, None
+    if source.get('start_time') != cut_run.cut['start_time'] or source.get('end_time') != cut_run.cut['end_time']:
+        return None, None
+    return content, row['id']
 
 
 def _frame_stage(cut_run, position, server, scratch):
@@ -265,18 +336,28 @@ def _frame_stage(cut_run, position, server, scratch):
         usage = {}
         cut_run.progress(f'Analyzing {label.lower()}')
         cut = cut_run.cut
-        image = Path(scratch) / 'boundary.jpg'
+        image = Path(scratch) / f'boundary-{cut_run.cut_id}-{position}.jpg'  # cuts share the scratch folder when run in parallel
         first, last = media.cut_frame_times(cut['start_time'], cut['end_time'])
         actual = media.extract_cut_frame(cut_run.original, image, first if position == 'first' else last, cut['start_time'], cut['end_time'], width=1280, last=position == 'last')
         box = strip_box(cut_run.strip, *frame_canvas(cut_run.episode))
         regions = [box] if box else []
-        data = frame_model.describe_frame(server, image, regions, {**cut_run.hints, 'target_frame': position},
-                                          cancel_check=cut_run.cancel_check, reference_images=cut_run.references, usage_out=usage,
-                                          subtitle_language=(cut_run.strip or {}).get('language'))
+        previous, previous_id = _first_frame_result(cut_run) if position == 'last' else (None, None)
+        first_people = marked_people(cut_run, 'first') if previous is not None else []
+        first_ids = {person['character_context_id'] for person in first_people} if previous is not None else None
+        people = marked_people(cut_run, position, first_ids)
+        data = frame_model.describe_frame(server, image, regions, cut_run.hints, cancel_check=cut_run.cancel_check, usage_out=usage,
+                                          subtitle_language=(cut_run.strip or {}).get('language'), people=people,
+                                          frame_label='first frame' if position == 'first' else 'last frame', previous=previous)
         data['frame_time'] = actual
         data['subtitle_regions'] = regions
-        cut_run.save(kind, data, frame_model.MODEL_ID, FRAME_INSTRUCTION,
-                     {'model_revision': frame_model.MODEL_REVISION, 'image_width': 1280, 'generation_seconds': time.monotonic() - started, 'usage': usage})
+        instruction = LAST_FRAME_INSTRUCTION if previous is not None else FRAME_INSTRUCTION
+        if previous is not None:
+            now = {person['character_context_id'] for person in people}
+            data['based_on_initial_frame'] = previous_id
+            data['left_frame'] = [person['name'] for person in first_people if person['character_context_id'] not in now]
+        cut_run.save(kind, data, frame_model.MODEL_ID, instruction,
+                     {'model_revision': frame_model.MODEL_REVISION, 'image_width': 1280, 'generation_seconds': time.monotonic() - started, 'usage': usage,
+                      'frame_mode': data.get('mode', 'full'), 'marked_characters': len(people)})
 
 
 # -- stage 2: video analysis (Qwen3-VL) -----------------------------------------

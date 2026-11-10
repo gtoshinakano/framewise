@@ -1,10 +1,24 @@
-import { useEffect, useRef, useState } from 'react'
-import { Check, Copy, Loader2, RefreshCw, Save, Sparkles, Undo2, Wand2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { BookOpen, Check, CircleCheck, Circle, Clock, Copy, Loader2, Pencil, RefreshCw, Save, Sparkles, TriangleAlert, Undo2, Wand2 } from 'lucide-react'
 import { api, type AnalysisResult, type Job } from './api'
 import { SummaryRequestEditor } from './SummaryRequestEditor'
 import { ResultMetrics } from './ResultMetrics'
+import { ActionButton, StatusChip, WarningLine } from './RunUi'
+import { Disclosure, StepPanel } from './ReviewUi'
+import { Markdown } from './Markdown'
 
 export const SUMMARY_TITLE = 'Cut summary'
+
+const VIEW_KEY = 'framewise.summaryView'
+type SummaryView = 'read' | 'edit'
+function storedView(): SummaryView | null {
+  try { const value = localStorage.getItem(VIEW_KEY); return value === 'read' || value === 'edit' ? value : null } catch { return null }
+}
+function rememberView(value: SummaryView) {
+  try { localStorage.setItem(VIEW_KEY, value) } catch { /* Private windows can block storage; the choice then lasts for this visit only. */ }
+}
+// Timeline lines start with "[0.4–2.7s]"; shown as code in the reading view so the times stand out.
+const timelineMarks = (text: string) => text.replace(/^(\[\d+(?:\.\d+)?\s?[–-]\s?\d+(?:\.\d+)?s\])/gm, '`$1`')
 
 const summaryHeadings = new Set(['overview', 'opening composition', 'main characters', 'secondary characters', 'character outfits', 'character actions', 'camera position', 'camera movement', 'setting and scenario', 'lighting', 'on-screen text', 'audio and voices', 'spoken dialogue by speaker', 'suggested animation direction', 'evidence and uncertainties'])
 
@@ -20,7 +34,11 @@ function visibleSummary(result?: AnalysisResult) {
   }).join('\n').trim()
 }
 
-export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStarted, onSaved, textProvider }: { cutId: string; current?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; textProvider?: 'local' | 'openrouter'; onStarted: () => Promise<void>; onSaved: (result: AnalysisResult) => void }) {
+/**
+ * The Results workbench: the Review column handed in as `review`, then the answers and the Cut summary. All three share
+ * this component's state because the summary is written from the saved answers.
+ */
+export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jobs, disabled, onStarted, onSaved, textProvider }: { cutId: string; review: ReactNode; editorSlot: ReactNode; current?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; textProvider?: 'local' | 'openrouter'; onStarted: () => Promise<void>; onSaved: (result: AnalysisResult) => void }) {
   const [instruction, setInstruction] = useState('')
   const [working, setWorking] = useState(false)
   const [savingInstructions, setSavingInstructions] = useState(false)
@@ -58,6 +76,7 @@ export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStar
     catch (err) { setInstructionsError((err as Error).message) } finally { setSavingInstructions(false) }
   }
   const [error, setError] = useState('')
+  const [saveError, setSaveError] = useState('')
   const [draft, setDraft] = useState({ id: current?.id, original: visibleSummary(current), content: visibleSummary(current) })
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   useEffect(() => {
@@ -67,14 +86,14 @@ export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStar
   const changedElsewhere = draft.id !== current?.id
   async function saveSummary() {
     if (!draft.content.trim() || changedElsewhere) return
-    setWorking(true); setError('')
+    setWorking(true); setSaveError('')
     try {
       const result = draft.id
         ? await api<AnalysisResult>(`/analysis-results/${draft.id}`, { method: 'PUT', body: JSON.stringify({ title: SUMMARY_TITLE, content: draft.content }) })
         : await api<AnalysisResult>(`/cuts/${cutId}/analysis-results`, { method: 'POST', body: JSON.stringify({ kind: 'cut_description', title: SUMMARY_TITLE, content: draft.content }) })
       setDraft({ id: result.id, original: result.content, content: result.content })
       onSaved(result)
-    } catch (err) { setError((err as Error).message) } finally { setWorking(false) }
+    } catch (err) { setSaveError((err as Error).message) } finally { setWorking(false) }
   }
   const reviewJobs = jobs.filter(job => job.pipeline === 'review_answers' && job.cuts.some(cut => cut.id === cutId))
   const activeReview = reviewJobs.find(job => job.status === 'queued' || job.status === 'running')
@@ -143,31 +162,79 @@ export function CutSummaryPanel({ cutId, current, loaded, jobs, disabled, onStar
     finally { field.remove(); previousFocus?.focus() }
   }
   const failure = !activeJob && latestJob?.status === 'failed' && latestJob.stage !== 'Cancelled' ? latestJob.error : null
-  return <section className="flex min-h-0 flex-1 flex-col gap-3 rounded-xl border hairline bg-[#1b202a] p-4" aria-label="Cut summary">
-    <div><div className="flex items-center justify-between gap-2"><h3 className="flex items-center gap-2 text-xs font-semibold"><Sparkles size={14} className="text-[#bca7ff]" /> Cut summary</h3><div className="flex items-center gap-2"><span role="status" className={`text-[11px] ${copyStatus === 'failed' ? 'text-[#ff9fa7]' : 'text-[#7bdcb2]'}`}>{copyStatus === 'copied' ? 'Copied' : copyStatus === 'failed' ? 'Could not copy; select the text instead.' : ''}</span><button type="button" disabled={!draft.content} onClick={copySummary} title="Copy cut summary" aria-label="Copy cut summary" className="rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#303746] hover:text-white">{copyStatus === 'copied' ? <Check size={16} /> : <Copy size={16} />}</button></div></div><p className="muted mt-2 text-[11px] leading-5">Write a production brief or generate one from available evidence. Save answers to suggested checks and production decisions below before generating. Previous versions stay in history.</p></div>
-    <textarea aria-label="Cut summary content" className="scrollbar min-h-40 flex-1 resize-y overflow-y-auto rounded-lg border border-[#333a45] bg-[#151a22] p-3 text-sm leading-6" maxLength={50000} value={draft.content} disabled={!loaded || working} onChange={event => setDraft({ ...draft, content: event.target.value })} placeholder="Write a cut summary, or queue one from the available results and context." />
-    {changedElsewhere && <div className="text-xs text-[#ffc980]" role="alert">The saved summary changed while you were editing. Copy your draft before loading the latest version. <button type="button" className="underline" onClick={() => setDraft({ id: current?.id, original: visibleSummary(current), content: visibleSummary(current) })}>Load latest</button></div>}
-    <button type="button" className="btn btn-primary" disabled={!loaded || working || changedElsewhere || !draft.content.trim() || draft.content === draft.original} onClick={saveSummary}><Save size={14} /> Save summary</button>
-    {current && <ResultMetrics result={current} />}
-    <div className="block"><label htmlFor={`answers-${cutId}`} className="label">Answers to suggested checks and production decisions</label>
-      <div className="relative"><textarea id={`answers-${cutId}`} aria-label="Answers to suggested checks and production decisions" className="field min-h-24 resize-y pr-11" maxLength={50000} value={humanInstructions} disabled={!instructionsLoaded || savingInstructions} onChange={event => setHumanInstructions(event.target.value)} placeholder="Record confirmations, corrections, and production decisions for this cut." />
-        <button type="button" className="absolute right-2 top-2 rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#303746] hover:text-white disabled:opacity-50" aria-label="Generate answers from analysis" title="Draft short answers to the Human review and Suggested checks from this cut's results, neighbouring cut summaries, and transcript. Replaces the text (unsaved) when finished." disabled={!instructionsLoaded || reviewWorking || disabled || !!activeReview} onClick={generateAnswers}>{activeReview ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}</button>
-      </div>
-      {activeReview && <div className="mt-1 flex items-center justify-between gap-2"><p role="status" className="text-[11px] text-[#c3aeff]">{activeReview.status === 'queued' ? 'Review answers queued' : activeReview.stage || 'Drafting review answers'}…</p><button type="button" className="btn btn-quiet px-3 py-1 text-[11px]" disabled={reviewWorking} onClick={cancelReview}>Cancel</button></div>}
-      {previousAnswers !== null && <button type="button" className="mt-1 inline-flex items-center gap-1 text-[11px] text-[#c3aeff] underline" onClick={() => { setHumanInstructions(previousAnswers); setPreviousAnswers(null) }}><Undo2 size={12} /> Restore previous answers</button>}
-      {(reviewError || reviewFailure) && <p role="alert" className="mt-1 text-xs text-[#ff9fa7]">{reviewError || reviewFailure}</p>}
+  const answersDirty = humanInstructions !== savedInstructions
+  const summaryDirty = draft.content !== draft.original
+  const [view, setView] = useState<SummaryView>(() => storedView() ?? 'read')
+  function chooseView(next: SummaryView) { setView(next); rememberView(next) }
+  // The choice is a preference; an empty summary can only be edited.
+  const reading = view === 'read' && draft.content.trim() !== ''
+  const readable = useMemo(() => timelineMarks(draft.content), [draft.content])
+
+  const answersChip = !instructionsLoaded ? null
+    : previousAnswers !== null && answersDirty ? <StatusChip tone="purple" icon={<Wand2 size={11} aria-hidden />} title="The draft replaced your previous text. Check it, edit it, then save.">AI draft · review and save</StatusChip>
+      : answersDirty ? <StatusChip tone="amber" icon={<Circle size={11} aria-hidden />} title="The summary is written from the saved answers">Unsaved changes</StatusChip>
+        : humanInstructions.trim() ? <StatusChip tone="green" icon={<CircleCheck size={11} aria-hidden />}>Saved</StatusChip>
+          : <StatusChip tone="grey" icon={<Circle size={11} aria-hidden />}>No answers yet</StatusChip>
+  const summaryChip = activeJob ? <StatusChip tone="purple" icon={activeJob.status === 'queued' ? <Clock size={11} aria-hidden /> : <Loader2 size={11} className="animate-spin" aria-hidden />}>{activeJob.status === 'queued' ? 'Queued' : 'Generating…'}</StatusChip>
+    : summaryDirty ? <StatusChip tone="amber" icon={<Circle size={11} aria-hidden />}>Unsaved edits</StatusChip>
+      : current ? <StatusChip tone="green" icon={<CircleCheck size={11} aria-hidden />} title={`Source: ${current.origin}${current.model_id ? ` · ${current.model_id}` : ''}`}>Saved</StatusChip>
+        : <StatusChip tone="grey" icon={<Circle size={11} aria-hidden />}>Not generated yet</StatusChip>
+
+  // Same conditions as before, now with the reason in words instead of a silently disabled button.
+  const queueBlocked = working || savingInstructions || disabled || !!activeJob || !instructionsLoaded || answersDirty
+  const blockedReason = activeJob ? 'A summary is already queued for this cut.'
+    : answersDirty ? 'Save your answers first. The summary is written from the saved version.'
+      : disabled ? 'Analysis is running, turned off for this cut, or the cut is archived.' : ''
+  const editHint = !queueBlocked && (!current ? 'Queue edit needs a saved summary to change.' : !instruction.trim() ? 'Add an instruction to use Queue edit.' : '')
+
+  return <div role="group" aria-label="Review, answers and Cut summary" className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] gap-4 pt-3 lg:grid-cols-2 lg:grid-rows-[minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
+    <div className="grid min-h-0 grid-rows-[minmax(0,1fr)] lg:col-start-1 lg:row-start-1">{review}</div>
+    <div className="scrollbar flex flex-col gap-4 lg:col-start-2 lg:row-start-1 lg:-mt-3 lg:min-h-0 lg:overflow-y-auto lg:pt-3 2xl:contents">
+      <StepPanel className="2xl:col-start-2 2xl:row-start-1" step={2} kind="review_answers" title="Your answers" subtitle="Decisions and checks" tag={answersChip}
+        actions={<ActionButton compact icon={<Wand2 size={13} aria-hidden />} pending={!!activeReview || reviewWorking} disabled={!instructionsLoaded || disabled || !!activeReview} onClick={generateAnswers} title="Draft short answers to the Human review and Suggested checks from this cut's results, neighbouring cut summaries, and transcript. Replaces the text (unsaved) when finished.">{activeReview ? 'Drafting…' : 'Draft with AI'}</ActionButton>}>
+        <div className="flex min-h-[15rem] flex-1 flex-col gap-2">
+          <label htmlFor={`answers-${cutId}`} className="label !mb-0">Answers to suggested checks and production decisions</label>
+          <textarea id={`answers-${cutId}`} aria-label="Answers to suggested checks and production decisions" className="editor-area min-h-[12rem] flex-1" maxLength={50000} value={humanInstructions} disabled={!instructionsLoaded || savingInstructions} onChange={event => setHumanInstructions(event.target.value)} placeholder="Record confirmations, corrections, and production decisions for this cut. One bullet per item in the Review column works well." />
+          {activeReview && <div className="flex items-center justify-between gap-2"><p role="status" className="text-[11px] text-[#c3aeff]">{activeReview.status === 'queued' ? 'Review answers queued' : activeReview.stage || 'Drafting review answers'}…</p><ActionButton compact disabled={reviewWorking} onClick={cancelReview}>Cancel</ActionButton></div>}
+          {previousAnswers !== null && <button type="button" className="inline-flex items-center gap-1 self-start text-[11px] text-[#c3aeff] underline" onClick={() => { setHumanInstructions(previousAnswers); setPreviousAnswers(null) }}><Undo2 size={12} aria-hidden /> Restore previous answers</button>}
+          {(reviewError || reviewFailure) && <p role="alert" className="text-xs text-[#ff9fa7]">{reviewError || reviewFailure}</p>}
+          {instructionsError && <p role="alert" className="text-xs text-[#ff9fa7]">{instructionsError}</p>}
+          <ActionButton variant={answersDirty ? 'primary' : 'quiet'} icon={<Save size={14} aria-hidden />} pending={savingInstructions} disabled={!instructionsLoaded || !answersDirty} onClick={saveInstructions} className="w-full">{savingInstructions ? 'Saving answers…' : 'Save answers'}</ActionButton>
+        </div>
+        <div className="shrink-0 space-y-2.5 rounded-lg border hairline bg-[#171c25] p-3">
+          <h4 className="flex items-center gap-1.5 text-xs font-semibold"><Sparkles size={14} className="text-[#e5d25a]" aria-hidden /> Generate the Cut summary</h4>
+          <label className="block"><span className="label !mb-1.5">Instruction · optional</span><textarea className="field min-h-16 resize-y !text-[13px]" maxLength={5000} value={instruction} onChange={event => setInstruction(event.target.value)} placeholder="For example: emphasize the uncertain camera movement" /></label>
+          {activeJob && <div className="flex flex-wrap items-center justify-between gap-2"><p role="status" className="text-xs text-[#c3aeff]">{activeJob.status === 'queued' ? 'Summary queued for this cut' : activeJob.stage || 'Generating summary'}…</p><ActionButton compact disabled={working} onClick={cancelSummary}>Cancel summary</ActionButton></div>}
+          {(error || failure) && <p role="alert" className="text-xs text-[#ff9fa7]">{error || failure}</p>}
+          <div className="flex gap-2">
+            <ActionButton variant="primary" icon={<RefreshCw size={14} aria-hidden />} className="flex-1" disabled={queueBlocked} onClick={() => start('regenerate')} title="Write a new summary from the available results and context; your instruction is used as direction">Queue summary</ActionButton>
+            <ActionButton icon={<Sparkles size={14} aria-hidden />} className="flex-1" disabled={queueBlocked || !current || !instruction.trim()} onClick={() => start('edit')} title="Edit the current summary following your instruction">Queue edit</ActionButton>
+          </div>
+          {blockedReason ? <WarningLine level="warn">{blockedReason}</WarningLine> : editHint ? <WarningLine level="info">{editHint}</WarningLine> : null}
+          {activeJob && <p className="muted text-[11px] leading-4">Saved answers will be used the next time you queue a summary. The queued summary keeps its original answers.</p>}
+          <p className="muted text-[11px]">Uses the text engine selected in the top navigation.</p>
+        </div>
+        <div className="shrink-0"><SummaryRequestEditor textProvider={textProvider} cutId={cutId} disabled={disabled || !!activeJob} onStarted={onStarted} /></div>
+      </StepPanel>
+
+      <StepPanel className="2xl:col-start-3 2xl:row-start-1" step={3} kind="cut_summary" title="Cut summary" subtitle="Final production brief" tag={summaryChip}
+        actions={<>
+          <div role="group" aria-label="Summary view" className="flex rounded-lg border hairline p-0.5 text-[11px] font-semibold">
+            <button type="button" aria-pressed={reading} disabled={!draft.content.trim()} onClick={() => chooseView('read')} title={draft.content.trim() ? 'Read the summary formatted' : 'Nothing to read yet'} className={`inline-flex items-center gap-1 rounded-md px-2 py-1 ${reading ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}><BookOpen size={12} aria-hidden /> Read</button>
+            <button type="button" aria-pressed={!reading} onClick={() => chooseView('edit')} title="Edit the summary text" className={`inline-flex items-center gap-1 rounded-md px-2 py-1 ${!reading ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}><Pencil size={12} aria-hidden /> Edit</button>
+          </div>
+          <ActionButton compact icon={copyStatus === 'copied' ? <Check size={14} className="text-[#7bdcb2]" aria-hidden /> : <Copy size={14} aria-hidden />} disabled={!draft.content} onClick={copySummary} title={copyStatus === 'copied' ? 'Copied' : 'Copy cut summary'} aria-label="Copy cut summary"><span role="status" className="sr-only">{copyStatus === 'copied' ? 'Copied' : ''}</span></ActionButton>
+        </>}
+        footer={<ActionButton variant="primary" icon={<Save size={14} aria-hidden />} className="w-full" disabled={!loaded || working || changedElsewhere || !draft.content.trim() || !summaryDirty} onClick={saveSummary}>Save summary</ActionButton>}>
+        {changedElsewhere && <div className="flex items-start gap-2 rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#f0d9a5]" role="alert"><TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden /><span>The saved summary changed while you were editing. Copy your draft before loading the latest version. <button type="button" className="underline" onClick={() => setDraft({ id: current?.id, original: visibleSummary(current), content: visibleSummary(current) })}>Load latest</button></span></div>}
+        {copyStatus === 'failed' && <p role="status" className="text-xs text-[#ff9fa7]">Could not copy; select the text instead.</p>}
+        {reading
+          ? <div className="scrollbar min-h-[24rem] flex-1 rounded-lg border border-[#303640] bg-[#11151d] p-4 lg:min-h-0 lg:overflow-y-auto 2xl:min-h-0" aria-label="Cut summary (formatted)"><Markdown className="md-summary" text={readable} /></div>
+          : <textarea aria-label="Cut summary content" className="editor-area min-h-[24rem] flex-1 lg:min-h-0 2xl:min-h-0" maxLength={50000} value={draft.content} disabled={!loaded || working} onChange={event => setDraft({ ...draft, content: event.target.value })} placeholder="Write a cut summary, or queue one from the available results and context." />}
+        {current && <Disclosure label="Generation details"><ResultMetrics result={current} /></Disclosure>}
+        {saveError && <p role="alert" className="text-xs text-[#ff9fa7]">{saveError}</p>}
+      </StepPanel>
     </div>
-    <button type="button" className="btn btn-quiet" disabled={!instructionsLoaded || savingInstructions || humanInstructions === savedInstructions} onClick={saveInstructions}><Save size={14} /> {savingInstructions ? 'Saving answers…' : 'Save answers'}</button>
-    {instructionsError && <p role="alert" className="text-xs text-[#ff9fa7]">{instructionsError}</p>}
-    {activeJob && <p className="muted text-[11px]">Saved answers will be used the next time you queue a summary. The queued summary keeps its original answers.</p>}
-    <label className="block"><span className="label">Instruction</span><textarea className="field min-h-16 resize-y" maxLength={5000} value={instruction} onChange={event => setInstruction(event.target.value)} placeholder="For example: emphasize the uncertain camera movement" /></label>
-    {activeJob && <div className="flex flex-wrap items-center justify-between gap-2"><p role="status" className="text-xs text-[#c3aeff]">{activeJob.status === 'queued' ? 'Summary queued for this cut' : activeJob.stage || 'Generating summary'}…</p><button type="button" className="btn btn-quiet px-3 py-2" disabled={working} onClick={cancelSummary}>Cancel summary</button></div>}
-    {(error || failure) && <p role="alert" className="text-xs text-[#ff9fa7]">{error || failure}</p>}
-    <div className="flex gap-2">
-      <button className="btn btn-primary flex-1" disabled={working || savingInstructions || disabled || !!activeJob || !instructionsLoaded || humanInstructions !== savedInstructions || !current || !instruction.trim()} onClick={() => start('edit')} title="Edit the current summary following your instruction"><Sparkles size={14} /> Queue edit</button>
-      <button className="btn btn-quiet flex-1" disabled={working || savingInstructions || disabled || !!activeJob || !instructionsLoaded || humanInstructions !== savedInstructions} onClick={() => start('regenerate')} title="Write a new summary from the available results and context; your instruction is used as direction"><RefreshCw size={14} /> Queue summary</button>
-    </div>
-    <p className="muted text-[11px]">Uses the text engine selected in the top navigation.</p>
-    <SummaryRequestEditor textProvider={textProvider} cutId={cutId} disabled={disabled || !!activeJob} onStarted={onStarted} />
-  </section>
+    {editorSlot}
+  </div>
 }

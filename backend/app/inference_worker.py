@@ -827,12 +827,55 @@ def start_assistant():
     return runner.start()
 
 
+def text_lane(name):
+    """An extra worker thread that runs only local text jobs next to the main loop.
+
+    The main loop and each lane use one llama-server slot, so ``TEXT_JOB_CONCURRENCY`` jobs
+    generate at once. A lane holds a chat session while it works: visual jobs wait for it before
+    they release the GPU, and the lane claims nothing while visual work owns the GPU.
+    """
+    import contextlib
+    from . import local_text_runtime
+    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers}
+    runtime = local_text_runtime.runtime
+    while True:
+        try:
+            if runtime.gpu_busy:
+                time.sleep(2)
+                continue
+            claimed = worker.claim_job(worker.TEXT_PIPELINES)
+            if not claimed:
+                time.sleep(2)
+                continue
+            job_id, owner = claimed
+            done = threading.Event()
+            beat = threading.Thread(target=worker.heartbeat, args=(job_id, owner, done), daemon=True)
+            beat.start()
+            try:
+                row = db.one("SELECT pipeline,payload_json FROM jobs WHERE id=?", (job_id,))
+                payload = json.loads(row['payload_json'])
+                provider = payload.get('text_provider') if row['pipeline'] == 'regen' else (payload.get('config') or {}).get('text_provider')
+                guard = runtime.chat_session(cancel_check=lambda: check_summary_lease(job_id, owner)) if provider == 'local' else contextlib.nullcontext()
+                with guard:
+                    handlers[row['pipeline']](job_id, owner)
+            finally:
+                done.set()
+                beat.join(timeout=1)
+        except (worker.LeaseLost, SummaryCancelled):
+            log.info('Text lane %s dropped a job it no longer holds', name)
+        except Exception:
+            log.exception('Text lane %s error', name)
+            time.sleep(2)
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     db.init_db()
     from . import local_text_runtime
     local_text_runtime.runtime = local_text_runtime.LocalTextRuntime()
     start_assistant()
+    for number in range(1, local_text_runtime.text_job_concurrency()):
+        threading.Thread(target=text_lane, args=(f'text-{number}',), daemon=True, name=f'text-lane-{number}').start()
     anime_runtime = None
     anime_batch_id = None
     while True:
