@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowRight, ChevronDown, ChevronsRight, Film, Image as ImageIcon, ImageDown, Layers, Play, RotateCcw, Save, SlidersHorizontal } from 'lucide-react'
+import { ArrowRight, ChevronDown, ChevronsRight, Film, Image as ImageIcon, Layers, Play, RotateCcw, Save, SlidersHorizontal } from 'lucide-react'
 import { api, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type VisualStage } from './api'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
-import { estimatedVideoFrames } from './analysisFrames'
+import { automaticVideoFps, estimatedVideoFrames } from './analysisFrames'
 import { ANSWERS_BATCH_REASONS, CHAIN_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
 import { ActionButton, Elapsed, NoticeStrip, Skeleton, StateChip, StatusChip, WarningLine, type Notice } from './RunUi'
 import { cachedConfig, cachedProjectId, loadConfig, loadProjectId, prefetchConfigs, storeConfig } from './runCache'
@@ -28,9 +28,8 @@ function fromHereMessage(firstCut: number, result: BatchQueueResult) {
 }
 
 const STAGE_BUTTONS: { stage: VisualStage; label: string; icon: ReactNode; hint: string }[] = [
-  { stage: 'initial_frame', label: 'Initial frame', icon: <ImageIcon size={13} />, hint: 'Analyze only the first frame' },
-  { stage: 'video_analysis', label: 'Video', icon: <Film size={13} />, hint: 'Analyze only the video between the frames' },
-  { stage: 'last_frame', label: 'Last frame', icon: <ImageDown size={13} />, hint: 'Analyze only the last frame' },
+  { stage: 'initial_frame', label: 'Initial frame', icon: <ImageIcon size={13} />, hint: 'Describe only the first frame: the still image, with each character\'s look, pose, expression and emotion' },
+  { stage: 'video_analysis', label: 'Video', icon: <Film size={13} />, hint: 'Analyze only the motion: camera, what each character does, who speaks, emotion and how the cut ends. Uses the first-frame result to tell characters apart, so run the initial frame first' },
 ]
 
 /** One state for a group of steps: anything running or queued wins, then failures, then complete or not run. */
@@ -220,7 +219,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
       <table className="w-full text-xs">
         <thead><tr className="muted text-[10px] uppercase tracking-wider"><th className="w-[38%] pb-1.5 text-left font-semibold">Step</th><th className="pb-1.5 font-semibold">This cut</th><th className="pb-1.5 font-semibold" title="This cut and every later cut">From cut {cut.cut_index + 1}</th><th className="pb-1.5 font-semibold">Whole episode</th></tr></thead>
         <tbody>
-          {row('Visual analysis', 'Frames + video', overall(VISUAL_STEPS.map(key => steps[key])),
+          {row('Visual analysis', 'First frame + video', overall(VISUAL_STEPS.map(key => steps[key])),
             cell(settingsReason, (disabled, title) => <ActionButton compact icon={<Play size={13} />} pending={isPending('visual-cut')} disabled={disabled} title={title || 'Queue visual analysis for this cut'} onClick={() => void queueVisual('cut')}>Run</ActionButton>),
             cell(batchReason || (!cut.active ? 'Only active cuts can be queued' : ''), (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('visual-from-here')} disabled={disabled} title={title || `Queue this cut and every later cut whose characters are settled (marked as no characters, or every box named). Cuts with unknown or undetected characters are skipped and listed. Up to ${batchLabel(counts.from)}.`} onClick={() => void queueVisual('from-here')}>{batchLabel(counts.from)}</ActionButton>),
             cell(batchReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('visual-batch')} disabled={disabled} title={title || `Queue visual analysis for all ${batchLabel(counts.all)}; completed ones are skipped`} onClick={() => void queueVisual('batch')}>All {counts.all}</ActionButton>))}
@@ -268,7 +267,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
         </div>
         <p className="text-xs text-[#d5dbe5]" aria-live="polite"><span className="muted">Estimate: </span>{invalid ? 'enter valid settings' : `≈${estimatedVideoFrames(config, cut)} video frames${config.video_frame_budget ? ` (maximum ${config.video_frame_budget}, including padding)` : ' (including padding; actual count may vary)'}`}</p>
         <div className="flex flex-wrap items-center gap-2">
-          <ActionButton compact icon={<RotateCcw size={13} />} title="Set the frame rate so the cut yields at most 60 frames" onClick={() => setConfig({ ...config, video_fps: Math.min(30, 56 / Math.max(.000001, cut.end_time - cut.start_time)), video_frame_budget: 60 })}>Limit to 60 frames</ActionButton>
+          <ActionButton compact icon={<RotateCcw size={13} />} title="Set the frame rate so the cut yields at most 60 frames" onClick={() => setConfig({ ...config, video_fps: automaticVideoFps(cut.end_time - cut.start_time), video_frame_budget: 60 })}>Limit to 60 frames</ActionButton>
           <ActionButton compact variant={dirty ? 'primary' : 'quiet'} icon={<Save size={13} />} pending={isPending('save')} disabled={!dirty || invalid || (!!pending && !isPending('save'))} title={dirty ? 'Save these settings for this cut' : 'Nothing to save'} onClick={() => void saveSettings()}>{dirty ? 'Save settings' : 'Saved'}</ActionButton>
         </div>
         <p className="muted text-[11px]">The cut is scaled to fit this canvas. Applies when queuing one cut; changes are also saved when you queue.</p>

@@ -1073,6 +1073,19 @@ def get_analysis_context(cut_id: str):
     }
 
 
+SINGLE_WINDOW_SECONDS = 6.0
+
+
+def automatic_video_fps(duration: float) -> float:
+    """Frame rate that fits the automatic frame budget.
+
+    A cut of up to SINGLE_WINDOW_SECONDS is sampled as 30 frames (at least 5 per second), which the
+    video model watches as one clip, so its motion is described once and no event is split between
+    two windows. Longer cuts keep 56 frames across windows of at most 32.
+    """
+    return min(30.0, (30.0 if duration <= SINGLE_WINDOW_SECONDS else 56.0) / duration)
+
+
 def analysis_config_for_cut(cut_id: str):
     cut = db.one("SELECT * FROM cuts WHERE id=?", (cut_id,))
     if not cut:
@@ -1082,9 +1095,9 @@ def analysis_config_for_cut(cut_id: str):
     if saved:
         config = AnalysisConfig.model_validate_json(saved["config_json"])
         if config.video_frame_budget is not None:
-            config.video_fps = min(30.0, 56.0 / duration)
+            config.video_fps = automatic_video_fps(duration)
     else:
-        config = AnalysisConfig(video_fps=min(30.0, 56.0 / duration), video_frame_budget=60)
+        config = AnalysisConfig(video_fps=automatic_video_fps(duration), video_frame_budget=60)
     return cut, config.model_copy(update=text_generation_settings())
 
 
@@ -1500,7 +1513,8 @@ def put_cut_analysis_config(cut_id: str, config: AnalysisConfig):
     return config
 
 
-VISUAL_STAGES = ('initial_frame', 'video_analysis', 'last_frame')
+# The last frame is no longer analyzed; results from earlier runs stay readable as history.
+VISUAL_STAGES = ('initial_frame', 'video_analysis')
 
 
 def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[str] | None = None):
@@ -2280,7 +2294,7 @@ def analyze_cut(cut_id: str):
 
 
 class VisualStageInput(BaseModel):
-    stage: Literal['initial_frame', 'video_analysis', 'last_frame']
+    stage: Literal['initial_frame', 'video_analysis']
 
 
 @app.post('/api/cuts/{cut_id}/analysis-stages/run')

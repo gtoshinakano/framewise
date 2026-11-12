@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from . import media
-from .visual_contracts import VIDEO_INSTRUCTION, subtitle_note, validate_video
+from .visual_contracts import VIDEO_CONTRACT, VIDEO_INSTRUCTION, cut_direction, earlier_note, link_video, roster_note, series_note, speech_note, subtitle_note, validate_video
 
 MODEL_ID = 'Qwen/Qwen3-VL-8B-Instruct'
 MODEL_REVISION = '0c351dd01ed87e9c1b53cbc748cba10e6187ff3b'
@@ -54,14 +54,6 @@ class VideoRuntime:
             self.model = self.processor = None
             gc.collect()
             self.torch.cuda.empty_cache()
-
-
-def without_character_notes(hints):
-    """Prompt hints minus character descriptions (they invite copied outfits); names stay."""
-    if not isinstance(hints, dict) or not isinstance(hints.get('selected_context'), list):
-        return hints
-    return {**hints, 'selected_context': [{key: value for key, value in item.items() if key != 'description'} if isinstance(item, dict) and item.get('kind') == 'character' else item
-                                          for item in hints['selected_context']]}
 
 
 def video_inputs(processor, clip, fps, prompt):
@@ -126,11 +118,16 @@ def generate_window(processor, model, torch, clip, fps, prompt, duration, start,
     raise RuntimeError(f'Invalid Qwen3-VL video response for {start:.3f}–{start + duration:.3f}s after {len(VIDEO_TOKEN_LIMITS)} attempts: {last_error}')
 
 
-def analyze_video(original, cut, config, model_path, scratch, on_window=None, subtitle_strip=None, source_size=None, load_window=None, save_window=None, context_hints=None, on_invalid_response=None, cancel_check=None, runtime=None):
+def analyze_video(original, cut, config, model_path, scratch, on_window=None, subtitle_strip=None, source_size=None, load_window=None, save_window=None, context_hints=None, on_invalid_response=None, cancel_check=None, runtime=None,
+                  roster=None, initial=None, transcript=None):
     """Process every cut window, recording both clip-relative and episode times.
 
     Each model invocation is bounded to limit video tokens. Windows partition the
     cut; events spanning a window boundary may be split. Clip files are transient and timing metadata is retained.
+
+    ``roster`` (visual_contracts.video_roster) names the characters to follow, ``initial`` is the cut's
+    first-frame result and ``transcript`` its spoken segments; each window is also told what the window
+    before it reported. The windows are merged into one ``direction`` for the whole cut.
     """
     owns_runtime = runtime is None
     runtime = runtime or VideoRuntime()
@@ -158,6 +155,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
             end = cut_end if window_index == window_count - 1 else min(cut_end, start + window_seconds)
             cached = load_window(window_index, start, end) if load_window else None
             if cached is not None and (cached.get('source', {}).get('boundary_policy') != BOUNDARY_POLICY
+                                       or cached['source'].get('contract') != VIDEO_CONTRACT  # saved under an older prompt
                                        or cached['source'].get('source_file') != Path(original).name):
                 cached = None
             if cached is not None:
@@ -183,6 +181,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
                 remaining_frames -= count
             metadata['boundary_policy'] = BOUNDARY_POLICY
             metadata['source_file'] = Path(original).name
+            metadata['contract'] = VIDEO_CONTRACT
             boxes = []
             if subtitle_strip and subtitle_strip.get('top') is not None and source_size and all(source_size):
                 width, height = source_size
@@ -192,17 +191,24 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
                 boxes = [[round(offset_x), round(subtitle_strip['top'] * height * scale + offset_y),
                           round(width * scale + offset_x), round(subtitle_strip['bottom'] * height * scale + offset_y)]]
             final = end >= cut_end - 0.000001
-            prompt = VIDEO_INSTRUCTION + f'\nWindow: {end-start:.6f} seconds, ' + (
-                'the final window of the cut; include its visible final frames.' if final
-                else 'an intermediate window; its end is not evidence of a hard cut.') + ' Ignore any duplicated tail frame and give no times beyond that duration.'
+            part = 'the whole cut, from its first to its last frame.' if window_count == 1 else (
+                f'part {window_index + 1} of {window_count} of the cut, ' + ('the final part: its last frames are the end of the cut.' if final
+                                                                         else 'an intermediate part: the cut continues after it, so its end is not a hard cut.'))
+            prompt = VIDEO_INSTRUCTION + f'\n\nClip: {end-start:.2f} seconds, {part} Ignore any duplicated tail frame and give no times beyond that duration.'
             if 'single_sample_time' in metadata:
                 prompt += ' It holds only one distinct image: infer no motion or change.'
+            prompt += '\n\n' + roster_note(roster or [], initial if window_index == 0 else None)
+            if transcript is not None:
+                prompt += '\n' + speech_note(transcript, start, end, roster)
+            if windows:
+                prompt += '\n\n' + earlier_note(windows[-1])
+            notes = series_note(context_hints)
+            if notes:
+                prompt += '\n' + notes
             prompt += subtitle_note((subtitle_strip or {}).get('language'), boxes, 'video canvas pixels')
-            if context_hints:
-                prompt += '\nContext and character detections: ' + json.dumps(without_character_notes(context_hints), ensure_ascii=False)
             reject = (lambda error, raw: on_invalid_response(window_index, start, end, error, raw)) if on_invalid_response else None
             output, usage, attempts = generate_window(processor, model, torch, clip, config['video_fps'], prompt, end - start, start, reject, cancel_check)
-            result = {'source': metadata, 'analysis': output, 'generation_attempts': attempts}
+            result = {'source': metadata, 'analysis': link_video(output, roster), 'generation_attempts': attempts}
             if attempts > 1:
                 result['retry_instruction'] = RETRY_INSTRUCTION.strip()
             if usage:
@@ -213,7 +219,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
             clip.unlink(missing_ok=True)
             start, window_index = end, window_index + 1
         usage = {key: sum(window.get('usage', {}).get(key, 0) for window in windows) for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')} if windows and all('usage' in window for window in windows) else {}
-        return {'model': MODEL_ID, 'revision': MODEL_REVISION, 'windows': windows, 'usage': usage,
+        return {'model': MODEL_ID, 'revision': MODEL_REVISION, 'contract': VIDEO_CONTRACT, 'direction': cut_direction(windows, roster), 'windows': windows, 'usage': usage,
                 'limitations': 'Window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window.'}
     finally:
         if owns_runtime:

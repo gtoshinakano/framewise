@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import db, media, structured_results, subtitle_store
+from . import db, media, prompt_context, structured_results, subtitle_store
 from .visual_contracts import full_last_frame
 
 
@@ -21,14 +21,14 @@ class CompositionError(Exception):
         self.status_code, self.detail = status_code, detail
 
 INCLUDES = {'initial_frame', 'last_frame', 'video_analysis', 'subtitle_ocr', 'consistency_summary', 'dialogue_segments'}
-FIELDS = {'id', 'cut_number', 'duration', 'start_time', 'end_time', 'ready', 'shot', 'setting', 'lighting', 'background', 'subjects', 'beats', 'end_state', 'initial_frame_id', 'last_frame_id', 'dialogue', 'subtitles'}
+FIELDS = {'id', 'cut_number', 'duration', 'start_time', 'end_time', 'ready', 'shot', 'setting', 'lighting', 'mood', 'props', 'background', 'action', 'subjects', 'beats', 'end_state', 'initial_frame_id', 'last_frame_id', 'dialogue', 'subtitles'}
 
 
 def projection_fingerprint():
     """Fingerprint code that can change the projected facts without DB edits."""
     root = Path(__file__).parent
     digest = hashlib.sha256()
-    for name in ('composition_brief.py', 'composition_compaction.py', 'structured_results.py', 'output_hygiene.py'):
+    for name in ('composition_brief.py', 'composition_compaction.py', 'structured_results.py', 'output_hygiene.py', 'prompt_context.py'):
         digest.update(name.encode())
         digest.update((root / name).read_bytes())
     return digest.hexdigest()
@@ -304,6 +304,32 @@ def video_camera(video):
         value = shot_props({'camera': text})
         if value.get('camera'): movements.append(value)
     return next((m for m in movements if m['camera'] != 'static'), movements[0] if movements else {})
+
+
+CAMERA_WORDS = {'pan left': ('pan', 'left'), 'pan right': ('pan', 'right'), 'tilt up': ('tilt', 'up'), 'tilt down': ('tilt', 'down'),
+                'zoom in': ('zoom', 'in'), 'zoom out': ('zoom', 'out'), 'push in': ('dolly', 'in'), 'pull out': ('dolly', 'out'),
+                'tracking': ('tracking', None), 'handheld': ('handheld', None), 'static': ('static', None)}
+
+
+def direction_camera(direction):
+    """Shot camera fields from a motion direction: the first real movement, else static."""
+    camera = direction.get('camera') if isinstance(direction.get('camera'), dict) else {}
+    moves = [move.strip() for move in str(camera.get('movement') or '').split('→') if move.strip() in CAMERA_WORDS]
+    if not moves:
+        return {}
+    kind, way = CAMERA_WORDS[next((move for move in moves if move != 'static'), moves[0])]
+    shot = {'camera': kind, **({'direction': way} if way else {})}
+    detail = str(camera.get('detail') or '').strip()
+    if kind != 'static' and detail and detail.lower().rstrip('.') != 'none':
+        shot['camera_detail'] = short(detail, 20)
+    return shot
+
+
+def motion_fields(person):
+    """One character's part of a motion direction, without placeholders that say nothing."""
+    empty = {'travel': ('none',), 'emotion': ('not readable',), 'end': ('',)}
+    return {key: person[key] for key in ('activity', 'travel', 'motion', 'speaking', 'emotion', 'end')
+            if isinstance(person.get(key), str) and person[key].strip() and person[key].strip().lower().rstrip('.') not in empty.get(key, ())}
 
 
 def phrase(text, pattern, limit=12):
@@ -759,7 +785,10 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
     for cut in cuts:
         rows = structured_results.list_results(cut['id'], conn=conn)
         by_type = {row['type']: row for row in reversed(rows) if row['content'] is not None}
-        needed = {'initial_frame', 'last_frame', 'video_analysis'}
+        # A video analysis written as a motion direction says how the cut ends. Older analyses
+        # need their last-frame description for that, so those cuts still require one.
+        direction = by_type['video_analysis']['content']['direction'] if prompt_context.is_direction((by_type.get('video_analysis') or {}).get('content')) else None
+        needed = {'initial_frame', 'video_analysis'} | (set() if direction is not None else {'last_frame'})
         stale = False
         for name in needed & by_type.keys():
             stored_context = one('SELECT context_json FROM analysis_results WHERE id=?', (by_type[name]['id'],))
@@ -782,7 +811,7 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
             start, end = cut['start_time'], cut['end_time']
             initial = by_type['initial_frame']['content']
             # A last frame written as changes from the first is read back as full states.
-            last_frame = full_last_frame(initial, by_type['last_frame']['content'])
+            last_frame = full_last_frame(initial, by_type['last_frame']['content']) if direction is None else None
             video = by_type['video_analysis']['content']
             stored = one('SELECT context_json FROM analysis_results WHERE id=?', (by_type['initial_frame']['id'],))
             try:
@@ -802,11 +831,16 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
                     if isinstance(box, list): box = [round(n, 1) if isinstance(n, (int, float)) else n for n in box]
                     links.append({'id': d['id'], 'position': d['position'], 'box': box, 'character_context_id': d['character_context_id'], 'name': d['name'] or 'unknown', 'label_source': d['label_source'] or 'unknown', 'stale': stale, 'verified': (d['id'], d['character_context_id']) in verified, 'frame_width': widths.get(d['position'])})
             record['initial_frame_id'] = by_type['initial_frame']['id']
-            record['last_frame_id'] = by_type['last_frame']['id']
+            if direction is None:
+                record['last_frame_id'] = by_type['last_frame']['id']
             shot = shot_props(initial)
-            video_movement = video_camera(video)
+            video_movement = direction_camera(direction) if direction is not None else video_camera(video)
+            if direction is not None:
+                shot.pop('direction', None); shot.pop('speed', None)  # a still cannot show movement; the direction decides
+                if shot.get('camera') and video_movement:
+                    shot.pop('camera')
             if video_movement:
-                shot.update({key:value for key,value in video_movement.items() if key in ('camera','direction','speed')})
+                shot.update({key:value for key,value in video_movement.items() if key in ('camera','direction','speed','camera_detail')})
             if shot: record['shot'] = shot
             missing_descriptions = set()
             for name, limit in [('setting', 20), ('lighting', 15)]:
@@ -817,59 +851,99 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
             background = initial.get('background_people')
             if isinstance(background, str) and background.strip().lower().rstrip('.') not in ('', 'none', 'unchanged'):
                 record['background'] = ' '.join(background.split()[:60])
+            for name, limit in (('mood', 8), ('props', 40)):
+                value = initial.get(name)
+                if isinstance(value, str) and value.strip().lower().rstrip('.') not in ('', 'none'):
+                    record[name] = short(value, limit)
             missing_subjects = set()
             chars = subjects(initial, links, missing=missing_subjects)
-            if chars: record['subjects'] = chars
-            missing_final = set()
-            final = subjects(last_frame, links, boundary='last', missing=missing_final)
-            delta, matched_first, matched_last, static_states = [], set(), set(), {}
             initial_people = [person for person in initial.get('visible_characters', []) if isinstance(person, dict)]
-            final_people = [person for person in last_frame.get('visible_characters', []) if isinstance(person, dict)]
-            def subject_changes(i, j):
-                before, after = chars[i], final[j]
-                changed, uncertain = position_delta(before.get('frame_pos'), after.get('frame_pos'),
-                                                    initial_people[i].get('position', ''), final_people[j].get('position', ''))
-                if uncertain: missing_final.add('frame_pos')
-                changes = {'frame_pos': after['frame_pos']} if changed else {}
-                changes.update({key: after[key] for key in ('facing','pose','hands','gaze','expression')
-                                if key in after and not unchanged(before.get(key), after.get(key), key)})
-                return changes
-            # Known character IDs are stable even when a model changes list order.
-            for i, char in enumerate(chars):
-                if not char['character_context_id']: continue
-                candidates = [j for j, end_char in enumerate(final) if j not in matched_last and end_char['character_context_id'] == char['character_context_id']]
-                if len(candidates) != 1: continue
-                j = candidates[0]; matched_first.add(i); matched_last.add(j)
-                changes = subject_changes(i, j)
-                if changes: delta.append({'subject': final[j]['name'], **changes})
-                if sum(s.get('name') == char['name'] for s in chars) == 1:
-                    # The final state is reconstructed only from fields that
-                    # the final observation actually contains.
-                    final_state = {key: changes.get(key, char.get(key)) for key in ('facing','pose','hands','gaze','expression','outfit_visible') if key in final[j] and changes.get(key, char.get(key))}
-                    static_states[char['name']] = {'first':char, 'last':final_state}
-            pairs = anonymous_pairs(chars, final, initial, last_frame,
-                                    [i for i in range(len(chars)) if i not in matched_first],
-                                    [j for j in range(len(final)) if j not in matched_last])
-            for i,j in pairs:
-                matched_first.add(i); matched_last.add(j)
-                changes = subject_changes(i, j)
-                if changes: delta.append({'subject':'unknown', **changes})
-            remaining_first = [i for i in range(len(chars)) if i not in matched_first]
-            remaining_last = [j for j in range(len(final)) if j not in matched_last]
-            # When either frame has an unidentified person, list order does not
-            # prove continuity. Do not manufacture entry, exit, or pose changes.
-            ambiguous = bool(remaining_first and remaining_last and
-                             (any(not chars[i]['character_context_id'] for i in remaining_first) or any(not final[j]['character_context_id'] for j in remaining_last)))
-            if not ambiguous:
-                delta.extend({'subject': chars[i]['name'], 'change': 'left frame'} for i in remaining_first)
-                delta.extend({'subject': final[j]['name'], 'change': 'entered frame'} for j in remaining_last)
-            last_shot = shot_props(last_frame)
-            end_state = {}
-            if delta: end_state['subjects'] = delta
-            if last_shot.get('size') and last_shot.get('size') != shot.get('size'): end_state['size'] = last_shot['size']
-            if end_state: record['end_state'] = end_state
-            beats, partial = video_beats(video, start, end, static_states=static_states)
-            if beats: record['beats'] = beats
+            for char, person in zip(chars, initial_people):
+                # Newer first frames state emotion and gaze as their own fields.
+                for key in ('emotion', 'gaze'):
+                    value = person.get(key)
+                    if isinstance(value, str) and value.strip() and not re.match(r'^(?:not (?:readable|visible)|unknown|unclear)\b', value.strip(), re.I):
+                        char[key] = compact_phrase(key, short(value, 12))
+            if chars: record['subjects'] = chars
+            if direction is not None:
+                moving = [person for person in direction.get('characters') or [] if isinstance(person, dict)]
+                followed = set()
+                for char in chars:
+                    match = next((person for person in moving if char['character_context_id'] and person.get('character_context_id') == char['character_context_id']), None)
+                    if match is None and not char['character_context_id'] and len(chars) == 1 and len(moving) == 1 and not moving[0].get('character_context_id'):
+                        match = moving[0]  # one unnamed person in the still and one in the motion is the same person
+                    if match is not None:
+                        followed.add(id(match))
+                        fields = motion_fields(match)
+                        if fields: char['motion'] = fields
+                # Leaving is what the video analysis reports for someone the last-frame boxes do not show.
+                # A missing box alone proves nothing: the detector often finds nobody in a last frame.
+                gone = re.compile(r'^\s*(?:has\s+)?(?:left|leaves|exits|exited|out of)\b.*\bframe\b|^\s*left frame\b', re.I)
+                delta = [{'subject': person.get('character') or 'unknown', 'change': 'left frame'} for person in moving
+                         if id(person) in followed and not person.get('in_last_frame') and gone.search(str(person.get('end') or ''))]
+                # People the motion follows who are not in the opening still (they enter, or were never marked).
+                for person in moving:
+                    if id(person) in followed or not motion_fields(person):
+                        continue
+                    entry = {'subject': person.get('character') or 'unknown', 'motion': motion_fields(person)}
+                    if re.search(r'\benters?\b', str(person.get('travel') or ''), re.I):
+                        entry['change'] = 'entered frame'
+                    delta.append(entry)
+                if delta: record['end_state'] = {'subjects': delta}
+                beats, partial = video_beats(video, start, end)
+                if beats: record['beats'] = beats
+                if isinstance(direction.get('summary'), str) and direction['summary'].strip():
+                    record['action'] = short(direction['summary'], 60)
+            if direction is None:
+                missing_final = set()
+                final = subjects(last_frame, links, boundary='last', missing=missing_final)
+                delta, matched_first, matched_last, static_states = [], set(), set(), {}
+                final_people = [person for person in last_frame.get('visible_characters', []) if isinstance(person, dict)]
+                def subject_changes(i, j):
+                    before, after = chars[i], final[j]
+                    changed, uncertain = position_delta(before.get('frame_pos'), after.get('frame_pos'),
+                                                        initial_people[i].get('position', ''), final_people[j].get('position', ''))
+                    if uncertain: missing_final.add('frame_pos')
+                    changes = {'frame_pos': after['frame_pos']} if changed else {}
+                    changes.update({key: after[key] for key in ('facing','pose','hands','gaze','expression')
+                                    if key in after and not unchanged(before.get(key), after.get(key), key)})
+                    return changes
+                # Known character IDs are stable even when a model changes list order.
+                for i, char in enumerate(chars):
+                    if not char['character_context_id']: continue
+                    candidates = [j for j, end_char in enumerate(final) if j not in matched_last and end_char['character_context_id'] == char['character_context_id']]
+                    if len(candidates) != 1: continue
+                    j = candidates[0]; matched_first.add(i); matched_last.add(j)
+                    changes = subject_changes(i, j)
+                    if changes: delta.append({'subject': final[j]['name'], **changes})
+                    if sum(s.get('name') == char['name'] for s in chars) == 1:
+                        # The final state is reconstructed only from fields that
+                        # the final observation actually contains.
+                        final_state = {key: changes.get(key, char.get(key)) for key in ('facing','pose','hands','gaze','expression','outfit_visible') if key in final[j] and changes.get(key, char.get(key))}
+                        static_states[char['name']] = {'first':char, 'last':final_state}
+                pairs = anonymous_pairs(chars, final, initial, last_frame,
+                                        [i for i in range(len(chars)) if i not in matched_first],
+                                        [j for j in range(len(final)) if j not in matched_last])
+                for i,j in pairs:
+                    matched_first.add(i); matched_last.add(j)
+                    changes = subject_changes(i, j)
+                    if changes: delta.append({'subject':'unknown', **changes})
+                remaining_first = [i for i in range(len(chars)) if i not in matched_first]
+                remaining_last = [j for j in range(len(final)) if j not in matched_last]
+                # When either frame has an unidentified person, list order does not
+                # prove continuity. Do not manufacture entry, exit, or pose changes.
+                ambiguous = bool(remaining_first and remaining_last and
+                                 (any(not chars[i]['character_context_id'] for i in remaining_first) or any(not final[j]['character_context_id'] for j in remaining_last)))
+                if not ambiguous:
+                    delta.extend({'subject': chars[i]['name'], 'change': 'left frame'} for i in remaining_first)
+                    delta.extend({'subject': final[j]['name'], 'change': 'entered frame'} for j in remaining_last)
+                last_shot = shot_props(last_frame)
+                end_state = {}
+                if delta: end_state['subjects'] = delta
+                if last_shot.get('size') and last_shot.get('size') != shot.get('size'): end_state['size'] = last_shot['size']
+                if end_state: record['end_state'] = end_state
+                beats, partial = video_beats(video, start, end, static_states=static_states)
+                if beats: record['beats'] = beats
             segments = [s for s in all_segments if s['start_time'] < end and s['end_time'] > start]
             dialogue = utterances(all_segments, start, end)
             if dialogue: record['dialogue'] = dialogue

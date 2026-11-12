@@ -23,21 +23,24 @@ test('summary line shows canvas, rate and estimated frames, or flags invalid inp
 
 test('finished results are done; superseded ones are ignored', () => {
   const state = cutStepStates([result('initial_frame'), result('video_analysis', { superseded_by: 'n' }), { title: 'Cut summary', superseded_by: null, settings: {} }], [], [], 'c1')
-  assert.deepEqual(state, { initial_frame: 'done', video_analysis: 'none', last_frame: 'none', consistency: 'none', summary: 'done' })
+  assert.deepEqual(state, { initial_frame: 'done', video_analysis: 'none', consistency: 'none', summary: 'done' })
 })
 
 test('an active run shows queued, running, and checkpointed stages for this cut only', () => {
   const stages = [{ id: 's1', job_id: 'j1', stage_key: 'initial_frame', status: 'done' }, { id: 's2', job_id: 'j1', stage_key: 'video_analysis', status: 'running' }]
   const state = cutStepStates([], stages, [job({ status: 'running' })], 'c1')
-  assert.deepEqual([state.initial_frame, state.video_analysis, state.last_frame], ['done', 'running', 'queued'])
+  assert.deepEqual([state.initial_frame, state.video_analysis], ['done', 'running'])
+  assert.deepEqual(cutStepStates([], [], [job()], 'c1'), { initial_frame: 'queued', video_analysis: 'queued', consistency: 'none', summary: 'none' })
   assert.equal(cutStepStates([], [], [job({ cuts: [{ id: 'other', completed: false }] })], 'c1').video_analysis, 'none')
-  assert.equal(cutStepStates([], [], [job({ stages: ['last_frame'] })], 'c1').initial_frame, 'none')
+  assert.equal(cutStepStates([], [], [job({ stages: ['video_analysis'] })], 'c1').initial_frame, 'none')
+  // A job queued before the last frame stopped being analyzed does not add a step.
+  assert.deepEqual(Object.keys(cutStepStates([result('last_frame')], [], [job({ stages: ['last_frame'] })], 'c1')), ['initial_frame', 'video_analysis', 'consistency', 'summary'])
 })
 
 test('summary pipelines map to their own steps and failed attempts show until a result exists', () => {
-  const state = cutStepStates([], [{ id: 's', job_id: 'old', stage_key: 'last_frame', status: 'failed' }], [job({ pipeline: 'consistency_summary', status: 'running' }), job({ id: 'j2', pipeline: 'regen' })], 'c1')
-  assert.deepEqual([state.consistency, state.summary, state.last_frame], ['running', 'queued', 'failed'])
-  assert.equal(cutStepStates([result('last_frame')], [{ id: 's', job_id: 'old', stage_key: 'last_frame', status: 'failed' }], [], 'c1').last_frame, 'done')
+  const state = cutStepStates([], [{ id: 's', job_id: 'old', stage_key: 'video_analysis', status: 'failed' }], [job({ pipeline: 'consistency_summary', status: 'running' }), job({ id: 'j2', pipeline: 'regen' })], 'c1')
+  assert.deepEqual([state.consistency, state.summary, state.video_analysis], ['running', 'queued', 'failed'])
+  assert.equal(cutStepStates([result('video_analysis')], [{ id: 's', job_id: 'old', stage_key: 'video_analysis', status: 'failed' }], [], 'c1').video_analysis, 'done')
 })
 
 test('the running job is preferred as the active run', () => {

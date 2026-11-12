@@ -29,7 +29,7 @@ class FrameAdapterTest(unittest.TestCase):
         answer = {**ANSWER, 'visible_characters': [{'box': 'B1', 'appearance': 'red coat', 'position': 'left', 'pose': 'sitting', 'expression': 'calm', 'action': 'reading'}]}
         result, body, text = self.call(answer, subtitle_regions=[[1, 2, 3, 4]], people=PEOPLE)
         self.assertEqual(body['messages'][0]['role'], 'system')
-        self.assertIn('ONE still frame', body['messages'][0]['content'])
+        self.assertIn('FIRST frame of an anime cut', body['messages'][0]['content'])
         self.assertEqual(body['response_format']['type'], 'json_schema')
         self.assertEqual(body['response_format']['json_schema']['schema']['properties']['visible_characters']['items']['properties']['box']['enum'], ['B1'])
         self.assertLessEqual(body['max_tokens'], 3072)
@@ -56,19 +56,15 @@ class FrameAdapterTest(unittest.TestCase):
         self.assertIn('Episode 3', text)
         self.assertNotIn('secret-box', text)
 
-    def test_last_frame_gets_the_changes_prompt_and_the_first_frame_notes(self):
-        first = {**ANSWER, 'mode': 'full', 'frame_time': 1.0, 'visible_characters': [{'character': 'Hero', 'character_context_id': 'hero', 
-                 'appearance': 'red coat', 'position': 'left', 'pose': 'sitting', 'expression': 'calm', 'action': 'reading'}]}
-        answer = {**ANSWER, 'composition': 'unchanged', 'visible_characters': [{'box': 'B1', 'appearance': 'unchanged', 'position': 'unchanged', 'pose': 'standing', 'expression': 'unchanged', 'action': 'unchanged'}]}
-        result, body, text = self.call(answer, people=[{**PEOPLE[0], 'new': False}], frame_label='last frame', previous=first)
-        self.assertIn('CHANGES', body['messages'][0]['content'])
-        self.assertIn('red coat', text)
-        self.assertNotIn('frame_time', text)
-        self.assertNotIn('d0', text)
-        self.assertIn('[was in the first frame]', text)
-        self.assertEqual(result['mode'], 'changes')
-        self.assertEqual(result['visible_characters'][0]['pose'], 'standing')
-        self.assertEqual(result['visible_characters'][0]['appearance'], 'unchanged')
+    def test_answer_carries_emotion_gaze_mood_and_props(self):
+        answer = {**ANSWER, 'mood': 'tense', 'props': 'cardboard box on the ground',
+                  'visible_characters': [{'box': 'B1', 'appearance': 'red coat', 'position': 'left', 'pose': 'sitting', 'expression': 'brows drawn', 'emotion': 'mild worry', 'gaze': 'down at the box', 'action': 'crouching, looking at the box'}]}
+        result, body, _ = self.call(answer, people=PEOPLE)
+        hero = result['visible_characters'][0]
+        self.assertEqual((hero['emotion'], hero['gaze'], result['mood'], result['props']), ('mild worry', 'down at the box', 'tense', 'cardboard box on the ground'))
+        required = body['response_format']['json_schema']['schema']['properties']['visible_characters']['items']['required']
+        self.assertIn('emotion', required)
+        self.assertIn('gaze', required)
 
     def test_prompt_states_the_single_subtitle_language(self):
         _, _, text = self.call(subtitle_regions=[[0, 500, 1280, 700]], subtitle_language='Portuguese')

@@ -40,16 +40,25 @@ class BatchPipelineTest(unittest.TestCase):
         server.return_value.__enter__.return_value = 'server'
         with patch.object(pipeline.frame_model, 'frame_server', server), \
              patch.object(pipeline, '_frame_stage') as frame_stage:
-            pipeline._boundary_frame_stages(runs, '/scratch')
+            pipeline._first_frame_stage(runs, '/scratch')
         self.assertEqual(server.call_count, 1)
-        self.assertEqual([(call.args[0].name, call.args[1]) for call in frame_stage.call_args_list],
-                         [('a', 'first'), ('a', 'last'), ('b', 'first'), ('b', 'last'), ('c', 'first'), ('c', 'last')])
+        # One description per cut: the first frame. The last frame is no longer analyzed.
+        self.assertEqual(sorted(call.args[0].name for call in frame_stage.call_args_list), ['a', 'b', 'c'])
 
     def test_frame_server_is_skipped_when_no_frame_stage_is_needed(self):
         runs = [FakeCutRun('a', [], stages=('video_analysis',))]
         with patch.object(pipeline.frame_model, 'frame_server') as server:
-            pipeline._boundary_frame_stages(runs, '/scratch')
+            pipeline._first_frame_stage(runs, '/scratch')
         server.assert_not_called()
+
+    def test_a_job_queued_with_the_removed_last_frame_stage_runs_nothing_for_it(self):
+        runs = [FakeCutRun('a', [], stages=('last_frame',))]
+        with patch.object(pipeline.frame_model, 'frame_server') as server, patch.object(pipeline.video_model, 'VideoRuntime') as runtime:
+            pipeline._first_frame_stage(runs, '/scratch')
+            pipeline._video_stage(runs, '/scratch')
+        server.assert_not_called()
+        runtime.assert_not_called()
+        self.assertEqual(pipeline.ALL_STAGES, ('initial_frame', 'video_analysis'))
 
     def test_video_model_is_shared_by_every_cut_and_closed_once(self):
         runs = [FakeCutRun(name, []) for name in ('a', 'b')]
@@ -66,12 +75,12 @@ class BatchPipelineTest(unittest.TestCase):
         job = {'id': 'job', 'payload_json': '{}'}
         with patch.object(pipeline, 'CutRun', side_effect=runs), \
              patch.object(pipeline, 'ensure_models_available'), patch.object(pipeline, 'release_gpu_models'), \
-             patch.object(pipeline, '_boundary_frame_stages', side_effect=lambda *_: order.append('frames')), \
+             patch.object(pipeline, '_first_frame_stage', side_effect=lambda *_: order.append('frames')), \
              patch.object(pipeline, '_video_stage', side_effect=lambda *_: order.append('video')):
             for run in runs:
                 run.validate = lambda: None
             pipeline.run_batch(job, 'owner', {}, [{}, {}])
-        self.assertEqual(order, ['frames', 'video'])  # subtitles are an episode-wide step of their own
+        self.assertEqual(order, ['frames', 'video'])  # the video stage builds on the first frame; subtitles are an episode-wide step of their own
         self.assertTrue(all(run.completed for run in runs))
 
 

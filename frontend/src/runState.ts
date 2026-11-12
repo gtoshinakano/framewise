@@ -1,13 +1,14 @@
 import type { AnalysisConfig, AnalysisResult, Cut, Job } from './api'
 import { estimatedVideoFrames } from './analysisFrames.ts'
 
-export type StepKey = 'initial_frame' | 'video_analysis' | 'last_frame' | 'consistency' | 'summary'
+export type StepKey = 'initial_frame' | 'video_analysis' | 'consistency' | 'summary'
 export type StepState = 'none' | 'queued' | 'running' | 'done' | 'failed'
 export type StageRow = { id: string; job_id: string; stage_key: string; label: string; status: string; elapsed_seconds: number; error: string | null }
 export type VideoErrors = { width?: string; height?: string; fps?: string }
 
-export const STEP_LABELS: Record<StepKey, string> = { initial_frame: 'Initial frame', video_analysis: 'Video', last_frame: 'Last frame', consistency: 'Consistency', summary: 'Cut summary' }
-export const VISUAL_STEPS = ['initial_frame', 'video_analysis', 'last_frame'] as const
+export const STEP_LABELS: Record<StepKey, string> = { initial_frame: 'Initial frame', video_analysis: 'Video', consistency: 'Consistency', summary: 'Cut summary' }
+// The last frame is no longer analyzed: how a cut ends comes from the video step. Older last-frame results stay in the result list.
+export const VISUAL_STEPS = ['initial_frame', 'video_analysis'] as const
 const SUMMARY_TITLE = 'Cut summary'
 
 /** Field-level problems with the video canvas and frame rate; an empty object means the settings are valid. */
@@ -36,7 +37,7 @@ type ResultLike = Pick<AnalysisResult, 'title' | 'superseded_by' | 'settings'>
 function resultKey(result: ResultLike): StepKey | null {
   if (result.superseded_by) return null
   const type = result.settings?.structured_type
-  if (type === 'initial_frame' || type === 'video_analysis' || type === 'last_frame') return type
+  if (type === 'initial_frame' || type === 'video_analysis') return type
   if (type === 'consistency_summary') return 'consistency'
   return result.title === SUMMARY_TITLE ? 'summary' : null
 }
@@ -48,7 +49,7 @@ const activeFor = (job: Job, cutId: string) => ['queued', 'running'].includes(jo
  * a run in progress shows queued/running; otherwise the latest failed attempt shows as failed.
  */
 export function cutStepStates(results: ResultLike[], stages: StageRow[], jobs: Job[], cutId: string): Record<StepKey, StepState> {
-  const state: Record<StepKey, StepState> = { initial_frame: 'none', video_analysis: 'none', last_frame: 'none', consistency: 'none', summary: 'none' }
+  const state: Record<StepKey, StepState> = { initial_frame: 'none', video_analysis: 'none', consistency: 'none', summary: 'none' }
   for (const result of results) { const key = resultKey(result); if (key) state[key] = 'done' }
   // Stage attempts are returned oldest first, so the last row per stage is the newest attempt.
   const latest = new Map<string, StageRow>()

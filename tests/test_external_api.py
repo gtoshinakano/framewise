@@ -57,7 +57,7 @@ class ExternalAPITest(unittest.TestCase):
         detail = self.client.get('/api/v1/cuts/c1')
         self.assertEqual(detail.status_code, 200, detail.text)
         data = detail.json()
-        self.assertEqual(set(data), {'project', 'cut', 'cut_summary', 'first_frame', 'last_frame',
+        self.assertEqual(set(data), {'project', 'cut', 'cut_summary', 'first_frame', 'last_frame', 'motion',
                                      'transcript_segments', 'subtitles', 'context_items', 'previous_cut', 'next_cut'})
         self.assertEqual(data['subtitles'], {'extracted': False, 'language': None, 'strip': None, 'lines': []})
         self.assertNotIn('synopsis', data['project'])
@@ -156,7 +156,7 @@ class ExternalAPITest(unittest.TestCase):
         self.assertIn('Recommended read sequence', spec['info']['description'])
         self.assertEqual(spec['info']['description'], self.client.get('/api/integration-guide').text)
         schemas = spec['components']['schemas']
-        self.assertEqual(set(schemas['CutDetail']['properties']), {'project', 'cut', 'cut_summary', 'first_frame', 'last_frame',
+        self.assertEqual(set(schemas['CutDetail']['properties']), {'project', 'cut', 'cut_summary', 'first_frame', 'last_frame', 'motion',
                                                                    'transcript_segments', 'subtitles', 'context_items', 'previous_cut', 'next_cut'})
         self.assertNotIn('synopsis', schemas['CutDetailProject']['properties'])
         self.assertNotIn('results', schemas['CutMetadata']['properties'])

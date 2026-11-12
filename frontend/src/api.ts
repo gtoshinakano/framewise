@@ -11,9 +11,9 @@ export type CutSubtitles = { extracted: boolean; language: string | null; strip:
 export type EpisodeSubtitles = { language: string | null; run: SubtitleRun | null; lines: SubtitleLine[] }
 export type Chunk = { id: string; chunk_index: number; start_time: number; end_time: number; title: string; notes: string }
 export type JobCut = { id: string; cut_index: number | null; title: string; start_time: number | null; end_time: number | null; completed: boolean }
-export type VisualStage = 'initial_frame' | 'video_analysis' | 'last_frame'
-// Jobs queued before subtitles became an episode-wide step may still list this stage in their history.
-export type JobStage = VisualStage | 'subtitle_ocr'
+export type VisualStage = 'initial_frame' | 'video_analysis'
+// Jobs queued before subtitles became an episode-wide step, or before the last frame stopped being analyzed, may still list these stages in their history.
+export type JobStage = VisualStage | 'subtitle_ocr' | 'last_frame'
 export type Job = { cuts: JobCut[]; id: string; pipeline: string; workflow?: string | null; stages?: JobStage[] | null; status: string; stage: string; error: string | null; created_at: string; updated_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null }
 export type EpisodeStatus = { status: string; stage: string; error: string | null; job_id: string | null; job_status: string | null }
 export type EpisodeSummary = { id: string; title: string; status: string; stage: string; error: string | null; duration: number | null; created_at: string }

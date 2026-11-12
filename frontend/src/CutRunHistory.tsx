@@ -8,7 +8,8 @@ import { ActionButton, Elapsed, JobChip, StatusChip, formatElapsed, jobTone, typ
 import type { StageRow } from './runState'
 
 const stageLabels: Record<string, string> = { subtitle_ocr: 'Subtitle detection and OCR', initial_frame: 'Initial frame', video_analysis: 'Video analysis', last_frame: 'Last frame' }
-const STAGE_ORDER = [['initial_frame', 'Initial frame'], ['video_analysis', 'Video analysis'], ['last_frame', 'Last frame']] as const
+// Stages a run still has to start. Runs from before the last frame stopped being analyzed list their own last_frame stage row.
+const STAGE_ORDER = [['initial_frame', 'Initial frame'], ['video_analysis', 'Video analysis']] as const
 const EDGE: Record<Tone, string> = { green: 'border-l-[#7bdcb2]', purple: 'border-l-[#c3aeff]', amber: 'border-l-[#e6c58b]', red: 'border-l-[#ff9fa7]', grey: 'border-l-[#4a5262]', blue: 'border-l-[#6aa8ff]' }
 const PREVIEW = 5
 

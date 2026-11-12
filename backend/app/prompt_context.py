@@ -105,7 +105,89 @@ def slim_context(context):
     return slim
 
 
+MOTION_VIEW = 'motion direction for the whole cut; event times are seconds from its first frame'
+
+
+def is_direction(content):
+    """True for a video analysis written as a motion direction (camera, per-character motion, end state)."""
+    return isinstance(content, dict) and isinstance(content.get('direction'), dict)
+
+
+def frame_view(content):
+    """A first-frame result as a prompt reads it: the description without run bookkeeping."""
+    if not isinstance(content, dict):
+        return content
+    return {key: value for key, value in content.items() if key not in ('mode', 'frame_time', 'subtitle_regions')}
+
+
+def video_view(content):
+    """A motion-direction video analysis as a prompt reads it.
+
+    One camera line, one entry per character and one event list for the whole cut, with event times in
+    seconds from the cut's first frame. Window bookkeeping, token counts and model names are left out.
+    A result that is not a motion direction (older analyses, or a view made earlier) is returned as it is.
+    """
+    if not is_direction(content) or not isinstance(content.get('windows'), list):
+        return content
+    direction = content['direction']
+    windows = [window for window in content['windows'] if isinstance(window, dict)]
+    origin = next((window['source']['source_start'] for window in windows
+                   if isinstance(window.get('source'), dict) and isinstance(window['source'].get('source_start'), (int, float))), 0.0)
+    events, limits = [], []
+    for window in windows:
+        source, analysis = window.get('source') or {}, window.get('analysis')
+        if not isinstance(analysis, dict):
+            continue
+        offset = (source.get('source_start') if isinstance(source.get('source_start'), (int, float)) else origin) - origin
+        for event in analysis.get('events') or []:
+            if not isinstance(event, dict) or not str(event.get('visual_action') or '').strip():
+                continue
+            start, end = event.get('start_seconds'), event.get('end_seconds')
+            timed = all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (start, end))
+            events.append(_present(seconds=f'{offset + start:.1f}-{offset + end:.1f}' if timed else 'unknown', subject=event.get('subject'), action=event['visual_action'].strip()))
+        note = str(analysis.get('uncertainties') or '').strip()
+        if note and note.lower().rstrip('.') != 'none' and note not in limits:
+            limits.append(note)
+    # A person without a character record was labelled by the video model, not marked by the user.
+    people = [{**{key: value for key, value in person.items() if key != 'character_context_id'}, **({} if person.get('character_context_id') else {'identity': 'not a marked character; the label is the video model\'s'})}
+              for person in direction.get('characters') or [] if isinstance(person, dict)]
+    end_state = {key: value for key, value in (direction.get('end_state') or {}).items() if value and key in ('in_frame', 'source')}
+    return _present(kind=MOTION_VIEW, summary=direction.get('summary'), camera=direction.get('camera'), characters=people, events=events,
+                    end_of_cut=end_state, uncertainties='; '.join(limits))
+
+
+FRAME_TITLES = ('Initial frame description', 'Last frame description')
+VIDEO_TITLE = 'Video analysis'
+
+
+def _loaded(content):
+    if not isinstance(content, str):
+        return content
+    try:
+        return json.loads(content)
+    except ValueError:
+        return content
+
+
 def slim_results(results):
-    """Results as title and content; origin only for text a person or the assistant wrote. Ids, kinds and model names stay out."""
-    return [_present(title=row.get('title'), content=row.get('content'), origin=row.get('origin') if row.get('origin') != 'model' else None)
-            for row in results or []]
+    """Results as title and content; origin only for text a person or the assistant wrote. Ids, kinds and model names stay out.
+
+    A first-frame description and a motion-direction video analysis are sent as compact objects
+    (`frame_view`, `video_view`). When the cut has a motion direction, a last-frame description kept
+    from an older analysis is left out: it was written against an earlier first frame, and the
+    direction already says how the cut ends.
+    """
+    rows = list(results or [])
+    video = next((_loaded(row.get('content')) for row in rows if row.get('title') == VIDEO_TITLE), None)
+    current_flow = is_direction(video) or (isinstance(video, dict) and video.get('kind') == MOTION_VIEW)
+    slim = []
+    for row in rows:
+        title, content = row.get('title'), row.get('content')
+        if current_flow and title == FRAME_TITLES[1]:
+            continue
+        if title in FRAME_TITLES or title == VIDEO_TITLE:
+            loaded = _loaded(content)
+            if isinstance(loaded, dict):
+                content = frame_view(loaded) if title in FRAME_TITLES else video_view(loaded)
+        slim.append(_present(title=title, content=content, origin=row.get('origin') if row.get('origin') != 'model' else None))
+    return slim

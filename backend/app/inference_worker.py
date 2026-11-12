@@ -344,7 +344,7 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
             if attempt < attempts - 1:
                 # Keep the original evidence, but don't compound context with
                 # invalid, truncated, or potentially very long model output.
-                repair = "The previous response was invalid (" + last_error + "). Return the complete requested format, without reasoning, in at most 3072 UTF-8 bytes." if plain_text and text_validator else "The previous response was empty. Return the analysis as nonempty plain text." if plain_text else "The previous response was invalid (" + last_error + "). Return a complete JSON object with every required field: " + ", ".join(fields) + (". Each field must be an object with nonempty string content and confidence exactly high, medium, low, or unknown." if summary_topics else ". Each field must be a nonempty string.") + " Preserve evidence uncertainty and do not omit any field or supplied dialogue."
+                repair = "The previous response was invalid (" + last_error + "). Return the complete requested format, without reasoning, in at most 4096 UTF-8 bytes." if plain_text and text_validator else "The previous response was empty. Return the analysis as nonempty plain text." if plain_text else "The previous response was invalid (" + last_error + "). Return a complete JSON object with every required field: " + ", ".join(fields) + (". Each field must be an object with nonempty string content and confidence exactly high, medium, low, or unknown." if summary_topics else ". Each field must be a nonempty string.") + " Preserve evidence uncertainty and do not omit any field or supplied dialogue."
                 payload["messages"] = payload["messages"][:2] + [{"role": "user", "content": repair}]
                 if last_error in ("response was truncated", "response was empty"):
                     payload["max_tokens"] = min(max_tokens * 2, 12288)
@@ -457,14 +457,17 @@ def fail_job(job_id, owner, episode_id, exc):
 PRODUCTION_BRIEF_SYSTEM = (Path(__file__).parent / "production_brief_prompt.txt").read_text(encoding="utf-8")
 
 
+BRIEF_MAX_BYTES = 4096  # the brief names an activity, emotion and speaking state per character, which a 3 KB cap cut short
+
+
 def validate_production_brief(text, duration=None):
     """Validate the existing Markdown section contract before any revision is saved."""
     from .output_hygiene import strip_reasoning_blocks
     text = strip_reasoning_blocks(text)
     if re.search(r'\[the model.s response was cut off|let me analy[sz]e|i(?: am|\x27m) a senior animation reconstruction director', text, re.I) or re.search(r'(?:\.\.\.|…|[,;:\-–])\s*$', text):
         raise ValueError('reasoning or truncation leaked into production brief')
-    if len(text.encode('utf-8')) > 3072:
-        raise ValueError('production brief exceeds 3 KB')
+    if len(text.encode('utf-8')) > BRIEF_MAX_BYTES:
+        raise ValueError('production brief exceeds 4 KB')
     headings = list(re.finditer(r'^###\s+(.+?)\s*$', text, flags=re.M))
     expected = ['Scene', 'Opening Frame', 'Animation Timeline', 'Dialogue', 'Continuity & Constraints']
     if [m.group(1).strip() for m in headings] != expected or text[:headings[0].start()].strip():

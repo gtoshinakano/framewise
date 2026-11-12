@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .. import db, subtitle_store
+from .. import db, prompt_context, subtitle_store
 from . import compact, h3_prompt, skills, store, transcript_edit
 from .transcript_edit import join_text, merged_transcript, transcript_rows  # noqa: F401  (re-exported for callers and tests)
 
@@ -158,6 +158,10 @@ def is_number(value):
 
 
 def project_video(content, cut):
+    if prompt_context.is_direction(content):
+        # A motion direction is already one view of the whole cut with clip-relative event times.
+        view = prompt_context.video_view(content)
+        return {'model': content.get('model'), **{key: value for key, value in view.items() if key != 'kind'}}
     windows = content.get('windows') if isinstance(content.get('windows'), list) else []
     views = []
     for window in windows:
@@ -407,7 +411,8 @@ def get_neighbors(ctx, args):
         if not text and consistency:
             text = store.loads(consistency['content'], {}).get('summary')
         if not text and video:
-            text = project('video_analysis', video, other).get('overview')
+            view = project('video_analysis', video, other)
+            text = view.get('summary') or view.get('overview')
         out[label] = {'number': other['cut_index'] + 1, 'duration': round(other['end_time'] - other['start_time'], 2), 'summary': text or 'no analysis'}
     return out
 

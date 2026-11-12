@@ -31,6 +31,6 @@ export const SUMMARY_BATCH_REASONS = {
 }
 
 export const CHAIN_BATCH_REASONS = {
-  missing_results: 'initial frame, video or last frame result missing',
+  missing_results: 'initial frame or video result missing',
   busy: 'analysis, consistency summary, answers or summary already queued or running',
 }

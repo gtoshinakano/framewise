@@ -185,8 +185,9 @@ class CompositionProjectionTest(unittest.TestCase):
         mai = {'ref': 'B1', 'detection_id': 'first-box', 'character_context_id': 'mai', 'name': 'Mai', 'box': None}
         base = {'composition': 'MS', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'background_people': 'none', 'notes': 'none'}
         initial = resolve_frame(json.dumps({**base, 'visible_characters': [{'box': 'B1', 'appearance': 'red blazer', 'position': 'left foreground', 'pose': 'sitting at a desk', 'expression': 'calm', 'action': 'reading'}]}), [mai])
-        last = resolve_frame(json.dumps({**base, 'composition': 'unchanged', 'visible_characters': [{'box': 'B1', 'appearance': 'unchanged', 'position': 'unchanged', 'pose': 'standing', 'expression': 'unchanged', 'action': 'unchanged'}]}),
-                             [{**mai, 'detection_id': 'last-box', 'new': False}], changes=True)
+        # A last frame as stored before last frames stopped being analyzed: only the changes from the first.
+        last = {**base, 'composition': 'unchanged', 'mode': 'changes', 'visible_characters': [{'character': 'Mai', 'character_context_id': 'mai', 'appearance': 'unchanged', 'position': 'unchanged',
+                                                                                              'pose': 'standing', 'expression': 'unchanged', 'action': 'unchanged', 'new_in_frame': False}]}
         links = lambda pos, id_: [{'id': id_, 'position': pos, 'box': [0, 0, 300, 700], 'frame_width': 1280, 'character_context_id': 'mai', 'name': 'Mai', 'label_source': 'manual', 'stale': False, 'verified': True}]
         first = composition_brief.subjects(initial, links('first', 'first-box'))[0]
         self.assertEqual((first['name'], first['identity'], first['outfit_visible']), ('Mai', 'confirmed', 'red blazer'))
@@ -477,8 +478,10 @@ class CompositionProjectionTest(unittest.TestCase):
     def test_summary_validation(self):
         good = '### Scene\nA store.\n### Opening Frame\nA person.\n### Animation Timeline\n[0–1] Holds still.\n### Dialogue\nNo dialogue timing supplied.\n### Continuity & Constraints\nStatic camera.'
         self.assertEqual(inference_worker.validate_production_brief('<think>private</think>\n' + good), good)
+        roomy = good + ' ' + 'x' * 3500  # a brief with activity, emotion and speaking per character needs more than the old 3 KB
+        self.assertEqual(inference_worker.validate_production_brief(roomy), roomy)
         self.assertEqual(inference_worker.validate_production_brief('<analysis>private</analysis><reasoning>private</reasoning>\n' + good), good)
-        for bad in (fixture(48)['results'][0]['type'], good + ('x'*3073), good + "\n[The model's response was cut off and may be incomplete.]", '<think>unfinished', '<analysis>unfinished'):
+        for bad in (fixture(48)['results'][0]['type'], good + ('x'*4097), good + "\n[The model's response was cut off and may be incomplete.]", '<think>unfinished', '<analysis>unfinished'):
             with self.assertRaises(ValueError): inference_worker.validate_production_brief(bad)
         for timeline in ('Holds still.', '[1–0] Holds still.', '[0–3] Holds still.', '[0–1]', '[1–2] Turns.\n[0–1] Stands.'):
             with self.assertRaises(ValueError):
@@ -706,6 +709,78 @@ class CompositionApiTest(unittest.TestCase):
         updated = self.client.get(self.path+'&updated_since=2001-01-01T00:00:00Z').json()['cuts']
         self.assertEqual(len(updated),1)
         self.assertEqual(updated[0]['id'],self.data['cut']['id'])
+
+    def use_motion_direction(self, drop_last_frame=True, boxed_at_end=False, end='left frame'):
+        """Turn the fixture into a cut analyzed by the current flow: emotion in the first frame, a motion direction, no last frame."""
+        cut_id = self.data['cut']['id']
+        initial = next(r for r in self.data['results'] if r['type'] == 'initial_frame')
+        video = next(r for r in self.data['results'] if r['type'] == 'video_analysis')
+        frame = json.loads(json.dumps(initial['content']))
+        frame.update(mood='light, teasing', props='orange carrot held by Mai Sakurajima')
+        frame['visible_characters'][0].update(emotion='amused, relaxed', gaze='at Sakuta Azusagawa')
+        mai = '1ab61da1-6b7b-44af-89cb-9ea73ebb83a9'
+        content = {**video['content'], 'contract': 'direction-v1', 'direction': {
+            'summary': 'Mai Sakurajima turns to Sakuta Azusagawa and speaks while the camera follows her.',
+            'camera': {'movement': 'static → pan left', 'detail': 'slow, follows Mai Sakurajima'},
+            'characters': [{'character': 'Mai Sakurajima', 'character_context_id': mai, 'activity': 'standing → walking', 'travel': 'left', 'motion': 'Turns her head, then steps left.',
+                            'speaking': 'yes', 'emotion': 'amused → serious', 'end': end},
+                           {'character': 'boy with a basket', 'character_context_id': None, 'activity': 'walking', 'travel': 'enters from right', 'motion': 'Walks in.', 'speaking': 'no', 'emotion': 'not readable', 'end': 'right, facing left'}],
+            **({'end_state': {'in_frame': ['Mai Sakurajima'], 'source': 'character boxes of the last frame'}} if boxed_at_end else {})}}
+        if boxed_at_end:
+            content['direction']['characters'][0]['in_last_frame'] = True
+        with db.connect() as conn:
+            conn.execute('UPDATE analysis_results SET content=? WHERE id=?', (json.dumps(frame), initial['id']))
+            conn.execute('UPDATE analysis_results SET content=? WHERE id=?', (json.dumps(content), video['id']))
+            if drop_last_frame:
+                conn.execute("DELETE FROM analysis_results WHERE cut_id=? AND json_extract(settings_json,'$.structured_type')='last_frame'", (cut_id,))
+
+    def test_motion_direction_makes_a_cut_ready_without_a_last_frame(self):
+        self.use_motion_direction()
+        response = self.client.get(self.path)
+        self.assertEqual(response.status_code, 200, response.text)  # the response model accepts the new fields
+        cut = response.json()['cuts'][0]
+        self.assertTrue(cut['ready'])
+        self.assertNotIn('last_frame_id', cut)
+        self.assertEqual((cut['shot']['camera'], cut['shot']['direction'], cut['shot']['camera_detail']), ('pan', 'left', 'slow, follows Mai Sakurajima'))
+        self.assertEqual((cut['mood'], cut['props']), ('light, teasing', 'orange carrot held by Mai Sakurajima'))
+        self.assertIn('turns to Sakuta', cut['action'])
+        mai = cut['subjects'][0]
+        self.assertEqual((mai['name'], mai['emotion'], mai['gaze']), ('Mai Sakurajima', 'amused, relaxed', 'at Sakuta Azusagawa'))
+        self.assertEqual(mai['motion'], {'activity': 'standing → walking', 'travel': 'left', 'motion': 'Turns her head, then steps left.', 'speaking': 'yes',
+                                         'emotion': 'amused → serious', 'end': 'left frame'})
+        # The video analysis says she left and no last-frame box contradicts it; someone who is not an opening subject is listed with their motion.
+        self.assertEqual(cut['end_state']['subjects'][0], {'subject': 0, 'change': 'left frame'})
+        stranger = cut['end_state']['subjects'][1]
+        self.assertEqual((stranger['subject'], stranger['change'], stranger['motion']['travel'], stranger['motion']['speaking']), ('boy with a basket', 'entered frame', 'enters from right', 'no'))
+        self.assertNotIn('emotion', stranger['motion'])  # "not readable" is not a fact
+        self.assertIn('turns her head', cut['beats'][0]['action'])  # timed events still become beats
+        selected = self.client.get(self.path + '&fields=mood,action').json()['cuts'][0]
+        self.assertEqual(set(selected), {'id', 'cut_number', 'ready', 'mood', 'action'})
+
+    def test_a_leftover_last_frame_is_ignored_once_the_cut_has_a_motion_direction(self):
+        self.use_motion_direction(drop_last_frame=False)
+        cut = self.client.get(self.path).json()['cuts'][0]
+        self.assertTrue(cut['ready'])
+        self.assertNotIn('last_frame_id', cut)
+        self.assertEqual([item.get('change') for item in cut['end_state']['subjects']], ['left frame', 'entered frame'])
+        included = self.client.get(self.path + '&include=last_frame').json()['cuts'][0]
+        self.assertEqual(included['last_frame']['type'], 'last_frame')  # still retrievable on request
+
+    def test_nobody_is_reported_as_gone_without_the_video_saying_so_or_against_a_last_frame_box(self):
+        # No last-frame box and the video says she is still there: a missing box proves nothing.
+        self.use_motion_direction(end='left edge, facing away')
+        subjects = self.client.get(self.path).json()['cuts'][0]['end_state']['subjects']
+        self.assertEqual([item.get('change') for item in subjects], ['entered frame'])
+        # The video says she left but a named box on the last frame shows her: the box wins.
+        self.use_motion_direction(boxed_at_end=True)
+        subjects = self.client.get(self.path).json()['cuts'][0]['end_state']['subjects']
+        self.assertEqual([item.get('change') for item in subjects], ['entered frame'])
+
+    def test_an_older_video_analysis_still_needs_its_last_frame(self):
+        with db.connect() as conn:
+            conn.execute("DELETE FROM analysis_results WHERE cut_id=? AND json_extract(settings_json,'$.structured_type')='last_frame'", (self.data['cut']['id'],))
+        result = self.client.get(self.path).json()
+        self.assertEqual((result['cuts'][0]['ready'], result['pending']), (False, [1]))
 
     def test_stale_detection_is_reported_and_not_used_as_identity(self):
         with db.connect() as conn:

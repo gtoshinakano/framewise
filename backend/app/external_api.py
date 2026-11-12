@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import db, media, structured_results
+from . import db, media, prompt_context, structured_results
 
 router = APIRouter(prefix="/api/v1", tags=["External integration v1"])
 
@@ -224,7 +224,8 @@ class CutDetail(BaseModel):
     cut: Cut
     cut_summary: str | None = Field(description="Text of the current Cut summary, or null if unavailable.")
     first_frame: dict[str, Any] | None = Field(description="Content of the current structured initial-frame analysis, or null if unavailable.")
-    last_frame: dict[str, Any] | None = Field(description="Content of the current structured last-frame analysis, or null if unavailable.")
+    last_frame: dict[str, Any] | None = Field(description="Content of the structured last-frame analysis. Last frames are no longer analyzed: this is null except for cuts analyzed before that change, and it is superseded by `motion` when that is present.")
+    motion: dict[str, Any] | None = Field(description="Motion direction from the current video analysis: summary, camera, per-character activity, travel, motion, speaking, emotion and end, timed events (seconds from the first frame) and end_of_cut.in_frame (characters a last-frame box confirms are still in frame; absence from it is not evidence of leaving). Null for cuts whose video analysis predates motion directions.")
     transcript_segments: list[Transcript] = Field(description="Current non-deleted segments overlapping this cut; may extend beyond its boundaries.")
     subtitles: CutSubtitles = Field(description="Burned-in subtitle lines overlapping this cut, from the episode-wide extraction.")
     context_items: list[ContextItem] = Field(description="Project-wide and this episode's context items, including characters.")
@@ -359,6 +360,7 @@ def cut_detail(cut_id: str):
     return {"project": main.require_project(project_id), "cut": context["cut"],
             "cut_summary": summary['content'] if summary else None,
             "first_frame": frame_content('initial_frame'), "last_frame": frame_content('last_frame'),
+            "motion": prompt_context.video_view(frame_content('video_analysis')) if prompt_context.is_direction(frame_content('video_analysis')) else None,
             "transcript_segments": context["transcript_segments"], "subtitles": context["subtitles"], "context_items": context["context_items"],
             "previous_cut": context["previous_cut"], "next_cut": context["next_cut"]}
 
@@ -481,9 +483,20 @@ class CompositionModel(BaseModel):
 class CompositionShot(CompositionModel):
     size: Literal['ECU', 'CU', 'MCU', 'MS', 'MWS', 'WS', 'EWS'] | None = None
     angle: Literal['eye', 'low', 'high', 'overhead', 'dutch'] | None = None
-    camera: Literal['static', 'pan', 'tilt', 'dolly', 'zoom', 'handheld'] | None = None
+    camera: Literal['static', 'pan', 'tilt', 'dolly', 'zoom', 'handheld', 'tracking'] | None = None
     direction: str | None = None
     speed: Literal['slow', 'medium', 'fast'] | None = None
+    camera_detail: str | None = Field(None, description='What the moving camera follows and how the framing ends, from the motion direction.')
+
+
+class CompositionMotion(CompositionModel):
+    """One character's part of the cut's motion direction (video analysis)."""
+    activity: str | None = Field(None, description='What the body does: standing, sitting, walking, running ... Several values joined by " → " when it changes.')
+    travel: str | None = Field(None, description='Movement through the picture (left, right, toward camera, exits right ...); omitted when the character stays in place.')
+    motion: str | None = Field(None, description='Visible body movement, or "holds still".')
+    speaking: Literal['yes', 'no', 'unclear'] | None = Field(None, description='Whether the mouth visibly moves as in speech at any point of the cut.')
+    emotion: str | None = Field(None, description='Emotion over the cut and how it changes.')
+    end: str | None = Field(None, description='Where and how the character is in the final frames.')
 
 
 class CompositionSubject(CompositionModel):
@@ -496,9 +509,11 @@ class CompositionSubject(CompositionModel):
     hands: str | None = None
     gaze: str | None = None
     expression: str | None = None
+    emotion: str | None = Field(None, description='Emotion the opening frame shows, with its strength.')
     outfit_visible: str | None = None
+    motion: CompositionMotion | None = Field(None, description='What this character does during the cut; present when the cut has a motion direction.')
 
-    @field_validator('facing', 'pose', 'hands', 'gaze', 'expression', 'outfit_visible')
+    @field_validator('facing', 'pose', 'hands', 'gaze', 'expression', 'emotion', 'outfit_visible')
     @classmethod
     def short_phrase(cls, value):
         if value is not None and len(value.split()) > 12:
@@ -551,6 +566,7 @@ class CompositionEndSubject(CompositionModel):
     hands: str | None = None
     gaze: str | None = None
     expression: str | None = None
+    motion: CompositionMotion | None = Field(None, description='Motion of someone who is not an opening subject, for example a character who enters during the cut.')
 
     @field_validator('facing', 'pose', 'hands', 'gaze', 'expression')
     @classmethod
@@ -573,10 +589,13 @@ class CompositionCut(CompositionModel):
     start_time: float | None = None
     end_time: float | None = None
     initial_frame_id: str | None = None
-    last_frame_id: str | None = None
+    last_frame_id: str | None = Field(None, description='Only for cuts analyzed before last-frame analysis was removed.')
     shot: CompositionShot | None = None
     setting: str | None = None
     lighting: str | None = None
+    mood: str | None = Field(None, description='Emotional tone of the opening frame.')
+    props: str | None = Field(None, description='Objects that matter in the opening frame and who holds them.')
+    action: str | None = Field(None, description='What happens in the cut, from the motion direction.')
     background: str | None = Field(None, description='Unmarked background people in the opening frame: count, outfits, where they stand.')
     subjects: list[CompositionSubject] | None = None
     beats: list[CompositionBeat] | None = None

@@ -44,3 +44,87 @@ class PromptContextTest(unittest.TestCase):
         for leaked in ('match_reason', 'CCIP', 'model_id', 'run_id', 'long', 'image_size'):
             self.assertNotIn(leaked, text)
         self.assertEqual(prompt_context.slim_context(slim), slim)
+
+
+FRAME = {'composition': 'Medium shot, Mai left', 'mood': 'calm', 'props': 'none', 'mode': 'full', 'frame_time': 12.02, 'subtitle_regions': [[0, 540, 1280, 700]],
+         'visible_characters': [{'character': 'Mai', 'character_context_id': 'mai-id', 'appearance': 'white shirt', 'emotion': 'calm', 'gaze': 'at Sakuta', 'action': 'standing'}]}
+WINDOW = lambda start, end, analysis: {'source': {'source_start': start, 'source_end': end, 'frame_count': 30, 'fps': 7.5, 'contract': 'direction-v1'}, 'analysis': analysis, 'usage': {'prompt_tokens': 4000}}
+VIDEO = {'model': 'Qwen/Qwen3-VL-8B-Instruct', 'revision': 'abc', 'contract': 'direction-v1', 'usage': {'prompt_tokens': 8000}, 'limitations': 'Window boundaries may split events.',
+         'direction': {'summary': 'Mai turns and walks off.', 'camera': {'movement': 'static', 'detail': 'none'},
+                       'characters': [{'character': 'Mai', 'character_context_id': 'mai-id', 'activity': 'standing → walking', 'travel': 'exits right', 'motion': 'Turns, then walks right.',
+                                       'speaking': 'yes', 'emotion': 'calm → annoyed', 'end': 'left frame'},
+                                      {'character': 'Sakuta', 'character_context_id': 'sakuta-id', 'activity': 'standing', 'travel': 'none', 'motion': 'holds still',
+                                       'speaking': 'no', 'emotion': 'calm', 'end': 'right, facing left', 'in_last_frame': True}],
+                       'end_state': {'in_frame': ['Sakuta'], 'source': 'character boxes of the last frame'}},
+         'windows': [WINDOW(12.0, 16.0, {'overview': 'Mai turns.', 'events': [{'start_seconds': 0.5, 'end_seconds': 1.5, 'subject': 'Mai', 'visual_action': 'Turns her head right.'}], 'uncertainties': 'none'}),
+                     WINDOW(16.0, 19.0, {'overview': 'Mai walks off.', 'events': [{'start_seconds': 1.0, 'end_seconds': 2.5, 'subject': 'Mai', 'visual_action': 'Walks out to the right.'},
+                                                                                {'start_seconds': None, 'end_seconds': None, 'subject': 'camera', 'visual_action': 'Stays fixed.'}], 'uncertainties': 'Face is small.'})]}
+LAST = {'composition': 'unchanged', 'mode': 'changes', 'visible_characters': []}
+
+
+class MotionDirectionEvidenceTest(unittest.TestCase):
+    def results(self, *extra):
+        return [{'id': 'f', 'type': 'initial_frame', 'content': FRAME}, {'id': 'v', 'type': 'video_analysis', 'content': VIDEO}, *extra]
+
+    def test_reviewer_gets_the_still_and_one_motion_direction_without_bookkeeping(self):
+        text = build_input(self.results({'id': 'l', 'type': 'last_frame', 'content': LAST}), [], [])['visual_evidence_text']
+        self.assertTrue(text.startswith('First frame:'))
+        for expected in ('emotion: calm', 'gaze: at Sakuta', 'movement: static', 'activity: standing → walking', 'travel: exits right', 'speaking: yes',
+                         'seconds: 0.5-1.5', 'seconds: 5.0-6.5', 'seconds: unknown', 'end: left frame', 'in last frame: True', 'in frame: \n    - Sakuta', 'uncertainties: Face is small.'):
+            self.assertIn(expected, text)
+        for noise in ('Last frame', 'unchanged', 'frame_count', 'prompt_tokens', 'Qwen', 'subtitle regions', 'frame time', 'mai-id', 'limitations', 'source start'):
+            self.assertNotIn(noise, text)  # a leftover last frame, run bookkeeping and ids are not evidence
+
+    def test_older_analyses_are_still_sent_with_their_last_frame(self):
+        old_video = {'windows': [WINDOW(12.0, 19.0, {'overview': 'Static camera.', 'events': []})]}
+        text = build_input([{'type': 'initial_frame', 'content': FRAME}, {'type': 'video_analysis', 'content': old_video}, {'type': 'last_frame', 'content': LAST}], [], [])['visual_evidence_text']
+        self.assertIn('Initial frame:', text)
+        self.assertIn('Last frame:\ncomposition: unchanged', text)
+
+    def test_queueing_needs_a_first_frame_and_a_video_analysis_only(self):
+        from app import summary_queue
+        context = {'cut': {'cut_index': 0, 'start_time': 12, 'end_time': 19}, 'transcript_segments': [], 'context_items': []}
+        payload = summary_queue.payload_for('c1', {}, context, self.results({'id': 'l', 'type': 'last_frame', 'content': LAST}))
+        self.assertEqual(payload['source_result_ids'], ['f', 'v'])  # the leftover last frame is not a source
+        with self.assertRaisesRegex(ValueError, 'Initial frame and video analysis'):
+            summary_queue.payload_for('c1', {}, context, self.results()[:1])
+        old = [{'id': 'f', 'type': 'initial_frame', 'content': FRAME}, {'id': 'v', 'type': 'video_analysis', 'content': {'windows': []}}]
+        with self.assertRaisesRegex(ValueError, 'run the video analysis again'):
+            summary_queue.payload_for('c1', {}, context, old)
+        legacy = summary_queue.payload_for('c1', {}, context, [*old, {'id': 'l', 'type': 'last_frame', 'content': LAST}])
+        self.assertEqual(legacy['source_result_ids'], ['f', 'v', 'l'])
+
+    def test_reviewer_prompt_is_about_the_three_generation_steps(self):
+        for expected in ('a still image of the opening frame', 'the dialogue audio', 'animates the still', 'speaking', 'inner voice', 'NOT an issue',
+                         'has NOT thereby left', 'the box wins', 'Never reproduce subtitle text'):
+            self.assertIn(expected, SYSTEM)
+        self.assertNotIn('ending-frame descriptions', SYSTEM)
+
+    def test_cut_summary_inputs_are_compact_and_stable_when_slimmed_twice(self):
+        import json
+        from app import prompt_context
+        rows = [{'id': '1', 'kind': 'first_frame', 'title': 'Initial frame description', 'content': json.dumps(FRAME), 'origin': 'model'},
+                {'id': '2', 'kind': 'cut_description', 'title': 'Video analysis', 'content': json.dumps(VIDEO), 'origin': 'model'},
+                {'id': '3', 'kind': 'last_frame', 'title': 'Last frame description', 'content': json.dumps(LAST), 'origin': 'model'},
+                {'id': '4', 'kind': 'cut_description', 'title': 'Consistency summary', 'content': '{"summary": "ok"}', 'origin': 'model'},
+                {'id': '5', 'kind': 'other', 'title': 'Note', 'content': 'hand written', 'origin': 'manual'}]
+        slim = prompt_context.slim_results(rows)
+        self.assertEqual([row['title'] for row in slim], ['Initial frame description', 'Video analysis', 'Consistency summary', 'Note'])
+        frame, video = slim[0]['content'], slim[1]['content']
+        self.assertEqual(frame['visible_characters'][0]['emotion'], 'calm')
+        self.assertNotIn('subtitle_regions', frame)
+        self.assertEqual(set(video), {'kind', 'summary', 'camera', 'characters', 'events', 'end_of_cut', 'uncertainties'})
+        self.assertEqual([event['seconds'] for event in video['events']], ['0.5-1.5', '5.0-6.5', 'unknown'])
+        self.assertEqual(video['end_of_cut'], {'in_frame': ['Sakuta'], 'source': 'character boxes of the last frame'})
+        self.assertEqual([person.get('in_last_frame') for person in video['characters']], [None, True])
+        self.assertNotIn('identity', video['characters'][0])  # marked characters need no caveat
+        guessed = prompt_context.video_view({**VIDEO, 'direction': {**VIDEO['direction'], 'characters': [{'character': 'girl with red umbrella', 'character_context_id': None, 'speaking': 'yes'}]}})
+        self.assertIn('not a marked character', guessed['characters'][0]['identity'])
+        self.assertEqual(slim[2]['content'], '{"summary": "ok"}')
+        self.assertEqual(slim[3], {'title': 'Note', 'content': 'hand written', 'origin': 'manual'})
+        self.assertEqual(prompt_context.slim_results(slim), slim)  # the worker slims a queued snapshot again
+        # A cut analyzed before motion directions keeps its last frame and its video analysis as stored.
+        old = [rows[0], {**rows[1], 'content': json.dumps({'windows': [{'analysis': {'overview': 'x'}}]})}, rows[2]]
+        kept = prompt_context.slim_results(old)
+        self.assertEqual([row['title'] for row in kept], ['Initial frame description', 'Video analysis', 'Last frame description'])
+        self.assertEqual(kept[1]['content'], {'windows': [{'analysis': {'overview': 'x'}}]})

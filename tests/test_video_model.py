@@ -18,7 +18,7 @@ class Tensor:
 class VideoAdapterTest(unittest.TestCase):
     def test_partitions_cut_and_converts_event_timing(self):
         event = {'start_seconds': 0.0, 'end_seconds': 0.5, 'subject': 'person', 'visual_action': 'turns', 'camera': 'fixed', 'uncertainty': 'unknown'}
-        response = json.dumps({'overview': 'scene', 'events': [event], 'uncertainties': 'limited'})
+        response = json.dumps({'overview': 'scene', 'camera': {'movement': 'static', 'detail': 'none'}, 'characters': [{'name': 'Mia', 'activity': 'standing', 'travel': 'none', 'motion': 'Turns.', 'speaking': 'yes', 'emotion': 'calm', 'end': 'left'}], 'events': [event], 'uncertainties': 'limited'})
         class Processor:
             def apply_chat_template(self, messages, **kwargs):
                 self.messages, self.kwargs = messages, kwargs
@@ -48,22 +48,48 @@ class VideoAdapterTest(unittest.TestCase):
             (path / 'model.safetensors.index.json').write_text('{"weight_map":{"w":"weights.safetensors"}}')
             (path / 'weights.safetensors').touch()
             with patch.dict(sys.modules, {'torch': torch, 'transformers': transformers}), patch.object(video_model.media, 'prepare_analysis_video', side_effect=prepare), patch.object(video_model, 'video_inputs', side_effect=encode):
-                result = video_model.analyze_video(path / 'original.mp4', {'start_time': 20, 'end_time': 29}, {'video_width': 640, 'video_height': 360, 'video_fps': 4}, path, path, context_hints={'character_detections': {'labels_confirmed_by_queue': True}})
+                roster = [{'name': 'Mia Lee', 'character_context_id': 'mia', 'at_start': True, 'at_end': True, 'start_box': [10, 20, 300, 900], 'end_box': [600, 20, 900, 900], 'position': 'left, facing right', 'appearance': 'red coat', 'emotion': 'calm'}]
+                segments = [{'start_time': 21, 'end_time': 22.5, 'text': 'secret words', 'character_name': 'Mia Lee'}]
+                result = video_model.analyze_video(path / 'original.mp4', {'start_time': 20, 'end_time': 29}, {'video_width': 640, 'video_height': 360, 'video_fps': 4}, path, path,
+                    context_hints={'character_detections': {'labels_confirmed_by_queue': True, 'detections': [{'id': 'secret-box'}]}, 'selected_context': [{'kind': 'world', 'title': 'School', 'description': 'A calm school'}]},
+                    roster=roster, initial={'composition': 'Medium shot of Mia Lee', 'background_people': 'none'}, transcript=segments)
             self.assertEqual([(x['source']['source_start'], x['source']['source_end']) for x in result['windows']], [(20, 28), (28, 29)])
             self.assertEqual(result['windows'][1]['analysis']['events'][0]['episode_start_seconds'], 28)
             self.assertFalse((path / 'video-window.mp4').exists())
             self.assertEqual(calls[0][0], 4)
-            self.assertIn('starting position and orientation', calls[0][1])
-            self.assertIn('never describe their clothing or hair', calls[0][1])
-            self.assertIn('Report displacement only when a position actually changes', calls[0][1])
-            self.assertIn('overlapping events for simultaneous actions', calls[0][1])
-            self.assertIn('verified by the user', calls[0][1])
-            self.assertIn('an intermediate window', calls[0][1])
-            self.assertIn('the final window of the cut', calls[1][1])
-            self.assertIn('include its visible final frames', calls[1][1])
-            self.assertNotIn('silent', calls[0][1].lower())
-            self.assertIn('labels_confirmed_by_queue', calls[0][1])
-            self.assertIn('unverified hints', calls[0][1].lower())
+            first, second = calls[0][1], calls[1][1]
+            self.assertIn('do not describe outfits', first)
+            self.assertIn('Report travel only when a position actually changes', first)
+            self.assertIn('overlapping events for simultaneous actions', first)
+            self.assertIn('identified by the user', first)
+            self.assertIn('part 1 of 2 of the cut, an intermediate part', first)
+            self.assertIn('part 2 of 2 of the cut, the final part: its last frames are the end of the cut', second)
+            self.assertNotIn('silent', first.lower())
+            # The model is told who to follow, where they start and whether they are still there at the end.
+            self.assertIn('- Mia Lee: first frame: left, facing right, box [10, 20, 300, 900]. look: red coat. emotion in the first frame: calm. last frame of the cut: in frame (right, box [600, 20, 900, 900]).', first)
+            self.assertIn('Opening shot: Medium shot of Mia Lee', first)
+            self.assertNotIn('Opening shot', second)
+            # Speech timing without the words, relative to each window.
+            self.assertIn('1.0-2.5 Mia Lee', first)
+            self.assertIn('none in the transcript', second)
+            self.assertNotIn('secret words', first)
+            # Series notes are readable text; detection rows and ids are not sent.
+            self.assertIn('world School: A calm school', first)
+            self.assertNotIn('secret-box', first)
+            self.assertNotIn('labels_confirmed_by_queue', first)
+            # The second window continues from what the first one reported.
+            self.assertIn('this clip continues the same cut', second)
+            self.assertIn('- Mia Lee: left', second)
+            self.assertNotIn('continues the same cut', first)
+            # Answers are tied to the character record and merged into one direction for the cut.
+            person = result['windows'][0]['analysis']['characters'][0]
+            self.assertEqual((person['character'], person['character_context_id'], person['speaking']), ('Mia Lee', 'mia', 'yes'))
+            self.assertEqual(result['contract'], video_model.VIDEO_CONTRACT)
+            self.assertEqual(result['direction']['camera']['movement'], 'static')
+            self.assertEqual(result['direction']['characters'][0]['character_context_id'], 'mia')
+            self.assertEqual(result['direction']['end_state']['in_frame'], ['Mia Lee'])
+            self.assertTrue(result['direction']['characters'][0]['in_last_frame'])
+            self.assertEqual(result['windows'][0]['source']['contract'], video_model.VIDEO_CONTRACT)
             rejected = []
             response = 'not json'
             with patch.dict(sys.modules, {'torch': torch, 'transformers': transformers}), patch.object(video_model.media, 'prepare_analysis_video', side_effect=prepare), patch.object(video_model, 'video_inputs', side_effect=encode):
@@ -139,12 +165,22 @@ class VideoAdapterTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
     def test_completed_windows_are_reused_without_loading_models(self):
-        windows = [{'source': {'source_start': 20, 'source_end': 28, 'boundary_policy': video_model.BOUNDARY_POLICY, 'source_file': 'missing.mp4'}, 'analysis': {'events': []}},
-                   {'source': {'source_start': 28, 'source_end': 29, 'boundary_policy': video_model.BOUNDARY_POLICY, 'source_file': 'missing.mp4'}, 'analysis': {'events': []}}]
+        source = {'boundary_policy': video_model.BOUNDARY_POLICY, 'contract': video_model.VIDEO_CONTRACT, 'source_file': 'missing.mp4'}
+        windows = [{'source': {'source_start': 20, 'source_end': 28, **source}, 'analysis': {'events': []}},
+                   {'source': {'source_start': 28, 'source_end': 29, **source}, 'analysis': {'events': []}}]
         result = video_model.analyze_video('missing.mp4', {'start_time': 20, 'end_time': 29},
             {'video_width': 640, 'video_height': 360, 'video_fps': 4}, '/missing-model', '/tmp',
             load_window=lambda index, start, end: windows[index])
         self.assertEqual(result['windows'], windows)
+        self.assertEqual(result['direction']['characters'], [])
+
+    def test_windows_saved_under_an_older_prompt_are_analyzed_again(self):
+        # A retried job from before motion directions holds windows without the contract marker.
+        old = {'source': {'source_start': 20, 'source_end': 21, 'boundary_policy': video_model.BOUNDARY_POLICY, 'source_file': 'missing.mp4'}, 'analysis': {'overview': 'old', 'events': []}}
+        with patch.object(video_model.VideoRuntime, 'load', side_effect=RuntimeError('model requested')):
+            with self.assertRaisesRegex(RuntimeError, 'model requested'):  # it goes on to the model instead of reusing the window
+                video_model.analyze_video('missing.mp4', {'start_time': 20, 'end_time': 21}, {'video_width': 640, 'video_height': 360, 'video_fps': 4}, '/missing-model', '/tmp',
+                                          load_window=lambda index, start, end: old)
 
     def test_preview_boundaries_replace_older_unbounded_window(self):
         class Model:

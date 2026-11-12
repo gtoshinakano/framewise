@@ -19,7 +19,7 @@ Goal: one answer that tells the user where the analysis stands and what the cut 
 
 ## Answer format
 ### Status
-A compact table: Stage | Status | Source. Stages: Character boxes, Initial frame, Last frame, Video analysis, Subtitle OCR, Consistency summary, Production brief, Review answers, H3 prompt, Image prompt. Status is one of ✅ done, ⏳ running/queued, ❌ failed (give the short error), — missing. Source is `model name` or `manual`/`assistant edit`.
+A compact table: Stage | Status | Source. Stages: Character boxes, Initial frame, Video analysis, Subtitle OCR, Consistency summary, Production brief, Review answers, H3 prompt, Image prompt. Status is one of ✅ done, ⏳ running/queued, ❌ failed (give the short error), — missing. Source is `model name` or `manual`/`assistant edit`.
 
 ### What happens in this cut
 3–6 sentences: setting, who is visible in the opening frame (identity only when supported or user-verified), the main action beats with clip-relative times, camera behaviour, dialogue if any.

@@ -92,7 +92,7 @@ export function WarningLine({ level, children }: { level: 'error' | 'warn' | 'in
 export function resultAccent(settings: Record<string, unknown> | undefined, title: string): { color: string; label: string } {
   const type = String(settings?.structured_type ?? '')
   if (type === 'initial_frame') return { color: '#6aa8ff', label: 'Initial frame' }
-  if (type === 'last_frame') return { color: '#8f9bff', label: 'Last frame' }
+  if (type === 'last_frame') return { color: '#8f9bff', label: 'Last frame (earlier analysis)' }
   if (type === 'video_analysis') return { color: '#4cc9c0', label: 'Video analysis' }
   if (type === 'consistency_summary') return { color: '#b496ff', label: 'Consistency summary' }
   if (title === 'Cut summary') return { color: '#e5d25a', label: 'Cut summary' }

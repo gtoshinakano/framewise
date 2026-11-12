@@ -1,5 +1,14 @@
 import type { AnalysisConfig, Cut } from './api'
 
+/**
+ * Frame rate for the automatic frame budget, matching the server default: a cut of up to six seconds is
+ * sampled as 30 frames and watched as one clip, longer cuts keep 56 frames across windows of at most 32.
+ */
+export function automaticVideoFps(duration: number): number {
+  const seconds = Math.max(.000001, duration)
+  return Math.min(30, (seconds <= 6 ? 30 : 56) / seconds)
+}
+
 // The encoder rounds sampled frames per window and may add one duplicate.
 export function estimatedVideoFrames(config: AnalysisConfig, cut: Cut): number {
   const duration = Math.max(0, cut.end_time - cut.start_time)

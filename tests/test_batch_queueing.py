@@ -55,14 +55,14 @@ class BatchQueueingTest(unittest.TestCase):
                          (str(uuid.uuid4()), cut_id, stage, json.dumps(content), json.dumps({'structured_type': stage}), json.dumps(context or {})))
 
     def test_only_missing_stages_are_queued_and_finished_cuts_are_skipped(self):
-        self.seed_result('c1', 'initial_frame', {'cut': {'start_time': 0, 'end_time': 2}})  # c1 only lacks the last frame and video
+        self.seed_result('c1', 'initial_frame', {'cut': {'start_time': 0, 'end_time': 2}})  # c1 only lacks the video
         for stage in pipeline.ALL_STAGES:                    # c2 is finished
             self.seed_result('c2', stage, {'cut': {'start_time': 2, 'end_time': 4}})
         result = main.queue_episode_visual_analysis('e')     # c3 has nothing
         self.assertEqual((result['queued'], result['skipped']), (2, 1))
         items = {item['cut_id']: item for item in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts']}
         self.assertEqual(sorted(items), ['c1', 'c3'])
-        self.assertEqual(set(items['c1']['stages']), {'last_frame', 'video_analysis'})
+        self.assertEqual(items['c1']['stages'], ['video_analysis'])  # the last frame is no longer a stage
         self.assertNotIn('stages', items['c3'])              # nothing done: every stage runs
 
     def test_subtitles_are_not_a_visual_stage_and_old_results_do_not_count(self):
@@ -100,7 +100,7 @@ class BatchQueueingTest(unittest.TestCase):
         events = []
         self.process_with_fake_models(job_id, owner, events)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
-        self.assertEqual(events.count('frame'), 5)  # c1 already had its initial frame
+        self.assertEqual(events.count('frame'), 2)  # one first frame per cut; c1 already had its own
         self.assertEqual(events.count('video-cut'), 3)
 
     def test_cuts_report_what_still_needs_human_action(self):
@@ -210,7 +210,7 @@ class BatchQueueingTest(unittest.TestCase):
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         self.assertEqual(db.one('SELECT SUM(completed) AS n FROM analysis_job_cuts WHERE job_id=?', (job_id,))['n'], 3)
         shape = [event for event in events if not event.startswith('save:') and event != 'video-load']
-        self.assertEqual(shape, ['server-start'] + ['frame'] * 6 + ['server-stop'] + ['video-cut'] * 3 + ['video-close'])
+        self.assertEqual(shape, ['server-start'] + ['frame'] * 3 + ['server-stop'] + ['video-cut'] * 3 + ['video-close'])
 
     def test_one_failing_cut_does_not_stop_the_others_and_a_retry_finishes_only_it(self):
         main.queue_episode_visual_analysis('e')
@@ -219,7 +219,7 @@ class BatchQueueingTest(unittest.TestCase):
 
         def describe(_server, _image, _regions, hints, **kwargs):
             calls.append(kwargs['frame_label'])
-            if len(calls) == 3:  # the second cut's first frame, like a truncated model answer
+            if len(calls) == 2:  # the second cut's first frame, like a truncated model answer
                 raise ValueError('Response was truncated')
             events.append('frame')
             return {'summary': 'x'}
@@ -241,7 +241,7 @@ class BatchQueueingTest(unittest.TestCase):
         self.process_with_fake_models(retry_id, retry_owner, retry_events)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (retry_id,))['status'], 'done')
         self.assertEqual(retry_events.count('video-cut'), 1)  # only the cut that failed is redone
-        self.assertEqual(retry_events.count('frame'), 2)
+        self.assertEqual(retry_events.count('frame'), 1)
 
 
 if __name__ == '__main__':
