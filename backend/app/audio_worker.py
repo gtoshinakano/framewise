@@ -315,6 +315,22 @@ def finish(conn, job_id, episode_id, stage='Complete'):
     worker.sync_episode_status(conn, episode_id)
 
 
+def release_gpu():
+    """Hand the GPU back after a job.
+
+    The models are locals of the job, but PyTorch's caching allocator keeps their memory in this
+    long-lived process, which left the text model unable to load until the worker was restarted.
+    """
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     db.init_db()
@@ -333,6 +349,7 @@ def main():
             finally:
                 done.set()
                 beat.join(timeout=1)
+                release_gpu()
         except Exception:
             log.exception('Audio worker error')
             time.sleep(2)

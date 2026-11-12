@@ -1,9 +1,11 @@
 import { useCallback, useState } from 'react'
 import type { Cut } from './api'
 
-export type CutFilterKey = 'needs_analysis' | 'no_boxes' | 'unknown_characters' | 'needs_consistency' | 'needs_summary'
+export type CutFilterKey = 'needs_analysis' | 'no_boxes' | 'unknown_characters' | 'needs_consistency' | 'needs_summary' | 'job_failed' | 'long_cut'
 
 export type CutFilter = { key: CutFilterKey; label: string; hint: string; color: string; matches: (cut: Cut) => boolean }
+
+export const LONG_CUT_SECONDS = 15
 
 // Cuts with analysis disabled are left out on purpose: nothing needs doing for them.
 const enabled = (cut: Cut) => cut.active && cut.analysis_enabled
@@ -21,6 +23,10 @@ export const CUT_FILTERS: CutFilter[] = [
     matches: cut => enabled(cut) && !!cut.has_visual_results && !cut.has_consistency_summary },
   { key: 'needs_summary', label: 'Needs cut summary', color: '#7bdcb2', hint: 'There is a consistency summary but no final cut summary',
     matches: cut => enabled(cut) && !!cut.has_consistency_summary && !cut.has_summary },
+  { key: 'job_failed', label: 'Last job failed', color: '#ff7a7a', hint: 'The most recent job that included this cut failed',
+    matches: cut => cut.active && !!cut.last_job_failed },
+  { key: 'long_cut', label: `Over ${LONG_CUT_SECONDS}s`, color: '#e6d36b', hint: `Cuts longer than ${LONG_CUT_SECONDS} seconds`,
+    matches: cut => cut.active && cut.end_time - cut.start_time > LONG_CUT_SECONDS },
 ]
 
 export function matchesAnyFilter(cut: Cut, active: ReadonlySet<CutFilterKey>) {

@@ -20,8 +20,7 @@ All supplied observations are model-generated and may contain errors, except "ex
 
 1. "existing_answers": authoritative. Keep their meaning and wording; never contradict them. Include them in the output when they are still relevant.
 2. The current cut: "current_cut" frame descriptions, video analysis, "transcript", "subtitles" (burned-in lines that overlap the cut, read from the whole episode, all in the one language given by subtitles.language; for comparison only) and "review".
-3. "previous_cut" and "next_cut" Cut summaries (continuity of characters, outfits, positions, props, setting, lighting and time of day). These are already-finished summaries; use them to settle continuity questions.
-4. "previous_cut" / "next_cut" video analysis and transcript. These are supplied ONLY when that neighbour has no Cut summary; treat them as weaker, unreviewed evidence.
+3. "previous_cut" and "next_cut" "consistency_summary", when present (continuity of characters, outfits, positions, props, setting, lighting and time of day). They are model reviews of the neighbouring cut, not confirmations; a neighbour without one has no supplied evidence, so do not infer anything about it.
 
 ## RULES
 
@@ -51,27 +50,28 @@ def transcript_text(segments):
     return consistency_summary.build_input([], segments, [])['transcript_text']
 
 
-def _neighbour(label, cut, summaries, results, segments):
+def _neighbour(cut, consistency):
+    """A neighbouring cut's boundaries and, when it has one, its Consistency summary. Nothing else about it is sent."""
     if not cut:
         return None
     entry = {'cut_index': cut.get('cut_index'), 'start_time': cut.get('start_time'), 'end_time': cut.get('end_time')}
-    summary = next((row['content'] for row in summaries if row.get('title') == SUMMARY_TITLE and isinstance(row.get('content'), str) and row['content'].strip()), None)
-    if summary:
-        entry['cut_summary'] = summary
-        return entry
-    video = next((item for item in results if item['type'] == 'video_analysis' and item['content'] is not None), None)
-    entry['cut_summary'] = None
-    entry['video_analysis'] = consistency_summary._as_text(video['content']) if video else 'Unavailable.'
-    entry['transcript'] = transcript_text(segments)
+    if consistency:
+        entry['consistency_summary'] = consistency
     return entry
 
 
-def build_evidence(results, context, existing_answers, neighbours):
-    """neighbours maps previous/next to {'summaries','results','segments'} for the adjacent cuts."""
+def build_evidence(results, context, existing_answers, neighbours, pending_review=False):
+    """neighbours maps previous/next to that adjacent cut's Consistency summary content, when it has one.
+
+    With `pending_review` the consistency summary may be missing or about to be replaced by a chained
+    job; `refresh` fills it in when the job starts.
+    """
     by_type = {item['type']: item for item in results}
     review = by_type.get('consistency_summary')
     if not review or not isinstance(review['content'], dict):
-        raise ValueError('Generate the consistency summary first')
+        if not pending_review:
+            raise ValueError('Generate the consistency summary first')
+        review = {'content': {}}
     base = consistency_summary.build_input(results, context['transcript_segments'], context['context_items'], context.get('subtitles'))
     evidence = {
         'review': {key: review['content'].get(key, '') for key in ('human_review', 'recommended_checks', 'confusing', 'clear')},
@@ -79,8 +79,7 @@ def build_evidence(results, context, existing_answers, neighbours):
         'existing_answers': existing_answers.strip() or None,
     }
     for label, cut in (('previous_cut', context.get('previous_cut')), ('next_cut', context.get('next_cut'))):
-        data = neighbours.get(label) or {}
-        entry = _neighbour(label, cut, data.get('summaries', []), data.get('results', []), data.get('segments', []))
+        entry = _neighbour(cut, (neighbours or {}).get('previous' if label == 'previous_cut' else 'next'))
         if entry:
             evidence[label] = entry
     return evidence
@@ -97,6 +96,23 @@ def validate_answers(text):
     if not text:
         raise ValueError('answers must not be empty')
     return text[:MAX_ANSWERS]
+
+
+def refresh(payload, results, existing_answers):
+    """Update a chained job's snapshot with what the earlier jobs of its chain produced.
+
+    The consistency summary and the saved answers are read again when the job starts, because the jobs
+    it waited for wrote the former and the user may have changed the latter. Everything else in the
+    evidence is unchanged by the chain.
+    """
+    review = next((item for item in results if item['type'] == 'consistency_summary'), None)
+    if not review or not isinstance(review['content'], dict):
+        raise RuntimeError('The consistency summary this job waited for is missing; queue the chain again')
+    payload['evidence']['review'] = {key: review['content'].get(key, '') for key in ('human_review', 'recommended_checks', 'confusing', 'clear')}
+    payload['evidence']['existing_answers'] = existing_answers.strip() or None
+    payload['existing_answers'] = existing_answers
+    payload['source_result_ids'] = [item['id'] for item in results]
+    return payload
 
 
 def payload_for(cut_id, config, evidence, source_result_ids, existing_answers):

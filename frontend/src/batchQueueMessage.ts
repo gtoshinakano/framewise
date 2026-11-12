@@ -29,3 +29,8 @@ export const SUMMARY_BATCH_REASONS = {
   answers_pending: 'production decisions still being drafted, queue again when they finish',
   busy: 'analysis, summary or answers already queued or running',
 }
+
+export const CHAIN_BATCH_REASONS = {
+  missing_results: 'initial frame, video or last frame result missing',
+  busy: 'analysis, consistency summary, answers or summary already queued or running',
+}

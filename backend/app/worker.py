@@ -118,8 +118,21 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
             conn.execute("UPDATE jobs SET status='failed',stage='Failed',error='Interrupted too many times; run the pipeline again',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
             if job['pipeline'] not in ('brief_export', 'composition_compact'):
                 sync_episode_status(conn, job["episode_id"], "Interrupted too many times; run the pipeline again")
+        # A chained text job (payload.wait_for) is held until the job it names is done. If that job
+        # failed, was cancelled or is gone, the waiting job can never run, so fail it now.
+        while True:  # cancelling one job can orphan the next link of its chain
+            orphans = conn.execute(f"""SELECT id,episode_id FROM jobs WHERE status='queued' AND pipeline IN ('regen','review_answers') AND pipeline IN ({placeholders})
+                AND json_extract(payload_json,'$.wait_for') IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM jobs dep WHERE dep.id=json_extract(jobs.payload_json,'$.wait_for') AND dep.status IN ('queued','running','done'))""", pipelines).fetchall()
+            if not orphans:
+                break
+            for orphan in orphans:
+                conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled because a job it waited for did not finish',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (orphan["id"],))
+                sync_episode_status(conn, orphan["episode_id"])
         job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND
             (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
+            AND (jobs.pipeline NOT IN ('regen','review_answers') OR json_extract(jobs.payload_json,'$.wait_for') IS NULL
+                 OR EXISTS (SELECT 1 FROM jobs dep WHERE dep.id=json_extract(jobs.payload_json,'$.wait_for') AND dep.status='done'))
             AND (jobs.pipeline='brief_export' OR NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status='running' AND other.id!=jobs.id AND other.pipeline!='brief_export'
                 -- Only a job with a live lease holds the episode. Interrupted jobs (lease
                 -- expired) must not block each other: a bulk batch leaves many at once.

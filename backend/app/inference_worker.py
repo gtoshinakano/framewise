@@ -13,7 +13,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from . import db, media, worker, frame_source
+from . import db, media, worker, frame_source, prompt_context
 
 log = logging.getLogger(__name__)
 MODEL_ID = "tencent/WeVisOne-VL-4B"
@@ -55,11 +55,11 @@ SUMMARY_SYSTEM = """You are a production analyst preparing a detailed analysis o
 For production use, make main_characters and secondary_characters identify visible people, their appearance, position, and relevant character context IDs only when visually supported. In actions give ordered, time-referenced action beats, separating observations from uncertain motion. Describe framing, camera angle and movement, setting, lighting, and composition concretely enough to recreate the shot. State unknowns instead of inventing details.
 
 INPUT MATERIALS
-- context describes the project and episode, the current cut and its time range and notes, adjacent cuts and their current analysis results, overlapping chunk notes, selected context items, additional user context, current transcript segments, and the burned-in subtitle lines overlapping the cut. Transcripts may be automatically generated and can contain errors; manual text and speaker links are also supplied evidence, not guaranteed facts. Transcript segment times are episode-relative and segments can extend beyond the cut. Adjacent-cut information does not prove what is visible in this cut. Transcripts describe audio, not visual presence. You receive text evidence, not the original audio, and cannot independently hear voices or verify a transcription.
+- context describes the project and episode, the current cut and its time range and notes, the Consistency summary of each adjacent cut when it has one (neighbor_consistency_summaries), overlapping chunk notes, selected context items, additional user context, current transcript segments, and the burned-in subtitle lines overlapping the cut. Transcripts may be automatically generated and can contain errors; manual text and speaker links are also supplied evidence, not guaranteed facts. Transcript segment times are episode-relative and segments can extend beyond the cut. Adjacent-cut information does not prove what is visible in this cut. Transcripts describe audio, not visual presence. You receive text evidence, not the original audio, and cannot independently hear voices or verify a transcription.
 - context.subtitles holds the burned-in subtitle lines that overlap this cut. They were read from the entire episode in one pass, independent of any cut, by a model that was told the single language of every subtitle in this video; that language is context.subtitles.language and it is certain. Each line has episode-relative start_time and end_time, a confidence of high or low (low means some characters were hard to read) and crosses_cut (true when the line starts before or ends after the cut). extracted false means subtitles were not extracted for this episode, which is not evidence that the video has none. Subtitles may paraphrase or translate speech.
 - sampled_frames, when present, contains timestamped visual analysis of frames from this cut. Each description is a model's observation of one still, not a record of everything that happened between frames. Detections are predicted labels and pixel-space boxes; an absent detection does not prove absence, and a label does not prove the detected object or its identity. OCR provides recognized text with boxes (and may include raw model markup); its readings and boxes can be wrong. The earliest sampled frame is the available evidence for the opening image, subject to its sampling time.
 - assessments, when present, contains visual_evidence and text_evidence: a previous analysis of the frame observations and OCR, with qualitative confidence, sources, and limitations. These are estimates to review, not calibrated probabilities or independent proof.
-- For a summary edit or regeneration, current_results supplies available current analysis results with their kind, title and content. Results may be human edits or model output. Use their origin where supplied, distinguish sources, and check them against the rest of the evidence. mode and instruction describe the requested operation; current_summary is the existing wording for an edit, not new evidence. Some inputs may be absent.
+- For a summary edit or regeneration, current_results supplies available current analysis results with their title and content. Results may be human edits or model output; an origin field appears only on text a person or the assistant wrote, and results without one are model output. Use it where supplied, distinguish sources, and check them against the rest of the evidence. mode and instruction describe the requested operation; current_summary is the existing wording for an edit, not new evidence. Some inputs may be absent.
 
 BEFORE WRITING
 1. Identify the cut, its boundaries, and which materials apply to it. Organize sampled frames in timestamp order, from the opening sample to later samples. Separate neighboring cuts and general background from evidence about this cut.
@@ -505,11 +505,16 @@ def process_regen(job_id, owner):
             if not dependency or dependency['status'] != 'done' or not result:
                 raise RuntimeError('The queued consistency summary did not complete; run text processing again')
             payload['results'] = [r for r in payload['results'] if r['title'] != 'Consistency summary'] + [result]
+        if payload.get('refresh_answers'):
+            saved = db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,))
+            payload['human_instructions'] = saved['content'] if saved else ''
         candidates = payload.get("sampled_frames", []) if not legacy else []
         candidates = [frame for frame in candidates if frame_source.result_frame_spec(frame['frame_id'])]
         current_prompt = payload["current_prompt"] if legacy else strip_suggested_frame(payload["current_prompt"])
-        request = {"mode": mode, "instruction": payload["instruction"], ("current_animation_prompt" if legacy else "current_summary"): current_prompt, "context": payload["context"], "current_results": payload["results"]}
+        request = {"mode": mode, "instruction": payload["instruction"], ("current_animation_prompt" if legacy else "current_summary"): current_prompt, "context": prompt_context.slim_context(payload["context"]), "current_results": prompt_context.slim_results(payload["results"])}
         if not legacy:
+            seen = {str(row.get('content')) for row in request["current_results"]}
+            candidates = [frame for frame in candidates if str(frame.get('description')) not in seen]
             request["sampled_frames"] = candidates
             if payload.get("production_brief"):
                 request["human_instructions"] = payload.get("human_instructions", "")
@@ -613,6 +618,17 @@ def process_review_answers(job_id, owner):
     payload = json.loads(job['payload_json'])
     cut_id = payload['cut_id']
     try:
+        if payload.get('wait_for'):
+            from . import structured_results
+            saved = db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,))
+            review_answers.refresh(payload, structured_results.list_results(cut_id), saved['content'] if saved else '')
+            if not review_answers.has_review_items(payload['evidence']) and not payload['existing_answers'].strip():
+                with db.connect() as conn:
+                    conn.execute('BEGIN IMMEDIATE')
+                    worker.require_lease(conn, job_id, owner)
+                    conn.execute("UPDATE jobs SET status='done',stage='Nothing to decide',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+                    worker.sync_episode_status(conn, job['episode_id'])
+                return
         worker.stage(job_id, owner, job['episode_id'], 'Drafting review answers')
         telemetry = {}
         content, actual_model = review_answers.generate(payload['config'], payload['evidence'],

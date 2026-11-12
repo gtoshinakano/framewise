@@ -4,7 +4,7 @@ import { ArrowRight, ChevronDown, ChevronsRight, Film, Image as ImageIcon, Image
 import { api, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type VisualStage } from './api'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
 import { estimatedVideoFrames } from './analysisFrames'
-import { ANSWERS_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
+import { ANSWERS_BATCH_REASONS, CHAIN_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
 import { ActionButton, Elapsed, NoticeStrip, Skeleton, StateChip, StatusChip, WarningLine, type Notice } from './RunUi'
 import { cachedConfig, cachedProjectId, loadConfig, loadProjectId, prefetchConfigs, storeConfig } from './runCache'
 import { STEP_LABELS, VISUAL_STEPS, activeRunFor, batchCounts, cutStepStates, hasVideoErrors, preflight, queueNotice, videoSettingsErrors, videoSettingsSummary, type CharacterSummary, type StageRow, type StepKey, type StepState } from './runState'
@@ -168,6 +168,12 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
       : batchQueueMessage('Cut summary', first, result, SUMMARY_BATCH_REASONS, 'they already have a Cut summary')
   })
 
+  const queueTextChain = () => perform('chain-from', async () => {
+    const first = cut.cut_index + 1
+    const result = await api<TextBatchResult>(`/episodes/${episodeId}/text-chain?from_cut=${first}`, { method: 'POST' })
+    return batchQueueMessage('Consistency summary, decisions and Cut summary', first, result, CHAIN_BATCH_REASONS, 'they keep their existing Cut summary')
+  })
+
   const queueAllText = () => perform('text-all', async () => {
     const settings = await api<Pick<AnalysisConfig, 'text_provider' | 'local_thinking' | 'openrouter_model'>>('/text-generation-settings')
     const result = await api<{ cuts_queued: number; skipped: number }>(`/episodes/${episodeId}/text-processing`, { method: 'POST', body: JSON.stringify(settings) })
@@ -230,6 +236,10 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
             none,
             cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('summaries-from')} disabled={disabled} title={title || 'Queue a Cut summary for this cut and every later cut that has a consistency summary but no summary yet. Cuts whose decisions are still being drafted are skipped and listed.'} onClick={() => void queueTextFromHere('summaries')}>{batchLabel(counts.from)}</ActionButton>),
             cell(allTextReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('text-all')} disabled={disabled} title={title || 'All text steps: queue a consistency summary and then a Cut summary for every ready cut'} onClick={() => void queueAllText()}>All text</ActionButton>))}
+          {row('All three text steps', 'Runs in order, each waits for the last', 'none',
+            none,
+            cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('chain-from')} disabled={disabled} title={title || 'For this cut and every later ready cut, queue a consistency summary, then production-decision answers from it, then a Cut summary from both. Each job starts only after the one before it finishes. Cuts that already have a Cut summary keep it. Cuts without initial frame, video and last frame results, or with jobs already pending, are skipped and listed.'} onClick={() => void queueTextChain()}>{batchLabel(counts.from)}</ActionButton>),
+            none)}
         </tbody>
       </table>
       <p className="muted mt-1 text-[11px]">Queue visual analysis first. Text steps work from its results.</p>

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Bookmark, BookmarkMinus, CheckCircle2, ChevronDown, Info, Loader2, PencilLine, ScanFace, Trash2, UserX, XCircle } from 'lucide-react'
 import { api, type ContextItem, type Job } from './api'
 import { cachedCharacters, cachedReferences, invalidateReferences, loadCharacters, loadReferences, type CharacterReference } from './runCache'
@@ -30,6 +30,8 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
   const [start, setStart] = useState<[number, number] | null>(null)
   const [current, setCurrent] = useState<[number, number] | null>(null)
   const [resize, setResize] = useState<Resize | null>(null)
+  // Last pointer position over a frame, in image pixels, for the "@" shortcut.
+  const hover = useRef<{ position: 'first' | 'last'; point: [number, number] } | null>(null)
   const job = jobs.find(item => item.pipeline === 'character_detect' && item.cuts?.some(cut => cut.id === cutId))
   const active = job?.status === 'queued' || job?.status === 'running'
   const episodeBusy = jobs.some(item => item.status === 'queued' || item.status === 'running')
@@ -131,6 +133,31 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     await action(() => api(`/character-detection-runs/${run.id}/boxes`, { method: 'POST', body: JSON.stringify({ position: frame.position, box }) }))
   }
   const locked = working || !!active || !!run?.stale || noChars
+  // "@" starts a box at the pointer on the hovered frame and a second "@" finishes it there (Escape cancels).
+  const keyState = useRef({ run, start, drawing, locked, finish })
+  keyState.current = { run, start, drawing, locked, finish }
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && keyState.current.start) { setStart(null); setCurrent(null); setDrawing(null); return }
+      if (event.key !== '@' || event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return
+      const target = event.target as HTMLElement | null
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return
+      if (document.querySelectorAll('[aria-modal="true"]').length > 1) return
+      const { run: currentRun, start: from, drawing: where, locked: isLocked, finish: complete } = keyState.current
+      const over = hover.current
+      if (!currentRun || isLocked) return
+      event.preventDefault()
+      if (from && where) {
+        const frame = currentRun.frames.find(item => item.position === where)
+        if (frame) void complete(frame, over && over.position === where ? over.point : from)
+        return
+      }
+      if (!over) return
+      setDrawing(over.position); setStart(over.point); setCurrent(over.point)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   return <section aria-label="Characters in this cut" className="space-y-3 rounded-xl border hairline bg-[#171c25] p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="min-w-0"><h3 className="flex items-center gap-2 text-sm font-semibold"><ScanFace size={15} className="text-[#e2709c]" aria-hidden /> Characters in this cut{run && <StatusChip tone={run.detections.length ? 'blue' : 'grey'}>{run.detections.length} {run.detections.length === 1 ? 'box' : 'boxes'}</StatusChip>}
@@ -151,8 +178,8 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     {run && <div className="grid gap-3 xl:grid-cols-2">{run.frames.map(frame => {
       const people = run.detections.filter(item => item.position === frame.position)
       const img = `/api/character-detection-runs/${run.id}/frame/${frame.position}`
-      return <div key={frame.position} className="space-y-2"><div className="flex justify-between"><strong className="text-xs text-[#d5dbe5]">{frame.position === 'first' ? 'First' : 'Last'} frame · {frame.time.toFixed(2)}s</strong><button type="button" className="inline-flex items-center gap-1 text-xs text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked} onClick={() => { setDrawing(drawing === frame.position ? null : frame.position); setStart(null); setCurrent(null) }}>{drawing === frame.position ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing === frame.position ? 'Cancel drawing' : 'Draw box'}</button></div>
-        <div className={`relative overflow-hidden bg-black ${noChars ? 'pointer-events-none select-none' : ''}`} aria-disabled={noChars || undefined} style={{ aspectRatio: `${frame.image_size[0]} / ${frame.image_size[1]}` }}><img src={img} alt={`${frame.position} detected frame`} loading="lazy" decoding="async" className={`absolute inset-0 h-full w-full transition-[filter,opacity] ${noChars ? 'opacity-35 grayscale' : ''}`} /><svg viewBox={`0 0 ${frame.image_size[0]} ${frame.image_size[1]}`} className={`absolute inset-0 h-full w-full ${noChars ? 'opacity-40 grayscale' : ''} ${drawing === frame.position ? 'touch-none cursor-crosshair' : 'pointer-events-none'}`} aria-label={`${frame.position} frame character boxes`} onPointerDown={event => { if (drawing !== frame.position) return; event.currentTarget.setPointerCapture(event.pointerId); const p = coords(event, frame); setStart(p); setCurrent(p) }} onPointerMove={event => { if (drawing === frame.position && start) setCurrent(coords(event, frame)) }} onPointerUp={event => { if (drawing === frame.position && start) void finish(frame, coords(event, frame)) }}>
+      return <div key={frame.position} className="space-y-2"><div className="flex justify-between"><strong className="text-xs text-[#d5dbe5]">{frame.position === 'first' ? 'First' : 'Last'} frame · {frame.time.toFixed(2)}s</strong><button type="button" className="inline-flex items-center gap-1 text-xs text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked} onClick={() => { setDrawing(drawing === frame.position ? null : frame.position); setStart(null); setCurrent(null) }}>{drawing === frame.position ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing === frame.position ? 'Cancel drawing' : 'Draw box'}<kbd className="ml-1 rounded border border-[#3b4352] px-1 font-mono text-[10px] leading-4 text-[#929aa9]" title="Hover a frame and press @ to start a box, press @ again to finish it">@</kbd></button></div>
+        <div onPointerMove={event => { const rect = event.currentTarget.getBoundingClientRect(); hover.current = { position: frame.position, point: [Math.max(0, Math.min(frame.image_size[0], (event.clientX - rect.left) * frame.image_size[0] / rect.width)), Math.max(0, Math.min(frame.image_size[1], (event.clientY - rect.top) * frame.image_size[1] / rect.height))] } }} onPointerLeave={() => { hover.current = null }} className={`relative overflow-hidden bg-black ${noChars ? 'pointer-events-none select-none' : ''}`} aria-disabled={noChars || undefined} style={{ aspectRatio: `${frame.image_size[0]} / ${frame.image_size[1]}` }}><img src={img} alt={`${frame.position} detected frame`} loading="lazy" decoding="async" className={`absolute inset-0 h-full w-full transition-[filter,opacity] ${noChars ? 'opacity-35 grayscale' : ''}`} /><svg viewBox={`0 0 ${frame.image_size[0]} ${frame.image_size[1]}`} className={`absolute inset-0 h-full w-full ${noChars ? 'opacity-40 grayscale' : ''} ${drawing === frame.position ? 'touch-none cursor-crosshair' : 'pointer-events-none'}`} aria-label={`${frame.position} frame character boxes`} onPointerDown={event => { if (drawing !== frame.position) return; event.currentTarget.setPointerCapture(event.pointerId); const p = coords(event, frame); setStart(p); setCurrent(p) }} onPointerMove={event => { if (drawing === frame.position && start) setCurrent(coords(event, frame)) }} onPointerUp={event => { if (drawing === frame.position && start) void finish(frame, coords(event, frame)) }}>
           {people.map((person, index) => {
             const color = BOX_COLORS[index % BOX_COLORS.length]
             const box = resize?.id === person.id ? resize.box : person.box

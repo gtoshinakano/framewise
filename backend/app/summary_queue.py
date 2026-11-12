@@ -1,7 +1,7 @@
 """Snapshot and enqueue a detached single-cut consistency summary."""
 import json
 import uuid
-from . import consistency_summary
+from . import consistency_summary, prompt_context
 
 
 def payload_for(cut_id, config, context, results):
@@ -10,8 +10,8 @@ def payload_for(cut_id, config, context, results):
         raise ValueError('Initial frame, video, and last frame results are required')
     evidence = consistency_summary.build_input(results, context['transcript_segments'], context['context_items'], context.get('subtitles'))
     if context.get('character_detections'):
-        evidence['character_detections'] = context['character_detections']
-    return {'cut_id': cut_id, 'context': {'cut': context['cut']}, 'config': config,
+        evidence['character_detections'] = prompt_context.slim_detections(context['character_detections'])
+    return {'cut_id': cut_id, 'context': {'cut': prompt_context.slim_cut(context['cut'])}, 'config': config,
             'evidence': evidence,
             'source_result_ids': [item['id'] for item in results if item['type'] != 'consistency_summary'],
             'base_id': by_type.get('consistency_summary', {}).get('id')}

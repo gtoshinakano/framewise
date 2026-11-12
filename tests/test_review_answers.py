@@ -41,21 +41,21 @@ class ReviewAnswersTest(unittest.TestCase):
         self.assertEqual(evidence['existing_answers'], 'Coat is green')
         self.assertEqual(evidence['review']['human_review'], 'Confirm coat colour.')
         self.assertIn('hello', evidence['current_cut']['transcript'])
-        self.assertEqual(evidence['next_cut']['cut_summary'], 'Hero keeps the green coat.')
-        self.assertNotIn('video_analysis', evidence['next_cut'])
+        self.assertEqual(evidence['next_cut']['consistency_summary']['human_review'], 'Confirm coat colour.')
+        self.assertNotIn('Hero keeps the green coat.', json.dumps(evidence))
+        self.assertEqual(set(evidence['next_cut']), {'cut_index', 'start_time', 'end_time', 'consistency_summary'})
         self.assertNotIn('previous_cut', evidence)
         self.assertIn('text_provider', payload['config'])
         self.assertEqual(self.client.post('/api/cuts/c1/review-answers').status_code, 409)
 
-    def test_neighbour_without_summary_falls_back_to_video_analysis_and_transcript(self):
-        self.seed()
+    def test_neighbour_without_consistency_summary_sends_only_its_boundaries(self):
+        self.seed(cuts=('c1',))
         with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content) VALUES ('v2','c2','cut_description','Video analysis','c2 video')")
             conn.execute("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,origin) VALUES ('t','e',2.5,3,'next line','manual')")
         job = self.client.post('/api/cuts/c1/review-answers').json()['job_id']
         neighbour = self.payload(job)['evidence']['next_cut']
-        self.assertIsNone(neighbour['cut_summary'])
-        self.assertIn('c2video_analysis', neighbour['video_analysis'])
-        self.assertIn('next line', neighbour['transcript'])
+        self.assertEqual(set(neighbour), {'cut_index', 'start_time', 'end_time'})
 
     def test_worker_stores_draft(self):
         self.seed()

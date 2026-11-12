@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import db, media, worker, storage, frame_source, frame_cache, subtitle_store, audio_worker
+from . import db, media, worker, storage, frame_source, frame_cache, subtitle_store, audio_worker, prompt_context
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
 
@@ -141,6 +141,10 @@ class CutInput(BaseModel):
 
 class CutAnalysisEnabledInput(BaseModel):
     analysis_enabled: bool
+
+
+class CutSplitInput(BaseModel):
+    time: float
 
 
 class CutTimingInput(BaseModel):
@@ -273,7 +277,8 @@ def episode_response(episode_id: str):
         EXISTS(SELECT 1 FROM character_detections d WHERE d.character_context_id IS NOT NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_characters,
         EXISTS(SELECT 1 FROM character_detections d WHERE d.character_context_id IS NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_boxes,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type') IN ('initial_frame','last_frame','video_analysis')) AS has_visual_results,
-        EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='consistency_summary') AS has_consistency_summary
+        EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='consistency_summary') AS has_consistency_summary,
+        COALESCE((SELECT j.status='failed' FROM analysis_job_cuts jc JOIN jobs j ON j.id=jc.job_id WHERE jc.cut_id=c.id ORDER BY j.created_at DESC, j.rowid DESC LIMIT 1),0) AS last_job_failed
         FROM cuts c WHERE c.episode_id=? AND c.active=1 ORDER BY c.cut_index""", (episode_id,))]
     episode["archived_cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=0 ORDER BY start_time,cut_index", (episode_id,))]
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
@@ -326,7 +331,7 @@ def serialize_cut(cut: dict):
     cut["active"] = bool(cut["active"])
     cut["analysis_enabled"] = bool(cut["analysis_enabled"])
     cut["no_characters"] = bool(cut.get("no_characters"))
-    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters", "has_unlabeled_boxes", "has_visual_results", "has_consistency_summary"):
+    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters", "has_unlabeled_boxes", "has_visual_results", "has_consistency_summary", "last_job_failed"):
         if flag in cut:
             cut[flag] = bool(cut[flag])
     fallback_first, fallback_last = media.cut_frame_times(cut["start_time"], cut["end_time"])
@@ -589,7 +594,7 @@ def detect_hardcuts_in_cut(cut_id: str, body: CutDetectionInput):
         raise HTTPException(409, str(exc)) from exc
 
 
-def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = None):
+def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = None, split_time: float | None = None):
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cut = conn.execute("SELECT * FROM cuts WHERE id=? AND active=1", (cut_id,)).fetchone()
@@ -623,6 +628,18 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
             if start != cut["start_time"] or end != cut["end_time"]:
                 conn.execute("UPDATE cuts SET start_time=?,end_time=? WHERE id=?", (start, end, cut_id))
                 affected_ids.add(cut_id)
+        elif action == "split":
+            assert split_time is not None
+            if not math.isfinite(split_time) or split_time < cut["start_time"] + MIN_SPLIT_SECONDS or split_time > cut["end_time"] - MIN_SPLIT_SECONDS:
+                raise HTTPException(400, f"Split inside the cut, at least {MIN_SPLIT_SECONDS}s from either edge")
+            # Later cuts move up one index, highest first so UNIQUE(episode_id, cut_index) never collides.
+            for item in reversed(cuts[index + 1:]):
+                conn.execute("UPDATE cuts SET cut_index=? WHERE id=?", (item["cut_index"] + 1, item["id"]))
+            new_id = str(uuid.uuid4())
+            conn.execute("UPDATE cuts SET end_time=? WHERE id=?", (split_time, cut_id))
+            conn.execute("INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time,analysis_enabled,created_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                         (new_id, cut["episode_id"], cut["cut_index"] + 1, split_time, cut["end_time"], cut["analysis_enabled"]))
+            affected_ids.update((cut_id, new_id))
         else:
             if len(cuts) < 2:
                 raise HTTPException(400, "The last cut must cover the video")
@@ -652,6 +669,14 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
             worker.sync_episode_status(conn, cut["episode_id"])
     worker.wake_event.set()
     return {"selected_id": cut_id if action != "delete" else kept["id"]}
+
+
+MIN_SPLIT_SECONDS = 0.1
+
+
+@app.post("/api/cuts/{cut_id}/split")
+def split_cut(cut_id: str, body: CutSplitInput):
+    return edit_cut_timeline(cut_id, "split", split_time=body.time)
 
 
 @app.put("/api/cuts/{cut_id}/timing")
@@ -1643,6 +1668,7 @@ def queue_episode_text_processing(episode_id: str, body: BatchTextInput):
             brief = summary_snapshot(conn, cut, config, 'regenerate', '')
             first = summary_queue.insert(conn, episode_id, consistency)
             brief['depends_on_consistency'] = first
+            brief['wait_for'] = first
             second = str(uuid.uuid4())
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'regen',?)", (second, episode_id, json.dumps(brief, ensure_ascii=False)))
             job_ids.extend((first, second))
@@ -1658,7 +1684,7 @@ def summary_snapshot(conn, cut, config, mode, instruction, current_prompt=None):
     if mode == "edit" and not summary and not (current_prompt or "").strip():
         raise HTTPException(400, "There is no cut summary to edit; regenerate one instead")
     current = current_prompt if current_prompt is not None else (summary["content"] if summary else "")
-    results = [{"title": row["title"], "kind": row["kind"], "content": row["content"], "origin": row["origin"]} for row in rows if row["title"] != SUMMARY_TITLE]
+    results = prompt_context.slim_results([dict(row) for row in rows if row["title"] != SUMMARY_TITLE])
     episode = require_episode(cut["episode_id"])
     sampled_frames = []
     for row in rows:
@@ -1678,7 +1704,7 @@ def summary_snapshot(conn, cut, config, mode, instruction, current_prompt=None):
                 sampled_frames.append({"frame_id": row["id"], "time": timestamp, "description": row["content"]})
     saved_instructions = conn.execute("SELECT content FROM cut_brief_instructions WHERE cut_id=?", (cut_id,)).fetchone()
     payload = {"production_brief": True, "human_instructions": saved_instructions["content"] if saved_instructions else "", "result_type": "summary", "cut_id": cut_id, "mode": mode, "instruction": instruction.strip(), "current_prompt": current if mode == "edit" else "",
-               "model": config.openrouter_model, "text_provider": config.text_provider, "local_thinking": config.local_thinking, "base_id": summary["id"] if summary else None, "results": results, "sampled_frames": sampled_frames, "context": selected_analysis_context(cut_id, config)}
+               "model": config.openrouter_model, "text_provider": config.text_provider, "local_thinking": config.local_thinking, "base_id": summary["id"] if summary else None, "results": results, "sampled_frames": sampled_frames, "context": prompt_context.slim_context(selected_analysis_context(cut_id, config))}
     return payload
 
 
@@ -1725,7 +1751,7 @@ def summary_request_preview(cut_id: str, source: Literal["current", "failed", "f
                 except (TypeError, ValueError):
                     continue
                 if item and isinstance(evidence, list) and evidence:
-                    request_input["context"] = item.get("context", {})
+                    request_input["context"] = prompt_context.slim_context(item.get("context", {}))
                     request_input["sampled_frames"] = [{key: frame[key] for key in ("time", "description", "detections", "image_size", "ocr_response", "ocr") if key in frame} for frame in evidence if isinstance(frame, dict)]
                     model = item.get("config", {}).get("openrouter_model", model)
                     source_job = {key: row[key] for key in ("id", "stage", "error", "finished_at")}
@@ -1871,21 +1897,17 @@ def queue_episode_consistency_summaries(episode_id: str, from_cut: int | None = 
     return {'queued': len(job_ids), 'job_ids': job_ids}
 
 
-def review_answers_payload(cut, config, auto_save=False):
-    """Snapshot the evidence for a review-answers job. Raises ValueError until a consistency summary exists."""
+def review_answers_payload(cut, config, auto_save=False, pending_review=False):
+    """Snapshot the evidence for a review-answers job. Raises ValueError until a consistency summary exists,
+    unless `pending_review` says a chained job will write it first."""
     from . import structured_results, review_answers
     cut_id = cut['id']
     context = selected_analysis_context(cut_id, config)
     results = structured_results.list_results(cut_id)
     saved = db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,))
     existing = saved['content'] if saved else ''
-    neighbours = {}
-    for label, key in (('previous_cut', 'previous'), ('next_cut', 'next')):
-        neighbour = context.get(label)
-        if neighbour:
-            neighbours[label] = {'summaries': context['neighbor_results'][key], 'results': structured_results.list_results(neighbour['id']),
-                                 'segments': [serialize_transcript(row) for row in db.all_rows("SELECT t.*,c.title AS character_name FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>? ORDER BY t.start_time,t.id", (cut['episode_id'], neighbour['end_time'], neighbour['start_time']))]}
-    evidence = review_answers.build_evidence(results, context, existing, neighbours)
+    neighbours = prompt_context.slim_neighbors(context)
+    evidence = review_answers.build_evidence(results, context, existing, neighbours, pending_review)
     payload = review_answers.payload_for(cut_id, config.model_dump(), evidence, [item['id'] for item in results], existing)
     if auto_save:
         payload['auto_save'] = True
@@ -1954,6 +1976,75 @@ def queue_episode_review_answers(episode_id: str, from_cut: int | None = None):
         if job_ids:
             worker.sync_episode_status(conn, episode_id)
     return {'queued': len(job_ids), 'blocked': blocked, 'job_ids': job_ids}
+
+
+@app.post('/api/episodes/{episode_id}/text-chain')
+def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, only_missing: bool = True):
+    """Queue consistency summary, production-decision answers and Cut summary for this cut and every later one.
+
+    `from_cut` is the cut number shown in the editor (cut_index + 1). For each ready cut three jobs are queued
+    in order, and each waits for the one before it (`payload.wait_for`), so the answers are drafted from the
+    new consistency summary and the Cut summary is written from both. Each later job reads those results again
+    when it starts; nothing it needs is snapshotted before the earlier job has written it. A cut is ready when
+    it is active and enabled, has initial frame, video and last frame results, and has no analysis, consistency,
+    answers or summary job pending; the others come back in `blocked`. With `only_missing` (the default) a cut
+    that already has a Cut summary keeps it, as in `cut-summaries`. With `only_missing=false` every ready cut gets a
+    new Cut summary, and a cut whose chain is still pending (queued earlier without that step) gets it added behind
+    its answers job (`attached`).
+    """
+    from . import review_answers, structured_results, summary_queue
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not conn.execute('SELECT id FROM episodes WHERE id=?', (episode_id,)).fetchone():
+            raise HTTPException(404, 'Episode not found')
+        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
+            raise HTTPException(409, 'Wait for media preparation or detection to finish')
+        first_index = max(0, from_cut - 1) if from_cut else 0
+        cuts = conn.execute('SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index', (episode_id, first_index)).fetchall()
+        blocked = {'missing_results': [], 'busy': []}
+        job_ids, queued, kept_summaries, attached = [], 0, 0, 0
+        for row in cuts:
+            cut_id, number = row['id'], row['cut_index'] + 1
+            pending = pending_cut_jobs(conn, episode_id, cut_id, ('analyze', 'consistency_summary', 'review_answers', 'regen'))
+            if pending:
+                # A chain that is still running has no Cut summary step when it was queued with only_missing. With
+                # only_missing=false, add that step behind its answers job instead of holding the cut back.
+                tail = None if only_missing or pending & {'analyze', 'regen'} else conn.execute(
+                    "SELECT id,json_extract(payload_json,'$.wait_for') AS consistency_id FROM jobs WHERE episode_id=? AND pipeline='review_answers' AND status IN ('queued','running') "
+                    "AND json_extract(payload_json,'$.cut_id')=? AND json_extract(payload_json,'$.wait_for') IS NOT NULL", (episode_id, cut_id)).fetchone()
+                if not tail:
+                    blocked['busy'].append(number); continue
+                cut, config = analysis_config_for_cut(cut_id)
+                brief = summary_snapshot(conn, cut, config, 'regenerate', '')
+                brief.update({'depends_on_consistency': tail['consistency_id'], 'wait_for': tail['id'], 'refresh_answers': True})
+                summary_id = str(uuid.uuid4())
+                conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'regen',?)", (summary_id, episode_id, json.dumps(brief, ensure_ascii=False)))
+                job_ids.append(summary_id)
+                attached += 1
+                continue
+            cut, config = analysis_config_for_cut(cut_id)
+            context = selected_analysis_context(cut_id, config)
+            try:
+                consistency = summary_queue.payload_for(cut_id, config.model_dump(), context, structured_results.list_results(cut_id))
+            except ValueError:
+                blocked['missing_results'].append(number); continue
+            consistency_id = summary_queue.insert(conn, episode_id, consistency)
+            answers, _ = review_answers_payload(cut, config, auto_save=True, pending_review=True)
+            answers['wait_for'] = consistency_id
+            answers_id = review_answers.insert(conn, episode_id, answers)
+            job_ids.extend((consistency_id, answers_id))
+            if only_missing and conn.execute("SELECT 1 FROM analysis_results WHERE cut_id=? AND title=? AND superseded_by IS NULL", (cut_id, SUMMARY_TITLE)).fetchone():
+                kept_summaries += 1
+            else:
+                brief = summary_snapshot(conn, cut, config, 'regenerate', '')
+                brief.update({'depends_on_consistency': consistency_id, 'wait_for': answers_id, 'refresh_answers': True})
+                summary_id = str(uuid.uuid4())
+                conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'regen',?)", (summary_id, episode_id, json.dumps(brief, ensure_ascii=False)))
+                job_ids.append(summary_id)
+            queued += 1
+        if job_ids:
+            worker.sync_episode_status(conn, episode_id)
+    return {'queued': queued, 'attached': attached, 'skipped': kept_summaries, 'blocked': blocked, 'job_ids': job_ids}
 
 
 @app.post('/api/episodes/{episode_id}/cut-summaries')

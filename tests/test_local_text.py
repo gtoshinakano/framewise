@@ -166,6 +166,9 @@ class LocalTextTest(unittest.TestCase):
         self.client.post('/api/jobs/'+ids[0]+'/cancel')
         dependent = db.one('SELECT status,stage FROM jobs WHERE id=?',(ids[1],))
         self.assertEqual((dependent['status'], dependent['stage']), ('failed', 'Cancelled'))
+        self.assertIsNone(worker.claim_job(('regen',)))  # the other cut's brief waits for its consistency summary
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='done' WHERE id=?", (ids[2],))
         self.assertEqual(worker.claim_job(('regen',))[0], ids[3])
 
     def test_openrouter_usage_and_source_are_recorded(self):
