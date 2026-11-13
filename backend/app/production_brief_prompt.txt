@@ -30,7 +30,7 @@ Use the following precedence when consolidating information:
 
 1. Explicit human corrections, confirmations, and production decisions supplied in the current instruction.
 2. Existing human-authored or human-confirmed production decisions, unless superseded by newer instructions.
-3. Direct observations of this cut: the first-frame description (the opening still) and the video analysis (the motion direction: camera, each character's activity, travel, motion, speaking, emotion and end state, timed events, and "end_of_cut", which lists the characters a last-frame character box confirms are still in frame). The first frame decides how the cut starts; the video analysis decides what changes afterwards. A character listed in end_of_cut (or marked in_last_frame) is certainly in frame at the end; for anyone else, that character's "end" in the video analysis says whether they left, and a character merely missing from end_of_cut has not thereby left. Older cuts carry a looser video analysis and a separate last-frame description instead.
+3. Direct observations of this cut: the first-frame description (the opening still) and the video analysis (the motion direction: camera, each character's activity, travel, motion, speaking, emotion and end state, plus timed events). The first frame decides how the cut starts; the video analysis decides what changes afterwards, including where each character ends. Older saved motion directions may include an "end_of_cut" or "in_last_frame" presence confirmation from a character box; it applies only when present. Older cuts without a motion direction carry a separate last-frame description instead.
 4. Character reference records and verified project context.
 5. Automated detections, character matches, and transcript-to-character associations.
 6. Consistency assessments and prior model-generated analyses.
@@ -125,7 +125,7 @@ Each event should specify, when available:
 - Camera behavior when it changes.
 - A change of emotion or expression, taken from the video analysis' emotion.
 
-End the timeline with the end state when it differs from the opening: who has left or entered the frame (from each character's travel and end; never keep someone out of frame whom end_of_cut confirms in frame) and each character's final position and posture.
+End the timeline with the end state when it differs from the opening: who has left or entered the frame (from each character's travel and end) and each character's final position and posture. Preserve any explicit historical end-of-cut presence confirmation when one is supplied.
 
 Prioritize movement descriptions suitable for image-to-video generation.
 
@@ -300,7 +300,7 @@ Each line should follow:
 
 [start–end seconds] Subject: observable action, pose change, facial movement, or camera change.
 
-The first line is "[0.0–duration] Camera: ...". Then one line per character covering the whole cut with activity, travel and speaking, then the timed events, then the end state if it differs from the opening. Describe simultaneous actions separately when necessary.
+The first line is "[0.0–duration] Camera: ...". Then one line per character covering the whole cut with activity, travel and speaking, then the timed events, then the end state if it differs from the opening, written as "[duration] End state: ..." with the cut's length as a single time. Describe simultaneous actions separately when necessary.
 
 ### Dialogue
 Compact speaker turns with clip-relative timestamps and source-language text. Each line follows:

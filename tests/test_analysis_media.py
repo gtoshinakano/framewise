@@ -11,6 +11,57 @@ from app import media, video_model
 
 
 class AnalysisMediaTest(unittest.TestCase):
+    def test_fractional_boundary_first_frame_is_not_skipped(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)
+            source, first = path / 'source.mp4', path / 'first.jpg'
+            media.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
+                       'color=red:s=160x120:r=24000/1001:d=12', '-vf',
+                       "drawbox=c=blue:t=fill:enable='eq(n,257)'", '-c:v', 'libx264',
+                       '-pix_fmt', 'yuv420p', str(source)])
+            boundary = media.step_frame_boundary(source, 256 * 1001 / 24000, 1)
+            self.assertAlmostEqual(boundary, 257 * 1001 / 24000, places=7)
+            actual = media.extract_cut_frame(source, first, boundary, max(0, boundary - .000002), 12, seek_tolerance=.000002)
+            decoded = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(first), '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, check=True).stdout
+            self.assertGreater(decoded[2], decoded[0] + 100)
+            # The API regenerates a preview from this saved time.
+            media.extract_cut_frame(source, first, actual, boundary, 12, seek_tolerance=.000002)
+            decoded = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(first), '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, check=True).stdout
+            self.assertGreater(decoded[2], decoded[0] + 100)
+
+    def test_fractional_frame_rate_boundaries_exclude_next_shot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)
+            source, still, clip = path / 'source.mp4', path / 'last.jpg', path / 'clip.mp4'
+            # At frame 255 the true boundary is 10.636875, but showinfo's
+            # pts_time prints 10.6369, past the first frame of the next shot.
+            media.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
+                       'color=red:s=160x120:r=24000/1001:d=12', '-vf',
+                       "drawbox=c=blue:t=fill:enable='gte(n,255)'", '-c:v', 'libx264',
+                       '-pix_fmt', 'yuv420p', str(source)])
+            expected = 255 * 1001 / 24000
+            cuts = media.detect_cuts(source, 12, .2)
+            self.assertEqual(len(cuts), 2)
+            boundary = cuts[0][1]
+            self.assertAlmostEqual(boundary, expected, places=7)
+            self.assertAlmostEqual(media.step_frame_boundary(source, boundary, -1), 254 * 1001 / 24000, places=5)
+            self.assertAlmostEqual(media.step_frame_boundary(source, boundary, 1), 256 * 1001 / 24000, places=5)
+            ranged = media.detect_cuts_in_range(source, 1.2345, 12, .2)
+            self.assertEqual(len(ranged), 2)
+            self.assertAlmostEqual(ranged[0][1], expected, places=5)
+            last = media.extract_cut_frame(source, still, boundary, 0, boundary, last=True, probe_padding=1)
+            self.assertAlmostEqual(last, 254 * 1001 / 24000, places=5)
+            def pixels(file):
+                return subprocess.run(['ffmpeg', '-v', 'error', '-i', str(file), '-vf', 'scale=1:1',
+                                       '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, check=True).stdout
+            red, _, blue = pixels(still)[:3]
+            self.assertGreater(red, blue + 100)
+            media.prepare_analysis_video(source, clip, 10, last + .000002, width=160, height=128, fps=24)
+            frames = pixels(clip)
+            for offset in range(0, len(frames), 3):
+                red, _, blue = frames[offset:offset + 3]
+                self.assertGreater(red, blue + 100)
+
     def test_frame_sampling_never_includes_the_next_cut(self):
         with tempfile.TemporaryDirectory() as folder:
             source, output = Path(folder) / 'original.mp4', Path(folder) / 'analysis.mp4'

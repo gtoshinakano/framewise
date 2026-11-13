@@ -28,6 +28,9 @@ services:
       QWEN35_MODEL_PATH: /models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf
       QWEN35_PROJECTOR_PATH: /models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf
       QWEN36_MODEL_PATH: /models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf
+      # Same model with multi-token-prediction heads (speculative decoding); choose it in the text engine dialog.
+      QWEN36_MTP_MODEL_PATH: /models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+      QWEN36_MTP_ARGS: ${QWEN36_MTP_ARGS:---spec-type draft-mtp --spec-draft-n-max 3}
       QWEN36_CONTEXT_SIZE: ${QWEN36_CONTEXT_SIZE:-65536}
       QWEN36_THINKING_BUDGET: ${QWEN36_THINKING_BUDGET:-2048}
       TEXT_JOB_CONCURRENCY: ${TEXT_JOB_CONCURRENCY:-2}
@@ -45,6 +48,7 @@ services:
       - ${VIDEO_MODEL_DIR:-./.models/qwen3-vl-8b}:/models/qwen3-vl-8b:ro
       - ${FRAME_MODEL_DIR:-./.models/qwen3.5-27b}:/models/qwen3.5-27b:ro
       - ${TEXT_MODEL_DIR:-./.models/qwen3.6-35b}:/models/qwen3.6-35b:ro
+      - ${TEXT_MTP_MODEL_DIR:-./.models/qwen3.6-35b-mtp}:/models/qwen3.6-35b-mtp:ro
       - ${LLAMACPP_RUNTIME_DIR:-./.models/llamacpp-runtime}:/models/llamacpp:ro
     devices:
       - /dev/kfd:/dev/kfd

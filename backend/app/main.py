@@ -150,6 +150,14 @@ class CutSplitInput(BaseModel):
 class CutTimingInput(BaseModel):
     start_time: float
     end_time: float
+    expected_start_time: float | None = None
+    expected_end_time: float | None = None
+
+
+class CutBoundaryStepInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    direction: Literal['earlier', 'later']
+    anchor: Literal['start', 'end'] = 'end'
 
 
 class ChunkInput(BaseModel):
@@ -273,9 +281,9 @@ def episode_response(episode_id: str):
     episode["proxy_ready"] = (path / "proxy.mp4").is_file()
     episode["cuts"] = [serialize_cut(cut) for cut in db.all_rows("""SELECT c.*, EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL) AS has_analysis_results,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.title='Cut summary' AND a.superseded_by IS NULL) AS has_summary,
-        EXISTS(SELECT 1 FROM character_detections d WHERE d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_boxes,
-        EXISTS(SELECT 1 FROM character_detections d WHERE d.character_context_id IS NOT NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_characters,
-        EXISTS(SELECT 1 FROM character_detections d WHERE d.character_context_id IS NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_boxes,
+        EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_boxes,
+        EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.character_context_id IS NOT NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_characters,
+        EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.character_context_id IS NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_boxes,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type') IN ('initial_frame','last_frame','video_analysis')) AS has_visual_results,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='consistency_summary') AS has_consistency_summary,
         COALESCE((SELECT j.status='failed' FROM analysis_job_cuts jc JOIN jobs j ON j.id=jc.job_id WHERE jc.cut_id=c.id ORDER BY j.created_at DESC, j.rowid DESC LIMIT 1),0) AS last_job_failed
@@ -609,6 +617,8 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
         if action == "timing":
             assert timing is not None
             start, end = timing.start_time, timing.end_time
+            if (timing.expected_start_time is not None and timing.expected_start_time != cut["start_time"]) or (timing.expected_end_time is not None and timing.expected_end_time != cut["end_time"]):
+                raise HTTPException(409, "The cut changed while you were adjusting it; reload and try again")
             if not math.isfinite(start) or not math.isfinite(end):
                 raise HTTPException(400, "Times must be finite")
             if (index == 0 and abs(start) > 0.000001) or (index == len(cuts) - 1 and abs(end - episode["duration"]) > 0.000001):
@@ -682,6 +692,58 @@ def split_cut(cut_id: str, body: CutSplitInput):
 @app.put("/api/cuts/{cut_id}/timing")
 def update_cut_timing(cut_id: str, body: CutTimingInput):
     return edit_cut_timeline(cut_id, "timing", body)
+
+
+def boundary_preview_source(cut_id: str):
+    cut = db.one("SELECT * FROM cuts WHERE id=? AND active=1", (cut_id,))
+    if not cut:
+        raise HTTPException(404, "Active cut not found")
+    episode = require_episode(cut['episode_id'])
+    path = media.episode_dir(episode['project_id'], episode['id'])
+    source = path / 'proxy.mp4'
+    if not source.is_file():
+        source = path / f"original{episode['original_ext']}"
+    if not source.is_file():
+        raise HTTPException(404, "The source video is unavailable")
+    return cut, episode, source
+
+
+@app.get('/api/cuts/{cut_id}/boundary-preview')
+def boundary_preview_times(cut_id: str, position: Literal['first', 'last'], around: float | None = None):
+    cut, episode, source = boundary_preview_source(cut_id)
+    anchor = (cut['first_frame_time'] if position == 'first' else cut['last_frame_time'])
+    if anchor is None:
+        anchor = cut['start_time'] if position == 'first' else cut['end_time']
+    if around is not None:
+        if not math.isfinite(around) or not 0 <= around <= (episode['duration'] or 0):
+            raise HTTPException(400, 'Invalid preview time')
+        anchor = around
+    try:
+        return {'times': media.frame_timestamps_near(source, anchor), 'anchor': anchor}
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get('/api/cuts/{cut_id}/boundary-preview-frame')
+async def boundary_preview_frame(cut_id: str, time: float):
+    cut, episode, source = boundary_preview_source(cut_id)
+    if not math.isfinite(time) or time < 0 or time > (episode['duration'] or 0):
+        raise HTTPException(400, 'Frame is outside the boundary preview window')
+    return await rendered_frame({'source': source, 'time': time, 'start': max(0, time - .000002), 'end': min(episode['duration'], time + 1), 'width': 480, 'last': False, 'seek_tolerance': .000002}, episode_id=episode['id'])
+
+
+@app.post('/api/cuts/{cut_id}/boundary-frame')
+def step_cut_boundary(cut_id: str, body: CutBoundaryStepInput):
+    """Move this cut's end and the following cut's start by one video frame."""
+    cut = db.one('SELECT episode_id FROM cuts WHERE id=? AND active=1', (cut_id,))
+    if not cut:
+        raise HTTPException(404, 'Active cut not found')
+    try:
+        return {'job_id': worker.enqueue(cut['episode_id'], 'cutframes', {
+            'cut_id': cut_id, 'frame_step': -1 if body.direction == 'earlier' else 1,
+            'frame_anchor': body.anchor, 'workflow': 'boundary_frame'})}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.post("/api/cuts/{cut_id}/merge-next")
@@ -1136,7 +1198,8 @@ def queue_character_detection(cut_id: str):
     result = _queue_bulk_character_jobs(cut['episode_id'], 'recognize', rerun=True, cut_id=cut_id)
     if not result['queued']:
         has_boxes = db.one('''SELECT 1 FROM character_detections d JOIN character_detection_runs r ON r.id=d.run_id
-            WHERE r.cut_id=? AND r.cut_start=? AND r.cut_end=? AND r.rowid=(SELECT max(rowid) FROM character_detection_runs WHERE cut_id=?)''',
+            WHERE r.cut_id=? AND r.cut_start=? AND r.cut_end=? AND r.rowid=(SELECT max(rowid) FROM character_detection_runs WHERE cut_id=?)
+            AND d.position='first' ''',
             (cut_id, cut['start_time'], cut['end_time'], cut_id))
         return {'job_id': None, 'queued': 0, 'detail': 'Every box in this cut already has your label.' if has_boxes
                 else 'No people were found in this cut. Draw a box for anyone missing.'}
@@ -1180,16 +1243,20 @@ def _queue_bulk_character_jobs(episode_id: str, phase: str, rerun: bool = False,
             raise HTTPException(409, 'Wait for the current episode job to finish')
         # The latest run for the cut's current boundaries decides what is still missing.
         latest = """(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id AND r2.cut_start=c.start_time AND r2.cut_end=c.end_time ORDER BY r2.rowid DESC LIMIT 1)"""
+        # Current detection runs save one frame. Older runs may still have both
+        # boundary frames, so completeness means the first frame is present.
+        incomplete_frames = "(CASE WHEN json_valid(r.frames_json) THEN NOT EXISTS (SELECT 1 FROM json_each(r.frames_json) f WHERE json_extract(f.value,'$.position')='first') ELSE 1 END)"
         if rerun:
-            need = f"""AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detections d WHERE d.run_id={latest}
-                AND (d.label_source IS NULL OR d.label_source!='manual')))"""
+            need = f"""AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND {incomplete_frames})
+                OR EXISTS (SELECT 1 FROM character_detections d WHERE d.run_id={latest}
+                AND d.position='first' AND (d.label_source IS NULL OR d.label_source!='manual')))"""
         elif phase == 'boxes':
-            need = f"AND {latest} IS NULL"
+            need = f"AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND {incomplete_frames}))"
         elif phase == 'full':
             # Boxes and recognition in one pass: anything without a finished run.
-            need = f"AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND r.phase!='complete'))"
+            need = f"AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND (r.phase!='complete' OR {incomplete_frames})))"
         else:
-            need = f"""AND EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND r.phase!='complete')"""
+            need = f"""AND EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND (r.phase!='complete' OR {incomplete_frames}))"""
         scope = "AND c.id=?" if cut_id else "AND c.analysis_enabled=1 AND c.no_characters=0"
         cuts = conn.execute(f"""SELECT c.*,{latest} AS current_run FROM cuts c WHERE c.episode_id=? AND c.active=1 {scope}
             AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.episode_id=c.episode_id AND j.pipeline='character_detect'
@@ -1200,13 +1267,21 @@ def _queue_bulk_character_jobs(episode_id: str, phase: str, rerun: bool = False,
             cut = dict(row)
             run_id = cut.pop('current_run')
             cut_phase = phase
+            partial_run = False
+            if run_id:
+                partial_run = bool(conn.execute('''SELECT CASE WHEN json_valid(frames_json)
+                                                                   THEN NOT EXISTS (SELECT 1 FROM json_each(frames_json) f WHERE json_extract(f.value,'$.position')='first') ELSE 1 END
+                                                      FROM character_detection_runs WHERE id=?''', (run_id,)).fetchone()[0])
             if rerun:
-                cut_phase = 'recognize' if run_id else 'full'
-                if run_id:
+                cut_phase = 'recognize' if run_id and not partial_run else 'full'
+                if run_id and not partial_run:
                     conn.execute("""UPDATE character_detections SET character_context_id=NULL,label_source=NULL,match_reason=NULL,
-                        match_model_id=NULL,match_model_revision=NULL,candidates_json=NULL WHERE run_id=? AND label_source='auto'""", (run_id,))
-                    conn.execute("UPDATE character_detections SET candidates_json=NULL WHERE run_id=? AND label_source IS NULL", (run_id,))
+                        match_model_id=NULL,match_model_revision=NULL,candidates_json=NULL WHERE run_id=? AND position='first' AND label_source='auto'""", (run_id,))
+                    conn.execute("UPDATE character_detections SET candidates_json=NULL WHERE run_id=? AND position='first' AND label_source IS NULL", (run_id,))
                     conn.execute("UPDATE character_detection_runs SET phase='boxes' WHERE id=?", (run_id,))
+            elif phase == 'recognize' and partial_run:
+                # A missing first frame needs fresh boxes before recognition.
+                cut_phase = 'full'
             job_id = str(uuid.uuid4())
             payload = {'cut_id': cut['id'], 'cut': cut, 'workflow': 'anime_bulk_v1', 'phase': cut_phase, 'batch_id': batch_id}
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, 'character_detect', json.dumps(payload)))
@@ -1218,7 +1293,7 @@ def _queue_bulk_character_jobs(episode_id: str, phase: str, rerun: bool = False,
 
 @app.post('/api/episodes/{episode_id}/character-boxes')
 def queue_character_boxes(episode_id: str):
-    """Step 1: AniRef boxes on first/last frames of cuts without a current detection run."""
+    """Step 1: AniRef boxes on the first frame of cuts without a current detection run."""
     return _queue_bulk_character_jobs(episode_id, 'boxes')
 
 
@@ -1261,6 +1336,49 @@ def get_character_detections(cut_id: str):
                              for item in json.loads(box.pop('candidates_json') or '[]') if item['character_id'] in names]
     run['detections'] = boxes
     return run
+
+
+@app.delete('/api/character-detection-runs/{run_id}/frame/{position}')
+def remove_stale_character_frame(run_id: str, position: Literal['first', 'last']):
+    """Remove an outdated boundary frame and its boxes from a stale detection run."""
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        run = conn.execute('''SELECT r.*,c.start_time AS current_start,c.end_time AS current_end,c.episode_id
+                              FROM character_detection_runs r JOIN cuts c ON c.id=r.cut_id WHERE r.id=?''',
+                           (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(404, 'Character detection run not found')
+        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running') AND pipeline NOT IN ('brief_export','composition_compact') LIMIT 1",
+                        (run['episode_id'],)).fetchone():
+            raise HTTPException(409, 'Wait for the current episode job to finish')
+        boundary_changed = (run['cut_start'] != run['current_start'] if position == 'first'
+                            else run['cut_end'] != run['current_end'])
+        if not boundary_changed:
+            raise HTTPException(409, 'This frame still matches the current cut boundary')
+        try:
+            frames = json.loads(run['frames_json'])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(409, 'The saved detection frames are invalid') from exc
+        if not isinstance(frames, list) or not any(isinstance(frame, dict) and frame.get('position') == position for frame in frames):
+            raise HTTPException(404, 'Frame not found in this detection run')
+        if conn.execute('''SELECT 1 FROM character_image_references ref
+                           JOIN character_detections d ON d.id=ref.detection_id
+                           WHERE d.run_id=? AND d.position=? LIMIT 1''', (run_id, position)).fetchone():
+            raise HTTPException(409, 'Remove the saved project reference before removing this frame')
+        removed = conn.execute('DELETE FROM character_detections WHERE run_id=? AND position=?', (run_id, position)).rowcount
+        frames = [frame for frame in frames if not (isinstance(frame, dict) and frame.get('position') == position)]
+        conn.execute("UPDATE character_detection_runs SET frames_json=?,phase='boxes' WHERE id=?",
+                     (json.dumps(frames), run_id))
+        episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (run['episode_id'],)).fetchone()
+    cache_dir = db.DATA_DIR / 'projects' / episode['project_id'] / 'episodes' / run['episode_id'] / 'character-frames'
+    if not cache_dir.is_symlink():
+        frame_path = cache_dir / f"{run['cut_id']}-{position}.jpg"
+        try:
+            frame_path.unlink(missing_ok=True)
+            cache_dir.rmdir()
+        except OSError:
+            pass
+    return {'ok': True, 'run_id': run_id, 'position': position, 'removed_detections': removed}
 
 
 @app.put('/api/character-detections/{detection_id}')
@@ -1577,14 +1695,17 @@ def unsettled_characters(cut, context):
     """Why a cut's characters still need a person, or None when they are settled.
 
     A cut marked as having no characters is settled. Otherwise it needs a current detection
-    run whose boxes all have a character assigned.
+    run with first-frame data, and every first-frame box must have a character assigned.
     """
     if cut['no_characters']:
         return None
     detections = context.get('character_detections')
     if detections is None:
         return 'not_detected'
-    if any(d['character_context_id'] is None for d in detections['detections']):
+    if not any(isinstance(frame, dict) and frame.get('position') == 'first' for frame in detections.get('frames', [])):
+        return 'not_detected'
+    first_frame = [d for d in detections['detections'] if d.get('position') == 'first']
+    if any(d['character_context_id'] is None for d in first_frame):
         return 'unknown_characters'
     return None
 
@@ -2133,12 +2254,13 @@ class TextGenerationSettings(BaseModel):
     text_provider: Literal['local', 'openrouter'] = 'openrouter'
     local_thinking: bool = False
     openrouter_model: str = Field(default='openrouter/free', min_length=1, max_length=200, pattern=r'^[a-zA-Z0-9_./:-]+$')
+    local_model: Literal['standard', 'mtp'] | None = None  # omitted keeps the current choice
 
 
 def text_generation_settings():
-    row = db.one('SELECT text_provider,local_thinking,openrouter_model FROM text_generation_settings WHERE id=1')
+    row = db.one('SELECT text_provider,local_thinking,openrouter_model,local_model FROM text_generation_settings WHERE id=1')
     if not row:
-        return TextGenerationSettings().model_dump()
+        return {**TextGenerationSettings().model_dump(), 'local_model': 'standard'}
     row['local_thinking'] = bool(row['local_thinking'])
     return row
 
@@ -2150,10 +2272,68 @@ def get_text_generation_settings():
 
 @app.put('/api/text-generation-settings')
 def put_text_generation_settings(body: TextGenerationSettings):
+    current = text_generation_settings()
+    local_model = body.local_model or current['local_model']
+    if local_model != current['local_model'] and local_model != 'standard':
+        # The worker reports which model files exist; selecting one that is missing would fail every local text job.
+        info = local_model_variants().get(local_model) or {}
+        if not info.get('available'):
+            raise HTTPException(409, f"That text model is not available yet ({info.get('detail') or 'the inference worker has not reported it'})")
     with db.connect() as conn:
-        conn.execute('UPDATE text_generation_settings SET text_provider=?,local_thinking=?,openrouter_model=? WHERE id=1',
-                     (body.text_provider, int(body.local_thinking), body.openrouter_model))
-    return body
+        conn.execute('UPDATE text_generation_settings SET text_provider=?,local_thinking=?,openrouter_model=?,local_model=? WHERE id=1',
+                     (body.text_provider, int(body.local_thinking), body.openrouter_model, local_model))
+    return text_generation_settings()
+
+
+def local_model_variants():
+    row = db.one('SELECT variants_json FROM local_text_model_state WHERE id=1')
+    try:
+        value = json.loads(row['variants_json']) if row else {}
+    except (ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+@app.get('/api/text-model-comparison')
+def text_model_comparison():
+    """Speed and size of local text results per model variant, read from each result's saved usage.
+
+    ``decode_tokens_per_second`` comes from llama-server's own timings (only results written since
+    they were recorded); ``overall_tokens_per_second`` is completion tokens over the whole
+    generation time, so it also covers older results, prompt processing included.
+    """
+    groups = {}
+    for row in db.all_rows("""SELECT kind, settings_json FROM analysis_results
+                           WHERE settings_json LIKE '%"usage"%' AND settings_json LIKE '%"provider": "local"%'"""):
+        try:
+            settings = json.loads(row['settings_json'])
+        except (ValueError, TypeError):
+            continue
+        usage = settings.get('usage') if isinstance(settings, dict) else None
+        seconds = settings.get('summary_generation_seconds')
+        if not isinstance(usage, dict) or not isinstance(usage.get('completion_tokens'), (int, float)):
+            continue
+        variant = usage.get('model_variant') or 'standard'
+        group = groups.setdefault(variant, {'results': 0, 'completion_tokens': 0, 'reasoning_tokens': 0, 'generation_seconds': 0.0, 'timed_results': 0,
+                                            'predicted_n': 0, 'predicted_ms': 0.0, 'draft_n': 0, 'draft_n_accepted': 0})
+        group['results'] += 1
+        group['completion_tokens'] += usage['completion_tokens']
+        group['reasoning_tokens'] += usage.get('reasoning_tokens') or 0
+        if isinstance(seconds, (int, float)) and seconds > 0:
+            group['generation_seconds'] += seconds
+            group['timed_results'] += 1
+        for name in ('predicted_n', 'predicted_ms', 'draft_n', 'draft_n_accepted'):
+            if isinstance(usage.get(name), (int, float)):
+                group[name] += usage[name]
+    out = []
+    for variant, g in groups.items():
+        out.append({'variant': variant, 'results': g['results'],
+                    'avg_completion_tokens': round(g['completion_tokens'] / g['results']),
+                    'avg_generation_seconds': round(g['generation_seconds'] / g['timed_results'], 1) if g['timed_results'] else None,
+                    'overall_tokens_per_second': round(g['completion_tokens'] / g['generation_seconds'], 1) if g['generation_seconds'] else None,
+                    'decode_tokens_per_second': round(g['predicted_n'] / g['predicted_ms'] * 1000, 1) if g['predicted_ms'] else None,
+                    'draft_acceptance': round(g['draft_n_accepted'] / g['draft_n'], 3) if g['draft_n'] else None})
+    return {'variants': sorted(out, key=lambda item: item['variant'])}
 
 
 @app.get('/api/local-text-model')
@@ -2163,6 +2343,8 @@ def local_text_model_status():
     if not row:
         raise HTTPException(503, 'Model status is unavailable')
     row['desired_loaded'] = bool(row['desired_loaded'])
+    row['variants'] = local_model_variants()
+    row.pop('variants_json', None)
     if time.time() - row['heartbeat'] > 15:
         row['state'] = 'worker_offline'
         row['detail'] = 'Inference worker is not responding'

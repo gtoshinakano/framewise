@@ -156,7 +156,7 @@ def full_last_frame(initial, last):
 
 # -- video analysis: motion direction for one window of a cut -----------------------------------
 
-VIDEO_CONTRACT = 'direction-v1'
+VIDEO_CONTRACT = 'direction-v2'
 CAMERA_MOVES = ('static', 'pan left', 'pan right', 'tilt up', 'tilt down', 'zoom in', 'zoom out', 'push in', 'pull out', 'tracking', 'handheld', 'other')
 VIDEO_PERSON_TEXT = ('activity', 'travel', 'motion', 'speaking', 'emotion', 'end')
 
@@ -181,7 +181,7 @@ events: the distinct visible changes in time order, at most 6. Each event has st
 
 uncertainties: material limitations only, otherwise "none".
 
-Names: the listed characters were identified by the user in the first or last frame of the cut, so those names are certain. A character listed as in frame in the last frame is still visible at the end. Follow each one through the clip by place and look, use the exact name everywhere, and never call a listed character "a girl", "a boy" or "a person".
+Names: the listed characters were identified by the user in the first frame of the cut, so those names are certain. Follow each one through the clip by place and look, use the exact name everywhere, and never call a listed character "a girl", "a boy" or "a person". The video itself determines where each character ends; no end-frame box is supplied.
 
 Speech: when speech times are given they come from the audio track. A listed speaker who is on screen is probably the one talking then; check the mouth and report what you see. A voice can also come from off screen or be a thought, so a closed mouth during speech is a valid observation. "another voice" is someone who is not a listed character: never give that voice's owner a name, and label an unlisted person only by what you see.
 
@@ -204,16 +204,15 @@ def _clip_words(text, limit):
 
 
 def video_roster(first_people, last_people, initial=None):
-    """Who the video model should follow: the marked characters of both boundary frames.
+    """Who the video model should follow: the marked characters of the first frame.
 
-    ``first_people``/``last_people`` are the marked characters of the first and last frame (``None``
-    when that frame has no detection data). Each roster entry says where the character is boxed at
-    the start and at the end, and how the first-frame result described them, so a smaller video model
-    can tell people apart without being asked to describe them again.
+    ``first_people`` are the marked characters of the first frame. ``last_people`` is retained as
+    an optional compatibility input for older callers, but the current pipeline supplies None.
+    The first-frame result helps the video model follow named characters without being asked to
+    describe them again.
 
-    A box proves presence; a missing box proves nothing. The detector regularly finds nobody in a
-    last frame that still shows the same people (back views, partial figures), so ``at_end`` is True
-    or None, never False, and whether someone left the frame is for the video model to report.
+    The video model reports whether someone remains in frame or leaves; the current workflow does
+    not run character detection on the last frame.
     """
     described = {item.get('character_context_id'): item for item in (initial or {}).get('visible_characters', []) if isinstance(item, dict)}
     roster, seen = [], {}
@@ -380,9 +379,9 @@ def cut_direction(windows, roster=()):
     """One motion direction for the whole cut, merged from its windows without calling a model.
 
     Camera moves, activities and emotions are listed in the order the windows report them; a
-    character's ``end`` is the last window's. A character boxed in the last frame gets
-    ``in_last_frame: True`` and is listed in ``end_state.in_frame``: that presence is certain. Nobody is
-    ever listed as having left on the strength of a missing box; leaving is what ``end`` reports.
+    character's ``end`` is the last window's. Legacy callers may provide a roster with last-frame
+    detections, which still adds the historical positive ``in_last_frame`` confirmation. The current
+    workflow provides no such boxes, so new directions rely on the video model's ``end`` field.
     """
     analyses = [window['analysis'] for window in windows if isinstance(window, dict) and isinstance(window.get('analysis'), dict)]
     cameras = [analysis['camera'] for analysis in analyses if isinstance(analysis.get('camera'), dict)]

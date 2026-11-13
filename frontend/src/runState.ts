@@ -81,7 +81,7 @@ export function activeRunFor(jobs: Job[], cutId: string): Job | undefined {
 }
 
 export type Warning = { level: 'error' | 'warn' | 'info'; text: string }
-export type CharacterSummary = { boxes: number; autoUnverified: number; unknown: number; stale: boolean }
+export type CharacterSummary = { boxes: number; autoUnverified: number; unknown: number; stale: boolean; saving?: boolean }
 
 export function preflight(input: { mediaBusy: boolean; enabled: boolean; errors: VideoErrors; characters: CharacterSummary | null }): Warning[] {
   const out: Warning[] = []

@@ -91,6 +91,7 @@ const FACT_KEYS: [label: string, keys: string[]][] = [
   ['Model', ['model_id', 'model', 'llm_model', 'openrouter_model']],
   ['Provider', ['text_provider', 'provider']],
   ['Thinking', ['local_thinking', 'thinking']],
+  ['Text model variant', ['model_variant']], ['Decode speed (tok/s)', ['decode_tokens_per_second']], ['Draft acceptance', ['draft_acceptance']],
   ['Width', ['video_width']], ['Height', ['video_height']], ['Frames per second', ['video_fps']], ['Frame budget', ['video_frame_budget']],
   ['Stages', ['stages']], ['Workflow', ['workflow']],
 ]

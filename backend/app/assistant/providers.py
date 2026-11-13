@@ -87,7 +87,9 @@ class LocalQwen(Provider):
         from .. import local_text_runtime
         info = super().describe()
         info.update(managed=True, context_limit=self.context_limit(), busy=bool(local_text_runtime.runtime and local_text_runtime.runtime.gpu_busy))
-        info['models'] = [{'id': local_text_runtime.MODEL_ID, 'label': 'Qwen 3.6 35B A3B · Q4_K_M', 'context': self.context_limit()}]
+        runtime = local_text_runtime.runtime
+        variant = runtime.target_variant() if runtime else local_text_runtime.DEFAULT_VARIANT
+        info['models'] = [{'id': local_text_runtime.MODEL_ID, 'label': local_text_runtime.VARIANTS[variant]['label'], 'context': self.context_limit()}]
         return info
 
     @staticmethod

@@ -876,8 +876,8 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
                         followed.add(id(match))
                         fields = motion_fields(match)
                         if fields: char['motion'] = fields
-                # Leaving is what the video analysis reports for someone the last-frame boxes do not show.
-                # A missing box alone proves nothing: the detector often finds nobody in a last frame.
+                # Current motion results have no last-frame box confirmation. Keep honoring the
+                # positive in_last_frame flag on historical results, if one was saved.
                 gone = re.compile(r'^\s*(?:has\s+)?(?:left|leaves|exits|exited|out of)\b.*\bframe\b|^\s*left frame\b', re.I)
                 delta = [{'subject': person.get('character') or 'unknown', 'change': 'left frame'} for person in moving
                          if id(person) in followed and not person.get('in_last_frame') and gone.search(str(person.get('end') or ''))]

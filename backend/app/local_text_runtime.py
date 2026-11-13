@@ -1,6 +1,7 @@
 """Worker-owned local text model lifecycle; the API controls desired state via SQLite."""
 import os
 import json
+import shlex
 import socket
 import subprocess
 import tempfile
@@ -15,6 +16,56 @@ from . import db
 
 MODEL_ID = 'Qwen/Qwen3.6-35B-A3B:Q4_K_M'
 MODEL_REVISION = 'ggml-org:7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5'
+DEFAULT_VARIANT = 'standard'
+# Two builds of the same Qwen3.6-35B-A3B text model. ``mtp`` carries the multi-token-prediction
+# head that llama.cpp uses as its own draft model (speculative decoding); it is a larger file, so
+# it lives beside the standard one and the user switches between them in the text engine dialog.
+VARIANTS = {
+    'standard': {'label': 'Qwen 3.6 35B A3B · Q4_K_M', 'id': MODEL_ID, 'revision': MODEL_REVISION, 'size': 20419565568},
+    'mtp': {'label': 'Qwen 3.6 35B A3B · UD-Q4_K_M + MTP', 'id': 'unsloth/Qwen3.6-35B-A3B-MTP:UD-Q4_K_M',
+            'revision': 'unsloth:5bc3e238d916f48a861bac2f8a1990a0e9b7e98d', 'size': 22663387424},
+}
+MTP_DEFAULT_ARGS = '--spec-type draft-mtp --spec-draft-n-max 3'
+
+
+def known_variant(variant):
+    return variant if variant in VARIANTS else DEFAULT_VARIANT
+
+
+def model_id_for(variant):
+    return VARIANTS[known_variant(variant)]['id']
+
+
+def revision_for(variant):
+    return VARIANTS[known_variant(variant)]['revision']
+
+
+def variant_path(variant):
+    if known_variant(variant) == 'mtp':
+        return Path(os.environ.get('QWEN36_MTP_MODEL_PATH', '/models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'))
+    return Path(os.environ.get('QWEN36_MODEL_PATH', '/models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf'))
+
+
+def variant_args(variant):
+    """Extra llama-server arguments for a variant; the MTP flags can be replaced with QWEN36_MTP_ARGS."""
+    if known_variant(variant) != 'mtp':
+        return []
+    return shlex.split(os.environ.get('QWEN36_MTP_ARGS') or MTP_DEFAULT_ARGS)
+
+
+def variant_status(variant):
+    variant = known_variant(variant)
+    model = variant_path(variant)
+    if model.is_file():
+        return {'available': True, 'detail': 'Installed'}
+    partial = model.with_name(model.name + '.partial')
+    if partial.is_file():
+        try:
+            percent = min(100.0, 100 * partial.stat().st_size / VARIANTS[variant]['size'])
+        except OSError:
+            percent = 0.0
+        return {'available': False, 'detail': f'Downloading {percent:.0f}%'}
+    return {'available': False, 'detail': 'Not installed'}
 
 
 def text_job_concurrency():
@@ -41,13 +92,51 @@ class LocalTextRuntime:
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
         self.chat_users = 0
+        self.inflight = 0  # generation requests on the wire; the model is never switched under one
+        self.variant = None  # variant of the running llama-server
         self.held = threading.local()  # chat sessions held by the calling thread
         self.gpu_busy = False
         self.publish('unloaded', 'Worker ready')
+        self.publish_variants()
 
-    def publish(self, state, detail=''):
+    def publish_variants(self):
+        """Tell the API which model files are installed or downloading and which one is loaded."""
+        try:
+            with db.connect() as conn:
+                conn.execute('UPDATE local_text_model_state SET variants_json=? WHERE id=1',
+                             (json.dumps({name: {**variant_status(name), 'label': info['label']} for name, info in VARIANTS.items()}),))
+        except Exception:
+            pass  # a locked database must not stop the worker loop
+
+    def desired_variant(self):
+        row = db.one('SELECT local_model FROM text_generation_settings WHERE id=1')
+        return known_variant(row['local_model'] if row else None)
+
+    def target_variant(self):
+        """The variant new work should use: the selected one, or the standard one while it is not installed."""
+        want = self.desired_variant()
+        if want != DEFAULT_VARIANT and not variant_path(want).is_file():
+            return DEFAULT_VARIANT
+        return want
+
+    def can_switch(self):
+        """Nothing is generating or holding a chat session, other than the calling thread."""
+        return self.inflight == 0 and self.chat_users - getattr(self.held, 'count', 0) <= 0
+
+    def switch_pending(self):
+        """The user selected another variant than the one that is loaded (text lanes then claim no new work)."""
+        try:
+            return bool(self.process and self.process.poll() is None and self.target_variant() != self.variant)
+        except Exception:
+            return False
+
+    def publish(self, state, detail='', variant=None):
+        """Publish the state; ``variant`` ('' when nothing is loaded) is the variant of the running server."""
         with db.connect() as conn:
-            conn.execute('UPDATE local_text_model_state SET state=?,detail=?,heartbeat=? WHERE id=1', (state, detail[:1000], time.time()))
+            if variant is None:
+                conn.execute('UPDATE local_text_model_state SET state=?,detail=?,heartbeat=? WHERE id=1', (state, detail[:1000], time.time()))
+            else:
+                conn.execute('UPDATE local_text_model_state SET state=?,detail=?,heartbeat=?,variant=? WHERE id=1', (state, detail[:1000], time.time(), variant))
 
     def heartbeat(self, done):
         """Keep the worker visible during long jobs without changing its state."""
@@ -84,7 +173,26 @@ class LocalTextRuntime:
         if self.log:
             self.log.close(); self.log = None
         self.url = None
-        self.publish('unloaded', detail)
+        self.variant = None
+        self.publish('unloaded', detail, '')
+
+    @contextmanager
+    def request(self, cancel_check=None):
+        """Yield ``(server url, variant)`` for one generation request.
+
+        The server is (re)started for the selected variant first, but only when no other request or
+        chat session is using the running one; the request is counted so a later switch waits for it.
+        """
+        with self.lock:
+            url = self._ensure(cancel_check)
+            self.inflight += 1
+            variant = self.variant
+        try:
+            yield url, variant
+        finally:
+            with self.changed:
+                self.inflight -= 1
+                self.changed.notify_all()
 
     def pending_nonlocal_work(self):
         row = db.one("SELECT pipeline,payload_json FROM jobs WHERE status='queued' AND pipeline IN ('analyze','regen','consistency_summary','review_answers','character_detect','composition_compact') ORDER BY created_at,rowid LIMIT 1")
@@ -107,15 +215,16 @@ class LocalTextRuntime:
         return provider != 'local'
 
     @staticmethod
-    def model_path():
-        return Path(os.environ.get('QWEN36_MODEL_PATH', '/models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf'))
+    def model_path(variant=DEFAULT_VARIANT):
+        return variant_path(variant)
 
-    def download_status(self):
-        model = self.model_path()
+    def download_status(self, variant=None):
+        variant = variant or self.target_variant()
+        model = variant_path(variant)
         partial = model.with_name(model.name + '.partial')
         if not model.is_file() and partial.is_file():
             size = partial.stat().st_size
-            percent = min(100.0, 100 * size / 20419565568)
+            percent = min(100.0, 100 * size / VARIANTS[variant]['size'])
             return partial, f'Downloading model: {percent:.1f}% (includes checksum verification)'
         return None, ''
 
@@ -159,14 +268,18 @@ class LocalTextRuntime:
             return self._ensure(cancel_check, idle_load)
 
     def _ensure(self, cancel_check=None, idle_load=False):
+        variant = self.target_variant()
         if self.process and self.process.poll() is None:
-            self.publish('loaded', 'Ready')
-            return self.url
-        self._stop()
+            if variant == self.variant or not self.can_switch():
+                self.publish('loaded', 'Ready')
+                return self.url
+            self._stop(f'Switching to {VARIANTS[variant]["label"]}')
+        else:
+            self._stop()
         runtime = Path(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'))
-        model = self.model_path()
+        model = variant_path(variant)
         while not model.is_file():
-            partial, detail = self.download_status()
+            partial, detail = self.download_status(variant)
             if partial is None:
                 break
             if cancel_check:
@@ -193,10 +306,11 @@ class LocalTextRuntime:
         env = os.environ.copy()
         env.pop('OPENROUTER_API_KEY', None)
         env['LD_LIBRARY_PATH'] = str(runtime.parent) + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
-        self.publish('loading', 'Loading Qwen 3.6 into GPU memory')
+        loading = 'Loading Qwen 3.6 into GPU memory' + (' (MTP)' if variant == 'mtp' else '')
+        self.publish('loading', loading)
         try:
             self.process = subprocess.Popen([str(runtime), '-m', str(model), '--host', '127.0.0.1', '--port', str(port),
-                '--n-gpu-layers', '99', '--ctx-size', os.environ.get('QWEN36_CONTEXT_SIZE', '65536'), '--parallel', str(text_job_concurrency()), '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048')],
+                '--n-gpu-layers', '99', '--ctx-size', os.environ.get('QWEN36_CONTEXT_SIZE', '65536'), '--parallel', str(text_job_concurrency()), '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048'), *variant_args(variant)],
                 stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT, env=env)
             self.url = f'http://127.0.0.1:{port}'
             deadline = time.monotonic() + 600
@@ -210,12 +324,13 @@ class LocalTextRuntime:
                 try:
                     with urllib.request.urlopen(self.url + '/health', timeout=2) as response:
                         if response.status == 200:
-                            self.failed = False; self.publish('loaded', 'Ready'); return self.url
+                            self.failed = False; self.variant = variant
+                            self.publish('loaded', 'Ready', variant); return self.url
                 except (OSError, urllib.error.URLError):
                     pass
                 if time.monotonic() > deadline:
                     raise RuntimeError('Local model did not become ready in time')
-                self.publish('loading', 'Loading Qwen 3.6 into GPU memory')
+                self.publish('loading', loading)
                 time.sleep(1)
         except Exception as exc:
             self._stop(); self.failed = True; self.publish('error', str(exc)); raise
@@ -225,6 +340,7 @@ class LocalTextRuntime:
             self._reconcile()
 
     def _reconcile(self):
+        self.publish_variants()
         want = self.desired()
         if not want:
             self.failed = False
@@ -241,7 +357,14 @@ class LocalTextRuntime:
                 else:
                     self.publish('downloading' if partial else 'unloaded', detail)
         elif self.process and self.process.poll() is None:
-            self.publish('loaded', 'Ready')
+            if self.switch_pending() and self.can_switch():
+                self._stop('Switching text model')
+                try:
+                    self.ensure(idle_load=True)
+                except Exception:
+                    pass
+            else:
+                self.publish('loaded', 'Switching text model when running jobs finish' if self.switch_pending() else 'Ready')
         elif not self.failed:
             try:
                 self.ensure(idle_load=True)

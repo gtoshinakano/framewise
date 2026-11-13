@@ -1,8 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowRight, ChevronDown, ChevronsRight, Film, Image as ImageIcon, Layers, Play, RotateCcw, Save, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronsRight, Film, Image as ImageIcon, Layers, Play, RotateCcw, Save, SlidersHorizontal } from 'lucide-react'
 import { api, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type VisualStage } from './api'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
+import { FrameImage } from './FrameImage'
 import { automaticVideoFps, estimatedVideoFrames } from './analysisFrames'
 import { ANSWERS_BATCH_REASONS, CHAIN_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
 import { ActionButton, Elapsed, NoticeStrip, Skeleton, StateChip, StatusChip, WarningLine, type Notice } from './RunUi'
@@ -65,9 +66,30 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const [optimistic, setOptimistic] = useState<Optimistic>({})
   const [characters, setCharacters] = useState<CharacterSummary | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [boundaryDraft, setBoundaryDraft] = useState<Partial<Record<'first' | 'last', { times: number[]; index: number; original: number }>>>({})
+  const [boundaryLoading, setBoundaryLoading] = useState<'first' | 'last' | null>(null)
+  const boundaryBase = useRef<{ start: number; end: number } | null>(null)
+  const [boundaryError, setBoundaryError] = useState('')
+  const [movingBoundary, setMovingBoundary] = useState(false)
   const configRef = useRef(config); configRef.current = config
   const savedRef = useRef(saved); savedRef.current = saved
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const previewRequests = useRef(new Map<string, Promise<{ times: number[]; anchor: number }>>())
+  const getBoundaryPreview = useCallback((position: 'first' | 'last') => {
+    const key = `${cutId}:${cut.start_time}:${cut.end_time}:${cut.first_frame_time}:${cut.last_frame_time}:${position}`
+    let request = previewRequests.current.get(key)
+    if (!request) {
+      request = api<{ times: number[]; anchor: number }>(`/cuts/${cutId}/boundary-preview?position=${position}`)
+      previewRequests.current.set(key, request)
+      void request.catch(() => previewRequests.current.delete(key))
+    }
+    return request
+  }, [cutId, cut.start_time, cut.end_time, cut.first_frame_time, cut.last_frame_time])
+  useEffect(() => {
+    // Probe nearby timestamps in the background, so the first click normally paints immediately.
+    if (cuts.some(item => item.cut_index === cut.cut_index - 1)) void getBoundaryPreview('first').catch(() => {})
+    if (cuts.some(item => item.cut_index === cut.cut_index + 1)) void getBoundaryPreview('last').catch(() => {})
+  }, [getBoundaryPreview, cuts, cut.cut_index])
 
   // The cached settings paint at once; the request only replaces them if the user has not started editing.
   const prefetchRef = useRef(prefetchIds); prefetchRef.current = prefetchIds
@@ -82,6 +104,21 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   useEffect(() => { if (!charactersTarget || projectId) return; let active = true; void loadProjectId(episodeId, cutId).then(id => { if (active) setProjectId(id) }).catch(() => {}); return () => { active = false } }, [charactersTarget, projectId, episodeId, cutId])
   useEffect(() => { onConfigChange(config) }, [config, onConfigChange])
   useEffect(() => () => clearTimeout(noticeTimer.current), [])
+  useEffect(() => {
+    // Warm the adjacent previews after a pause, without delaying rapid stepping.
+    const timer = setTimeout(() => {
+      for (const draft of Object.values(boundaryDraft)) {
+        if (!draft) continue
+        for (const index of [draft.index - 1, draft.index + 1]) {
+          const time = draft.times[index]
+          if (time === undefined) continue
+          const image = new Image()
+          image.src = `/api/cuts/${cutId}/boundary-preview-frame?time=${time}`
+        }
+      }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [boundaryDraft, cutId])
 
   const errors = useMemo(() => config ? videoSettingsErrors(config) : {}, [config])
   const invalid = hasVideoErrors(errors)
@@ -95,12 +132,66 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const counts = useMemo(() => batchCounts(cuts, cut), [cuts, cut])
   const warnings = useMemo(() => preflight({ mediaBusy: busy, enabled, errors, characters }), [busy, enabled, errors, characters])
 
-  const settingsReason = pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !enabled ? 'Analysis is disabled for this cut' : !config ? 'Settings are still loading' : invalid ? 'Fix the video analysis settings first' : ''
-  const batchReason = pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !config ? 'Settings are still loading' : invalid ? 'Fix the video analysis settings first' : ''
+  const boundaryDirty = Object.values(boundaryDraft).some(draft => draft && draft.index !== draft.original)
+  const settingsReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !enabled ? 'Analysis is disabled for this cut' : !config ? 'Settings are still loading' : invalid ? 'Fix the video analysis settings first' : ''
+  const batchReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !config ? 'Settings are still loading' : invalid ? 'Fix the video analysis settings first' : ''
   const textReason = pending ? 'Another action is being queued' : !cut.active ? 'Only active cuts can be queued' : ''
   const consistencyReason = pending ? 'Another action is being queued' : !enabled ? 'Analysis is disabled for this cut' : ''
   const allTextReason = pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : ''
   const nextReason = settingsReason || (!onNext ? 'This is the last cut' : '')
+  const precedingCut = cuts.find(item => item.cut_index === cut.cut_index - 1)
+  const followingCut = cuts.find(item => item.cut_index === cut.cut_index + 1)
+  const boundaryBusy = movingBoundary || !!characters?.saving || jobs.some(job => job.status === 'queued' || job.status === 'running')
+  async function moveBoundary(position: 'first' | 'last', direction: -1 | 1) {
+    if (boundaryBusy || boundaryLoading) return
+    setBoundaryError('')
+    if (!boundaryDirty) boundaryBase.current = { start: cut.start_time, end: cut.end_time }
+    let draft = boundaryDraft[position]
+    if (!draft) {
+      setBoundaryLoading(position)
+      try {
+        const result = await getBoundaryPreview(position)
+        if (!result.times.length) throw new Error('No frames found near this boundary.')
+        const original = result.times.reduce((best, time, index) => Math.abs(time - result.anchor) < Math.abs(result.times[best] - result.anchor) ? index : best, 0)
+        draft = { times: result.times, index: original, original }
+      } catch (error) { setBoundaryError((error as Error).message); return } finally { setBoundaryLoading(null) }
+    }
+    let index = draft.index + direction
+    // Extend the timestamp window on demand; the first probe is only a small, fast slice.
+    if (index < 0 || index >= draft.times.length - (position === 'last' ? 1 : 0)) {
+      setBoundaryLoading(position)
+      try {
+        const edge = draft.times[draft.index]
+        const around = Math.max(0, Math.min(cuts[cuts.length - 1]?.end_time ?? cut.end_time, edge + direction * 2))
+        const result = await api<{ times: number[] }>(`/cuts/${cutId}/boundary-preview?position=${position}&around=${around}`)
+        const times = [...new Set([...draft.times, ...result.times])].sort((a, b) => a - b)
+        const originalTime = draft.times[draft.original]
+        const currentTime = draft.times[draft.index]
+        draft = { times, original: times.indexOf(originalTime), index: times.indexOf(currentTime) }
+        index = draft.index + direction
+      } catch (error) { setBoundaryError((error as Error).message); return } finally { setBoundaryLoading(null) }
+    }
+    // The frame after the selected last frame is the new shared boundary.
+    if (index < 0 || index >= draft.times.length - (position === 'last' ? 1 : 0)) { setBoundaryError('No more frames are available in that direction.'); return }
+    const boundary = draft.times[index + (position === 'last' ? 1 : 0)]
+    const start = position === 'first' ? boundary : boundaryDraft.first && boundaryDraft.first.index !== boundaryDraft.first.original ? boundaryDraft.first.times[boundaryDraft.first.index] : cut.start_time
+    const end = position === 'last' ? boundary : boundaryDraft.last && boundaryDraft.last.index !== boundaryDraft.last.original ? boundaryDraft.last.times[boundaryDraft.last.index + 1] : cut.end_time
+    if (start >= end || (precedingCut && start <= precedingCut.start_time) || (followingCut && end >= followingCut.end_time)) { setBoundaryError('That frame would leave a cut without a positive duration.'); return }
+    setBoundaryDraft(value => ({ ...value, [position]: { ...draft!, index } }))
+  }
+  async function saveBoundaries() {
+    if (!boundaryDirty || boundaryBusy) return
+    const first = boundaryDraft.first
+    const last = boundaryDraft.last
+    const start = first && first.index !== first.original ? first.times[first.index] : cut.start_time
+    const end = last && last.index !== last.original ? last.times[last.index + 1] : cut.end_time
+    setMovingBoundary(true); setBoundaryError('')
+    try {
+      await api(`/cuts/${cutId}/timing`, { method: 'PUT', body: JSON.stringify({ start_time: start, end_time: end, expected_start_time: boundaryBase.current?.start ?? cut.start_time, expected_end_time: boundaryBase.current?.end ?? cut.end_time }) })
+      setBoundaryDraft({}); boundaryBase.current = null
+      await onStarted()
+    } catch (error) { setBoundaryError((error as Error).message) } finally { setMovingBoundary(false) }
+  }
 
   function show(next: Notice) {
     clearTimeout(noticeTimer.current)
@@ -213,6 +304,25 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
       {notice && <NoticeStrip notice={notice} onDismiss={() => setNotice(null)} />}
     </section>
 
+    <section aria-label="Adjust cut boundaries" className="space-y-3 rounded-xl border hairline bg-[#171c25] p-3">
+      <h3 className="text-sm font-semibold">Adjust cut boundaries</h3>
+      <p className="muted text-[11px] leading-4">Preview frames with Earlier and Later, then save the boundaries when ready. The adjacent cuts move with them. Existing results and boxes stay saved; detect characters again if needed.</p>
+      <div className="grid grid-cols-2 gap-2">
+        {(['first', 'last'] as const).map(position => <figure key={position} className="min-w-0">
+          <FrameImage className="aspect-video w-full rounded bg-black object-contain" src={boundaryDraft[position] && boundaryDraft[position]!.index !== boundaryDraft[position]!.original ? `/api/cuts/${cut.id}/boundary-preview-frame?time=${boundaryDraft[position]!.times[boundaryDraft[position]!.index]}` : `/api/cuts/${cut.id}/frame/${position}?v=${position === 'first' ? `${cut.start_time}-${cut.first_frame_time}` : `${cut.end_time}-${cut.last_frame_time}`}`} alt={position === 'first' ? 'Current first frame' : 'Current last frame'} />
+          <figcaption className="muted mt-1 text-[11px]">{position === 'first' ? 'First frame' : 'Last frame'}</figcaption>
+        </figure>)}
+      </div>
+      {([['Start', precedingCut], ['End', followingCut ? cut : undefined]] as const).map(([label, boundaryCut]) => <div key={label} className="flex items-center gap-2">
+        <span className="w-10 text-xs font-semibold">{label}</span>
+        <ActionButton compact icon={<ArrowLeft size={13} />} disabled={boundaryBusy || !!boundaryLoading || !boundaryCut} title={`Preview the ${label.toLowerCase()} boundary one frame earlier`} onClick={() => void moveBoundary(label === 'Start' ? 'first' : 'last', -1)}>Earlier</ActionButton>
+        <ActionButton compact icon={<ArrowRight size={13} />} disabled={boundaryBusy || !!boundaryLoading || !boundaryCut} title={`Preview the ${label.toLowerCase()} boundary one frame later`} onClick={() => void moveBoundary(label === 'Start' ? 'first' : 'last', 1)}>Later</ActionButton>
+      </div>)}
+      <div className="flex gap-2"><ActionButton compact icon={<Save size={13} />} disabled={!boundaryDirty || boundaryBusy || !!boundaryLoading} pending={movingBoundary} onClick={() => void saveBoundaries()}>Save boundaries</ActionButton><ActionButton compact disabled={!boundaryDirty || boundaryBusy || !!boundaryLoading} onClick={() => { setBoundaryDraft({}); boundaryBase.current = null; setBoundaryError('') }}>Discard</ActionButton></div>
+      {boundaryLoading && <p role="status" className="muted text-xs">Loading nearby frames…</p>}
+      {boundaryError && <p role="alert" className="text-xs text-[#ff9fa7]">{boundaryError}</p>}
+    </section>
+
     {/* Batch actions: what each button does is stated by its column and row, not by a long label. */}
     <section aria-label="Queue more" className="rounded-xl border hairline bg-[#171c25] p-3">
       <h3 className="mb-1 flex items-center gap-2 text-sm font-semibold"><Layers size={15} className="text-[#b496ff]" aria-hidden /> Queue more</h3>
@@ -275,7 +385,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
     </details>}
 
     {charactersTarget && createPortal(projectId
-      ? <CharacterDetectionPanel cutId={cutId} projectId={projectId} jobs={jobs} onStarted={onStarted} onSummary={setCharacters} noCharacters={!!cut.no_characters} />
+      ? <CharacterDetectionPanel cutId={cutId} cutStart={cut.start_time} cutEnd={cut.end_time} projectId={projectId} jobs={jobs} onStarted={onStarted} onSummary={setCharacters} noCharacters={!!cut.no_characters} boundaryKey={`${cut.start_time}:${cut.end_time}`} />
       : <div className="space-y-2 rounded-xl border hairline bg-[#171c25] p-3" aria-busy="true" aria-label="Loading characters"><Skeleton className="h-5 w-48" /><div className="grid gap-3 xl:grid-cols-2"><Skeleton className="aspect-video" /><Skeleton className="aspect-video" /></div></div>, charactersTarget)}
     {children}
   </div>

@@ -25,8 +25,6 @@ from . import anime_gallery, anime_matching, anime_models, db, media, worker
 
 log = logging.getLogger('framewise.character_detect')
 PHASES = ('boxes', 'embeddings', 'complete')
-SAME_TRACK_REASON = 'Short same-cut track with matching appearance and position'
-ADJACENT_REASON = 'Strong unique appearance match to the preceding cut boundary'
 BATCH_SIZE = 16
 
 # Kept for callers that crop outside the gallery module.
@@ -48,7 +46,7 @@ def timed(label, timings=None, **fields):
 
 
 def frame_cache_dir(episode):
-    """Temporary boundary frames shared by the phases; removed when detection completes."""
+    """Temporary first frames shared by the phases; removed when detection completes."""
     return media.episode_dir(episode['project_id'], episode['id']) / 'character-frames'
 
 
@@ -73,7 +71,6 @@ class BulkRuntime:
         self.gallery = None
         self.gallery_project = None
         self.prepared_frames = {}
-        self.previous_cut = None
 
     def get_detector(self):
         if self.detector is None:
@@ -99,7 +96,6 @@ class BulkRuntime:
         import gc
         self.detector = self.embedder = self.gallery = None
         self.prepared_frames.clear()
-        self.previous_cut = None
         gc.collect()
         try:
             import torch
@@ -117,16 +113,16 @@ def _valid_cut(conn, job_id, owner, episode_id, cut):
 
 
 def _extract_frames(original, cut, cache, saved=None):
-    """Return frame metadata and RGB images, reusing cached temporary JPEGs when present."""
+    """Return the first frame and RGB image, reusing its cached JPEG when present."""
     from PIL import Image
     times = media.cut_frame_times(cut['start_time'], cut['end_time'])
     frames, images = [], []
-    for index, position in enumerate(('first', 'last')):
+    for index, position in enumerate(('first',)):
         existing = next((frame for frame in saved or [] if frame['position'] == position), None)
         target = Path(cache) / f"{cut['id']}-{position}.jpg"
         if not (existing and target.is_file()):
             actual = media.extract_cut_frame(original, target, existing['time'] if existing else times[index],
-                cut['start_time'], cut['end_time'], width=1280, last=(position == 'last' and existing is None),
+                cut['start_time'], cut['end_time'], width=1280, last=False,
                 seek_tolerance=.000002 if existing else 0)
         else:
             actual = existing['time']
@@ -190,24 +186,8 @@ def _target_vectors(job_id, owner, detections, crops, model):
 
 
 def _detection_crop(images, detection):
-    """JPEG crop of one detection from its boundary frame (images are [first, last])."""
-    return _crop_jpeg(images[0 if detection['position'] == 'first' else 1], json.loads(detection['box_json']))
-
-
-def _observations(cut, frames, detections, vectors):
-    """Pair each detection with its frame time so boxes can be linked across frames."""
-    times = {frame['position']: frame for frame in frames}
-    return [{'cut_id': cut['id'], 'time': times[d['position']]['time'], 'box': json.loads(d['box_json']),
-             'image_size': times[d['position']]['image_size'], 'embedding': vector} for d, vector in zip(detections, vectors)]
-
-
-def _same_cut_links(detections, observations, min_similarity=None):
-    """Map each last-frame detection index to the first-frame one it clearly continues."""
-    first = [i for i, d in enumerate(detections) if d['position'] == 'first']
-    last = [i for i, d in enumerate(detections) if d['position'] == 'last']
-    options = {} if min_similarity is None else {'min_similarity': min_similarity}
-    links = anime_matching.match_tracks([observations[i] for i in first], [observations[i] for i in last], **options)
-    return {last[j]: first[i] for j, i in links.items()}
+    """JPEG crop of a detection from the first frame."""
+    return _crop_jpeg(images[0], json.loads(detection['box_json']))
 
 
 def _finish(job_id, owner, episode_id, cut):
@@ -228,7 +208,7 @@ class _Labeller:
         self.job_id, self.owner, self.episode, self.cut = job_id, owner, episode, cut
         self.detections = detections
         # A character appears at most once per frame.
-        self.present = {'first': set(), 'last': set()}
+        self.present = {'first': set()}
         for detection in detections:
             if detection['character_context_id']:
                 self.present[detection['position']].add(detection['character_context_id'])
@@ -255,18 +235,6 @@ class _Labeller:
             self.present[detection['position']].add(character_id)
         return bool(updated)
 
-    def propagate(self, linked, model_id, revision):
-        """Copy a label along each same-cut track, in either direction, until nothing changes."""
-        changed = True
-        while changed:
-            changed = False
-            for last, first in linked.items():
-                for source, target in ((first, last), (last, first)):
-                    character_id = self.detections[source]['character_context_id']
-                    if character_id and self.assign(target, character_id, SAME_TRACK_REASON, model_id, revision):
-                        changed = True
-
-
 def _store_candidates(job_id, owner, detections, candidates):
     with db.connect() as conn:
         worker.require_lease(conn, job_id, owner)
@@ -277,20 +245,18 @@ def _store_candidates(job_id, owner, detections, candidates):
 
 
 def _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings):
-    """Embed the cut's boxes, match them with the gallery and propagate along tracks.
-
-    Returns (linked, next_tracks) for the next cut.
-    """
+    """Embed first-frame boxes and match them with the gallery."""
     gallery = runtime.get_gallery(episode['project_id'], lease_check, timings)
+    # Older runs can still contain last-frame boxes. New recognition only spends
+    # time matching first-frame boxes; legacy boxes remain stored and viewable.
+    detections = [d for d in detections if d['position'] == 'first']
     if not len(gallery) or not detections:
-        return {}, []
+        return
     model = runtime.get_embedder()
     defaults = model.defaults
     worker.stage(job_id, owner, episode['id'], f'Matching characters with {model.label}')
     with timed('embeddings', timings, cut=cut.get('cut_index'), detections=len(detections)):
         vectors = _target_vectors(job_id, owner, detections, [_detection_crop(images, d) for d in detections], model)
-    observations = _observations(cut, frames, detections, vectors)
-    linked = _same_cut_links(detections, observations, defaults['track'])
     labeller = _Labeller(job_id, owner, episode, cut, detections)
     threshold = anime_matching.env_fraction('ANIME_REID_MIN_SIMILARITY', defaults['similarity'])
     margin = anime_matching.env_fraction('ANIME_REID_MIN_MARGIN', defaults['margin'])
@@ -312,21 +278,8 @@ def _recognize(job_id, owner, runtime, episode, cut, frames, images, detections,
                               f'{model.label} similarity {ranked[0][1]:.2f} to your confirmed labels{runner_up}'))
     for score, index, character_id, reason in sorted(proposals, key=lambda item: -item[0]):
         labeller.assign(index, character_id, reason, model.model_id, model.revision)
-    labeller.propagate(linked, model.model_id, model.revision)
-    previous = runtime.previous_cut
-    if previous and previous['episode_id'] == episode['id'] and abs(previous['end_time'] - cut['start_time']) <= .000001:
-        # A previous identity must appear only once on its boundary;
-        # otherwise the source track is already ambiguous.
-        tracks = [track for track in previous['tracks'] if sum(t['character_id'] == track['character_id'] for t in previous['tracks']) == 1]
-        first = [i for i, d in enumerate(detections) if d['position'] == 'first']
-        matches = anime_matching.match_adjacent_appearances(tracks, [observations[i] for i in first], defaults['adjacent'])
-        for j, i in matches.items():
-            labeller.assign(first[j], tracks[i]['character_id'], ADJACENT_REASON, model.model_id, model.revision)
-        labeller.propagate(linked, model.model_id, model.revision)
     _store_candidates(job_id, owner, detections, candidates)
-    next_tracks = [{'character_id': d['character_context_id'], 'embedding': vectors[i]}
-                   for i, d in enumerate(detections) if d['position'] == 'last' and d['character_context_id']]
-    return linked, next_tracks
+    return
 
 
 def process(job_id, owner, runtime):
@@ -347,7 +300,6 @@ def process(job_id, owner, runtime):
         lease_check = lambda: inference_worker.check_summary_lease(job_id, owner)
         cache = frame_cache_dir(episode)
         cache.mkdir(parents=True, exist_ok=True)
-        next_tracks = []
         label = f"cut={cut.get('cut_index')}"
         run = db.one('SELECT * FROM character_detection_runs WHERE job_id=?', (job_id,))
         if not run and mode == 'recognize':
@@ -384,19 +336,17 @@ def process(job_id, owner, runtime):
         detections = db.all_rows('SELECT * FROM character_detections WHERE run_id=? ORDER BY rowid', (run['id'],))
         phase = run['phase']
         if phase == 'boxes':
-            if any(d['label_source'] is None for d in detections):
+            if any(d['position'] == 'first' and d['label_source'] is None for d in detections):
                 frames, images = frames_and_images()
-                _, next_tracks = _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings)
+                _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings)
             _set_phase(job_id, owner, run['id'], 'embeddings', timings)
             phase = 'embeddings'
         if phase == 'embeddings':
             _set_phase(job_id, owner, run['id'], 'complete', timings)
         _finish(job_id, owner, episode['id'], cut)
         clear_cut_frames(episode, cut['id'])
-        runtime.previous_cut = {'episode_id': episode['id'], 'end_time': cut['end_time'], 'tracks': next_tracks}
         log.info('character-detect %s finished mode=%s total=%.2fs timings_ms=%s', label, mode, time.perf_counter() - started, timings)
     except Exception as exc:
-        runtime.previous_cut = None
         inference_worker.fail_job(job_id, owner, job['episode_id'], exc)
         inference_worker.log.exception('Bulk anime character detection failed for job %s', job_id)
 
@@ -426,7 +376,7 @@ def _claim_batch(first_job, first_owner, limit=BATCH_SIZE):
 
 
 def _prepare_frames(claimed, runtime):
-    """Extract the boundary frames of every claimed cut that still needs them, in parallel."""
+    """Extract the first frame of every claimed cut that still needs it, in parallel."""
     from . import inference_worker
     work = []
     for job_id, owner in claimed:
@@ -466,7 +416,7 @@ def _prepare_frames(claimed, runtime):
 
 
 def _detect_batch(claimed, runtime):
-    """Detect boundary frames for several leased cuts in one GPU invocation."""
+    """Detect first-frame boxes for several leased cuts in one GPU invocation."""
     from . import inference_worker
     prepared = []
     for job_id, owner in claimed:
@@ -512,10 +462,12 @@ def _detect_batch(claimed, runtime):
         for job, owner, cut, episode, frames, images, timings in prepared:
             runtime.prepared_frames[job['id']] = (frames, images)
         return
-    for index, (job, owner, cut, episode, frames, images, timings) in enumerate(prepared):
+    box_index = 0
+    for job, owner, cut, episode, frames, images, timings in prepared:
         try:
-            for frame, boxes in zip(frames, all_boxes[index * 2:index * 2 + 2]):
-                frame['boxes'] = boxes
+            for frame in frames:
+                frame['boxes'] = all_boxes[box_index]
+                box_index += 1
             timings['boxes'] = per_cut_ms
             _save_run(job, owner, episode, cut, frames, detector, timings)
             if json.loads(job['payload_json']).get('phase') != 'boxes':

@@ -27,6 +27,92 @@ def sample_video(path: Path):
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_frame_step_moves_both_cuts_and_preserves_results(self):
+        from app.main import app
+        from app import db, media
+        with tempfile.TemporaryDirectory() as temp:
+            old = db.DATA_DIR, db.DB_PATH, media.DATA_DIR
+            db.DATA_DIR = media.DATA_DIR = Path(temp)
+            db.DB_PATH = Path(temp) / 'app.sqlite3'
+            try:
+                video = Path(temp) / 'sample.mp4'
+                sample_video(video)
+                with TestClient(app) as client:
+                    imported = client.post('/api/import', data={'project_title': 'Boundary'}, files={'file': ('sample.mp4', video.read_bytes(), 'video/mp4')})
+                    self.assertEqual(imported.status_code, 200, imported.text)
+                    episode_id = imported.json()['episode']['id']
+                    def ready():
+                        for _ in range(200):
+                            episode = client.get(f'/api/episodes/{episode_id}').json()
+                            if episode['status'] == 'ready': return episode
+                            if episode['status'] == 'failed': self.fail(episode['error'])
+                            time.sleep(.1)
+                        self.fail('Media job timed out')
+                    ready()
+                    self.assertEqual(client.post(f'/api/episodes/{episode_id}/run', json={'pipeline': 'hardcuts'}).status_code, 200)
+                    before = ready()['cuts']
+                    self.assertEqual(len(before), 3)
+                    first, second = before[:2]
+                    result = client.post(f"/api/cuts/{first['id']}/analysis-results", json={'kind': 'cut_description', 'content': 'Keep this'}).json()
+                    # Previewing is read-only; the selected frame can be committed once.
+                    preview = client.get(f"/api/cuts/{first['id']}/boundary-preview", params={'position': 'last'})
+                    self.assertEqual(preview.status_code, 200, preview.text)
+                    data = preview.json()
+                    original = min(range(len(data['times'])), key=lambda i: abs(data['times'][i] - data['anchor']))
+                    frame_time = data['times'][original - 1]
+                    image = client.get(f"/api/cuts/{first['id']}/boundary-preview-frame", params={'time': frame_time})
+                    self.assertEqual(image.status_code, 200, image.text)
+                    self.assertTrue(image.headers['content-type'].startswith('image/jpeg'))
+                    self.assertEqual(client.get(f'/api/episodes/{episode_id}').json()['cuts'][0]['end_time'], first['end_time'])
+                    stale = client.put(f"/api/cuts/{first['id']}/timing", json={'start_time': first['start_time'], 'end_time': frame_time, 'expected_start_time': first['start_time'], 'expected_end_time': first['end_time'] + 1})
+                    self.assertEqual(stale.status_code, 409)
+                    response = client.post(f"/api/cuts/{first['id']}/boundary-frame", json={'direction': 'earlier'})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    after = ready()['cuts']
+                    self.assertEqual([c['id'] for c in after], [c['id'] for c in before])
+                    self.assertAlmostEqual(after[0]['end_time'], first['end_time'] - .04, places=5)
+                    self.assertEqual(after[0]['end_time'], after[1]['start_time'])
+                    self.assertAlmostEqual(after[0]['last_frame_time'], .92, places=5)
+                    self.assertAlmostEqual(after[1]['first_frame_time'], .96, places=5)
+                    self.assertEqual(after[0]['first_frame_time'], first['first_frame_time'])
+                    self.assertEqual(after[1]['last_frame_time'], second['last_frame_time'])
+                    self.assertEqual(client.get(f"/api/cuts/{first['id']}/analysis-results").json()[0]['id'], result['id'])
+                    response = client.post(f"/api/cuts/{first['id']}/boundary-frame", json={'direction': 'later'})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    restored = ready()['cuts']
+                    self.assertAlmostEqual(restored[0]['end_time'], first['end_time'], places=5)
+                    self.assertEqual(restored[0]['end_time'], restored[1]['start_time'])
+                    # Some episodes have a saved last-frame preview shortened
+                    # without moving the cut boundary. Step from that visible
+                    # frame and move the adjacent cut to the resulting boundary.
+                    with db.connect() as conn:
+                        conn.execute('UPDATE cuts SET last_frame_time=? WHERE id=?', (.88, first['id']))
+                    response = client.post(f"/api/cuts/{first['id']}/boundary-frame", json={'direction': 'earlier', 'anchor': 'end'})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    adjusted = ready()['cuts']
+                    self.assertAlmostEqual(adjusted[0]['last_frame_time'], .84, places=5)
+                    self.assertAlmostEqual(adjusted[0]['end_time'], .88, places=5)
+                    self.assertEqual(adjusted[0]['end_time'], adjusted[1]['start_time'])
+                    response = client.post(f"/api/cuts/{first['id']}/boundary-frame", json={'direction': 'later', 'anchor': 'start'})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    adjusted = ready()['cuts']
+                    self.assertAlmostEqual(adjusted[1]['first_frame_time'], .92, places=5)
+                    self.assertEqual(client.post(f"/api/cuts/{restored[-1]['id']}/boundary-frame", json={'direction': 'later'}).status_code, 409)
+                    self.assertEqual(client.post(f"/api/cuts/{first['id']}/boundary-frame", json={'direction': 'sideways'}).status_code, 422)
+                    current = ready()['cuts']
+                    preview = client.get(f"/api/cuts/{first['id']}/boundary-preview", params={'position': 'last'}).json()
+                    index = min(range(len(preview['times'])), key=lambda i: abs(preview['times'][i] - preview['anchor']))
+                    new_end = preview['times'][index]  # boundary after the previous visible frame
+                    response = client.put(f"/api/cuts/{first['id']}/timing", json={'start_time': current[0]['start_time'], 'end_time': new_end, 'expected_start_time': current[0]['start_time'], 'expected_end_time': current[0]['end_time']})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    committed = ready()['cuts']
+                    self.assertAlmostEqual(committed[0]['end_time'], new_end, places=6)
+                    self.assertEqual(committed[0]['end_time'], committed[1]['start_time'])
+                    self.assertAlmostEqual(committed[0]['last_frame_time'], preview['times'][index - 1], places=5)
+                    self.assertEqual(client.get(f"/api/cuts/{first['id']}/analysis-results").json()[0]['id'], result['id'])
+            finally:
+                db.DATA_DIR, db.DB_PATH, media.DATA_DIR = old
+
     def test_detect_inside_selected_cut_preserves_neighbors_and_archives(self):
         from app.main import app
         from app import db, media

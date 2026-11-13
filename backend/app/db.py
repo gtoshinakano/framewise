@@ -65,12 +65,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS local_text_model_state (
             id INTEGER PRIMARY KEY CHECK(id=1), desired_loaded INTEGER NOT NULL DEFAULT 0,
             state TEXT NOT NULL DEFAULT 'unloaded', detail TEXT NOT NULL DEFAULT '',
-            heartbeat REAL NOT NULL DEFAULT 0
+            heartbeat REAL NOT NULL DEFAULT 0,
+            variant TEXT NOT NULL DEFAULT '', variants_json TEXT NOT NULL DEFAULT '{}'
         );
         INSERT OR IGNORE INTO local_text_model_state(id) VALUES (1);
         CREATE TABLE IF NOT EXISTS text_generation_settings (
             id INTEGER PRIMARY KEY CHECK(id=1), text_provider TEXT NOT NULL DEFAULT 'openrouter',
-            local_thinking INTEGER NOT NULL DEFAULT 0, openrouter_model TEXT NOT NULL DEFAULT 'openrouter/free'
+            local_thinking INTEGER NOT NULL DEFAULT 0, openrouter_model TEXT NOT NULL DEFAULT 'openrouter/free',
+            local_model TEXT NOT NULL DEFAULT 'standard'
         );
         INSERT OR IGNORE INTO text_generation_settings(id) VALUES (1);
         CREATE TABLE IF NOT EXISTS cuts (
@@ -272,6 +274,9 @@ def init_db():
             ('character_detection_runs', 'phase', "TEXT NOT NULL DEFAULT 'complete'"),
             ('character_detection_runs', 'timings_json', 'TEXT'),
             ('cuts', 'no_characters', 'INTEGER NOT NULL DEFAULT 0'),
+            ('text_generation_settings', 'local_model', "TEXT NOT NULL DEFAULT 'standard'"),
+            ('local_text_model_state', 'variant', "TEXT NOT NULL DEFAULT ''"),
+            ('local_text_model_state', 'variants_json', "TEXT NOT NULL DEFAULT '{}'"),
             ('episodes', 'subtitle_language', 'TEXT'),
             ('cuts', 'created_at', 'TEXT'),
             ('character_detections', 'match_model_id', 'TEXT'),

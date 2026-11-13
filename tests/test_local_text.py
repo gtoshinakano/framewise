@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import unittest
@@ -136,7 +137,8 @@ class LocalTextTest(unittest.TestCase):
         batch = [db.one('SELECT * FROM jobs WHERE id=?', (job_id,)) for job_id in job_ids]
         self.assertEqual([job['pipeline'] for job in batch], ['consistency_summary','regen','consistency_summary','regen'])
         self.assertEqual(json.loads(batch[1]['payload_json'])['depends_on_consistency'], job_ids[0])
-        model = Mock(); model.ensure.return_value = 'http://127.0.0.1:1234'
+        model = Mock(); model.ensure.return_value = 'http://127.0.0.1:1234'; model.variant = 'standard'
+        model.request.side_effect = lambda cancel_check=None: contextlib.nullcontext(('http://127.0.0.1:1234', 'standard'))
         fields = {'summary':'summary','clear':'clear','confusing':'None identified.','human_review':'None required.','recommended_checks':'None required.'}
         replies = [{'choices':[{'message':{'content':json.dumps(fields)},'finish_reason':'stop'}], 'model':'path', 'usage':{'prompt_tokens':100,'completion_tokens':20,'total_tokens':120}},
                    {'choices':[{'message':{'content':analysis_tests.PRODUCTION_TEXT},'finish_reason':'stop'}], 'model':'path', 'usage':{'prompt_tokens':200,'completion_tokens':30,'total_tokens':230}}]
@@ -276,7 +278,8 @@ class LocalTextTest(unittest.TestCase):
         self.client.put('/api/text-generation-settings', json={'text_provider':'local'})
         job_id=self.client.post('/api/cuts/c1/regenerate-summary',json={'mode':'regenerate'}).json()['job_id']
         jid,owner=worker.claim_job(('regen',))
-        runtime=Mock(); runtime.ensure.return_value='http://127.0.0.1:1234'
+        runtime=Mock(); runtime.ensure.return_value='http://127.0.0.1:1234'; runtime.variant='standard'
+        runtime.request.side_effect=lambda cancel_check=None: contextlib.nullcontext(('http://127.0.0.1:1234','standard'))
         def cancel_during_request(request, cancel_check, **kwargs):
             self.assertEqual(self.client.post('/api/jobs/'+job_id+'/cancel').status_code,200)
             cancel_check()
@@ -285,3 +288,76 @@ class LocalTextTest(unittest.TestCase):
         runtime.stop.assert_called_once_with('Cancelled')
         self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?',(job_id,))['stage'],'Cancelled')
         self.assertIsNone(db.one('SELECT id FROM analysis_results WHERE job_id=?',(job_id,)))
+
+    def test_mtp_variant_uses_its_own_file_and_flags(self):
+        self.assertEqual(local_text_runtime.variant_args('standard'), [])
+        self.assertEqual(local_text_runtime.variant_args('mtp'), ['--spec-type', 'draft-mtp', '--spec-draft-n-max', '3'])
+        with patch.dict(os.environ, {'QWEN36_MTP_ARGS': '--spec-type draft-mtp --spec-draft-n-max 2', 'QWEN36_MTP_MODEL_PATH': '/m/mtp.gguf'}):
+            self.assertEqual(local_text_runtime.variant_args('mtp')[-1], '2')
+            self.assertEqual(str(local_text_runtime.variant_path('mtp')), '/m/mtp.gguf')
+        self.assertNotEqual(local_text_runtime.revision_for('mtp'), local_text_runtime.revision_for('standard'))
+        self.assertEqual(local_text_runtime.revision_for('unknown'), local_text_runtime.MODEL_REVISION)
+
+    def test_selecting_mtp_needs_an_installed_file_and_falls_back_while_missing(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            mtp = Path(folder) / 'mtp.gguf'
+            partial = mtp.with_name('mtp.gguf.partial'); partial.write_bytes(b'x' * 1000)
+            with patch.dict(os.environ, {'QWEN36_MTP_MODEL_PATH': str(mtp)}):
+                runtime = local_text_runtime.LocalTextRuntime()
+                variants = self.client.get('/api/local-text-model').json()['variants']
+                self.assertFalse(variants['mtp']['available']); self.assertIn('Downloading', variants['mtp']['detail'])
+                self.assertEqual(self.client.put('/api/text-generation-settings', json={'text_provider': 'local', 'local_model': 'mtp'}).status_code, 409)
+                self.assertEqual(self.client.get('/api/text-generation-settings').json()['local_model'], 'standard')
+                partial.rename(mtp); runtime.publish_variants()
+                saved = self.client.put('/api/text-generation-settings', json={'text_provider': 'local', 'local_model': 'mtp'})
+                self.assertEqual(saved.status_code, 200, saved.text); self.assertEqual(saved.json()['local_model'], 'mtp')
+                self.assertEqual(runtime.target_variant(), 'mtp')
+                # an older client that omits the field keeps the choice
+                self.assertEqual(self.client.put('/api/text-generation-settings', json={'text_provider': 'local'}).json()['local_model'], 'mtp')
+                mtp.unlink()
+                self.assertEqual(runtime.target_variant(), 'standard')
+
+    def test_model_switch_waits_for_running_requests_and_chat_sessions(self):
+        runtime = local_text_runtime.LocalTextRuntime()
+        runtime.process = Mock(); runtime.process.poll.return_value = None
+        runtime.variant = 'standard'; runtime.url = 'http://127.0.0.1:1'
+        with patch.object(runtime, 'target_variant', return_value='mtp'), patch.object(runtime, '_stop') as stop:
+            runtime.inflight = 1
+            self.assertEqual(runtime.ensure(), 'http://127.0.0.1:1')  # a request is running: keep serving on the old model
+            stop.assert_not_called(); self.assertTrue(runtime.switch_pending())
+            runtime.inflight = 0
+            with runtime.chat_session():  # the only session is the caller's own
+                self.assertTrue(runtime.can_switch())
+            runtime.chat_users = 1  # another thread's session
+            self.assertFalse(runtime.can_switch())
+            runtime.chat_users = 0
+            with patch.object(local_text_runtime.Path, 'is_file', return_value=False):
+                with self.assertRaises(RuntimeError):  # nothing installed here: it tried to restart, so it did switch
+                    runtime.ensure()
+            stop.assert_called()
+
+    def test_local_usage_records_variant_speed_and_draft_acceptance(self):
+        model = Mock(); model.ensure.return_value = 'http://127.0.0.1:1'; model.variant = 'mtp'
+        model.request.side_effect = lambda cancel_check=None: contextlib.nullcontext(('http://127.0.0.1:1', 'mtp'))
+        reply = {'choices': [{'message': {'content': 'text'}, 'finish_reason': 'stop'}], 'usage': {'completion_tokens': 100},
+                 'timings': {'predicted_n': 100, 'predicted_ms': 1000.0, 'draft_n': 60, 'draft_n_accepted': 45}}
+        usage = {}
+        with patch.object(local_text_runtime, 'runtime', model), patch.object(inference_worker, 'request_json', return_value=reply):
+            text, model_id = inference_worker.chat_json('x', 's', 'e', [], plain_text=True, provider='local', usage_out=usage)
+        self.assertEqual(model_id, local_text_runtime.model_id_for('mtp'))
+        self.assertEqual((usage['model_variant'], usage['decode_tokens_per_second'], usage['draft_acceptance']), ('mtp', 100.0, 0.75))
+
+    def test_comparison_averages_results_per_variant(self):
+        def result(rid, variant, tokens, seconds, extra=None):
+            usage = {'completion_tokens': tokens, **({'model_variant': variant} if variant else {}), **(extra or {})}
+            with db.connect() as conn:
+                conn.execute('INSERT INTO analysis_results(id,cut_id,kind,title,content,settings_json) VALUES (?,?,?,?,?,?)',
+                             (rid, 'c1', 'cut_description', 'Cut summary', 'x', json.dumps({'provider': 'local', 'summary_generation_seconds': seconds, 'usage': usage})))
+        result('r1', None, 2000, 40)  # saved before variants were recorded: standard
+        result('r2', 'mtp', 2000, 25, {'predicted_n': 2000, 'predicted_ms': 20000.0, 'draft_n': 100, 'draft_n_accepted': 70})
+        rows = {row['variant']: row for row in self.client.get('/api/text-model-comparison').json()['variants']}
+        self.assertEqual(rows['standard']['overall_tokens_per_second'], 50.0)
+        self.assertIsNone(rows['standard']['decode_tokens_per_second'])
+        self.assertEqual((rows['mtp']['decode_tokens_per_second'], rows['mtp']['draft_acceptance']), (100.0, 0.7))

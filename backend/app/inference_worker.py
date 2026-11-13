@@ -13,7 +13,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from . import db, media, worker, frame_source, prompt_context
+from . import db, media, worker, frame_source, prompt_context, local_text_runtime
 
 log = logging.getLogger(__name__)
 MODEL_ID = "tencent/WeVisOne-VL-4B"
@@ -240,18 +240,18 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
         raise RuntimeError("OPENROUTER_API_KEY is not configured for the inference worker")
     model_load_started = time.monotonic()
     if provider == 'local':
-        from . import local_text_runtime
         if local_text_runtime.runtime is None:
             raise RuntimeError('Local text model worker is unavailable')
         if progress:
             progress(1, 3)
-        url = local_text_runtime.runtime.ensure(cancel_check=cancel_check) + '/v1/chat/completions'
-        model = local_text_runtime.MODEL_ID
+        local_text_runtime.runtime.ensure(cancel_check=cancel_check)  # load now so the wait is timed as loading
+        model = local_text_runtime.model_id_for(local_text_runtime.runtime.variant)
         if usage_out is not None:
             usage_out['load_seconds'] = usage_out.get('load_seconds', 0) + time.monotonic() - model_load_started
         local_text_runtime.runtime.publish('generating', 'Processing a text request')
     else:
         url = 'https://openrouter.ai/api/v1/chat/completions'
+    served_variant = None
     payload = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": evidence}], "temperature": 0.2, "max_tokens": max_tokens}
     if provider == 'local':
         payload['chat_template_kwargs'] = {'enable_thinking': thinking}
@@ -268,9 +268,18 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
             cancel_check()
         if progress:
             progress(attempt + 1, attempts)
-        request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={**({"Authorization": f"Bearer {key}"} if provider == 'openrouter' else {}), "Content-Type": "application/json"}, method="POST")
+        headers = {**({"Authorization": f"Bearer {key}"} if provider == 'openrouter' else {}), "Content-Type": "application/json"}
         try:
-            result = request_json(request, cancel_check, timeout=1200 if provider == 'local' else 180)
+            if provider == 'local':
+                # The server may be restarted between attempts (the user switched the model), so ask for its
+                # address every time; the request is counted so a switch waits until it has finished.
+                with local_text_runtime.runtime.request(cancel_check) as (server_url, served_variant):
+                    request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps(payload).encode(), headers=headers, method="POST")
+                    result = request_json(request, cancel_check, timeout=1200)
+                model = local_text_runtime.model_id_for(served_variant)
+            else:
+                request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
+                result = request_json(request, cancel_check, timeout=180)
         except urllib.error.HTTPError as exc:
             service = 'Local model' if provider == 'local' else 'OpenRouter'
             detail = ''
@@ -303,6 +312,19 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
                     usage_out[field] = usage_out.get(field, 0) + value
             if isinstance(result.get('provider'), str):
                 usage_out['routed_provider'] = result['provider']
+            if provider == 'local':
+                usage_out['model_variant'] = local_text_runtime.known_variant(served_variant)
+                # llama-server's own timings: decode speed without prompt processing, and how many
+                # speculative draft tokens the model accepted (MTP).
+                timings = result.get('timings') if isinstance(result.get('timings'), dict) else {}
+                for name in ('predicted_n', 'predicted_ms', 'prompt_n', 'prompt_ms', 'draft_n', 'draft_n_accepted'):
+                    value = timings.get(name)
+                    if isinstance(value, (int, float)) and value >= 0:
+                        usage_out[name] = usage_out.get(name, 0) + value
+                if usage_out.get('predicted_ms'):
+                    usage_out['decode_tokens_per_second'] = round(usage_out.get('predicted_n', 0) / usage_out['predicted_ms'] * 1000, 1)
+                if usage_out.get('draft_n'):
+                    usage_out['draft_acceptance'] = round(usage_out.get('draft_n_accepted', 0) / usage_out['draft_n'], 3)
         content = ""
         try:
             choice = result["choices"][0]
@@ -341,6 +363,8 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
             return output, model if provider == 'local' else result.get("model") or model
         except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as exc:
             last_error = str(exc)
+            rejected = locals().get('content')
+            log.warning("Rejected %s response (attempt %s/%s, finish_reason=%s): %s\n--- model output ---\n%s\n--- end ---", provider, attempt + 1, attempts, locals().get('choice', {}).get('finish_reason') if isinstance(locals().get('choice'), dict) else None, last_error, (rejected if isinstance(rejected, str) else repr(rejected))[:6000])
             if attempt < attempts - 1:
                 # Keep the original evidence, but don't compound context with
                 # invalid, truncated, or potentially very long model output.
@@ -475,15 +499,16 @@ def validate_production_brief(text, duration=None):
     if any(not text[m.end():(headings[i+1].start() if i+1 < len(headings) else len(text))].strip() for i,m in enumerate(headings)):
         raise ValueError('production brief contains an empty section')
     timeline = text[headings[2].end():headings[3].start()].strip()
-    event_pattern = re.compile(r'^\s*(?:[-*]\s*)?\[\s*(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*(?:s|secs?|seconds?)?\s*\]\s*(\S.*)$', re.I)
+    event_pattern = re.compile(r'^\s*(?:[-*]\s*)?\[\s*(\d+(?:\.\d+)?)\s*(?:(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*)?(?:s|secs?|seconds?)?\s*\]\s*(\S.*)$', re.I)
     previous_start = -1.
     for line in timeline.splitlines():
         if not line.strip(): continue
         event = event_pattern.fullmatch(line)
         if not event:
-            raise ValueError('animation timeline requires time-coded event lines')
-        start, end = float(event.group(1)), float(event.group(2))
-        if end <= start or start < previous_start or (duration is not None and end > duration + .05):
+            raise ValueError('animation timeline requires time-coded event lines: ' + repr(line.strip()[:120]))
+        start = float(event.group(1))
+        end = float(event.group(2)) if event.group(2) is not None else start  # a single time marks an instant, such as the end state
+        if (event.group(2) is not None and end <= start) or start < previous_start or (duration is not None and end > duration + .05):
             raise ValueError('animation timeline contains an invalid cut-relative interval')
         previous_start = start
     return text
@@ -536,7 +561,7 @@ def process_regen(job_id, owner):
         output, actual_model = chat_json(model, system, json.dumps(request, ensure_ascii=False), fields, 6144, summary_topics=not legacy, progress=lambda attempt, total: worker.stage(job_id, owner, job["episode_id"], f"Waiting for {'local model' if provider == 'local' else 'OpenRouter'} summary (attempt {attempt}/{total})"), cancel_check=lambda: check_summary_lease(job_id, owner), plain_text=not legacy, provider=provider, thinking=thinking, usage_out=telemetry, text_validator=validator)
         generation_seconds = time.monotonic() - generation_started
         content = output[field].strip() if legacy else None
-        settings = json.dumps({"mode": mode, "instruction": payload["instruction"], "summary_model": actual_model, "summary_generation_seconds": generation_seconds, "provider": provider, "model_revision": 'ggml-org:7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5' if provider == 'local' else None, "thinking": thinking if provider == "local" else None, "thinking_budget_tokens": int(os.environ.get("QWEN36_THINKING_BUDGET", "2048")) if provider == "local" and thinking else None, "usage": telemetry}, ensure_ascii=False)
+        settings = json.dumps({"mode": mode, "instruction": payload["instruction"], "summary_model": actual_model, "summary_generation_seconds": generation_seconds, "provider": provider, "model_revision": local_text_runtime.revision_for(telemetry.get('model_variant')) if provider == 'local' else None, "thinking": thinking if provider == "local" else None, "thinking_budget_tokens": int(os.environ.get("QWEN36_THINKING_BUDGET", "2048")) if provider == "local" and thinking else None, "usage": telemetry}, ensure_ascii=False)
         snapshot = json.dumps(request, ensure_ascii=False)
         new_id = str(uuid.uuid4())
         with db.connect() as conn:
@@ -559,7 +584,6 @@ def process_regen(job_id, owner):
             worker.sync_episode_status(conn, job["episode_id"])
     except SummaryCancelled:
         if payload.get('text_provider') == 'local':
-            from . import local_text_runtime
             if local_text_runtime.runtime:
                 local_text_runtime.runtime.stop('Cancelled')
         log.info("Summary job %s was cancelled", job_id)
@@ -597,14 +621,13 @@ def process_consistency_summary(job_id, owner):
             with db.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 structured_results.save_generated(conn, cut_id, job_id, owner, 'consistency_summary', output, actual_model,
-                    consistency_summary.SYSTEM, {'source_result_ids': payload['source_result_ids'], 'provider': payload['config'].get('text_provider', 'openrouter'), 'model_revision': 'ggml-org:7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5' if payload['config'].get('text_provider') == 'local' else None, 'thinking': payload['config'].get('local_thinking', False) if payload['config'].get('text_provider') == 'local' else None, 'thinking_budget_tokens': int(os.environ.get('QWEN36_THINKING_BUDGET', '2048')) if payload['config'].get('text_provider') == 'local' and payload['config'].get('local_thinking') else None, 'summary_generation_seconds': elapsed, 'usage': telemetry}, payload['evidence'], expected_current=payload['base_id'])
+                    consistency_summary.SYSTEM, {'source_result_ids': payload['source_result_ids'], 'provider': payload['config'].get('text_provider', 'openrouter'), 'model_revision': local_text_runtime.revision_for(telemetry.get('model_variant')) if payload['config'].get('text_provider') == 'local' else None, 'thinking': payload['config'].get('local_thinking', False) if payload['config'].get('text_provider') == 'local' else None, 'thinking_budget_tokens': int(os.environ.get('QWEN36_THINKING_BUDGET', '2048')) if payload['config'].get('text_provider') == 'local' and payload['config'].get('local_thinking') else None, 'summary_generation_seconds': elapsed, 'usage': telemetry}, payload['evidence'], expected_current=payload['base_id'])
         with db.connect() as conn:
             worker.require_lease(conn, job_id, owner)
             conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
             worker.sync_episode_status(conn, job['episode_id'])
     except SummaryCancelled:
         if payload.get('config', {}).get('text_provider') == 'local':
-            from . import local_text_runtime
             if local_text_runtime.runtime:
                 local_text_runtime.runtime.stop('Cancelled')
         log.info('Consistency summary %s was cancelled', job_id)
@@ -647,7 +670,6 @@ def process_review_answers(job_id, owner):
             worker.sync_episode_status(conn, job['episode_id'])
     except SummaryCancelled:
         if payload.get('config', {}).get('text_provider') == 'local':
-            from . import local_text_runtime
             if local_text_runtime.runtime:
                 local_text_runtime.runtime.stop('Cancelled')
         log.info('Review answers %s was cancelled', job_id)
@@ -721,7 +743,7 @@ def process(job_id, owner):
             if request_override is not None:
                 snapshot_data["openrouter_input"] = request_override["input"]
             snapshot = json.dumps(snapshot_data, ensure_ascii=False)
-            settings = json.dumps({**config, **({"openrouter_model": request_override["model"]} if request_override is not None else {}), "visual_model": MODEL_ID, "visual_revision": MODEL_REVISION, "caption_model": CAPTION_MODEL_ID, "caption_revision": CAPTION_MODEL_REVISION, "summary_model": actual_model, "summary_generation_seconds": generation_seconds, "assessment_model": output.get("_assessment_model", actual_model), "provider": config.get('text_provider', 'openrouter'), "model_revision": 'ggml-org:7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5' if config.get('text_provider') == 'local' else None, "thinking": config.get('local_thinking', False) if config.get('text_provider') == 'local' else None, "usage": output.get('_usage', {})}, ensure_ascii=False)
+            settings = json.dumps({**config, **({"openrouter_model": request_override["model"]} if request_override is not None else {}), "visual_model": MODEL_ID, "visual_revision": MODEL_REVISION, "caption_model": CAPTION_MODEL_ID, "caption_revision": CAPTION_MODEL_REVISION, "summary_model": actual_model, "summary_generation_seconds": generation_seconds, "assessment_model": output.get("_assessment_model", actual_model), "provider": config.get('text_provider', 'openrouter'), "model_revision": local_text_runtime.revision_for(output.get('_usage', {}).get('model_variant')) if config.get('text_provider') == 'local' else None, "thinking": config.get('local_thinking', False) if config.get('text_provider') == 'local' else None, "usage": output.get('_usage', {})}, ensure_ascii=False)
             visual_settings_data = json.loads(settings)
             visual_settings_data.update({'provider': 'local', 'usage': {}})
             visual_settings_data.pop('summary_generation_seconds', None)
@@ -750,7 +772,6 @@ def process(job_id, owner):
             worker.sync_episode_status(conn, episode["id"])
     except SummaryCancelled:
         if payload.get('text_only') and item.get('config', {}).get('text_provider', 'openrouter') == 'local':
-            from . import local_text_runtime
             if local_text_runtime.runtime:
                 local_text_runtime.runtime.stop('Cancelled')
         log.info('Analysis %s was cancelled', job_id)
@@ -854,12 +875,11 @@ def text_lane(name):
     they release the GPU, and the lane claims nothing while visual work owns the GPU.
     """
     import contextlib
-    from . import local_text_runtime
     handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers}
     runtime = local_text_runtime.runtime
     while True:
         try:
-            if runtime.gpu_busy:
+            if runtime.gpu_busy or runtime.switch_pending():  # a model switch waits for running jobs, so claim no new one
                 time.sleep(2)
                 continue
             claimed = worker.claim_job(worker.TEXT_PIPELINES)
@@ -890,7 +910,6 @@ def text_lane(name):
 def main():
     logging.basicConfig(level=logging.INFO)
     db.init_db()
-    from . import local_text_runtime
     local_text_runtime.runtime = local_text_runtime.LocalTextRuntime()
     start_assistant()
     for number in range(1, local_text_runtime.text_job_concurrency()):

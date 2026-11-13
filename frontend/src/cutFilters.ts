@@ -15,9 +15,9 @@ const expectsCharacters = (cut: Cut) => enabled(cut) && !cut.no_characters
 export const CUT_FILTERS: CutFilter[] = [
   { key: 'needs_analysis', label: 'No visual analysis', color: '#f2a65a', hint: 'Frames and video have not been analyzed yet',
     matches: cut => enabled(cut) && !cut.has_visual_results },
-  { key: 'no_boxes', label: 'No boxes', color: '#e5646c', hint: 'No character boxes detected yet (cuts marked as having no characters are skipped)',
+  { key: 'no_boxes', label: 'No boxes', color: '#e5646c', hint: 'No first-frame character boxes detected yet (cuts marked as having no characters are skipped)',
     matches: cut => expectsCharacters(cut) && !cut.has_boxes },
-  { key: 'unknown_characters', label: 'Unknown characters', color: '#4cc9f0', hint: 'Boxes exist but at least one has no character assigned',
+  { key: 'unknown_characters', label: 'Unknown characters', color: '#4cc9f0', hint: 'A first-frame box has no character assigned',
     matches: cut => expectsCharacters(cut) && !!cut.has_boxes && !!cut.has_unlabeled_boxes },
   { key: 'needs_consistency', label: 'Needs consistency summary', color: '#a58ae8', hint: 'Visual analysis is done but there is no consistency summary',
     matches: cut => enabled(cut) && !!cut.has_visual_results && !cut.has_consistency_summary },

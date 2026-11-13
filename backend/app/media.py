@@ -147,6 +147,20 @@ def waveform(audio: Path, output: Path, duration: float):
     output.write_text(json.dumps({"peaks": peaks, "duration": duration}))
 
 
+def showinfo_times(lines):
+    """Read full-precision presentation times from showinfo's integer PTS."""
+    time_base = None
+    for line in lines:
+        if 'Parsed_showinfo' not in line:
+            continue
+        config = re.search(r'config in time_base:\s*(\d+)/(\d+)', line)
+        if config:
+            time_base = int(config.group(1)) / int(config.group(2))
+        stamp = re.search(r'\bn:\s*\d+\s+pts:\s*(-?\d+)', line)
+        if stamp and time_base is not None:
+            yield int(stamp.group(1)) * time_base
+
+
 def detect_cuts(proxy: Path, duration: float, threshold: float):
     starts = [0.0]
     tail = deque(maxlen=20)
@@ -154,13 +168,13 @@ def detect_cuts(proxy: Path, duration: float, threshold: float):
                            "-vf", f"select='gt(scene,{threshold})',showinfo", "-an", "-f", "null", "-"],
                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True) as process:
         assert process.stderr is not None
-        for line in process.stderr:
-            tail.append(line)
-            match = re.search(r"Parsed_showinfo[^\n]*pts_time:\s*([0-9.]+)", line)
-            if match:
-                time = float(match.group(1))
-                if starts[-1] + 0.15 < time < duration - 0.15:
-                    starts.append(time)
+        def lines():
+            for line in process.stderr:
+                tail.append(line)
+                yield line
+        for time in showinfo_times(lines()):
+            if starts[-1] + 0.15 < time < duration - 0.15:
+                starts.append(time)
         if process.wait():
             raise RuntimeError("".join(tail)[-1800:])
     return [(start, end) for start, end in zip(starts, starts[1:] + [duration])]
@@ -175,13 +189,14 @@ def detect_cuts_in_range(proxy: Path, start: float, end: float, threshold: float
                            "-vf", f"select='gt(scene,{threshold})',showinfo", "-an", "-f", "null", "-"],
                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True) as process:
         assert process.stderr is not None
-        for line in process.stderr:
-            tail.append(line)
-            match = re.search(r"Parsed_showinfo[^\n]*pts_time:\s*([0-9.]+)", line)
-            if match:
-                timestamp = start + float(match.group(1))
-                if starts[-1] + 0.15 < timestamp < end - 0.15:
-                    starts.append(timestamp)
+        def lines():
+            for line in process.stderr:
+                tail.append(line)
+                yield line
+        for time in showinfo_times(lines()):
+            timestamp = start + time
+            if starts[-1] + 0.15 < timestamp < end - 0.15:
+                starts.append(timestamp)
         if process.wait():
             raise RuntimeError("".join(tail)[-1800:])
     return [(left, right) for left, right in zip(starts, starts[1:] + [end])]
@@ -209,10 +224,14 @@ def extract_cut_frame(source: Path, output: Path, sample_time: float, start: flo
                         value = float(line.split(",", 1)[0]) - origin
                     except ValueError:
                         continue
-                    if start <= value < end:
+                    # FFprobe prints times to six decimals. A boundary frame
+                    # rounded down must not be mistaken for an in-cut frame.
+                    if start - .000001 <= value < end - .000001:
                         values.append(value)
                 if values:
                     sample_time = max(values)
+                    # Seeking to a rounded-up FFprobe timestamp skips that frame.
+                    seek_tolerance = max(seek_tolerance, .000002)
                     break
                 if probe_start == start:
                     break
@@ -225,8 +244,8 @@ def extract_cut_frame(source: Path, output: Path, sample_time: float, start: flo
                           "-t", f"{end - seek:.9f}", "-frames:v", "1", "-vf", filters,
                           "-pix_fmt", "yuvj420p", "-threads", "1", *(["-q:v", str(quality)] if quality is not None else []), str(temp)], timeout=timeout)
             if temp.is_file() and temp.stat().st_size:
-                match = re.search(r"Parsed_showinfo[^\n]*\bn:\s*0\s+pts:.*?pts_time:\s*([-+0-9.eE]+)", result.stderr)
-                actual = seek + float(match.group(1)) if match else seek
+                timestamps = showinfo_times(result.stderr.splitlines())
+                actual = seek + next(timestamps, 0)
                 temp.replace(output)
                 return round(actual, 6)
             if seek == start:
@@ -238,3 +257,46 @@ def extract_cut_frame(source: Path, output: Path, sample_time: float, start: flo
 
 def cut_frame_times(start: float, end: float) -> tuple[float, float]:
     return start, max(start, end - min(0.000001, (end - start) / 4))
+
+
+def frame_timestamps_near(source: Path, boundary: float) -> list[float]:
+    """Return presentation timestamps in a bounded window around a boundary."""
+    info = json.loads(run(['ffprobe', '-v', 'error', '-show_entries', 'format=start_time',
+                           '-of', 'json', str(source)], timeout=30).stdout)
+    try:
+        origin = float(info.get('format', {}).get('start_time') or 0)
+        if not math.isfinite(origin):
+            origin = 0
+    except (TypeError, ValueError):
+        origin = 0
+    result = run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-read_intervals',
+                  f'{max(0, boundary - 3) + origin:.6f}%{boundary + 3 + origin:.6f}',
+                  '-show_entries', 'stream=time_base:frame=best_effort_timestamp', '-of', 'json', str(source)], timeout=60)
+    data = json.loads(result.stdout)
+    try:
+        numerator, denominator = map(int, data['streams'][0]['time_base'].split('/'))
+        time_base = numerator / denominator
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError) as exc:
+        raise ValueError('Could not determine the video frame time base') from exc
+    stamps = []
+    for frame in data.get('frames', []):
+        try:
+            stamp = int(frame['best_effort_timestamp']) * time_base - origin
+            if math.isfinite(stamp):
+                stamps.append(stamp)
+        except (KeyError, TypeError, ValueError):
+            continue
+    stamps = sorted(set(stamps))
+    return stamps
+
+
+def step_frame_boundary(source: Path, boundary: float, direction: int, *, after_stepped_frame: bool = False) -> float:
+    """Step from a frame; optionally return the frame after the stepped frame."""
+    stamps = frame_timestamps_near(source, boundary)
+    if direction not in (-1, 1) or not stamps:
+        raise ValueError('Could not find video frames near this boundary')
+    nearest = min(range(len(stamps)), key=lambda index: abs(stamps[index] - boundary))
+    target = nearest + direction + int(after_stepped_frame)
+    if not 0 <= target < len(stamps):
+        raise ValueError('No further frame is available in that direction')
+    return stamps[target]

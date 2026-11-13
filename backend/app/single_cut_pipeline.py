@@ -7,10 +7,10 @@ Work always runs stage by stage across all cuts, so each model is loaded once:
     1. initial_frame   - one llama-server (Qwen3.5), the first frame of every cut: the still image
     2. video_analysis  - Qwen3-VL, every cut: camera, motion, speaking and emotion over time
 
-The last frame is no longer described. Who is in frame when the cut ends comes from the user's
-last-frame character boxes, and how they got there from the video stage, which is told what the
-first frame showed so it can follow each named character. Jobs queued before that change may still
-name last_frame; it is ignored, and results it produced earlier stay readable.
+The last frame is no longer described or character-detected. The video stage reports how each
+character ends, using first-frame character boxes and the first-frame description to follow named
+characters. Jobs queued before the last-frame analysis change may still name last_frame; it is
+ignored, and results produced earlier stay readable.
 
 Subtitles are not a stage here. They are extracted once for the whole episode by
 subtitle_pipeline; these stages only learn the subtitle language and where the strip
@@ -405,7 +405,7 @@ def _video_analysis(cut_run, scratch, runtime):
     with cut_run.stage('video_analysis', 'Video analysis'):
         started = time.monotonic()
         initial, initial_id = _first_frame_result(cut_run)
-        roster = video_roster(marked_people(cut_run, 'first'), marked_people(cut_run, 'last'), initial)
+        roster = video_roster(marked_people(cut_run, 'first'), None, initial)
         data = video_model.analyze_video(
             proxy if proxy.is_file() else cut_run.original, cut_run.cut, cut_run.config,
             os.environ.get('QWEN3_VIDEO_MODEL_PATH', '/models/qwen3-vl-8b'), scratch,
