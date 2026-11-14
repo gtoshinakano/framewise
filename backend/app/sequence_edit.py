@@ -6,7 +6,7 @@ proposal is previewed or applied; it does not import FastAPI.
 """
 import uuid
 
-from . import sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, worker
+from . import sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, worker
 
 DIRECT_STEPS = ('direct', 'bible', 'plan')
 
@@ -25,6 +25,47 @@ def config_snapshot(conn):
     if not row:
         return {'text_provider': 'openrouter', 'local_thinking': False, 'openrouter_model': 'openrouter/free'}
     return {'text_provider': row['text_provider'], 'local_thinking': bool(row['local_thinking']), 'openrouter_model': row['openrouter_model']}
+
+
+def require_reviewed(conn, sequence, cuts):
+    """Direction starts from the dialogue the user reviewed; a sequence in which nobody speaks has none to review."""
+    if store.reviewed_compilation(conn, sequence) is not None:
+        return
+    if store.current(conn, sequence['id'], 'compilation') is None and not store.transcript_lines(conn, sequence['episode_id'], cuts[0]['start_time'], cuts[-1]['end_time']):
+        return
+    raise EditError(409, 'Review the dialogue first: open the Dialogue tab, check it and save it')
+
+
+def queue_compile(conn, sequence):
+    """Start the dialogue compilation of a new sequence in the transaction that created it."""
+    return store.insert_job(conn, sequence, {'step': 'compile', 'config': config_snapshot(conn), 'base_id': None})
+
+
+def confirm_compilation(conn, sequence, result_id):
+    """Mark the current compilation as the dialogue the user reviewed; Direction and every shot use it from now on."""
+    row = store.current(conn, sequence['id'], 'compilation')
+    if not row or row['id'] != result_id:
+        raise EditError(409, 'The dialogue changed; reload it and save again')
+    conn.execute('UPDATE sequences SET reviewed_compilation_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (result_id, sequence['id']))
+    return result_id
+
+
+def use_source_dialogue(conn, sequence):
+    """Save the raw transcript as the dialogue (no corrections) and confirm it."""
+    if store.pending_jobs(conn, sequence['id']):
+        raise EditError(409, 'This sequence already has jobs queued or running; wait for them or cancel them')
+    cuts = store.current_cuts(conn, sequence)
+    if cuts is None:
+        raise EditError(409, 'The first or last cut of this sequence was archived; create the sequence again')
+    timeline = store.raw_timeline_for(conn, sequence, cuts)
+    roster = {row['title']: row['id'] for row in conn.execute("SELECT c.id,c.title FROM context_items c JOIN episodes e ON e.project_id=c.project_id WHERE e.id=? AND c.kind='character'", (sequence['episode_id'],))}
+    content = sequence_compile.validate(sequence_compile.source_lines(timeline), timeline['duration'], roster)
+    base = store.current(conn, sequence['id'], 'compilation')
+    source, fragments, subtitles = store.source_fingerprint(conn, sequence, cuts)
+    result_id = store.save(conn, sequence['id'], 'compilation', content, origin='source', settings={'note': 'The original transcript, without corrections'}, expected_current=base['id'] if base else None)
+    store.record_sources(conn, sequence['id'], result_id, source, None, len(fragments), len(subtitles))
+    conn.execute('UPDATE sequences SET reviewed_compilation_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (result_id, sequence['id']))
+    return result_id
 
 
 def needs_writing(view):
@@ -46,9 +87,15 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
     if cuts is None:
         raise EditError(409, 'The first or last cut of this sequence was archived; create the sequence again')
     job_ids = []
-    if step in DIRECT_STEPS:
+    if step == 'compile':
         if pending:
             raise EditError(409, 'This sequence already has jobs queued or running; wait for them or cancel them')
+        base = store.current(conn, sequence['id'], 'compilation')
+        job_ids.append(store.insert_job(conn, sequence, {'step': 'compile', 'config': config, 'base_id': base['id'] if base else None}))
+    elif step in DIRECT_STEPS:
+        if pending:
+            raise EditError(409, 'This sequence already has jobs queued or running; wait for them or cancel them')
+        require_reviewed(conn, sequence, cuts)
         length = cuts[-1]['end_time'] - cuts[0]['start_time']
         if length > sequence_timeline.MAX_SEQUENCE_SECONDS + 0.001:
             raise EditError(409, f'The cuts of this sequence now last {length:.1f} s; a sequence may last at most {sequence_timeline.MAX_SEQUENCE_SECONDS:g} s')
@@ -113,18 +160,124 @@ def cancel(conn, sequence):
 
 
 def normal_spans(shots, timeline):
-    """Check hand-edited plan shots and keep only the fields a plan stores."""
+    """Check hand-edited plan shots (one per cut, see ``sequence_timeline.check_spans``) and keep only the fields a plan stores."""
     problems = sequence_timeline.check_spans(shots, timeline)
     if problems:
         raise sequence_timeline.PlanError(problems)
-    spans = []
-    for shot in shots:
-        t0, t1 = shot['start_time'] - timeline['origin'], shot['end_time'] - timeline['origin']
-        covered = {cut['id'] for cut in sequence_timeline.covered_cuts(timeline, t0, t1)}
-        spans.append({'start_time': shot['start_time'], 'end_time': shot['end_time'], 'frame_cut_id': shot.get('frame_cut_id') if shot.get('frame_cut_id') in covered else None,
-                      'scene': shot.get('scene') if isinstance(shot.get('scene'), str) else None,
-                      'intent': shot['intent'].strip() if isinstance(shot.get('intent'), str) else '', 'staging': shot['staging'].strip() if isinstance(shot.get('staging'), str) else ''})
-    return spans
+    return [{'start_time': shot['start_time'], 'end_time': shot['end_time'], 'frame_cut_id': sequence_timeline.owner_of(shot, timeline)['id'],
+             'scene': shot.get('scene') if isinstance(shot.get('scene'), str) else None,
+             'intent': shot['intent'].strip() if isinstance(shot.get('intent'), str) else ''} for shot in shots]
+
+
+def normal_decisions(items, timeline):
+    """The plan's boundary decisions: one per hard cut inside speech, ``{after_cut_id, choice, reason, by}``."""
+    speaking = {boundary['after_cut_id'] for boundary in timeline['boundaries'] if boundary['speech']}
+    order = {boundary['after_cut_id']: index for index, boundary in enumerate(timeline['boundaries'])}
+    found = {}
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and item.get('after_cut_id') in speaking and item.get('choice') in sequence_timeline.CHOICES:
+            found[item['after_cut_id']] = {'after_cut_id': item['after_cut_id'], 'choice': item['choice'], 'reason': item['reason'].strip() if isinstance(item.get('reason'), str) else '',
+                                           'by': item.get('by') if item.get('by') in ('director', 'app', 'user') else 'user'}
+    return sorted(found.values(), key=lambda item: order[item['after_cut_id']])
+
+
+def boundary_plan(plan, timeline, after_cut_id, choice, reason=''):
+    """A plan with the shot boundary at the hard cut after ``after_cut_id`` moved to ``choice``; the other boundaries, intents and voices stay."""
+    boundary = next((item for item in timeline['boundaries'] if item['after_cut_id'] == after_cut_id), None)
+    if boundary is None:
+        raise EditError(404, 'There is no hard cut after that cut in this sequence')
+    try:
+        spans = sequence_timeline.move_boundary(plan['shots'], timeline, boundary['id'], choice)
+    except sequence_timeline.PlanError as exc:
+        raise EditError(422, ' '.join(exc.errors)) from exc
+    decisions = [item for item in plan.get('boundaries') or [] if isinstance(item, dict) and item.get('after_cut_id') != after_cut_id]
+    if boundary['speech']:
+        decisions.append({'after_cut_id': after_cut_id, 'choice': choice, 'reason': reason.strip(), 'by': 'user'})
+    return {**plan, 'shots': spans, 'boundaries': normal_decisions(decisions, timeline)}
+
+
+def set_boundary(conn, sequence, after_cut_id, choice, origin='manual_edit', provenance=None):
+    """Move one hard cut's shot boundary (keep the cut, or before or after the phrase it falls into) and save the plan; returns its revision id.
+
+    The two shots on either side get new intervals, so they must be written again; every other shot keeps its prompt.
+    """
+    current = sequence_view.state(conn, sequence)
+    row, plan = current['plan_row'], current['plan']
+    if current['cuts'] is None or current['changed']:
+        raise EditError(409, 'The cuts of this sequence changed; direct the sequence again')
+    if not row or not current['shots']:
+        raise EditError(409, 'The shot plan no longer fits the cuts; plan the shots again' if current['plan_problems'] else 'Plan the shots first')
+    if any(job['step'] in ('bible', 'plan') for job in store.pending_jobs(conn, sequence['id'])):
+        raise EditError(409, 'Wait for the shot plan to finish')
+    content = boundary_plan(plan, current['timeline'], after_cut_id, choice)
+    if content['shots'] == plan['shots'] and content['boundaries'] == (plan.get('boundaries') or []):
+        return row['id']
+    return revise(conn, sequence, row, content, origin, provenance, current)
+
+
+def normal_plan_voices(voices, timeline):
+    """Check the user's voice ranges of a plan: ``[{speaker, from, to, delivery}]`` in episode seconds inside the sequence."""
+    if not isinstance(voices, list):
+        raise ValueError('"voices" must be a list of {speaker, from, to, delivery}')
+    start, end = timeline['origin'], timeline['origin'] + timeline['duration']
+    normal, errors = [], []
+    for number, item in enumerate(voices, 1):
+        if not isinstance(item, dict) or not isinstance(item.get('speaker'), str) or not item['speaker'].strip():
+            errors.append(f'voice range {number} needs a speaker')
+            continue
+        if not all(isinstance(item.get(key), (int, float)) and not isinstance(item.get(key), bool) for key in ('from', 'to')) or not start - 0.01 <= item['from'] < item['to'] <= end + 0.01:
+            errors.append(f'voice range {number} needs from < to inside the sequence ({start:g} to {end:g} s, episode time)')
+            continue
+        delivery = sequence_prompt.delivery_of(item.get('delivery'))
+        if delivery is None:
+            errors.append(f"voice range {number}: delivery must be one of {', '.join(sequence_prompt.DELIVERIES)}")
+            continue
+        normal.append({'speaker': item['speaker'].strip(), 'from': round(max(start, float(item['from'])), 6), 'to': round(min(end, float(item['to'])), 6), 'delivery': delivery})
+    if errors:
+        raise ValueError('; '.join(errors))
+    return sorted(normal, key=lambda item: (item['from'], item['speaker']))
+
+
+def set_voices(conn, sequence, shot_key, speaker, segments):
+    """Decide how one speaker is heard in one shot, and rewrite that shot around it.
+
+    ``segments`` are ``[{from, delivery}]`` in seconds from the shot's start, or None to let the director
+    decide again. The ranges are saved on the plan (episode time) and a rewrite of the shot is queued in
+    the same transaction; a rewrite that is still queued reads them when it starts, one already running
+    is cancelled because it started from the old voices. Returns the new plan revision id.
+    """
+    current = sequence_view.state(conn, sequence)
+    row, plan = current['plan_row'], current['plan']
+    if current['cuts'] is None or current['changed']:
+        raise EditError(409, 'The cuts of this sequence changed; direct the sequence again')
+    if not current['bible'] or not row or not current['shots']:
+        raise EditError(409, 'Direct the sequence first: it needs a bible and a shot plan')
+    shot = next((item for item in current['shots'] if item['key'] == shot_key), None)
+    if shot is None:
+        raise EditError(404, 'That shot is not part of the current plan')
+    heard = sequence_prompt.speakers(evidence.shot_dialogue(shot, current['bible']))
+    if speaker not in heard:
+        raise EditError(422, f"{speaker} is not heard in this shot" + (f"; the speakers are {', '.join(heard)}" if heard else '; nobody speaks in it'))
+    normal = []
+    for item in segments or []:
+        delivery = sequence_prompt.delivery_of(item.get('delivery')) if isinstance(item, dict) else None
+        start = item.get('from') if isinstance(item, dict) else None
+        if delivery is None or isinstance(start, bool) or not isinstance(start, (int, float)) or not 0 <= start < shot['duration']:
+            raise EditError(422, f"Each range needs a delivery ({', '.join(sequence_prompt.DELIVERIES)}) and a start inside the shot (0 to {shot['duration']:g} s)")
+        normal.append({'from': float(start), 'delivery': delivery})
+    if len({round(item['from'], 2) for item in normal}) != len(normal):
+        raise EditError(422, 'Two ranges start at the same second')
+    voices = sequence_timeline.replace_voices(plan.get('voices') or [], speaker, shot['start_time'], shot['end_time'], normal)
+    if voices == (plan.get('voices') or []):
+        return row['id']
+    plan_id = revise(conn, sequence, row, {**plan, 'voices': voices}, current=current)
+    for job in store.pending_jobs(conn, sequence['id']):
+        if job['step'] == 'shot' and job['shot_key'] == shot_key and job['status'] == 'running':
+            conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'",
+                         ('Cancelled: the voices of this shot changed', job['id']))
+    if not any(job['step'] == 'shot' and job['shot_key'] == shot_key for job in store.pending_jobs(conn, sequence['id'])):
+        queue(conn, sequence, 'shots', shot_keys=[shot_key])
+    return plan_id
 
 
 def preview_shot(current, shot, content):
@@ -147,13 +300,25 @@ def revise(conn, sequence, row, content, origin='manual_edit', provenance=None, 
         raise EditError(409, 'The first or last cut of this sequence was archived; create the sequence again')
     settings = dict(provenance or {})
     try:
+        if row['type'] == 'compilation':
+            roster = {person['name']: person['id'] for person in current['ctx']['characters']}
+            normal = sequence_compile.validate(content, current['timeline']['duration'], roster)
+            new_id = store.save(conn, sequence['id'], 'compilation', normal, origin=origin, settings=settings, expected_current=row['id'])
+            # A new revision has not been reviewed yet: Direction waits for it to be confirmed again.
+            conn.execute('UPDATE sequences SET reviewed_compilation_id=NULL WHERE id=?', (sequence['id'],))
+            return new_id
         if row['type'] == 'bible':
             normal = direction.validate_bible(content, current['ctx'], current['timeline'])
             return store.save(conn, sequence['id'], 'bible', normal, origin=origin, settings=settings, expected_current=row['id'])
         if row['type'] == 'plan':
             spans = normal_spans(content.get('shots'), current['timeline'])
             notes = content.get('notes') if isinstance(content.get('notes'), str) else ''
-            return store.save(conn, sequence['id'], 'plan', {'shots': spans, 'notes': notes}, origin=origin, settings=settings, expected_current=row['id'])
+            earlier = store.loads(row['content'], {})
+            # The user's voice ranges and the boundary decisions stay with the plan unless this revision sets them.
+            voices = normal_plan_voices(content['voices'], current['timeline']) if 'voices' in content else (earlier.get('voices') or [])
+            decisions = normal_decisions(content['boundaries'] if 'boundaries' in content else earlier.get('boundaries'), current['timeline'])
+            saved = {'shots': spans, 'boundaries': decisions, 'notes': notes, **({'voices': voices} if voices else {})}
+            return store.save(conn, sequence['id'], 'plan', saved, origin=origin, settings=settings, expected_current=row['id'])
         if row['type'] == 'shot':
             if not current['bible']:
                 raise EditError(409, 'Write the sequence bible first')
@@ -168,20 +333,3 @@ def revise(conn, sequence, row, content, origin='manual_edit', provenance=None, 
     except RuntimeError as exc:
         raise EditError(409, str(exc)) from exc
     raise EditError(409, 'A review cannot be edited; run it again')
-
-
-def reshape(conn, sequence, shot_key, time=None, origin='manual_edit', provenance=None):
-    """Merge a planned shot with the next one, or split it at an episode time; returns the new plan revision id."""
-    current = sequence_view.state(conn, sequence)
-    row, plan = current['plan_row'], current['plan']
-    if not row or not plan or current['timeline'] is None:
-        raise EditError(409, 'Plan the shots first')
-    spans = plan['shots']
-    index = next((position for position, span in enumerate(spans) if sequence_timeline.shot_key(span['start_time'], span['end_time']) == shot_key), None)
-    if index is None:
-        raise EditError(404, 'That shot is not part of the current plan')
-    try:
-        changed = sequence_timeline.merge_spans(spans, index) if time is None else sequence_timeline.split_span(spans, index, time)
-        return revise(conn, sequence, row, {'shots': changed, 'notes': plan.get('notes')}, origin, provenance, current)
-    except sequence_timeline.PlanError as exc:
-        raise EditError(422, ' '.join(exc.errors)) from exc

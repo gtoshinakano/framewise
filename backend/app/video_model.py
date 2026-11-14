@@ -136,10 +136,11 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
     first, last = cut.get('first_frame_time'), cut.get('last_frame_time')
     if first is not None and last is not None:
         first, last = float(first), float(last)
-        # Stored times are rounded to microseconds, so allow that much float noise at the edges.
-        if not all(math.isfinite(value) for value in (first, last)) or not start - .000002 <= first <= last < cut_end:
+        # Frame times come from ffprobe presentation timestamps, which can sit a few microseconds
+        # (never more than a millisecond) outside the stored cut boundary; clamp instead of failing.
+        if not all(math.isfinite(value) for value in (first, last)) or not start - .001 <= first <= last < cut_end + .001:
             raise ValueError('Cut preview frame timestamps are invalid; refresh the cut frames before analysis')
-        start, cut_end = first, min(cut_end, last + .000002)
+        start, cut_end = max(start, first), min(cut_end, last + .000002)
     fps = config['video_fps']
     frame_budget = config.get('video_frame_budget')
     window_seconds = min(max(8.0, 2.0 / fps), 32.0 / fps) if frame_budget else min(8.0, 32.0 / fps)

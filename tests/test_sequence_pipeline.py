@@ -1,5 +1,6 @@
 """Sequence direction end to end: API, queued steps, revisions, staleness and hand edits (the model is faked)."""
 import json
+import re
 import unittest
 from unittest.mock import patch
 
@@ -22,7 +23,7 @@ def video(start, end):
 
 
 BIBLE = {'logline': 'Hero greets someone in the street.', 'synopsis': 'Hero stands in a street, greets an unseen friend and leaves.',
-         'style': 'The target video is a 2D cel-shaded anime with clean ink lines and warm flat colours.', 'spoken_language': 'Japanese',
+         'spoken_language': 'Japanese',
          'scenes': [{'id': 'A', 'from_cut': 1, 'to_cut': 3, 'location': 'Shopping street', 'time_of_day': 'dusk', 'lighting': 'warm low sun', 'mood': 'calm', 'scenario': None}],
          'characters': [{'name': 'hero', 'role': 'the lead', 'anchors': 'slim build, short dark hair, green wool coat', 'outfit': 'green coat over a white shirt', 'arc': 'decides to leave'}],
          'voices': [{'speaker_label': 'SPEAKER_01', 'character': 'Somebody else', 'kind': 'character', 'confidence': 'low', 'reason': 'guess'},
@@ -30,7 +31,7 @@ BIBLE = {'logline': 'Hero greets someone in the street.', 'synopsis': 'Hero stan
          'arc': 'From greeting to parting.', 'pacing': 'Even and calm.', 'continuity': ['The green coat stays on.'], 'open_questions': []}
 
 
-def shot_answer(lines=(), seconds=2.0):
+def shot_answer(speakers=(), seconds=2.0):
     return {
         'subjects': [{'name': 'Hero', 'anchors': 'slim build, short dark hair, green wool coat over a white shirt', 'keep': 'face, hair and green coat follow the sheet exactly'}],
         'picture_line': 'Hero stands in the centre of a narrow street at dusk, facing the camera.',
@@ -46,7 +47,7 @@ def shot_answer(lines=(), seconds=2.0):
                                                            'with the palm open, and the sleeve slides back a little from the wrist. The hand stops beside the face with the fingers relaxed and slightly spread.'},
                   {'end': seconds, 'action': 'Hero keeps the hand raised and the lips move in short, even shapes as the eyes stay fixed ahead. The head dips once in a small nod and a strand of dark hair '
                                              'shifts across the forehead. The hand lowers halfway and settles at chest height, the shoulders loosen and the mouth closes in a faint smile.'}],
-        'speech': [{'line': line, 'delivery': 'lip_sync', 'subject': 'hero'} for line in lines],
+        'voices': [{'speaker': speaker, 'from': 0, 'delivery': 'on_screen' if speaker == 'Hero' else 'off_screen', 'subject': 'hero' if speaker == 'Hero' else None} for speaker in speakers],
         'scenario_anchors': '', 'scenario_keep': '',
         'soundscape': 'Quiet street ambience with a light breeze and distant footsteps. The soft rustle of a coat sleeve as the arm lifts.',
         'continuity': {'from_previous': 'Hero stands in the same spot as before.', 'to_next': 'Hero ends with the hand at chest height, facing the camera.'},
@@ -78,19 +79,23 @@ class SequenceBase(unittest.TestCase):
 
     def answer(self, system, data):
         """What the director 'writes' for a step; tests replace single steps through ``self.answers``."""
-        step = {direction.BIBLE_SYSTEM: 'bible', direction.PLAN_SYSTEM: 'plan', direction.SHOT_SYSTEM: 'shot', direction.REVIEW_SYSTEM: 'review'}[system]
+        step = {direction.COMPILE_SYSTEM: 'compile', direction.BIBLE_SYSTEM: 'bible', direction.PLAN_SYSTEM: 'plan', direction.SHOT_SYSTEM: 'shot', direction.REVIEW_SYSTEM: 'review'}[system]
         self.calls.append((step, data))
         if step in self.answers:
             custom = self.answers[step]
             return custom(data) if callable(custom) else custom
+        if step == 'compile':
+            rows = re.findall(r'^(L\d+) [\d.]+-[\d.]+ (\S+)(?: / (.+?))?: (.*)$', data['lines'], re.M)
+            return {'lines': [{'ids': [line], 'text': text, 'speaker': name or None, 'subtitle_ids': [], 'confidence': 'high', 'note': '', 'continues_next': False}
+                              for line, _, name, text in rows], 'voices': [], 'open_questions': []}
         if step == 'bible':
             return BIBLE
         if step == 'plan':
-            ids = [item['id'] for item in data['candidates'] if item['kind'] in ('start', 'cut', 'end')]
-            return {'shots': [{'from': a, 'to': b, 'frame_cut': None, 'scene': 'S1', 'intent': 'Follow the source.', 'staging': ''} for a, b in zip(ids, ids[1:])], 'notes': 'One shot per cut.'}
+            decisions = data['decisions'] if isinstance(data['decisions'], list) else []
+            return {'decisions': [{'id': item['id'], 'choice': 'keep_cut', 'reason': 'The reply cuts in.'} for item in decisions],
+                    'cuts': [{'cut': item['cut'], 'intent': 'Follow the source.'} for item in data['cuts']], 'notes': 'One shot per cut.'}
         if step == 'shot':
-            lines = [item['line'] for item in data['dialogue']] if isinstance(data['dialogue'], list) else []
-            return shot_answer(lines, data['shot']['seconds'])
+            return shot_answer([item['speaker'] for item in data.get('speakers') or []], data['shot']['seconds'])
         return {'verdict': 'The sequence holds together.', 'issues': [{'shot': 1, 'severity': 'check', 'problem': 'The hand ends lower than shot 2 starts.', 'suggestion': 'End with the hand at shoulder height.'},
                                                                       {'shot': 99, 'severity': 'fix', 'problem': 'No such shot.', 'suggestion': ''}]}
 
@@ -114,10 +119,21 @@ class SequenceBase(unittest.TestCase):
 
     # --------------------------------------------------------------- helpers
 
-    def create(self, first=1, last=3, **extra):
+    def interrupt(self):
+        """Hero's line L3 runs across the hard cut between cut 2 and cut 3 (3.6-4.6 s)."""
+        with db.connect() as conn:
+            conn.execute("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin) VALUES ('t4','e',3.6,4.6,'ちょっと待って','SPEAKER_01','ctx','model')")
+
+    def create(self, first=1, last=3, review='source', **extra):
+        """A new sequence; its dialogue is confirmed as the original transcript unless ``review`` is None (the compile job is queued either way)."""
         response = self.client.post('/api/episodes/e/sequences', json={'from_cut': first, 'to_cut': last, **extra})
         self.assertEqual(response.status_code, 200, response.text)
-        return response.json()['sequence']['id']
+        sequence_id = response.json()['sequence']['id']
+        if review == 'source':
+            with db.connect() as conn:
+                conn.execute("UPDATE jobs SET status='failed',error='skipped in tests' WHERE pipeline='sequence' AND status='queued' AND json_extract(payload_json,'$.step')='compile'")
+            self.assertEqual(self.client.post(f'/api/sequences/{sequence_id}/compilation/use-source').status_code, 200)
+        return sequence_id
 
     def detail(self, sequence_id):
         response = self.client.get(f'/api/sequences/{sequence_id}')
@@ -144,7 +160,7 @@ class SequenceBase(unittest.TestCase):
         return sequence_id
 
     def jobs(self, sequence_id=None):
-        return db.all_rows("SELECT status,stage,error,json_extract(payload_json,'$.step') AS step FROM jobs WHERE pipeline='sequence' ORDER BY rowid")
+        return db.all_rows("SELECT status,stage,error,json_extract(payload_json,'$.step') AS step FROM jobs WHERE pipeline='sequence' AND json_extract(payload_json,'$.step')!='compile' ORDER BY rowid")
 
 
 class SequenceFlowTest(SequenceBase):
@@ -181,10 +197,11 @@ class SequenceFlowTest(SequenceBase):
                          [(1, [1], 2.0, None, 'S1'), (2, [2], 2.0, None, 'S1'), (3, [3], 6.0, None, 'S1')])
         self.assertEqual(detail['shots'][0]['lines'][0]['text'], 'こんにちは')
         self.assertEqual((detail['ready'], detail['plan_problems']), (False, []))
-        # The plan step was given the bible and candidates on the sequence clock.
+        # The plan step was given the bible, one digest per cut and the transcript; no hard cut falls inside speech here.
         plan_input = next(data for step, data in self.calls if step == 'plan')
-        self.assertEqual([item['id'] for item in plan_input['candidates']], ['B0', 'B1', 'B2', 'B3'])
+        self.assertEqual(([item['cut'] for item in plan_input['cuts']], plan_input['decisions']), ([1, 2, 3], 'No hard cut falls inside speech: every boundary stays on its hard cut.'))
         self.assertIn('L2 2.50-3.50 SPEAKER_02 / Hero: はい', plan_input['transcript'])
+        self.assertEqual([(shot['cut'], shot['opens']['how'], shot['closes']['how']) for shot in detail['shots']], [(1, 'start', 'keep_cut'), (2, 'keep_cut', 'keep_cut'), (3, 'keep_cut', 'end')])
         # The bible was given what the opening frames show of each character, not only the record notes.
         bible_input = next(data for step, data in self.calls if step == 'bible')
         self.assertEqual(bible_input['characters'], [{'name': 'Hero', 'notes': 'Green coat', 'seen_in_cuts': [1, 2, 3], 'appearance_in_first_frames': ['cut 1: Green coat, short dark hair']}])
@@ -204,7 +221,7 @@ class SequenceFlowTest(SequenceBase):
         self.assertIn('<Subject 1> is Hero, whose face, hair and clothing come from <Picture 2>:', prompt)
         self.assertIn('At 00:00.400, <Subject 1> (S1) says: <d>[Japanese] こんにちは</d>', prompt)
         self.assertIn('00:02.000-00:05.000: Everyone holds the final pose', prompt)  # shorter than H3's minimum
-        self.assertIn('<Subject 1> speaks the words of <Audio 1> in its voice, lips in sync, from 00:00.400.', prompt)
+        self.assertIn('<Subject 1> speaks the words of <Audio 1> in its voice, lips in sync, from 00:00.400 to 00:01.200.', prompt)
         self.assertNotIn('Hero stands with both arms', prompt.split('detailed_description:')[1])  # names became labels
         self.assertEqual([item['label'] for item in first['result']['derived']['references']], ['<Picture 1>', '<Picture 2>', '<Audio 1>'])
         self.assertEqual(detail['review']['content']['issues'], [{'shot': 1, 'severity': 'check', 'problem': 'The hand ends lower than shot 2 starts.',
@@ -222,15 +239,28 @@ class SequenceFlowTest(SequenceBase):
         self.run_step(sequence_id, 'shots', expected=409)  # nothing left to write
 
     def test_an_invalid_plan_is_completed_by_the_app(self):
+        self.interrupt()
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET end_time=24 WHERE id='c3'")  # 20 s: too long for one shot
             conn.execute("UPDATE episodes SET duration=24")
+        # The director divides L3 without a reason and forgets the intents.
+        self.answers['plan'] = {'decisions': [{'id': 'K2', 'choice': 'keep_cut', 'reason': ''}], 'cuts': [], 'notes': 'Quick.'}
         sequence_id = self.directed()
         detail = self.detail(sequence_id)
         self.assertEqual(detail['plan']['completed_by_app'][:45], 'OpenRouter returned an invalid analysis after')
-        self.assertEqual([shot['source_cuts'] for shot in detail['shots']], [[1], [2], [3], [3]])
+        plan_input = next(data for step, data in self.calls if step == 'plan')
+        decision = plan_input['decisions'][0]
+        self.assertEqual((decision['id'], decision['cuts'], list(decision['options'])), ('K2', [2, 3], ['keep_cut', 'before_line', 'after_line']))
+        self.assertEqual(decision['options']['after_line'], 'moves 0.75 s later to 4.75: the shot of cut 2 runs on until L3 has ended and carries it whole; the first 0.75 s of cut 3 are hidden; the hidden picture shows 0.2-1.0 s Hero: raises a hand')
+        self.assertEqual(plan_input['cuts'][2]['parts'], 2)
+        # One shot per cut, the long cut in two parts; the app kept L3 whole with its visibly speaking speaker in cut 2.
+        self.assertEqual([(shot['cut'], shot['part']) for shot in detail['shots']], [(1, None), (2, None), (3, [1, 2]), (3, [2, 2])])
         self.assertTrue(all(shot['duration'] <= 15 for shot in detail['shots']))
-        self.assertEqual((detail['shots'][3]['auto_fixed'], detail['shots'][3]['frame']['strategy'], detail['shots'][3]['starts_mid_cut']), (True, 'frame_at_time', True))
+        boundary = next(item for item in detail['timeline']['boundaries'] if item['id'] == 'K2')
+        self.assertEqual((boundary['choice'], boundary['by'], boundary['reason']), ('after_line', 'app', 'Chosen by the app: keeps the phrase whole.'))
+        self.assertEqual((detail['shots'][1]['end_time'], detail['shots'][1]['closes']['how'], detail['shots'][2]['frame']['strategy']), (4.75, 'after_line', 'frame_at_time'))
+        self.assertEqual((detail['shots'][3]['frame']['strategy'], detail['shots'][3]['frame']['continues_previous_shot'], detail['shots'][3]['opens']['how']), ('frame_at_time', True, 'continuation'))
+        self.assertEqual(detail['shots'][0]['intent'], 'Follow the source.')
 
     def test_lines_without_a_voice_label_get_no_owner_from_the_bible(self):
         with db.connect() as conn:
@@ -261,7 +291,9 @@ class SequenceFlowTest(SequenceBase):
             conn.execute("UPDATE transcript_segments SET text='いいえ' WHERE id='t2'")
             conn.execute("INSERT INTO cut_brief_instructions(cut_id,content) VALUES ('c3','- Speaking: the voice is off screen.')")
         detail = self.detail(sequence_id)
-        self.assertEqual([shot['stale'] for shot in detail['shots']], [[], ['plan'], ['evidence']])
+        # The reviewed dialogue is frozen: a changed transcript does not move the shots, it makes the compilation stale.
+        self.assertEqual([shot['stale'] for shot in detail['shots']], [[], [], ['evidence']])
+        self.assertTrue(detail['compilation']['stale'])
         self.assertFalse(detail['ready'])
         self.calls.clear()
         self.assertEqual(self.run_step(sequence_id, 'shots', shot_keys=[key], instruction='Keep the mouth closed.')['queued'], 1)
@@ -269,7 +301,7 @@ class SequenceFlowTest(SequenceBase):
         shot = self.detail(sequence_id)['shots'][1]
         self.assertEqual((shot['stale'], shot['result']['instruction'], shot['result']['parent_id'] is not None), ([], 'Keep the mouth closed.', True))
         self.assertEqual(self.calls[0][1]['instruction_for_this_shot'], 'Keep the mouth closed.')
-        self.assertIn('<d>[Japanese] いいえ</d>', shot['result']['prompt'])
+        self.assertIn('<d>[Japanese] はい</d>', shot['result']['prompt'])  # the reviewed dialogue, not the edited transcript
         self.assertEqual(self.run_step(sequence_id, 'shots')['queued'], 1)  # only the remaining stale shot
         self.assertEqual(self.client.post(f'/api/sequences/{sequence_id}/run', json={'step': 'shots', 'shot_keys': ['1-2']}).status_code, 404)
 
@@ -294,7 +326,7 @@ class SequenceFlowTest(SequenceBase):
         refused = self.client.put(f"/api/sequence-results/{shot['result']['id']}", json={'content': bad})
         self.assertEqual(refused.status_code, 422)
         self.assertIn('summary contains the word "cut"', refused.json()['detail'])
-        silent = {**content, 'speech': [{'line': 'L1', 'delivery': 'off_screen', 'subject': None}]}
+        silent = {**content, 'voices': [{'speaker': 'Hero', 'from': 0, 'delivery': 'off_screen', 'subject': None}]}
         saved = self.client.put(f"/api/sequence-results/{shot['result']['id']}", json={'content': silent})
         self.assertEqual(saved.status_code, 200, saved.text)
         result = saved.json()['shots'][0]['result']
@@ -306,25 +338,90 @@ class SequenceFlowTest(SequenceBase):
         history = self.client.get(f"/api/sequence-results/{result['id']}/history").json()
         self.assertEqual([row['origin'] for row in history], ['manual_edit', 'model'])
         bible = detail['bible']
-        wrong = self.client.put(f"/api/sequence-results/{bible['id']}", json={'content': {**bible['content'], 'style': 'Anime.'}})
+        wrong = self.client.put(f"/api/sequence-results/{bible['id']}", json={'content': {**bible['content'], 'spoken_language': '日本語'}})
         self.assertEqual(wrong.status_code, 422)
-        self.assertIn('The target video is', wrong.json()['detail'])
+        self.assertIn('spoken_language', wrong.json()['detail'])
         self.assertEqual(self.client.put(f"/api/sequence-results/{detail['review']['id']}", json={'content': {}}).status_code, 409)
 
-    def test_merge_and_split_rewrite_the_plan(self):
+    def test_a_boundary_inside_speech_can_be_moved_by_hand(self):
+        self.interrupt()
         sequence_id = self.written()
-        shots = self.detail(sequence_id)['shots']
-        merged = self.client.post(f'/api/sequences/{sequence_id}/plan/merge', json={'shot_key': shots[0]['key']})
-        self.assertEqual(merged.status_code, 200, merged.text)
-        after = merged.json()
-        self.assertEqual([(shot['source_cuts'], shot['merged'], shot['result'] is None) for shot in after['shots']], [([1, 2], True, True), ([3], False, False)])
-        self.assertEqual((after['plan']['origin'], after['ready']), ('manual_edit', False))
-        split = self.client.post(f'/api/sequences/{sequence_id}/plan/split', json={'shot_key': after['shots'][1]['key'], 'time': 7.0}).json()
-        self.assertEqual([(shot['start_time'], shot['end_time']) for shot in split['shots']], [(0.0, 4.0), (4.0, 7.0), (7.0, 10.0)])
-        self.assertEqual(split['shots'][2]['frame']['strategy'], 'frame_at_time')
-        self.assertEqual(self.client.post(f'/api/sequences/{sequence_id}/plan/split', json={'shot_key': split['shots'][1]['key'], 'time': 4.1}).status_code, 422)
-        self.assertEqual(self.client.post(f'/api/sequences/{sequence_id}/plan/merge', json={'shot_key': 'missing'}).status_code, 404)
-        self.assertEqual(self.run_step(sequence_id, 'shots')['queued'], 3)
+        detail = self.detail(sequence_id)
+        boundary = next(item for item in detail['timeline']['boundaries'] if item['id'] == 'K2')
+        self.assertEqual((boundary['choice'], boundary['by'], boundary['reason'], boundary['speech']['lines']), ('keep_cut', 'director', 'The reply cuts in.', ['L3']))
+        self.assertEqual((detail['shots'][1]['closes']['split'], detail['shots'][1]['closes']['reason']), ({'lines': ['L3'], 'before': '', 'after': 'ちょっと待って'}, 'The reply cuts in.'))
+        url = f'/api/sequences/{sequence_id}/boundaries'
+        moved = self.client.put(url, json={'after_cut_id': 'c2', 'choice': 'after_line'})
+        self.assertEqual(moved.status_code, 200, moved.text)
+        after = moved.json()
+        self.assertEqual([(shot['start_time'], shot['end_time'], shot['result'] is None) for shot in after['shots']], [(0.0, 2.0, False), (2.0, 4.75, True), (4.75, 10.0, True)])
+        self.assertEqual((after['plan']['origin'], after['plan']['content']['boundaries'], after['ready']), ('manual_edit', [{'after_cut_id': 'c2', 'choice': 'after_line', 'reason': '', 'by': 'user'}], False))
+        self.assertEqual(next(item for item in after['timeline']['boundaries'] if item['id'] == 'K2')['by'], 'user')
+        # Positions that are not offered, a hard cut without speech and a cut with no hard cut after it are refused.
+        self.assertEqual(self.client.put(url, json={'after_cut_id': 'c1', 'choice': 'after_line'}).status_code, 422)
+        self.assertEqual(self.client.put(url, json={'after_cut_id': 'c3', 'choice': 'keep_cut'}).status_code, 404)
+        self.assertEqual(self.client.put(url, json={'after_cut_id': 'c2', 'choice': 'sideways'}).status_code, 422)
+        self.assertEqual(self.client.post(f'/api/sequences/{sequence_id}/plan/merge', json={'shot_key': after['shots'][0]['key']}).status_code, 404)
+        self.calls.clear()
+        self.assertEqual(self.run_step(sequence_id, 'shots')['queued'], 2)
+        self.work()
+        second, third = [data for step, data in self.calls if step == 'shot']
+        self.assertIn('runs 0.75 s past the end of its own cut to finish L3: from 2.00 s to the end it keeps this framing', second['shot']['closes']['how'])
+        self.assertEqual((second['shot']['closes']['decided_by'], second['shot']['audio_from_cuts'], second['cuts'][1]), ('the user', [2, 3], {'cut': 3, 'plays_at': [2.0, 2.75], 'picture': 'not shown: only its audio plays in this shot'}))
+        # The borrowed seconds keep this shot's own picture: the neighbour's on-screen facts are not offered as if it were shown.
+        self.assertEqual(second['speakers'][0]['per_cut'][1], {'cut': 3, 'plays_at': [2.0, 2.75], 'picture': "not shown: only its audio is borrowed, and this shot's own picture goes on over these seconds"})
+        self.assertIn('starts 0.75 s into its own cut, after L3, which the previous shot finished', third['shot']['opens']['how'])
+        self.assertEqual(third['shot']['initial_frame']['is'][:30], 'the frame 0.8 s into that cut ')
+        # Hand-edited plans follow the same rules: a merge is refused.
+        plan = self.detail(sequence_id)['plan']
+        merged = {**plan['content'], 'shots': [plan['content']['shots'][0], {**plan['content']['shots'][1], 'end_time': 10.0}]}
+        refused = self.client.put(f"/api/sequence-results/{plan['id']}", json={'content': merged})
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn('merges, drops or reorders cuts', refused.json()['detail'])
+
+    def test_voices_are_decided_per_shot_and_rewrite_the_shot(self):
+        sequence_id = self.written()
+        shot = self.detail(sequence_id)['shots'][2]
+        self.assertEqual(shot['speakers'], ['Hero'])
+        self.assertEqual([(voice['speaker'], voice['delivery'], voice['fixed_by_user']) for voice in shot['result']['derived']['voices']], [('Hero', 'on_screen', False)])
+        url = f'/api/sequences/{sequence_id}/voices'
+        self.assertEqual(self.client.put(url, json={'shot_key': shot['key'], 'speaker': 'Ghost', 'segments': None}).status_code, 422)
+        self.assertEqual(self.client.put(url, json={'shot_key': shot['key'], 'speaker': 'Hero', 'segments': [{'from': 0, 'delivery': 'lip_sync'}]}).status_code, 422)
+        self.assertEqual(self.client.put(url, json={'shot_key': shot['key'], 'speaker': 'Hero', 'segments': [{'from': 9, 'delivery': 'narrative'}]}).status_code, 422)
+        saved = self.client.put(url, json={'shot_key': shot['key'], 'speaker': 'Hero', 'segments': [{'from': 0, 'delivery': 'narrative'}, {'from': 1.5, 'delivery': 'inner_voice'}]})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        after = saved.json()
+        self.assertEqual(after['plan']['content']['voices'], [{'speaker': 'Hero', 'from': 4.0, 'to': 5.5, 'delivery': 'narrative'}, {'speaker': 'Hero', 'from': 5.5, 'to': 10.0, 'delivery': 'inner_voice'}])
+        target = after['shots'][2]
+        self.assertEqual((target['stale'], target['job']), (['plan'], 'queued'))
+        self.assertEqual(target['fixed_voices'], [{'speaker': 'Hero', 'from': 0.0, 'to': 1.5, 'delivery': 'narrative'}, {'speaker': 'Hero', 'from': 1.5, 'to': 6.0, 'delivery': 'inner_voice'}])
+        self.assertEqual([shot['stale'] for shot in after['shots'][:2]], [[], []])  # nothing leaks into the neighbouring shots
+        # A second change while the rewrite is still queued adds no job: the queued one reads the voices when it starts.
+        again = self.client.put(url, json={'shot_key': shot['key'], 'speaker': 'Hero', 'segments': [{'from': 0, 'delivery': 'narrative'}, {'from': 1.5, 'delivery': 'off_screen'}]})
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual([job['step'] for job in self.jobs() if job['status'] == 'queued'], ['shot'])
+        self.assertEqual(self.work(), 1)
+        shot_call = [data for step, data in self.calls if step == 'shot'][-1]
+        self.assertEqual(shot_call['speakers'][0]['fixed_by_user'], [{'from': 0.0, 'to': 1.5, 'delivery': 'narrative'}, {'from': 1.5, 'to': 6.0, 'delivery': 'off_screen'}])
+        self.assertEqual(shot_call['speakers'][0]['per_cut'][0]['picture'], "this shot's picture")
+        rewritten = self.detail(sequence_id)['shots'][2]
+        self.assertEqual(rewritten['stale'], [])
+        self.assertEqual([(voice['from'], voice['delivery'], voice['fixed_by_user']) for voice in rewritten['result']['derived']['voices']], [(0.0, 'narrative', True), (1.5, 'off_screen', True)])
+        self.assertIn('At 00:01.000, an off-screen voice is heard: <d>[Japanese] じゃあね</d>', rewritten['result']['prompt'])  # L3 is heard 1.0-2.0 s into the shot
+        # The review sees each shot's voices as one line, with the user's ranges marked.
+        self.run_step(sequence_id, 'review')
+        self.work()
+        review_call = [data for step, data in self.calls if step == 'review'][-1]
+        self.assertEqual(review_call['shots'][2]['voices'], 'Hero narrative 0-1.5 (user), off_screen 1.5-6 (user)')
+        self.assertEqual(review_call['shots'][0]['voices'], 'Hero on_screen')
+        # Planning again keeps the ranges, because they are stored in episode time.
+        self.run_step(sequence_id, 'plan')
+        self.work()
+        replanned = self.detail(sequence_id)
+        self.assertEqual((replanned['plan']['origin'], len(replanned['plan']['content']['voices'])), ('model', 2))
+        cleared = self.client.put(url, json={'shot_key': replanned['shots'][2]['key'], 'speaker': 'Hero', 'segments': None})
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        self.assertNotIn('voices', cleared.json()['plan']['content'])
 
     def test_cut_changes_block_shots_until_the_sequence_is_directed_again(self):
         sequence_id = self.directed()

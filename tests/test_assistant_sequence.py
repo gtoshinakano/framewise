@@ -56,15 +56,18 @@ class SequenceAssistantTest(pipeline_tests.SequenceBase):
         overview, label, ok = self.run_tool('get_sequence', {})
         self.assertTrue(ok, overview)
         self.assertEqual(label, 'Read sequence overview')
-        self.assertEqual([(row['shot'], row['cuts'], row['prompt'], row.get('lines')) for row in overview['shots']], [(1, [1], 'ok', ['L1']), (2, [2], 'ok', ['L2']), (3, [3], 'ok', ['L3'])])
+        self.assertEqual([(row['shot'], row['cut'], row['prompt'], row.get('lines')) for row in overview['shots']], [(1, 1, 'ok', ['L1']), (2, 2, 'ok', ['L2']), (3, 3, 'ok', ['L3'])])
+        self.assertEqual((overview['shots'][0].get('opens'), overview['shots'][0]['closes']), (None, 'keep_cut'))
         self.assertEqual(overview['story']['spoken_language'], 'Japanese')
         self.assertEqual(overview['review']['issues'][0]['shot'], 1)
         self.assertEqual(self.run_tool('get_sequence', {'part': 'bible'})[0]['bible']['characters'][0]['name'], 'Hero')
         plan = self.run_tool('get_sequence', {'part': 'plan'})[0]
-        self.assertEqual((plan['shots'][2]['t'], plan['shots'][2]['frame_from_cut'], plan['shots'][2]['frame']), ('4.00–10.00', 3, 'cut_first_frame'))
+        self.assertEqual((plan['shots'][2]['t'], plan['shots'][2]['cut'], plan['shots'][2]['frame'], plan.get('boundaries_in_speech')), ('4.00–10.00', 3, 'cut_first_frame', None))
         shot, _, _ = self.run_tool('get_shot', {'shot': 2})
-        self.assertEqual((shot['written'], shot['plan']['cuts'], shot['direction']['camera']['move'], shot['check']['ok']), (True, [2], 'static', True))
-        self.assertEqual(shot['dialogue'], [{'line': 'L2', 't': '0.50–1.50', 'speaker': 'Hero', 'known_from': 'director', 'delivery': 'lip_sync', 'subject': 1, 'text': 'はい'}])
+        self.assertEqual((shot['written'], shot['plan']['cut'], shot['direction']['camera']['move'], shot['check']['ok']), (True, 2, 'static', True))
+        self.assertEqual(shot['plan']['opens'], {'at': 0.0, 'how': 'opens exactly on the hard cut'})
+        self.assertEqual(shot['dialogue'], [{'line': 'L2', 't': '0.50–1.50', 'speaker': 'Hero', 'known_from': 'director', 'delivery': 'on_screen', 'text': 'はい'}])
+        self.assertEqual(overview['shots'][1]['voices'], 'Hero on_screen')
         self.assertNotIn('prompt', shot)
         self.assertTrue(self.run_tool('get_shot', {'shot': 2, 'fields': ['prompt']})[0]['prompt'].startswith('subject_definitions:'))
         self.assertIn('the plan has 3 shot(s)', self.run_tool('get_shot', {'shot': 9})[0]['error'])
@@ -84,7 +87,7 @@ class SequenceAssistantTest(pipeline_tests.SequenceBase):
         self.assertEqual(self.proposals(), [])
         self.assertIn('does not change the shot', self.run_tool('propose_shot_edit', {'shot': 1, 'replacements': [{'find': 'Hero', 'replace': 'Hero'}], 'summary': 'x'})[0]['error'])
         self.assertIn('Text not found', self.run_tool('propose_shot_edit', {'shot': 1, 'replacements': [{'find': 'purple', 'replace': 'red'}], 'summary': 'x'})[0]['error'])
-        made, label, ok = self.run_tool('propose_shot_edit', {'shot': 1, 'set': [{'path': 'speech.0.delivery', 'value': 'off_screen'}, {'path': 'speech.0.subject', 'value': None}],
+        made, label, ok = self.run_tool('propose_shot_edit', {'shot': 1, 'set': [{'path': 'voices.0.delivery', 'value': 'off_screen'}, {'path': 'voices.0.subject', 'value': None}],
                                                              'replacements': [{'find': 'green wool coat', 'replace': 'dark green wool coat'}], 'summary': 'The greeting comes from off screen'})
         self.assertEqual((ok, made['ok'], made['status'], label), (True, True, 'pending_user_approval', 'Proposed a change to shot 1'))
         self.assertIn('+[an off-screen voice is heard', made['diff'])
@@ -97,7 +100,7 @@ class SequenceAssistantTest(pipeline_tests.SequenceBase):
         self.assertEqual(applied.status_code, 200, applied.text)
         after = self.detail(self.sequence_id)['shots'][0]['result']
         self.assertEqual((after['origin'], after['parent_id'], applied.json()['applied_result_id']), ('assistant_edit', before['id'], after['id']))
-        self.assertEqual((after['content']['speech'][0]['delivery'], after['check']['ok']), ('off_screen', True))
+        self.assertEqual((after['content']['voices'][0]['delivery'], after['check']['ok']), ('off_screen', True))
         self.assertIn('dark green wool coat', after['prompt'])
         settings = json.loads(db.one('SELECT settings_json FROM sequence_results WHERE id=?', (after['id'],))['settings_json'])
         self.assertEqual(settings['assistant_edit']['summary'], 'The greeting comes from off screen')
@@ -111,25 +114,46 @@ class SequenceAssistantTest(pipeline_tests.SequenceBase):
         self.assertEqual(self.client.post(f"/api/assistant/proposals/{made['proposal_id']}/apply").status_code, 409)
 
     def test_plan_and_bible_edits(self):
-        merged, label, ok = self.run_tool('propose_plan_edit', {'action': 'merge', 'shot': 1, 'summary': 'One take for the greeting'})
-        self.assertEqual((ok, label, merged['shots_after'], merged['shots_to_write_again'], merged['written_shots_that_disappear']), (True, 'Proposed a plan change (merge shot 1)', 2, [1], [1, 2]))
-        self.assertIn('exceed', self.run_tool('propose_plan_edit', {'action': 'merge', 'shot': 2, 'summary': 'x'})[0].get('error', 'exceed'))
-        self.assertIn('at least 0.5 s inside', self.run_tool('propose_plan_edit', {'action': 'split', 'shot': 3, 'time': 4.1, 'summary': 'x'})[0]['error'])
-        self.assertIn('frame_cut must be one of the cuts this shot covers: 3', self.run_tool('propose_plan_edit', {'action': 'update', 'shot': 3, 'frame_cut': 1, 'summary': 'x'})[0]['error'])
+        updated, label, ok = self.run_tool('propose_plan_edit', {'action': 'update', 'cut': 2, 'intent': 'Hero answers the friend.', 'summary': 'Sharper intent'})
+        self.assertEqual((ok, label, updated['shots_after'], updated.get('shots_to_write_again'), updated.get('written_shots_that_disappear')), (True, 'Proposed a plan change (update at cut 2)', 3, None, None))
+        self.assertIn('no speech crosses the hard cut between cut 1 and cut 2', self.run_tool('propose_plan_edit', {'action': 'boundary', 'cut': 1, 'choice': 'after_line', 'summary': 'x'})[0]['error'])
+        self.assertIn('There is no hard cut after that cut', self.run_tool('propose_plan_edit', {'action': 'boundary', 'cut': 3, 'choice': 'keep_cut', 'summary': 'x'})[0]['error'])
+        self.assertIn('Cut 9 is not part of this sequence', self.run_tool('propose_plan_edit', {'action': 'update', 'cut': 9, 'intent': 'x', 'summary': 'x'})[0]['error'])
         proposal = next(item for item in self.proposals() if item['target'] == 'sequence_plan')
-        self.assertIn('1. 0.00–4.00 s (4.00 s) · cuts 1, 2 · frame from cut 1', proposal['content'])
+        self.assertIn('2. 2.00–4.00 s (2.00 s) · cut 2 · opens keep_cut · closes keep_cut — Hero answers the friend.', proposal['content'])
         self.assertEqual(self.client.post(f"/api/assistant/proposals/{proposal['id']}/apply").status_code, 200)
         detail = self.detail(self.sequence_id)
-        self.assertEqual(([shot['source_cuts'] for shot in detail['shots']], detail['plan']['origin']), ([[1, 2], [3]], 'assistant_edit'))
-        wrong, _, _ = self.run_tool('propose_bible_edit', {'set': [{'path': 'style', 'value': 'Anime.'}], 'summary': 'x'})
+        self.assertEqual(([shot['intent'] for shot in detail['shots']], [shot['stale'] for shot in detail['shots']], detail['plan']['origin']),
+                         (['Follow the source.', 'Hero answers the friend.', 'Follow the source.'], [[], ['plan'], []], 'assistant_edit'))
+        wrong, _, _ = self.run_tool('propose_bible_edit', {'set': [{'path': 'spoken_language', 'value': '日本語'}], 'summary': 'x'})
         self.assertEqual(wrong['ok'], False)
-        self.assertIn('The target video is', wrong['errors'])
+        self.assertIn('spoken_language', wrong['errors'])
         made, _, _ = self.run_tool('propose_bible_edit', {'set': [{'path': 'characters.0.outfit', 'value': 'dark green coat over a white shirt'}], 'summary': 'Coat colour'})
         self.assertTrue(made['ok'], made)
         self.assertEqual(self.client.post(f"/api/assistant/proposals/{made['proposal_id']}/apply").status_code, 200)
         detail = self.detail(self.sequence_id)
         self.assertEqual((detail['bible']['origin'], detail['bible']['content']['characters'][0]['outfit']), ('assistant_edit', 'dark green coat over a white shirt'))
-        self.assertEqual(detail['shots'][1]['stale'], ['bible'])  # the surviving shot was written from the old outfit
+        self.assertEqual(detail['shots'][0]['stale'], ['bible'])  # written from the old outfit
+
+    def test_a_boundary_inside_speech_can_be_proposed(self):
+        self.interrupt()
+        sequence_id = self.create()
+        self.run_step(sequence_id, 'direct')
+        self.work()
+        self.run_step(sequence_id, 'shots')
+        self.work()
+        session = self.client.post(f'/api/sequences/{sequence_id}/assistant/sessions', json={'provider': 'fake', 'model': 'fake-model'}).json()['session']
+        ctx = tools.ToolContext(cut_id=session['cut_id'], session_id=session['id'], provider='fake', model='fake-model', sequence_id=sequence_id)
+        plan = self.run_tool('get_sequence', {'part': 'plan'}, ctx)[0]
+        boundary = plan['boundaries_in_speech'][0]
+        self.assertEqual((boundary['after_cut'], boundary['lines'], boundary['choice'], boundary['decided_by'], sorted(boundary['options'])), (2, ['L3'], 'keep_cut', 'director', ['after_line', 'before_line', 'keep_cut']))
+        made, label, ok = self.run_tool('propose_plan_edit', {'action': 'boundary', 'cut': 2, 'choice': 'before_line', 'reason': 'Hero says it to her face.', 'summary': 'Keep L3 whole'}, ctx)
+        self.assertEqual((ok, label, made['shots_to_write_again']), (True, 'Proposed a plan change (boundary at cut 2)', [2, 3]))
+        self.assertEqual(self.client.post(f"/api/assistant/proposals/{made['proposal_id']}/apply").status_code, 200)
+        detail = self.detail(sequence_id)
+        self.assertEqual(([shot['end_time'] for shot in detail['shots']], detail['plan']['content']['boundaries']),
+                         ([2.0, 3.55, 10.0], [{'after_cut_id': 'c2', 'choice': 'before_line', 'reason': 'Hero says it to her face.', 'by': 'user'}]))
+        self.assertEqual(detail['shots'][2]['opens']['reason'], 'Hero says it to her face.')
 
     def test_edits_that_cannot_be_made_do_not_ask_the_model_to_retry(self):
         with db.connect() as conn:

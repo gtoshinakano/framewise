@@ -9,10 +9,10 @@ no approval status. Nothing here imports FastAPI: the inference worker uses it t
 import json
 import uuid
 
-from . import db, media, prompt_context, sequence_timeline
+from . import db, media, prompt_context, sequence_compile, sequence_timeline, subtitle_store
 from .assistant.transcript_edit import merged_transcript
 
-TYPES = ('bible', 'plan', 'shot', 'review')
+TYPES = ('compilation', 'bible', 'plan', 'shot', 'review')
 MAX_CONTENT = 2_000_000
 
 
@@ -93,13 +93,49 @@ def event_starts(conn, cuts):
     return events
 
 
+def source_fingerprint(conn, sequence, cuts):
+    """``(hash, transcript fragments, subtitle rows)`` of the range: what a dialogue compilation is built from."""
+    start, end = cuts[0]['start_time'], cuts[-1]['end_time']
+    fragments = [dict(row) for row in conn.execute("""SELECT id,start_time,end_time,text,speaker_label,character_context_id FROM transcript_segments
+        WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND start_time<? AND end_time>? ORDER BY start_time,id""", (sequence['episode_id'], end, start))]
+    subtitles = subtitle_rows(conn, sequence['episode_id'], start, end)
+    return sequence_compile.source_hash(fragments, subtitles), fragments, subtitles
+
+
+def subtitle_rows(conn, episode_id, start, end):
+    """Subtitle lines of the current run overlapping ``[start, end)`` as rows with episode times."""
+    return [{'id': line['id'], 'start_time': line['start_time'], 'end_time': line['end_time'], 'text': line['text']}
+            for line in subtitle_store.lines(episode_id, start, end, conn=conn)]
+
+
+def reviewed_compilation(conn, sequence):
+    """The dialogue compilation the user confirmed, when it is still the current revision; otherwise None."""
+    if not sequence.get('reviewed_compilation_id'):
+        return None
+    row = current(conn, sequence['id'], 'compilation')
+    if not row or row['id'] != sequence['reviewed_compilation_id']:
+        return None
+    return {**loads(row['content'], {}), 'origin': row['origin']}
+
+
 def timeline_for(conn, sequence, cuts):
-    """The sequence clock, speech lines, pauses and candidate boundaries for the given current cuts."""
+    """The sequence clock, speech lines, pauses and candidate boundaries for the given current cuts.
+
+    Once the user has confirmed a dialogue compilation its lines replace the raw transcript everywhere.
+    """
     episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (sequence['episode_id'],)).fetchone()
     start, end = cuts[0]['start_time'], cuts[-1]['end_time']
     audio = media.episode_dir(episode['project_id'], sequence['episode_id']) / 'audio.wav'
     envelope = sequence_timeline.audio_envelope(audio, start, end) if audio.is_file() else []
-    return sequence_timeline.build(cuts, transcript_lines(conn, sequence['episode_id'], start, end), envelope, event_starts(conn, cuts))
+    compiled = reviewed_compilation(conn, sequence)
+    lines = sequence_compile.merged_lines(compiled, start) if compiled is not None else transcript_lines(conn, sequence['episode_id'], start, end)
+    return sequence_timeline.build(cuts, lines, envelope, event_starts(conn, cuts))
+
+
+def raw_timeline_for(conn, sequence, cuts):
+    """The same timeline built from the raw transcript, which is what the dialogue compilation starts from."""
+    start, end = cuts[0]['start_time'], cuts[-1]['end_time']
+    return sequence_timeline.build(cuts, transcript_lines(conn, sequence['episode_id'], start, end))
 
 
 # -------------------------------------------------------------------- results
@@ -148,6 +184,14 @@ def save(conn, sequence_id, result_type, content, *, shot_key='', rendered=None,
         conn.execute('UPDATE sequence_results SET superseded_by=? WHERE id=?', (result_id, base['id']))
     conn.execute('UPDATE sequences SET updated_at=CURRENT_TIMESTAMP WHERE id=?', (sequence_id,))
     return result_id
+
+
+def record_sources(conn, sequence_id, result_id, source_hash, subtitle_run_id, transcript_count, subtitle_count):
+    """Remember what the current compilation was built from, to tell later when the transcript or subtitles moved on."""
+    conn.execute("""INSERT INTO sequence_compilation_sources(sequence_id,result_id,source_hash,subtitle_run_id,transcript_count,subtitle_count) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(sequence_id) DO UPDATE SET result_id=excluded.result_id,source_hash=excluded.source_hash,subtitle_run_id=excluded.subtitle_run_id,
+        transcript_count=excluded.transcript_count,subtitle_count=excluded.subtitle_count,created_at=CURRENT_TIMESTAMP""",
+                 (sequence_id, result_id, source_hash, subtitle_run_id, transcript_count, subtitle_count))
 
 
 def history(conn, sequence_id, result_type, shot_key=''):

@@ -8,7 +8,7 @@ model answer is. Nothing is saved until the user applies the proposal.
 """
 import json
 
-from .. import db, sequence_direction as direction, sequence_edit, sequence_evidence as evidence, sequence_store, sequence_timeline, sequence_view
+from .. import db, sequence_direction as direction, sequence_edit, sequence_evidence as evidence, sequence_prompt, sequence_store, sequence_timeline, sequence_view
 from . import tools
 from .tools import ToolError, tool
 
@@ -52,10 +52,12 @@ def check_label(view):
     return 'ok' if verdict.get('ok') else f"{len(verdict.get('errors') or [])} format error(s)"
 
 
-def shot_row(view):
-    return {'shot': view['index'], 't': tools.span(view['t0'], view['t1']), 'seconds': view['duration'], 'cuts': view['source_cuts'], 'merged': view['merged'] or None,
-            'continues_previous_take': view['frame']['continues_previous_shot'] or None, 'intent': view['intent'][:140], 'prompt': check_label(view),
-            'stale_because': view['stale'] or None, 'lines': [line['line'] for line in view['lines']] or None, 'job': view['job']}
+def shot_row(view, bible=None):
+    return {'shot': view['index'], 't': tools.span(view['t0'], view['t1']), 'seconds': view['duration'], 'cut': view['cut'], 'part': view['part'],
+            'opens': evidence.edge_brief(view['opens']), 'closes': evidence.edge_brief(view['closes']), 'intent': view['intent'][:140], 'prompt': check_label(view),
+            'stale_because': view['stale'] or None, 'lines': [line['line'] for line in view['lines']] or None,
+            'voices': evidence.voices_text((view['result'] or {}).get('content') or {}, view, bible) if view['result'] else None,
+            'voices_set_by_user': view['fixed_voices'] or None, 'job': view['job']}
 
 
 def sequence_card(sequence_id):
@@ -97,7 +99,7 @@ def sequence_card(sequence_id):
 
 # ---------------------------------------------------------------------- read
 
-@tool('get_sequence', 'Read this sequence. part: overview (status, story, every shot in one row, review issues; the default), bible (the full sequence bible), plan (every shot with times, source cuts, frame, intent, staging) or review.',
+@tool('get_sequence', 'Read this sequence. part: overview (status, story, every shot in one row, review issues; the default), bible (the full sequence bible), plan (every shot with its cut, times, frame and intent, and every hard cut that falls inside speech with the choice made there and its options) or review.',
       {'part': {'type': 'string', 'enum': ['overview', 'bible', 'plan', 'review']}},
       summary=lambda args, value: f"Read sequence {args.get('part') or 'overview'}", limit=9000, scope='sequence')
 def get_sequence(ctx, args):
@@ -111,30 +113,42 @@ def get_sequence(ctx, args):
         return {'review': review or 'not reviewed yet'}
     if part == 'plan':
         return {'plan_problems': current['plan_problems'] or None, 'notes': (current['plan'] or {}).get('notes'),
-                'shots': [{'shot': view['index'], 't': tools.span(view['t0'], view['t1']), 'seconds': view['duration'], 'generate_seconds': view['generate_seconds'], 'cuts': view['source_cuts'],
-                           'merged': view['merged'] or None, 'starts_mid_cut': view['starts_mid_cut'] or None, 'frame_from_cut': view['frame']['cut'], 'frame': view['frame']['strategy'],
-                           'scene': view['scene'], 'intent': view['intent'], 'staging': view['staging'] or None, 'lines': [line['line'] for line in view['lines']] or None} for view in shots] or 'no shot plan yet',
-                'split_candidates': [{'t': candidate['t'], 'kind': candidate['kind'], 'pause': candidate.get('pause')} for candidate in current['timeline']['candidates'] if candidate['kind'] in ('pause', 'event', 'quiet')] or None}
+                'shots': [{'shot': view['index'], 't': tools.span(view['t0'], view['t1']), 'seconds': view['duration'], 'generate_seconds': view['generate_seconds'], 'cut': view['cut'],
+                           'part': view['part'], 'audio_from_cuts': view['source_cuts'] if len(view['source_cuts']) > 1 else None, 'frame': view['frame']['strategy'],
+                           'opens': evidence.edge_brief(view['opens']), 'closes': evidence.edge_brief(view['closes']),
+                           'scene': view['scene'], 'intent': view['intent'], 'lines': [line['line'] for line in view['lines']] or None} for view in shots] or 'no shot plan yet',
+                'boundaries_in_speech': [boundary_row(boundary) for boundary in sequence_view.boundary_views(current) if boundary['speech']] or None}
     info = sequence_view.sequence_view(sequence, current['cuts'], current['changed'])
     return {'sequence': {'title': info['title'], 'cuts': [info['first_cut'], info['last_cut']], 'seconds': info['duration'], 'instruction': sequence['instruction'] or None,
                          'cuts_changed': info['cuts_changed'] or None, 'cuts_without_analysis': current['missing'] or None},
-            'story': {key: bible.get(key) for key in ('logline', 'synopsis', 'style', 'spoken_language', 'pacing', 'open_questions')} if bible else 'no bible yet',
-            'shots': [shot_row(view) for view in shots] or 'no shot plan yet',
+            'story': {key: bible.get(key) for key in ('logline', 'synopsis', 'spoken_language', 'pacing', 'open_questions')} if bible else 'no bible yet',
+            'shots': [shot_row(view, bible) for view in shots] or 'no shot plan yet',
             'review': {'verdict': review.get('verdict'), 'issues': review.get('issues')} if review else 'not reviewed yet',
             'jobs': [{'step': job['step'], 'status': job['status']} for job in pending] or None}
 
 
+def boundary_row(boundary):
+    """A hard cut inside speech: where the boundary sits now, why, and where else it could sit (t in sequence seconds)."""
+    speech = boundary['speech']
+    return {'after_cut': boundary['after_cut'], 'hard_cut_t': boundary['t'], 'lines': speech['lines'], 'before_cut': speech['words_before'], 'after_cut_words': speech['words_after'],
+            'choice': boundary['choice'], 'reason': boundary['reason'], 'decided_by': boundary['by'],
+            'options': {choice: {'t': option['t'], 'shift': option['shift']} for choice, option in boundary['options'].items()},
+            'not_possible': boundary['unavailable'] or None}
+
+
 def dialogue_rows(view, bible):
+    """The shot's lines with the delivery each one gets from its speaker's voice range in the written direction."""
     decided = {line['line']: line for line in ((view['result'] or {}).get('derived') or {}).get('dialogue') or []}
     rows = []
     for line in evidence.shot_dialogue(view, bible or {}):
         made = decided.get(line['line']) or {}
-        rows.append({'line': line['line'], 't': tools.span(line['t0'], line['t1']), 'speaker': line['character_name'] or line['speaker_label'] or 'unknown', 'known_from': line['attribution'],
-                     'delivery': made.get('delivery'), 'subject': made.get('subject'), 'text': line['text'], 'continues_in_next_shot': line['crosses_end'] or None})
+        rows.append({'line': line['line'], 't': tools.span(line['t0'], line['t1']), 'speaker': sequence_prompt.speaker_key(line), 'known_from': line['attribution'],
+                     'delivery': sequence_prompt.delivery_of(made.get('delivery')), 'set_by_user': made.get('fixed_by_user') or None, 'text': line['text'],
+                     'continues_from_previous_shot': line['crosses_start'] or None, 'continues_in_next_shot': line['crosses_end'] or None})
     return rows
 
 
-@tool('get_shot', "Read one shot by number. direction is the JSON object that propose_shot_edit changes (paths such as beats.0.action, camera.move, speech.1.delivery). Times are seconds from the start of the shot. fields narrows to: plan, dialogue, direction, check, prompt (the rendered H3 prompt; only returned when asked for).",
+@tool('get_shot', "Read one shot by number. direction is the JSON object that propose_shot_edit changes (paths such as beats.0.action, camera.move, voices.0.delivery). voices says per speaker how they are heard in this shot from which second (on_screen, off_screen, inner_voice, narrative); voices_set_by_user are ranges the user decided, which no edit may change. Times are seconds from the start of the shot. fields narrows to: plan, dialogue, direction, check, prompt (the rendered H3 prompt; only returned when asked for).",
       {'shot': {'type': 'integer'}, 'fields': {'type': 'array', 'items': {'type': 'string', 'enum': ['plan', 'dialogue', 'direction', 'check', 'prompt']}}}, ('shot',),
       summary=lambda args, value: f"Read shot {args['shot']}", limit=10000, scope='sequence')
 def get_shot(ctx, args):
@@ -143,10 +157,12 @@ def get_shot(ctx, args):
     fields = args.get('fields') or ['plan', 'dialogue', 'direction', 'check']
     result = view['result'] or {}
     out = {'shot': view['index'], 'written': bool(result), 'stale_because': view['stale'] or None, 'origin': result.get('origin')}
+    if 'plan' in fields and view['fixed_voices']:
+        out['voices_set_by_user'] = view['fixed_voices']
     if 'plan' in fields:
         out['plan'] = {'t_in_sequence': tools.span(view['t0'], view['t1']), 'seconds': view['duration'], 'generate_seconds': view['generate_seconds'], 'trim_to': view['trim_seconds'],
-                       'cuts': view['source_cuts'], 'merged': view['merged'] or None, 'frame_from_cut': view['frame']['cut'], 'frame': view['frame']['strategy'],
-                       'scene': view['scene'], 'intent': view['intent'], 'staging': view['staging'] or None}
+                       'cut': view['cut'], 'part': view['part'], 'frame': view['frame']['strategy'], 'opens': evidence.edge_words(view, 'opens'), 'closes': evidence.edge_words(view, 'closes'),
+                       'scene': view['scene'], 'intent': view['intent']}
     if 'dialogue' in fields:
         out['dialogue'] = dialogue_rows(view, current['bible']) or 'nobody speaks during this shot'
     if 'direction' in fields:
@@ -267,57 +283,56 @@ def propose_shot_edit(ctx, args):
 
 def plan_text(shots):
     """The plan as one readable line per shot, for the proposal card."""
-    return '\n'.join(f"{shot['index']}. {shot['t0']:.2f}–{shot['t1']:.2f} s ({shot['duration']:.2f} s) · cut{'s' if len(shot['source_cuts']) > 1 else ''} {', '.join(map(str, shot['source_cuts']))}"
-                     f" · frame from cut {shot['frame']['cut']}{' (continues the take)' if shot['frame']['continues_previous_shot'] else ''} — {shot['intent']}"
-                     + (f" | {shot['staging']}" if shot['staging'] else '') for shot in shots)
+    return '\n'.join(f"{shot['index']}. {shot['t0']:.2f}–{shot['t1']:.2f} s ({shot['duration']:.2f} s) · cut {shot['cut']}"
+                     + (f" part {shot['part'][0]}/{shot['part'][1]}" if shot.get('part') else '')
+                     + ''.join(f" · {side} {evidence.edge_brief(shot[side])}" for side in ('opens', 'closes') if evidence.edge_brief(shot[side]) and shot[side]['how'] != 'continuation')
+                     + f" — {shot['intent']}" for shot in shots)
 
 
-@tool('propose_plan_edit', "Propose a change to the shot plan. action merge joins a shot with the next one (at most 15 s together); split divides a shot at `time` (seconds from the start of the sequence, at least 0.5 s inside it; prefer a split candidate from get_sequence part=plan); update changes a shot's intent, staging or frame_cut. The user must apply it. A shot whose interval or plan entry changes becomes stale and must be written again.",
-      {'action': {'type': 'string', 'enum': ['merge', 'split', 'update']}, 'shot': {'type': 'integer'}, 'time': {'type': 'number'},
-       'intent': {'type': 'string'}, 'staging': {'type': 'string'}, 'frame_cut': {'type': 'integer', 'description': 'Number of a covered cut whose opening frame becomes the initial frame'},
-       'summary': {'type': 'string', 'description': 'One line describing the change'}}, ('action', 'shot', 'summary'),
-      summary=lambda args, value: f"Proposed a plan change ({args['action']} shot {args['shot']})" if value.get('proposal_id') else 'Plan change not possible', limit=5000, scope='sequence')
+@tool('propose_plan_edit', "Propose a change to the shot plan. Every cut is exactly one shot (a cut longer than 15 s is divided by the app); shots are never merged or split. "
+      "action boundary chooses where the shot boundary sits at the hard cut after cut `cut` when speech crosses it: keep_cut (on the hard cut; the speech is divided there), "
+      "before_line or after_line (in the silence just before or after the phrase, so it stays in one shot); get_sequence part=plan lists these hard cuts with their options. "
+      "action update changes the intent of the shot(s) of cut `cut`. The user must apply it. Shots whose interval or plan entry changes become stale and must be written again.",
+      {'action': {'type': 'string', 'enum': ['boundary', 'update']}, 'cut': {'type': 'integer', 'description': 'Cut number: for boundary, the cut before the hard cut'},
+       'choice': {'type': 'string', 'enum': list(sequence_timeline.CHOICES)}, 'reason': {'type': 'string', 'description': 'Why the boundary sits there (boundary)'},
+       'intent': {'type': 'string'}, 'summary': {'type': 'string', 'description': 'One line describing the change'}}, ('action', 'cut', 'summary'),
+      summary=lambda args, value: f"Proposed a plan change ({args['action']} at cut {args['cut']})" if value.get('proposal_id') else 'Plan change not possible', limit=5000, scope='sequence')
 def propose_plan_edit(ctx, args):
     _, current, _ = load(ctx)
     row, plan, timeline = current['plan_row'], current['plan'], current['timeline']
     if not row or not current['shots']:
         return not_possible('There is no usable shot plan; the user must direct the sequence first.')
-    index = find_shot(current['shots'], args['shot'])['index'] - 1
-    spans = [dict(span) for span in plan['shots']]
+    cut = next((item for item in timeline['cuts'] if item['number'] == args['cut']), None)
+    if cut is None:
+        raise ToolError(f"Cut {args['cut']} is not part of this sequence (cuts {timeline['cuts'][0]['number']}–{timeline['cuts'][-1]['number']})")
     try:
-        if args['action'] == 'merge':
-            spans = sequence_timeline.merge_spans(spans, index)
-        elif args['action'] == 'split':
-            if not tools.is_number(args.get('time')):
-                raise ToolError('split needs time in seconds from the start of the sequence')
-            spans = sequence_timeline.split_span(spans, index, timeline['origin'] + args['time'])
+        if args['action'] == 'boundary':
+            if args.get('choice') not in sequence_timeline.CHOICES:
+                raise ToolError(f"boundary needs choice: {', '.join(sequence_timeline.CHOICES)}")
+            content = sequence_edit.boundary_plan(plan, timeline, cut['id'], args['choice'], args.get('reason') or '')
         else:
-            if args.get('intent') is None and args.get('staging') is None and args.get('frame_cut') is None:
-                raise ToolError('update needs intent, staging or frame_cut')
-            for key in ('intent', 'staging'):
-                if args.get(key) is not None:
-                    spans[index][key] = args[key].strip()
-            if args.get('frame_cut') is not None:
-                covered = {cut['number']: cut['id'] for cut in sequence_timeline.covered_cuts(timeline, current['shots'][index]['t0'], current['shots'][index]['t1'])}
-                if args['frame_cut'] not in covered:
-                    raise ToolError(f"frame_cut must be one of the cuts this shot covers: {', '.join(map(str, covered))}")
-                spans[index]['frame_cut_id'] = covered[args['frame_cut']]
-        spans = sequence_edit.normal_spans(spans, timeline)
-        after = sequence_timeline.expand(spans, timeline)
+            if not isinstance(args.get('intent'), str) or not args['intent'].strip():
+                raise ToolError('update needs intent')
+            content = {**plan, 'shots': [{**span, 'intent': args['intent'].strip()} if sequence_timeline.owner_of(span, timeline)['id'] == cut['id'] else span for span in plan['shots']]}
+        spans = sequence_edit.normal_spans(content['shots'], timeline)
+        after = sequence_timeline.expand(spans, timeline, plan.get('voices'), content.get('boundaries'))
+    except sequence_edit.EditError as exc:
+        raise ToolError(exc.detail) from exc
     except sequence_timeline.PlanError as exc:
         raise ToolError(' '.join(exc.errors)) from exc
     before_text, after_text = plan_text(current['shots']), plan_text(after)
-    if before_text == after_text:
+    if before_text == after_text and content.get('boundaries') == plan.get('boundaries'):
         raise ToolError('The proposal does not change the plan')
     kept = {shot['key'] for shot in after}
-    proposal_id = propose(ctx, 'sequence_plan', row, before_text, after_text, args['summary'], {'title': 'Shot plan', 'plan': {'shots': spans, 'notes': plan.get('notes') or ''}})
+    proposal_id = propose(ctx, 'sequence_plan', row, before_text, after_text, args['summary'],
+                          {'title': 'Shot plan', 'plan': {'shots': spans, 'boundaries': content.get('boundaries') or [], 'notes': plan.get('notes') or ''}})
     return {'ok': True, 'proposal_id': proposal_id, 'status': 'pending_user_approval', 'shots_after': len(after),
             'shots_to_write_again': [shot['index'] for shot in after if shot['key'] not in current['shot_rows']] or None,
             'written_shots_that_disappear': [shot['index'] for shot in current['shots'] if shot['key'] in current['shot_rows'] and shot['key'] not in kept] or None,
             'diff': tools.short_diff(before_text, after_text), 'note': EDIT_NOTE}
 
 
-@tool('propose_bible_edit', "Propose a change to the sequence bible (story, style, scenes, characters' anchors and outfits, voices, continuity rules). The answer is checked like the director's own; if it returns errors, fix them and call again. The user must apply it. Shots written from the changed parts become stale.",
+@tool('propose_bible_edit', "Propose a change to the sequence bible (story, scenes, characters' anchors and outfits, voices, continuity rules). The answer is checked like the director's own; if it returns errors, fix them and call again. The user must apply it. Shots written from the changed parts become stale.",
       CHANGE_PROPERTIES, ('summary',),
       summary=lambda args, value: 'Proposed a bible change' if value.get('proposal_id') else ('Bible change not possible' if value.get('ok') else 'Bible change has errors'), limit=5000, must_pass=True, scope='sequence')
 def propose_bible_edit(ctx, args):

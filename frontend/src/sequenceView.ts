@@ -1,5 +1,5 @@
 // Pure helpers of the sequence workspace: no React and no fetch, so the node tests can import them.
-import type { ReviewIssue, SequenceCandidate, SequenceDetail, SequenceShot, StaleReason } from './sequenceApi'
+import type { BoundaryChoice, Decider, Delivery, FixedVoice, ReviewIssue, SequenceBoundary, SequenceDetail, SequenceShot, ShotEdge, ShotVoice, StaleReason } from './sequenceApi'
 
 /** Seconds as m:ss.s, the clock every time in the workspace uses. */
 export function clock(seconds: number) {
@@ -22,7 +22,7 @@ export function shotStatus(shot: SequenceShot): ShotStatus {
 }
 
 const STALE: Record<StaleReason, string> = {
-  plan: 'its plan entry or its spoken lines changed',
+  plan: 'its plan entry, its spoken lines or your voice settings changed',
   bible: 'the bible changed (style, characters, voices or its scene)',
   evidence: 'the analysis or your answers for its cuts changed',
 }
@@ -48,12 +48,15 @@ export function progress(detail: SequenceDetail): Progress {
   }
 }
 
-export type Stage = 'recreate' | 'analyse' | 'direct' | 'directing' | 'redirect' | 'write' | 'writing' | 'ready'
+export type Stage = 'recreate' | 'compiling' | 'review' | 'analyse' | 'direct' | 'directing' | 'redirect' | 'write' | 'writing' | 'ready'
 
 /** Where the sequence stands in its two-click flow: direct (bible and plan), review the plan, write the shots. */
 export function stage(detail: SequenceDetail): { key: Stage; hint: string } {
   const counts = progress(detail)
   if (detail.sequence.cuts_missing) return { key: 'recreate', hint: 'The first or last cut of this sequence was archived. Create the sequence again.' }
+  if (counts.step === 'compile') return { key: 'compiling', hint: 'Qwen is compiling the dialogue…' }
+  const dialogue = detail.compilation
+  if (!detail.bible && dialogue?.has_speech && dialogue.state !== 'confirmed' && dialogue.state !== 'running') return { key: 'review', hint: dialogue.state === 'none' ? 'Compile the dialogue first: Qwen matches the transcript with the subtitles.' : 'Review the dialogue, then save it. The director starts from it.' }
   if (counts.step === 'bible' || counts.step === 'plan') return { key: 'directing', hint: counts.step === 'bible' ? 'Writing the sequence bible…' : 'Planning the shots…' }
   if (counts.running + counts.queued) return { key: 'writing', hint: counts.step === 'review' ? 'Reviewing continuity…' : `Writing shot prompts: ${counts.ready}/${counts.shots} ready.` }
   if (detail.missing.length) return { key: 'analyse', hint: `Cut${detail.missing.length > 1 ? 's' : ''} ${detail.missing.join(', ')} need a first-frame and a video analysis before the sequence can be directed.` }
@@ -63,18 +66,104 @@ export function stage(detail: SequenceDetail): { key: Stage; hint: string } {
   return { key: 'ready', hint: 'Every shot has a current prompt. The sequence is ready to download.' }
 }
 
-/** Places where a planned shot can be split by hand: boundaries strictly inside it, at least half a second from its ends. */
-export function splitChoices(shot: SequenceShot, candidates: SequenceCandidate[]) {
-  return candidates.filter(candidate => candidate.t >= shot.t0 + 0.5 && candidate.t <= shot.t1 - 0.5)
-    .map(candidate => ({ time: candidate.time, label: `${clock(candidate.t)} · ${candidate.kind === 'cut' ? 'hard cut' : candidate.kind === 'pause' ? (candidate.pause ? `pause ${candidate.pause} s` : 'pause') : candidate.kind === 'event' ? 'action change' : 'quiet point'}` }))
+function phrase(keeps: string[] | undefined) {
+  if (!keeps?.length) return 'the phrase'
+  return keeps.length === 1 ? keeps[0] : `${keeps[0]}–${keeps[keeps.length - 1]}`
+}
+
+const signed = (seconds: number) => `${seconds < 0 ? '−' : '+'}${Math.abs(seconds).toFixed(2)} s`
+
+/** The choices at a hard cut inside speech, as the boundary picker lists them; options that are not possible are left out. */
+export function boundaryChoices(boundary: SequenceBoundary) {
+  const lines = boundary.speech?.lines.join(' and ') ?? ''
+  const keeps = phrase(boundary.speech?.keeps)
+  const labels: Record<BoundaryChoice, (shift: number) => string> = {
+    keep_cut: () => `On the hard cut · divides ${lines}`,
+    before_line: shift => `Before ${keeps} (${signed(shift)})`,
+    after_line: shift => `After ${keeps} (${signed(shift)})`,
+  }
+  return (['keep_cut', 'before_line', 'after_line'] as BoundaryChoice[])
+    .filter(choice => boundary.options[choice])
+    .map(choice => ({ choice, label: labels[choice](boundary.options[choice]!.shift) }))
+}
+
+export function deciderLabel(by: Decider | null | undefined) {
+  return by === 'director' ? 'director' : by === 'app' ? 'app' : by === 'user' ? 'you' : null
+}
+
+/** Short tags for how a shot meets its neighbours: borrowed audio before or after its cut, and speech divided at an edge. */
+export function edgeTags(shot: Pick<SequenceShot, 'opens' | 'closes' | 'part'>) {
+  const tags: { label: string; title: string }[] = []
+  if (shot.part) tags.push({ label: `part ${shot.part[0]}/${shot.part[1]}`, title: 'Its cut is longer than one take, so the app divides it into consecutive parts of one take' })
+  const describe = (edge: ShotEdge, side: 'opens' | 'closes') => {
+    if (edge.how === 'before_line' || edge.how === 'after_line') {
+      const shift = edge.shift ?? 0
+      const borrows = (side === 'opens') === (edge.how === 'before_line')
+      tags.push({ label: `${side === 'opens' ? 'starts' : 'ends'} ${signed(shift)}`, title: borrows
+        ? `${side === 'opens' ? 'Starts before' : 'Runs past the end of'} its cut to keep ${phrase(edge.keeps)} whole: it plays ${Math.abs(shift).toFixed(2)} s of the neighbouring cut's audio over its own picture`
+        : `${side === 'opens' ? 'Starts after the start of' : 'Ends before the end of'} its cut: the neighbouring shot carries ${phrase(edge.keeps)} whole` })
+    }
+    if (edge.split) tags.push({ label: `${side === 'opens' ? 'opens inside' : 'divides'} ${edge.split.lines.join('+')}`, title: `The speech is divided here: “${edge.split.before}” | “${edge.split.after}”${edge.reason ? ` — ${edge.reason}` : ''}` })
+  }
+  describe(shot.opens, 'opens')
+  describe(shot.closes, 'closes')
+  return tags
+}
+
+export const DELIVERIES: { value: Delivery; label: string; hint: string }[] = [
+  { value: 'on_screen', label: 'On screen', hint: 'In the picture with the mouth visible: the lips move in sync with the words' },
+  { value: 'off_screen', label: 'Off screen', hint: 'Not in the picture: the words are heard and no visible lips move for them' },
+  { value: 'inner_voice', label: 'Inner voice', hint: 'In the picture but the mouth does not move: a thought, or the face is turned away' },
+  { value: 'narrative', label: 'Narrative', hint: 'Too far from the camera for lip sync (or not visible): the words simply play over the picture' },
+]
+
+export function deliveryLabel(delivery: Delivery | null | undefined) {
+  return DELIVERIES.find(item => item.value === delivery)?.label ?? 'Director decides'
+}
+
+/** One range of a speaker's voice as the Voices panel draws it. */
+export type VoiceRange = { from: number; to: number; delivery: Delivery; mine: boolean; subject: string | null }
+
+/** A speaker's ranges in a shot: what the written direction says, with the ranges you set laid over it (they win). */
+export function speakerRanges(written: ShotVoice[] | undefined, fixed: FixedVoice[], speaker: string, duration: number): VoiceRange[] {
+  const own = (written || []).filter(item => item.speaker === speaker)
+  const mine = fixed.filter(item => item.speaker === speaker)
+  const points = [...new Set([0, duration, ...own.map(item => item.from), ...mine.flatMap(item => [item.from, Math.min(item.to, duration)])])].sort((a, b) => a - b)
+  const ranges: VoiceRange[] = []
+  for (let index = 0; index + 1 < points.length; index++) {
+    const from = points[index], to = points[index + 1], middle = (from + to) / 2
+    if (to - from < 0.001) continue
+    const user = [...mine].reverse().find(item => item.from <= middle && middle < item.to)
+    const base = [...own].reverse().find(item => item.from <= middle)
+    const piece = user ? { delivery: user.delivery, mine: true, subject: base?.subject ?? null } : base ? { delivery: base.delivery, mine: !!(base.fixed_by_user || base.fixed), subject: base.subject } : null
+    if (!piece) continue
+    const last = ranges[ranges.length - 1]
+    if (last && last.delivery === piece.delivery && last.mine === piece.mine && Math.abs(last.to - from) < 0.001) last.to = to
+    else ranges.push({ from, to, ...piece })
+  }
+  return ranges
+}
+
+/** The segments to save when the speaker changes to ``delivery`` from second ``at`` (0 sets the whole shot). */
+export function changeAt(ranges: VoiceRange[], at: number, delivery: Delivery): { from: number; delivery: Delivery }[] {
+  const start = Math.max(0, Math.round(at * 10) / 10)
+  const kept = ranges.filter(range => range.from < start - 0.05).map(range => ({ from: range.from, delivery: range.delivery }))
+  const segments = [...kept, { from: start, delivery }]
+  // Ranges after the new one are replaced by it until the next range you set yourself.
+  const later = ranges.find(range => range.from > start + 0.05 && range.mine)
+  if (later) segments.push(...ranges.filter(range => range.from >= later.from).map(range => ({ from: range.from, delivery: range.delivery })))
+  const joined: { from: number; delivery: Delivery }[] = []
+  for (const segment of segments) if (!joined.length || joined[joined.length - 1].delivery !== segment.delivery) joined.push(segment)
+  if (joined.length) joined[0] = { ...joined[0], from: 0 }
+  return joined
+}
+
+/** The speakers whose voice ranges the user set for a shot. */
+export function hasOwnVoices(shot: SequenceShot, speaker: string) {
+  return (shot.fixed_voices || []).some(item => item.speaker === speaker)
 }
 
 /** Whether a shot and the next one fit one take. */
-export function canMerge(shots: SequenceShot[], index: number, limit: number) {
-  const next = shots[index + 1]
-  return !!next && next.t1 - shots[index].t0 <= limit + 0.001
-}
-
 export function issuesFor(issues: ReviewIssue[] | undefined, shot: SequenceShot) {
   return (issues || []).filter(issue => issue.shot_key === shot.key)
 }

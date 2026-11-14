@@ -46,7 +46,9 @@ class SequenceExportTest(pipeline_tests.SequenceBase):
                                                'anchors': 'slim build, short dark hair, green wool coat over a white shirt'})
         line = shot['dialogue'][0]
         self.assertEqual((line['line'], line['t0'], line['t1'], line['text'], line['character_name'], line['attribution'], line['delivery'], line['subject']),
-                         ('L1', 0.4, 1.2, 'こんにちは', 'Hero', 'transcript', 'lip_sync', 1))
+                         ('L1', 0.4, 1.2, 'こんにちは', 'Hero', 'transcript', 'on_screen', 1))
+        self.assertEqual(shot['voices'], [{'speaker': 'Hero', 'from': 0.0, 'to': 2.0, 'delivery': 'on_screen', 'subject': 'Hero', 'subject_number': 1, 'fixed_by_user': False}])
+        self.assertIsNone(shot['fixed_voices'])
         self.assertEqual([(beat['start'], beat['end'], beat.get('hold')) for beat in shot['beats']], [(0.0, 1.0, None), (1.0, 2.0, None), (2.0, 5.0, True)])
         self.assertIn('“shot-01.wav”', shot['prompt'])
         listed = self.client.get('/api/v1/episodes/e/sequences').json()

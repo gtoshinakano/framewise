@@ -5,14 +5,38 @@ export type SequenceInfo = {
   id: string; episode_id: string; title: string; instruction: string; start_time: number; end_time: number; duration: number
   first_cut: number | null; last_cut: number | null; cuts_changed: boolean; cuts_missing: boolean; created_at: string; updated_at: string
 }
-export type SequenceSummary = SequenceInfo & { has_bible: boolean; has_plan: boolean; has_review: boolean; shots_planned: number; shots_written: number; pending_jobs: number }
+export type DialogueState = 'none' | 'running' | 'review' | 'confirmed'
+export type SequenceSummary = SequenceInfo & { dialogue?: DialogueState; has_bible: boolean; has_plan: boolean; has_review: boolean; shots_planned: number; shots_written: number; pending_jobs: number }
 export type SequenceCut = { id: string; number: number; t0: number; t1: number; start_time: number; end_time: number; ready: boolean }
-/** A place where a shot may begin or end; `t` is in seconds from the start of the sequence, `time` in episode seconds. */
-export type SequenceCandidate = { id: string; t: number; time: number; kind: 'start' | 'cut' | 'pause' | 'event' | 'quiet' | 'end'; cut: number | null; pause?: number; crosses_line?: string }
+/** Where a shot boundary sits at a hard cut: on the cut, or in the silence just before or after the phrase the cut falls into. */
+export type BoundaryChoice = 'keep_cut' | 'before_line' | 'after_line'
+export type Decider = 'director' | 'app' | 'user'
+/** One possible position; `t` is in seconds from the start of the sequence, `time` in episode seconds, `shift` relative to the hard cut. */
+export type BoundaryOption = { t: number; time: number; shift: number; drops?: { cut: number; from: number; to: number } }
+export type BoundarySpeech = {
+  kind: 'inside_line' | 'between_sentence_halves'; lines: string[]; words_before: string; words_after: string; keeps: string[]; phrase: [number, number]
+  speaker_label: string; character_name: string | null; character_context_id: string | null
+}
+/** A hard cut of the sequence: its options and, with a usable plan, the choice made there. */
+export type SequenceBoundary = {
+  id: string; after_cut: number; before_cut: number; after_cut_id: string; before_cut_id: string; t: number; time: number
+  speech: BoundarySpeech | null; options: Partial<Record<BoundaryChoice, BoundaryOption>>; unavailable: Partial<Record<BoundaryChoice, string>>
+  choice: BoundaryChoice | null; reason: string | null; by: Decider | null
+}
+/** How a shot meets its neighbour on one side. */
+export type ShotEdge = {
+  how: 'start' | 'end' | 'continuation' | BoundaryChoice; boundary?: string; shift?: number; hard_cut?: number; keeps?: string[]
+  split?: { lines: string[]; before: string; after: string }; reason?: string; by?: Decider
+}
 export type SequenceLine = { id: string; t0: number; t1: number; text: string; speaker_label: string; character_name: string | null; character_context_id: string | null }
 export type ShotLine = { line: string; t0: number; t1: number; text: string; speaker_label: string; character_context_id: string | null; character_name: string | null; crosses_start: boolean; crosses_end: boolean }
-export type Delivery = 'lip_sync' | 'off_screen' | 'inner_voice' | 'narration'
-export type ShotDialogue = ShotLine & { attribution?: 'transcript' | 'director' | 'unknown'; delivery?: Delivery | null; subject?: number | null }
+/** How a speaker is heard during part of a shot (decided per shot, never per line). */
+export type Delivery = 'on_screen' | 'off_screen' | 'inner_voice' | 'narrative'
+export type ShotDialogue = ShotLine & { attribution?: 'reviewed' | 'transcript' | 'director' | 'unknown'; speaker?: string; delivery?: Delivery | null; subject?: number | null; fixed_by_user?: boolean }
+/** One range of a speaker's voice in a shot, in seconds from the start of the shot. */
+export type ShotVoice = { speaker: string; from: number; to: number; delivery: Delivery; subject: string | null; subject_number?: number | null; fixed_by_user?: boolean; fixed?: boolean }
+/** A range the user decided for a speaker in a shot (shot seconds). */
+export type FixedVoice = { speaker: string; from: number; to: number; delivery: Delivery }
 export type ShotCheck = { ok: boolean; errors: string[]; warnings: string[]; stats: { seconds?: number | null; chars?: number; description_words?: number; beats?: number } }
 /** What the director writes for a shot; the app renders the H3 prompt from it. */
 export type ShotDirection = {
@@ -20,44 +44,71 @@ export type ShotDirection = {
   still: { shot: string; subjects: string; layout: string; setting: string; lighting: string }
   summary: string; shot_line: string; framing_lock: string; light: string
   camera: { move: string; amplitude: string; speed: string; detail: string }
-  beats: { end: number; action: string }[]; speech: { line: string; delivery: Delivery; subject: string | null }[]
+  beats: { end: number; action: string }[]; voices?: ShotVoice[]
   scenario_anchors: string; scenario_keep: string; soundscape: string; continuity: { from_previous: string; to_next: string }; open_questions: string[]
 }
 export type ShotReference = { label: string; role: 'initial_frame' | 'character_sheet' | 'scenario' | 'original_audio'; character_context_id?: string | null; context_id?: string | null; name?: string | null }
 export type ShotResult = {
   id: string; content: ShotDirection; prompt: string | null; check: ShotCheck | null
-  derived: { references?: ShotReference[]; dialogue?: ShotDialogue[]; still_prompt?: string; audio_file?: string }
+  derived: { references?: ShotReference[]; dialogue?: ShotDialogue[]; voices?: ShotVoice[]; still_prompt?: string; audio_file?: string }
   origin: string; model_id: string | null; job_id: string | null; parent_id: string | null; created_at: string; instruction: string | null; completed_by_app: string | null
+  generation_seconds: number | null; model_variant: string | null; decode_tokens_per_second: number | null
 }
 export type StaleReason = 'plan' | 'bible' | 'evidence'
 export type SequenceShot = {
   index: number; key: string; t0: number; t1: number; start_time: number; end_time: number; duration: number; generate_seconds: number; trim_seconds: number | null
-  source_cuts: number[]; cut_ids: string[]; merged: boolean; starts_mid_cut: boolean; ends_mid_cut: boolean
+  /** The cut this shot is; `part` is [n, of] for a cut longer than one take. `source_cuts` are the cuts whose audio it plays. */
+  cut: number; cut_id: string; part: [number, number] | null
+  source_cuts: number[]; cut_ids: string[]; starts_mid_cut: boolean; ends_mid_cut: boolean
   frame: { cut: number; cut_id: string; time: number; strategy: 'cut_first_frame' | 'frame_at_time'; continues_previous_shot: boolean }
-  scene: string | null; intent: string; staging: string; auto_fixed: boolean; lines: ShotLine[]
+  opens: ShotEdge; closes: ShotEdge
+  scene: string | null; intent: string; lines: ShotLine[]; fixed_voices: FixedVoice[]
+  /** The speakers heard in the shot, named as its voices name them. */
+  speakers: string[]
   result: ShotResult | null; stale: StaleReason[]; job: 'queued' | 'running' | null
 }
 export type SequenceResult<T> = { id: string; content: T; origin: string; model_id: string | null; job_id: string | null; parent_id: string | null; created_at: string; completed_by_app: string | null; generation_seconds?: number | null }
 export type Bible = {
-  logline: string; synopsis: string; style: string; spoken_language: string; arc: string; pacing: string
+  logline: string; synopsis: string; spoken_language: string; arc: string; pacing: string
   scenes: { id: string; from_cut: number; to_cut: number; location: string; time_of_day: string; lighting: string; mood: string; scenario: string | null }[]
   characters: { name: string; character_context_id: string; role: string; anchors: string; outfit: string; arc: string }[]
-  voices: { speaker_label: string; character: string | null; kind: 'character' | 'narrator' | 'unknown'; confidence: 'high' | 'medium' | 'low'; source: 'transcript' | 'director'; reason: string }[]
+  voices: { speaker_label: string; character: string | null; kind: 'character' | 'narrator' | 'unknown'; confidence: 'high' | 'medium' | 'low'; source: 'transcript' | 'director' | 'reviewed'; reason: string }[]
   continuity: string[]; open_questions: string[]
 }
-export type Plan = { shots: { start_time: number; end_time: number; frame_cut_id: string | null; scene: string | null; intent: string; staging: string; auto_fixed?: boolean }[]; notes: string }
+export type Plan = {
+  shots: { start_time: number; end_time: number; frame_cut_id: string | null; scene: string | null; intent: string }[]; notes: string
+  /** The choice at each hard cut that falls inside speech. */
+  boundaries?: { after_cut_id: string; choice: BoundaryChoice; reason: string; by: Decider }[]
+  /** The user's voice ranges, in episode seconds. */
+  voices?: { speaker: string; from: number; to: number; delivery: Delivery }[]
+}
 export type ReviewIssue = { shot: number; shot_key: string; severity: 'fix' | 'check'; problem: string; suggestion: string }
 export type Review = { verdict: string; issues: ReviewIssue[] }
-export type SequenceStep = 'bible' | 'plan' | 'shot' | 'review'
+export type SequenceStep = 'compile' | 'bible' | 'plan' | 'shot' | 'review'
 export type SequenceJob = { id: string; status: string; stage: string; error: string | null; created_at: string; started_at: string | null; finished_at: string | null; step: SequenceStep; shot_key: string | null }
+/** One reviewed line of the dialogue; times are seconds from the start of the sequence. */
+export type CompiledLine = {
+  id: string; t0: number; t1: number; text: string; original_text: string; subtitle_text: string | null
+  speaker_label: string; character: string | null; character_context_id: string | null
+  continues_next: boolean; confidence: 'high' | 'medium' | 'low'; note: string
+  source_ids: string[]; subtitle_ids: string[]; parts: { t0: number; t1: number; text: string }[]
+}
+export type CompiledVoice = { speaker_label: string; character: string | null; character_context_id: string | null; kind: 'character' | 'narrator' | 'unknown'; confidence: 'high' | 'medium' | 'low'; reason: string }
+export type Compilation = { lines: CompiledLine[]; voices: CompiledVoice[]; open_questions: string[] }
+export type DialogueView = {
+  state: DialogueState; result: SequenceResult<Compilation> | null; confirmed: boolean; stale: boolean; has_speech: boolean
+  source: { id: string; t0: number; t1: number; text: string; speaker_label: string }[]
+  subtitles: { id: string; t0: number; t1: number; text: string }[]
+  characters?: { id: string; name: string }[]
+}
 export type SequenceDetail = {
-  sequence: SequenceInfo; cuts: SequenceCut[]; missing: number[]
-  timeline: { duration: number; pauses: [number, number][]; candidates: SequenceCandidate[]; lines: SequenceLine[] } | null
+  sequence: SequenceInfo; compilation: DialogueView; cuts: SequenceCut[]; missing: number[]
+  timeline: { duration: number; pauses: [number, number][]; boundaries: SequenceBoundary[]; lines: SequenceLine[] } | null
   bible: SequenceResult<Bible> | null; plan: SequenceResult<Plan> | null; plan_problems: string[]
   shots: SequenceShot[]; review: SequenceResult<Review> | null; ready: boolean; jobs: SequenceJob[]
   limits: { sequence_seconds: number; shot_seconds: number; min_generate_seconds: number }
 }
-export type RunStep = 'direct' | 'bible' | 'plan' | 'shots' | 'review'
+export type RunStep = 'compile' | 'direct' | 'bible' | 'plan' | 'shots' | 'review'
 type ExportStatus = { job_id: string; status: string; stage: string; error: string | null; download_url: string | null }
 
 export const sequenceApi = {
@@ -69,8 +120,14 @@ export const sequenceApi = {
   run: (id: string, body: { step: RunStep; shot_keys?: string[]; only_missing?: boolean; instruction?: string }) => api<{ queued: number; job_ids: string[] }>(`/sequences/${id}/run`, jsonBody(body)),
   cancel: (id: string) => api<{ cancelled: number }>(`/sequences/${id}/cancel`, { method: 'POST' }),
   revise: (resultId: string, content: unknown) => api<SequenceDetail>(`/sequence-results/${resultId}`, { method: 'PUT', body: JSON.stringify({ content }) }),
-  merge: (id: string, shotKey: string) => api<SequenceDetail>(`/sequences/${id}/plan/merge`, jsonBody({ shot_key: shotKey })),
-  split: (id: string, shotKey: string, time: number) => api<SequenceDetail>(`/sequences/${id}/plan/split`, jsonBody({ shot_key: shotKey, time })),
+  confirmDialogue: (id: string, resultId: string) => api<SequenceDetail>(`/sequences/${id}/compilation/confirm`, jsonBody({ result_id: resultId })),
+  useSourceDialogue: (id: string) => api<SequenceDetail>(`/sequences/${id}/compilation/use-source`, { method: 'POST' }),
+  /** Choose where the shot boundary sits at the hard cut after a cut; the two shots beside it must be written again. */
+  setBoundary: (id: string, afterCutId: string, choice: BoundaryChoice) =>
+    api<SequenceDetail>(`/sequences/${id}/boundaries`, { method: 'PUT', body: JSON.stringify({ after_cut_id: afterCutId, choice }) }),
+  /** Decide how one speaker is heard in one shot (null: the director decides); the shot is rewritten around it. */
+  setVoices: (id: string, shotKey: string, speaker: string, segments: { from: number; delivery: Delivery }[] | null) =>
+    api<SequenceDetail>(`/sequences/${id}/voices`, { method: 'PUT', body: JSON.stringify({ shot_key: shotKey, speaker, segments }) }),
   /** Queue the ZIP (package, audio, initial frames, prompts) and wait until it can be downloaded; returns its URL. */
   async exportZip(id: string, onStage?: (stage: string) => void) {
     let status = await api<ExportStatus>(`/v1/sequences/${id}/exports`, { method: 'POST' })

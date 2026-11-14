@@ -230,8 +230,6 @@ def check(prompt, original=None):
             errors.append('detailed_description: needs exactly one [Shot 1].')
         if any(shot != '1' for shot in shots):
             errors.append('Only [Shot 1] is allowed: one continuous shot.')
-        if not description.lstrip().startswith('The target video is'):
-            warnings.append('detailed_description: open with the style sentence "The target video is …".')
     timeline = beats(description)
     duration = timeline[-1][1] if timeline else None
     if prompt_mode != 'fix' and 'detailed_description' in sections:

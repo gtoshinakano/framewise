@@ -22,8 +22,15 @@ CAMERA_MOVES = {
 }
 AMPLITUDES = ('small', 'medium', 'large')
 SPEEDS = ('slow', 'medium', 'fast')
-DELIVERIES = ('lip_sync', 'off_screen', 'inner_voice', 'narration')
-STYLE_START = 'The target video is'
+LOOK_SENTENCE = 'The shot keeps the look of <Picture 1> unchanged: its rendering, palette and lighting.'
+# How a speaker is heard during part of a shot. on_screen: visible with the mouth visible, lip-synced.
+# off_screen: not in the picture. inner_voice: visible, the mouth does not move for the words (a thought,
+# or the face turned away). narrative: visible or not, too far from the camera to lip-sync; the words play over the picture.
+DELIVERIES = ('on_screen', 'off_screen', 'inner_voice', 'narrative')
+NEEDS_SUBJECT = ('on_screen', 'inner_voice')
+LEGACY_DELIVERY = {'lip_sync': 'on_screen', 'narration': 'narrative'}  # per-line values of shots written before 2026-11-14
+NARRATOR = 'Narrator'
+UNKNOWN_SPEAKER = 'Unknown speaker'
 
 
 def sentence(text):
@@ -126,58 +133,178 @@ def camera_sentence(camera):
     return text
 
 
-def spoken(dialogue, content, subjects):
-    """Each spoken line with the director's delivery decision and the subject number it belongs to."""
-    decisions = {item['line']: item for item in content.get('speech') or []}
+def delivery_of(value):
+    """A delivery in the current vocabulary, translating the per-line values of older shots; None when unknown."""
+    value = LEGACY_DELIVERY.get(value, value)
+    return value if value in DELIVERIES else None
+
+
+def speaker_key(line):
+    """The name a shot's voices use for the speaker of a line: the resolved character (or Narrator), else the voice label."""
+    return line.get('character_name') or line.get('speaker_label') or UNKNOWN_SPEAKER
+
+
+def speakers(dialogue):
+    """The speakers heard in a shot, in the order they first speak."""
+    return list(dict.fromkeys(speaker_key(line) for line in dialogue))
+
+
+def normal_voices(entries, duration):
+    """Voice entries per speaker in time order: the first starts at 0, a later entry at the same time wins,
+    neighbours that change nothing are joined, and each entry gets ``to`` (the next entry's start, or the shot's end)."""
+    by_speaker = {}
+    for entry in entries:
+        by_speaker.setdefault(entry['speaker'], []).append(entry)
+    out = []
+    for items in by_speaker.values():
+        joined = []
+        for entry in sorted(items, key=lambda item: item['from']):
+            entry = {key: entry.get(key) for key in ('speaker', 'from', 'delivery', 'subject', 'fixed')}
+            if joined and entry['from'] - joined[-1]['from'] < 0.05:
+                joined[-1] = {**entry, 'from': joined[-1]['from']}
+            elif not joined or (entry['delivery'], entry['subject'], bool(entry['fixed'])) != (joined[-1]['delivery'], joined[-1]['subject'], bool(joined[-1]['fixed'])):
+                joined.append(entry)
+        joined[0]['from'] = 0.0
+        for entry, following in zip(joined, [*joined[1:], None]):
+            entry['from'] = round(min(max(0.0, float(entry['from'])), duration), 3)
+            entry['to'] = round(following['from'] if following else duration, 3)
+            entry['fixed'] = bool(entry['fixed']) or None
+        out.extend({key: value for key, value in entry.items() if key != 'fixed' or value} for entry in joined if entry['to'] - entry['from'] > 0.001 or len(joined) == 1)
+    return out
+
+
+def overlay(entries, fixed, duration):
+    """The director's voice entries with the user's ranges laid over them; a user range keeps the director's subject for that speaker.
+
+    ``entries`` are ``{speaker, from, delivery, subject}``; ``fixed`` are ``{speaker, from, to, delivery}`` on the shot's clock.
+    """
+    normal = normal_voices(entries, duration) if entries else []
+    out = []
+    for speaker in dict.fromkeys([*(entry['speaker'] for entry in normal), *(item['speaker'] for item in fixed)]):
+        own = [entry for entry in normal if entry['speaker'] == speaker]
+        mine = [item for item in fixed if item['speaker'] == speaker]
+        if not mine:
+            out.extend(own)
+            continue
+        points = sorted({0.0, duration, *(item['from'] for item in mine), *(min(item['to'], duration) for item in mine), *(entry['from'] for entry in own)})
+        pieces = []
+        for start, end in zip(points, points[1:]):
+            if end - start < 0.001:
+                continue
+            middle = (start + end) / 2
+            user = next((item for item in reversed(mine) if item['from'] <= middle < item['to']), None)
+            base = next((entry for entry in own if entry['from'] <= middle < entry['to']), None)
+            if user:
+                subject = (base or {}).get('subject') or (speaker if user['delivery'] in NEEDS_SUBJECT else None)
+                pieces.append({'speaker': speaker, 'from': start, 'delivery': user['delivery'], 'subject': subject if user['delivery'] != 'off_screen' else None, 'fixed': True})
+            elif base:
+                pieces.append({**base, 'from': start, 'fixed': None})
+        if pieces:
+            out.extend(normal_voices(pieces, duration))
+    return out
+
+
+def voices_of(content, dialogue, duration):
+    """A direction's voices; shots written before voices existed are read from their per-line ``speech``."""
+    if isinstance(content.get('voices'), list):
+        entries = [{**entry, 'delivery': delivery_of(entry.get('delivery')) or 'off_screen'} for entry in content['voices']
+                   if isinstance(entry, dict) and entry.get('speaker') and isinstance(entry.get('from'), (int, float)) and not isinstance(entry.get('from'), bool)]
+        return normal_voices(entries, duration) if entries else []
+    by_line = {line['line']: line for line in dialogue}
+    entries = []
+    for item in content.get('speech') or []:
+        line = by_line.get(item.get('line')) if isinstance(item, dict) else None
+        if line is None:
+            continue
+        entries.append({'speaker': speaker_key(line), 'from': line['t0'], 'delivery': delivery_of(item.get('delivery')) or 'off_screen', 'subject': item.get('subject')})
+    return normal_voices(entries, duration) if entries else []
+
+
+def voice_at(voices, speaker, t):
+    """The voice entry of ``speaker`` in force at second ``t`` of the shot."""
+    items = [entry for entry in voices if entry['speaker'] == speaker]
+    return next((entry for entry in reversed(items) if entry['from'] <= t + 1e-6), items[0] if items else None)
+
+
+def spoken(dialogue, content, subjects, duration=None):
+    """Each spoken line with the delivery its speaker has at the middle of the line, and the subject number that carries it."""
+    duration = duration if duration is not None else max([line['t1'] for line in dialogue] or [0.0])
+    voices = voices_of(content, dialogue, duration)
     lines = []
     for line in dialogue:
-        decision = decisions.get(line['line']) or {}
-        number = subject_number(decision.get('subject'), subjects)
-        delivery = decision.get('delivery') if decision.get('delivery') in DELIVERIES else 'off_screen'
-        if delivery in ('lip_sync', 'inner_voice') and number is None:
-            delivery = 'off_screen'
-        lines.append({**line, 'delivery': delivery, 'subject': number if delivery in ('lip_sync', 'inner_voice') else None})
+        speaker = speaker_key(line)
+        entry = voice_at(voices, speaker, (line['t0'] + line['t1']) / 2) or {}
+        delivery = delivery_of(entry.get('delivery')) or 'off_screen'
+        number = subject_number(entry.get('subject'), subjects) if delivery != 'off_screen' else None
+        if delivery in NEEDS_SUBJECT and number is None:
+            delivery = 'off_screen'  # nobody visible can carry the voice; the validator normally prevents this
+        lines.append({**line, 'speaker': speaker, 'delivery': delivery, 'subject': number,
+                      'range': [entry['from'], entry['to']] if 'to' in entry else None, 'fixed_by_user': bool(entry.get('fixed'))})
     return lines
 
 
 def speech_sentence(line, language):
     at, words = h3_prompt.fmt(line['t0']), f"<d>[{language}] {line['text']}</d>"
-    if line['delivery'] == 'lip_sync':
+    if line['delivery'] == 'on_screen':
         return f"At {at}, <Subject {line['subject']}> (S{line['subject']}) says: {words}"
     if line['delivery'] == 'inner_voice':
-        return f"At {at}, the inner voice of <Subject {line['subject']}> is heard while the lips stay closed: {words}"
-    if line['delivery'] == 'narration':
-        return f"At {at}, a narrator is heard: {words}"
+        return f"At {at}, the voice of <Subject {line['subject']}> is heard while its lips stay closed: {words}"
+    if line['delivery'] == 'narrative':
+        if line['subject']:
+            return f"At {at}, the voice of <Subject {line['subject']}> plays over the picture without lip sync: {words}"
+        return f"At {at}, {'a narrator' if line.get('speaker') == NARRATOR else 'a voice'} is heard over the picture: {words}"
     return f"At {at}, an off-screen voice is heard: {words}"
 
 
 def audio_lines(lines):
-    """What ``<Audio 1>`` drives: whose lips follow it, and which words nobody on screen mouths."""
+    """What ``<Audio 1>`` drives, per speaker and voice range: whose lips follow it, and which words nobody on screen mouths."""
     if not lines:
         return ['<Audio 1> carries no speech; match its ambience and timing.']
-    out, seen = [], set()
+    runs = {}
     for line in lines:
-        key = (line['delivery'], line['subject'])
-        if key in seen:
-            continue
-        seen.add(key)
-        at = h3_prompt.fmt(line['t0'])
-        if line['delivery'] == 'lip_sync':
-            out.append(f"<Subject {line['subject']}> speaks the words of <Audio 1> in its voice, lips in sync, from {at}.")
-        elif line['delivery'] == 'inner_voice':
-            out.append(f"The words of <Audio 1> from {at} are the inner voice of <Subject {line['subject']}>; the lips stay closed.")
-        elif line['delivery'] == 'narration':
-            out.append(f"A narrator speaks the words of <Audio 1> from {at}; no lips on screen move for them.")
+        key = (line['speaker'], tuple(line['range'] or ()), line['delivery'], line['subject'])
+        run = runs.setdefault(key, {'t0': line['t0'], 't1': line['t1'], **line})
+        run['t0'], run['t1'] = min(run['t0'], line['t0']), max(run['t1'], line['t1'])
+    out = []
+    for run in sorted(runs.values(), key=lambda item: item['t0']):
+        span = f"from {h3_prompt.fmt(run['t0'])} to {h3_prompt.fmt(run['t1'])}"
+        subject = f"<Subject {run['subject']}>" if run['subject'] else None
+        if run['delivery'] == 'on_screen':
+            out.append(f"{subject} speaks the words of <Audio 1> in its voice, lips in sync, {span}.")
+        elif run['delivery'] == 'inner_voice':
+            out.append(f"The words of <Audio 1> {span} are the voice of {subject}; its lips stay closed.")
+        elif run['delivery'] == 'narrative':
+            who = f"the voice of {subject}, too far from the camera for lip sync" if subject else ('a narrator' if run['speaker'] == NARRATOR else 'a voice heard over the picture')
+            out.append(f"The words of <Audio 1> {span} are {who}; they play over the picture and no lips move for them.")
         else:
-            out.append(f"An off-screen voice speaks the words of <Audio 1> from {at}; no lips on screen move for them.")
+            out.append(f"An off-screen voice speaks the words of <Audio 1> {span}; no lips on screen move for them.")
     return out
+
+
+def voice_notes(subjects, lines):
+    """One sentence per person on screen about the mouth: closed, not lip-synced, or moving only for its own words."""
+    notes = []
+    for subject in subjects:
+        if subject['kind'] == 'scenario':
+            continue
+        own = {line['delivery'] for line in lines if line['subject'] == subject['number']}
+        label = subject['label']
+        if not own or own == {'inner_voice'}:
+            if not own:
+                notes.append(f"{label} does not speak; the lips stay closed." if subject['kind'] == 'character' else f"{label} does not speak.")
+            else:
+                notes.append(f"{label} keeps the lips closed while its voice is heard.")
+        elif 'on_screen' not in own:
+            notes.append(f"{label} is too far from the camera for lip sync; its voice plays over the picture.")
+        elif own != {'on_screen'}:
+            notes.append(f"{label} moves the lips only while its own on-screen words are heard.")
+    return notes
 
 
 def render(shot, content, bible, subjects, dialogue):
     """The H3 prompt of a shot, from ``subject_definitions:`` to ``non_diegetic_music:``."""
     language = bible.get('spoken_language') or 'Japanese'
-    lines = spoken(dialogue, content, subjects)
-    people = [subject for subject in subjects if subject['kind'] != 'scenario']
+    lines = spoken(dialogue, content, subjects, shot['duration'])
 
     definitions = [f"<Picture 1> is the first frame of [Shot 1]: {sentence(content.get('picture_line'))}"]
     for subject in subjects:
@@ -190,19 +317,15 @@ def render(shot, content, bible, subjects, dialogue):
     carries = 'the voices and ambience to keep in sync' if lines else 'the ambience and timing to match'
     definitions.append(f"<Audio 1> is the original sound of this shot, “{audio_file(shot)}”: {carries}.")
 
-    retention = [f"<Picture 1> ([Shot 1] first frame): fully_preserved - {sentence(content.get('keep_picture') or 'composition, style, palette and lighting of the opening frame')}"]
+    retention = [f"<Picture 1> ([Shot 1] first frame): fully_preserved - {sentence(content.get('keep_picture') or 'composition, palette and lighting of the opening frame')}"]
     retention.extend(f"{subject['label']} (appears in [Shot 1]): fully_preserved - {sentence(subject['keep'] or 'appearance follows its reference exactly')}" for subject in subjects)
 
-    speaking = {line['subject'] for line in lines if line['delivery'] == 'lip_sync'}
-    # A named character has a face whose lips H3 might move to the audio; a subject without a record can be anything
-    # the director listed (a passer-by, a hand), so it only gets the plain statement.
-    silent = [f"{subject['label']} does not speak; the lips stay closed." if subject['kind'] == 'character' else f"{subject['label']} does not speak."
-              for subject in people if subject['number'] not in speaking]
+    # What each person's mouth does: H3 would otherwise move any visible lips to the audio.
     opening = ' '.join(part for part in (
         f"[Shot 1] The shot begins from <Picture 1>: {sentence(label_names(content.get('shot_line'), subjects))}",
-        sentence(label_names(content.get('framing_lock'), subjects)), sentence(label_names(content.get('light'), subjects)), *silent) if part)
+        sentence(label_names(content.get('framing_lock'), subjects)), sentence(label_names(content.get('light'), subjects)), *voice_notes(subjects, lines)) if part)
     ranges = beat_ranges(content, shot)
-    description = [sentence(bible.get('style') or f'{STYLE_START} an animated shot in the style of <Picture 1>'), opening]
+    description = [LOOK_SENTENCE, opening]
     for index, beat in enumerate(ranges):
         parts = [sentence(beat['action'] if beat.get('hold') else label_names(beat['action'], subjects))]
         if index == 0:
@@ -227,10 +350,8 @@ def render(shot, content, bible, subjects, dialogue):
 def still_prompt(content, bible):
     """A generator-agnostic prompt for the opening still: one frozen moment, no motion, no text."""
     still = content.get('still') or {}
-    style = clause(bible.get('style'))
-    style = style[len(STYLE_START):].strip() if style.startswith(STYLE_START) else style
     rows = [('Shot', still.get('shot')), ('Subjects', still.get('subjects')), ('Objects and layout', still.get('layout')), ('Setting', still.get('setting')),
-            ('Lighting and colour', still.get('lighting')), ('Style', style[:1].upper() + style[1:] if style else None),
+            ('Lighting and colour', still.get('lighting')),
             ('Constraints', 'one frozen moment; no text, subtitles, captions, logos or watermarks; no additional characters')]
     return '\n'.join(f'{title}: {sentence(value)}' for title, value in rows if clause(value))
 
@@ -245,11 +366,16 @@ def build(shot, content, bible, roster, scenario, dialogue):
     """Render a shot and everything the download declares about it.
 
     Returns ``(prompt, check, derived)`` where ``derived`` holds the numbered subjects and references,
-    the dialogue with deliveries, the still prompt and the audio file name the prompt quotes.
+    the dialogue with the delivery each line gets, the shot's voice ranges, the still prompt and the
+    audio file name the prompt quotes.
     """
     subjects, references = assign(content, roster, scenario)
     prompt = render(shot, content, bible, subjects, dialogue)
-    lines = spoken(dialogue, content, subjects)
+    lines = spoken(dialogue, content, subjects, shot['duration'])
+    voices = [{**entry, 'subject_number': subject_number(entry.get('subject'), subjects), 'fixed_by_user': bool(entry.get('fixed'))}
+              for entry in voices_of(content, dialogue, shot['duration'])]
     derived = {'subjects': subjects, 'references': references, 'audio_file': audio_file(shot), 'still_prompt': still_prompt(content, bible),
-               'dialogue': [{key: line.get(key) for key in ('line', 't0', 't1', 'text', 'speaker_label', 'character_context_id', 'character_name', 'attribution', 'delivery', 'subject', 'crosses_start', 'crosses_end')} for line in lines]}
+               'voices': [{key: entry.get(key) for key in ('speaker', 'from', 'to', 'delivery', 'subject', 'subject_number', 'fixed_by_user')} for entry in voices],
+               'dialogue': [{key: line.get(key) for key in ('line', 't0', 't1', 'text', 'speaker', 'speaker_label', 'character_context_id', 'character_name', 'attribution', 'delivery', 'subject',
+                                                          'fixed_by_user', 'crosses_start', 'crosses_end')} for line in lines]}
     return prompt, check(prompt), derived

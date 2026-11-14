@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { canMerge, clock, issueInstruction, issuesFor, progress, promptSections, rangeSeconds, shotStatus, splitChoices, stage, staleText } from '../src/sequenceView.ts'
+import { boundaryChoices, changeAt, clock, deciderLabel, deliveryLabel, edgeTags, issueInstruction, issuesFor, progress, promptSections, rangeSeconds, shotStatus, speakerRanges, stage, staleText } from '../src/sequenceView.ts'
 
 const shot = (index, extra = {}) => ({ index, key: `k${index}`, t0: (index - 1) * 4, t1: index * 4, duration: 4, stale: [], job: null, result: { check: { ok: true } }, ...extra })
 const detail = (extra = {}) => ({ sequence: { cuts_changed: false, cuts_missing: false }, missing: [], plan_problems: [], bible: {}, plan: {}, shots: [shot(1), shot(2)], jobs: [], ...extra })
@@ -24,7 +24,7 @@ test('a shot reports its most urgent need first', () => {
 test('stale reasons read as one sentence', () => {
   assert.equal(staleText([]), '')
   assert.match(staleText(['bible']), /^Written before the bible changed/)
-  assert.match(staleText(['plan', 'evidence']), /spoken lines changed and the analysis or your answers/)
+  assert.match(staleText(['plan', 'evidence']), /your voice settings changed and the analysis or your answers/)
 })
 
 test('the stage follows the two-click flow', () => {
@@ -44,13 +44,11 @@ test('the stage follows the two-click flow', () => {
     { shots: 2, written: 1, ready: 1, needWriting: 1, running: 0, queued: 1, step: 'shot' })
 })
 
-test('split choices lie inside the shot, and a merge must fit one take', () => {
-  const candidates = [{ id: 'B0', t: 0, time: 100, kind: 'start' }, { id: 'B1', t: 0.3, time: 100.3, kind: 'quiet' }, { id: 'B2', t: 2, time: 102, kind: 'pause', pause: 0.6 }, { id: 'B3', t: 3.8, time: 103.8, kind: 'event' }, { id: 'B4', t: 4, time: 104, kind: 'cut' }]
-  assert.deepEqual(splitChoices(shot(1), candidates), [{ time: 102, label: '0:02.0 · pause 0.6 s' }])
-  const shots = [shot(1), shot(2), shot(3, { t1: 30 })]
-  assert.equal(canMerge(shots, 0, 15), true)
-  assert.equal(canMerge(shots, 1, 15), false)
-  assert.equal(canMerge(shots, 2, 15), false)
+test('a hard cut inside speech offers only the positions that are possible, with signed moves', () => {
+  const boundary = { id: 'K2', speech: { lines: ['L3'], keeps: ['L3', 'L4'] }, options: { keep_cut: { t: 5, time: 105, shift: 0 }, after_line: { t: 6.21, time: 106.21, shift: 1.21 } }, unavailable: { before_line: 'too far' } }
+  assert.deepEqual(boundaryChoices(boundary), [{ choice: 'keep_cut', label: 'On the hard cut · divides L3' }, { choice: 'after_line', label: 'After L3–L4 (+1.21 s)' }])
+  assert.deepEqual(boundaryChoices({ ...boundary, speech: { lines: ['L1'], keeps: ['L1'] }, options: { keep_cut: { shift: 0 }, before_line: { shift: -0.4 } } }).map(item => item.label), ['On the hard cut · divides L1', 'Before L1 (−0.40 s)'])
+  assert.deepEqual([deciderLabel('director'), deciderLabel('app'), deciderLabel('user'), deciderLabel(null)], ['director', 'app', 'you', null])
 })
 
 test('review issues attach to shots by key and become a rewrite instruction', () => {
@@ -73,4 +71,39 @@ test('a range of cuts has a length only when both ends exist in order', () => {
   assert.equal(rangeSeconds(cuts, 2, 2), 3.5)
   assert.equal(rangeSeconds(cuts, 2, 1), null)
   assert.equal(rangeSeconds(cuts, 1, 9), null)
+})
+
+test('the dialogue comes before direction', () => {
+  const compilation = state => ({ compilation: { state, has_speech: true }, bible: null, plan: null })
+  assert.equal(stage(detail(compilation('review'))).key, 'review')
+  assert.equal(stage(detail(compilation('none'))).key, 'review')
+  assert.equal(stage(detail(compilation('confirmed'))).key, 'direct')
+  assert.equal(stage(detail({ ...compilation('review'), compilation: { state: 'review', has_speech: false } })).key, 'direct')
+  assert.equal(stage(detail({ ...compilation('running'), jobs: [{ status: 'running', step: 'compile' }] })).key, 'compiling')
+})
+
+test('edge tags show borrowed audio, divided speech and the parts of a long cut', () => {
+  const plain = { how: 'keep_cut' }
+  assert.deepEqual(edgeTags({ opens: { how: 'start' }, closes: plain, part: null }), [])
+  const runsOn = edgeTags({ opens: plain, closes: { how: 'after_line', shift: 0.8, keeps: ['L5'] }, part: null })
+  assert.equal(runsOn[0].label, 'ends +0.80 s')
+  assert.match(runsOn[0].title, /Runs past the end of its cut to keep L5 whole/)
+  const later = edgeTags({ opens: { how: 'after_line', shift: 0.8, keeps: ['L5'] }, closes: { how: 'end' }, part: null })
+  assert.match(later[0].title, /the neighbouring shot carries L5 whole/)
+  const divided = edgeTags({ opens: { how: 'start' }, closes: { how: 'keep_cut', split: { lines: ['L7'], before: 'ねえ', after: '聞いてる？' }, reason: 'Mai cuts him off.' }, part: [1, 2] })
+  assert.deepEqual(divided.map(tag => tag.label), ['part 1/2', 'divides L7'])
+  assert.match(divided[1].title, /“ねえ” \| “聞いてる？” — Mai cuts him off\./)
+})
+
+test('voice ranges: your ranges win over the director, and a change from the playhead keeps what came before', () => {
+  const written = [{ speaker: 'Mai', from: 0, to: 4, delivery: 'narrative', subject: 'Mai' }, { speaker: 'Mai', from: 4, to: 10, delivery: 'on_screen', subject: 'Mai' }, { speaker: 'Ken', from: 0, to: 10, delivery: 'off_screen', subject: null }]
+  const fixed = [{ speaker: 'Mai', from: 6, to: 10, delivery: 'inner_voice' }]
+  const ranges = speakerRanges(written, fixed, 'Mai', 10)
+  assert.deepEqual(ranges.map(range => [range.from, range.to, range.delivery, range.mine]), [[0, 4, 'narrative', false], [4, 6, 'on_screen', false], [6, 10, 'inner_voice', true]])
+  assert.deepEqual(speakerRanges(undefined, [], 'Mai', 10), [])
+  assert.deepEqual(changeAt(ranges, 0, 'off_screen'), [{ from: 0, delivery: 'off_screen' }, { from: 6, delivery: 'inner_voice' }])
+  assert.deepEqual(changeAt(ranges, 2.04, 'on_screen'), [{ from: 0, delivery: 'narrative' }, { from: 2, delivery: 'on_screen' }, { from: 6, delivery: 'inner_voice' }])
+  assert.deepEqual(changeAt(speakerRanges(written, [], 'Mai', 10), 5, 'on_screen'), [{ from: 0, delivery: 'narrative' }, { from: 4, delivery: 'on_screen' }])
+  assert.equal(deliveryLabel('narrative'), 'Narrative')
+  assert.equal(deliveryLabel(null), 'Director decides')
 })

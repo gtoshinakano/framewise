@@ -798,19 +798,39 @@ class SequenceLine(BaseModel):
     speaker_label: str | None = None
     character_context_id: str | None = None
     character_name: str | None = None
-    attribution: Literal['transcript', 'director', 'unknown'] | None = Field(default=None, description='transcript: the user linked the line; director: the sequence bible decided the voice; unknown: nobody did.')
-    delivery: Literal['lip_sync', 'off_screen', 'inner_voice', 'narration'] | None = Field(default=None, description='How the shot plays the line; null until the shot is written.')
-    subject: int | None = Field(default=None, description='Subject number that speaks (lip_sync) or thinks (inner_voice) the line.')
+    attribution: Literal['reviewed', 'transcript', 'director', 'unknown'] | None = Field(default=None, description='reviewed: the user reviewed the dialogue; transcript: the user linked the line; director: the sequence bible decided the voice; unknown: nobody did.')
+    speaker: str | None = Field(default=None, description='The speaker as the shot\'s voices name it: the character name, Narrator, or the voice label.')
+    delivery: Literal['on_screen', 'off_screen', 'inner_voice', 'narrative'] | None = Field(default=None, description="How the shot plays the line: its speaker's voice range at the middle of the line (see the shot's voices). Null until the shot is written.")
+    subject: int | None = Field(default=None, description='Subject number that carries the voice: lip-synced (on_screen), with the mouth still (inner_voice), or far away (narrative).')
+    fixed_by_user: bool | None = Field(default=None, description='True when the user decided this delivery.')
     crosses_start: bool | None = None
     crosses_end: bool | None = None
+
+
+class SequenceVoice(BaseModel):
+    speaker: str = Field(description='The character name, Narrator, or the voice label of an unresolved voice.')
+    start: float = Field(alias='from', description='Second of the shot from which this delivery holds.')
+    to: float = Field(description='Second of the shot at which it ends (the next range of the speaker, or the end of the shot).')
+    delivery: Literal['on_screen', 'off_screen', 'inner_voice', 'narrative'] = Field(
+        description='on_screen: visible with the mouth visible, lip-synced. off_screen: not in the picture. inner_voice: visible, the mouth does not move for the words. narrative: too far for lip sync; the words play over the picture.')
+    subject: str | None = Field(default=None, description='Name of the subject who carries the voice.')
+    subject_number: int | None = Field(default=None, description='Its <Subject N> number in the prompt.')
+    fixed_by_user: bool = Field(default=False, description='True when the user decided this range in the Shots tab.')
+
+
+class SequenceFixedVoice(BaseModel):
+    speaker: str
+    start: float = Field(alias='from', description='Second of the shot.')
+    to: float
+    delivery: Literal['on_screen', 'off_screen', 'inner_voice', 'narrative']
 
 
 class SequenceFrame(BaseModel):
     cut_id: str
     cut_number: int
     time: float = Field(description='Episode time of the frame, in seconds.')
-    strategy: Literal['cut_first_frame', 'frame_at_time'] = Field(description='cut_first_frame: the analysed first frame of that cut. frame_at_time: a later moment of the cut, where the previous shot stopped; its description is derived, not observed.')
-    continues_previous_shot: bool = Field(description='True when this shot continues the take of the previous one; the last generated frame of that shot may serve as the initial frame instead.')
+    strategy: Literal['cut_first_frame', 'frame_at_time'] = Field(description='cut_first_frame: the analysed first frame of that cut. frame_at_time: a later moment of the cut (the next part of a cut longer than one take, or just after a phrase the previous shot finished across the hard cut); its description is derived, not observed.')
+    continues_previous_shot: bool = Field(description='True for the next part of a cut longer than one take (the previous shot showed the same cut); the last generated frame of that shot may serve as the initial frame instead.')
     description: str | None = Field(description='Who is where in the opening still.')
     still: dict[str, Any] | None = Field(description='The opening still as shot, subjects, layout, setting and lighting.')
     still_prompt: str | None = Field(description='A generator-agnostic prompt for the still image.')
@@ -833,6 +853,18 @@ class SequenceBeat(BaseModel):
     hold: bool | None = Field(default=None, description='True for the hold the app adds to a shot shorter than the minimum generation length.')
 
 
+class SequenceEdge(BaseModel):
+    how: Literal['start', 'end', 'continuation', 'keep_cut', 'before_line', 'after_line'] = Field(
+        description='start/end: the edge of the sequence. continuation: the next or previous part of the same long cut. keep_cut: exactly on the hard cut. before_line/after_line: moved off the hard cut by shift seconds into the silence before or after a phrase, so the phrase stays in one shot (the shot borrows that much of the neighbouring cut\'s audio, never its picture).')
+    boundary: str | None = Field(default=None, description='Id of the hard cut (K1…).')
+    shift: float | None = Field(default=None, description='Seconds the boundary moved off the hard cut (negative: earlier).')
+    hard_cut: float | None = Field(default=None, description='The hard cut, in seconds from the start of the sequence.')
+    keeps: list[str] | None = Field(default=None, description='Line ids the moved boundary keeps whole.')
+    split: dict[str, Any] | None = Field(default=None, description='Speech the edge divides: lines, the words before it and the words after it.')
+    reason: str | None = Field(default=None, description="The director's (or the user's) reason for this choice.")
+    by: Literal['director', 'app', 'user'] | None = Field(default=None, description='Who chose it.')
+
+
 class SequenceShot(BaseModel):
     index: int = Field(description='One-based position in the sequence.')
     key: str = Field(description='Stable id of the shot: its episode interval in milliseconds.')
@@ -843,17 +875,24 @@ class SequenceShot(BaseModel):
     duration: float = Field(description='Length of the audio interval the shot covers in the finished video.')
     generate_seconds: float = Field(description='Length to generate with H3 (the last beat of the prompt ends here); longer than duration for very short shots.')
     trim_seconds: float | None = Field(description='When set, cut the generated video to this length.')
-    source_cuts: list[int]
+    cut: int = Field(description='Number of the cut this shot is: every cut is one shot, and its picture is the only one shown.')
+    cut_id: str
+    part: list[int] | None = Field(default=None, description='[part, of] for a cut longer than one take, which is divided into consecutive parts.')
+    source_cuts: list[int] = Field(description='Cuts whose audio the shot plays: its own cut, plus a neighbour when a boundary moved to keep a phrase whole.')
     cut_ids: list[str]
-    merged: bool = Field(description='True when one continuous take covers several source cuts.')
-    starts_mid_cut: bool
+    merged: bool = Field(description='Always false: shots are never merged.')
+    starts_mid_cut: bool = Field(description='True when the shot starts after its cut starts (a later part, or after a phrase the previous shot finished).')
     ends_mid_cut: bool
+    opens: SequenceEdge = Field(description='How the shot meets the previous one.')
+    closes: SequenceEdge = Field(description='How the shot meets the next one.')
     scene: str | None
     intent: str
-    staging: str
+    staging: str = Field(description='Always empty; see opens and closes.')
     initial_frame: SequenceFrame
     audio: SequenceAudio
     dialogue: list[SequenceLine]
+    voices: list[SequenceVoice] | None = Field(default=None, description='How each speaker is heard in this shot, as time ranges per speaker. Null until the shot is written.')
+    fixed_voices: list[SequenceFixedVoice] | None = Field(default=None, description='The ranges the user decided for this shot; the director writes the shot around them.')
     subjects: list[SequenceSubject]
     references: list[SequenceReference] = Field(description='Every label of the prompt in the order the files must be attached.')
     camera: dict[str, Any] | None

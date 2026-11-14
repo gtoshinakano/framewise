@@ -4,7 +4,7 @@ Both are assembled from current data on every read: the cuts as they are now, th
 plan, shots and review, and for each shot whether what it was written from has changed since
 (``stale``). ``package`` is the contract ``sequence-v1`` that the video generation app downloads.
 """
-from . import db, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline
+from . import db, sequence_compile, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline
 
 CONTRACT = 'sequence-v1'
 
@@ -14,6 +14,7 @@ def state(conn, sequence):
     cuts = store.current_cuts(conn, sequence)
     current = {'sequence': sequence, 'cuts': cuts, 'changed': store.cuts_changed(sequence, cuts), 'ctx': None, 'timeline': None, 'missing': [],
                'bible_row': store.current(conn, sequence['id'], 'bible'), 'plan_row': store.current(conn, sequence['id'], 'plan'),
+               'compilation_row': store.current(conn, sequence['id'], 'compilation'),
                'review_row': store.current(conn, sequence['id'], 'review'), 'shot_rows': store.current_shots(conn, sequence['id']), 'shots': None, 'plan_problems': []}
     current['bible'] = store.loads(current['bible_row']['content'], {}) if current['bible_row'] else None
     current['plan'] = store.loads(current['plan_row']['content'], {}) if current['plan_row'] else None
@@ -25,7 +26,7 @@ def state(conn, sequence):
     if current['plan'] and current['plan'].get('shots'):
         current['plan_problems'] = sequence_timeline.check_spans(current['plan']['shots'], current['timeline'])
         if not current['plan_problems']:
-            current['shots'] = sequence_timeline.expand(current['plan']['shots'], current['timeline'])
+            current['shots'] = sequence_timeline.expand(current['plan']['shots'], current['timeline'], current['plan'].get('voices'), current['plan'].get('boundaries'))
     return current
 
 
@@ -37,6 +38,36 @@ def sequence_view(sequence, cuts, changed):
             'cuts_changed': bool(changed and cuts is not None), 'cuts_missing': cuts is None, 'created_at': sequence['created_at'], 'updated_at': sequence['updated_at']}
 
 
+def dialogue_state(conn, sequence, row=None, pending=None):
+    """Where the dialogue stands: none (never compiled), running, review (waiting for the user) or confirmed."""
+    row = row if row is not None else store.current(conn, sequence['id'], 'compilation')
+    pending = pending if pending is not None else store.pending_jobs(conn, sequence['id'])
+    if any(job['step'] == 'compile' for job in pending):
+        return 'running'
+    if not row:
+        return 'none'
+    return 'confirmed' if sequence.get('reviewed_compilation_id') == row['id'] else 'review'
+
+
+def compilation_view(conn, sequence, current, pending):
+    """The dialogue compilation with what it was built from, for the Dialogue tab."""
+    row, cuts = current['compilation_row'], current['cuts']
+    view = {'state': dialogue_state(conn, sequence, row, pending), 'result': result_view(row), 'confirmed': False, 'stale': False, 'source': [], 'subtitles': [], 'has_speech': False}
+    view['confirmed'] = view['state'] == 'confirmed'
+    if cuts is None:
+        return view
+    origin = cuts[0]['start_time']
+    hash_now, fragments, subtitle_source = store.source_fingerprint(conn, sequence, cuts)
+    saved = conn.execute('SELECT source_hash FROM sequence_compilation_sources WHERE sequence_id=?', (sequence['id'],)).fetchone()
+    view['stale'] = bool(row and saved and saved['source_hash'] != hash_now)
+    view['has_speech'] = bool(fragments)
+    view['subtitles'] = [{'id': item['id'], 't0': round(item['start_time'] - origin, 3), 't1': round(item['end_time'] - origin, 3), 'text': item['text']} for item in subtitle_source]
+    view['source'] = [{'id': line['id'], 't0': round(line['start_time'] - origin, 3), 't1': round(line['end_time'] - origin, 3), 'text': line['text'], 'speaker_label': line['speaker_label'] or ''}
+                      for line in store.transcript_lines(conn, sequence['episode_id'], cuts[0]['start_time'], cuts[-1]['end_time'])]
+    view['characters'] = [{'id': person['id'], 'name': person['name']} for person in current['ctx']['characters']]
+    return view
+
+
 def summary(conn, sequence):
     """One row of the episode's sequence list; cheap enough to compute for every sequence."""
     cuts = store.current_cuts(conn, sequence)
@@ -45,7 +76,7 @@ def summary(conn, sequence):
     return {**sequence_view(sequence, cuts, store.cuts_changed(sequence, cuts)),
             'has_bible': store.current(conn, sequence['id'], 'bible') is not None, 'has_plan': plan is not None, 'has_review': store.current(conn, sequence['id'], 'review') is not None,
             'shots_planned': planned, 'shots_written': len(store.current_shots(conn, sequence['id'])) if planned else 0,
-            'pending_jobs': len(store.pending_jobs(conn, sequence['id']))}
+            'dialogue': dialogue_state(conn, sequence), 'pending_jobs': len(store.pending_jobs(conn, sequence['id']))}
 
 
 def stale_reasons(current, shot, row):
@@ -61,7 +92,9 @@ def shot_result(row):
     if not row:
         return None
     settings = store.loads(row['settings_json'], {})
+    usage = settings.get('usage') or {}
     return {'id': row['id'], 'content': store.loads(row['content'], {}), 'prompt': row['rendered'], 'check': settings.get('check'), 'derived': settings.get('derived') or {},
+            'generation_seconds': settings.get('summary_generation_seconds'), 'model_variant': usage.get('model_variant'), 'decode_tokens_per_second': usage.get('decode_tokens_per_second'),
             'origin': row['origin'], 'model_id': row['model_id'], 'job_id': row['job_id'], 'parent_id': row['parent_id'], 'created_at': row['created_at'],
             'instruction': settings.get('instruction'), 'completed_by_app': settings.get('completed_by_app')}
 
@@ -81,7 +114,24 @@ def shot_views(current, pending=()):
     views = []
     for shot in current['shots'] or []:
         row = current['shot_rows'].get(shot['key'])
-        views.append({**shot, 'result': shot_result(row), 'stale': stale_reasons(current, shot, row), 'job': waiting.get(shot['key'])})
+        views.append({**shot, 'result': shot_result(row), 'stale': stale_reasons(current, shot, row), 'job': waiting.get(shot['key']),
+                      'speakers': sequence_prompt.speakers(evidence.shot_dialogue(shot, current['bible'] or {}))})
+    return views
+
+
+def boundary_views(current):
+    """Every hard cut of the sequence with its options and, once there is a usable plan, the choice made there and by whom."""
+    timeline = current['timeline']
+    if timeline is None:
+        return []
+    choices = sequence_timeline.choices_of(current['plan']['shots'], timeline) if current['shots'] else {}
+    decided = {item.get('after_cut_id'): item for item in (current['plan'] or {}).get('boundaries') or [] if isinstance(item, dict)}
+    views = []
+    for boundary in timeline['boundaries']:
+        choice = choices.get(boundary['id'])
+        made = decided.get(boundary['after_cut_id']) or {}
+        views.append({**boundary, 'choice': choice, 'reason': made.get('reason') if made.get('choice') == choice else None,
+                      'by': made.get('by') if made.get('choice') == choice else None})
     return views
 
 
@@ -98,15 +148,16 @@ def detail(sequence_id):
         current = state(conn, sequence)
         pending = store.pending_jobs(conn, sequence_id)
         jobs = store.recent_jobs(conn, sequence_id)
+        compilation = compilation_view(conn, sequence, current, pending)
     cuts, timeline = current['cuts'], current['timeline']
     shots = shot_views(current, pending)
     return {'sequence': sequence_view(sequence, cuts, current['changed']),
             'cuts': [{'id': cut['id'], 'number': cut['number'], 't0': cut['t0'], 't1': cut['t1'], 'start_time': cut['start_time'], 'end_time': cut['end_time'],
                       'ready': cut['number'] not in current['missing']} for cut in timeline['cuts']] if timeline else [],
             'missing': current['missing'],
-            'timeline': {'duration': timeline['duration'], 'pauses': timeline['pauses'], 'candidates': timeline['candidates'],
+            'timeline': {'duration': timeline['duration'], 'pauses': timeline['pauses'], 'boundaries': boundary_views(current),
                          'lines': [{key: line[key] for key in ('id', 't0', 't1', 'text', 'speaker_label', 'character_name', 'character_context_id')} for line in timeline['lines']]} if timeline else None,
-            'bible': result_view(current['bible_row']), 'plan': result_view(current['plan_row']), 'plan_problems': current['plan_problems'],
+            'compilation': compilation, 'bible': result_view(current['bible_row']), 'plan': result_view(current['plan_row']), 'plan_problems': current['plan_problems'],
             'shots': shots, 'review': result_view(current['review_row']),
             'ready': is_ready(current, shots), 'jobs': jobs,
             'limits': {'sequence_seconds': sequence_timeline.MAX_SEQUENCE_SECONDS, 'shot_seconds': sequence_timeline.MAX_SHOT_SECONDS, 'min_generate_seconds': sequence_timeline.MIN_GENERATE_SECONDS}}
@@ -127,24 +178,30 @@ def package(sequence_id):
         content, derived = result.get('content') or {}, result.get('derived') or {}
         dialogue = derived.get('dialogue')
         if dialogue is None:  # not written yet: the lines with their speakers, without a delivery decision
-            dialogue = [{key: line.get(key) for key in ('line', 't0', 't1', 'text', 'speaker_label', 'character_context_id', 'character_name', 'attribution', 'crosses_start', 'crosses_end')}
-                        for line in evidence.shot_dialogue(shot, bible)]
+            dialogue = [{**{key: line.get(key) for key in ('line', 't0', 't1', 'text', 'speaker_label', 'character_context_id', 'character_name', 'attribution', 'compiled', 'crosses_start', 'crosses_end')},
+                         'speaker': sequence_prompt.speaker_key(line), 'delivery': None, 'subject': None} for line in evidence.shot_dialogue(shot, bible)]
+        else:  # shots written before voices existed carry per-line values of the old vocabulary
+            dialogue = [{**line, 'delivery': sequence_prompt.delivery_of(line.get('delivery'))} for line in dialogue]
         shots.append({
             'index': shot['index'], 'key': shot['key'], 'start_time': shot['start_time'], 'end_time': shot['end_time'], 't0': shot['t0'], 't1': shot['t1'],
             'duration': shot['duration'], 'generate_seconds': shot['generate_seconds'], 'trim_seconds': shot['trim_seconds'],
-            'source_cuts': shot['source_cuts'], 'cut_ids': shot['cut_ids'], 'merged': shot['merged'], 'starts_mid_cut': shot['starts_mid_cut'], 'ends_mid_cut': shot['ends_mid_cut'],
-            'scene': shot['scene'], 'intent': shot['intent'], 'staging': shot['staging'],
+            'cut': shot['cut'], 'cut_id': shot['cut_id'], 'part': shot['part'],
+            'source_cuts': shot['source_cuts'], 'cut_ids': shot['cut_ids'], 'merged': False, 'starts_mid_cut': shot['starts_mid_cut'], 'ends_mid_cut': shot['ends_mid_cut'],
+            'opens': shot['opens'], 'closes': shot['closes'],
+            'scene': shot['scene'], 'intent': shot['intent'], 'staging': '',
             'initial_frame': {'cut_id': shot['frame']['cut_id'], 'cut_number': shot['frame']['cut'], 'time': shot['frame']['time'], 'strategy': shot['frame']['strategy'],
                               'continues_previous_shot': shot['frame']['continues_previous_shot'], 'description': content.get('picture_line'), 'still': content.get('still'),
                               'still_prompt': derived.get('still_prompt'), 'frame_url': f"{base}/shots/{shot['index']}/frame", 'file': f"shot-{shot['index']:02d}-initial.jpg"},
             'audio': {'start_time': shot['start_time'], 'end_time': shot['end_time'], 'url': f"{base}/shots/{shot['index']}/audio", 'file': sequence_prompt.audio_file(shot), 'has_speech': bool(dialogue)},
             'dialogue': dialogue,
+            'voices': derived.get('voices') if result else None,
+            'fixed_voices': shot['fixed_voices'] or None,
             'subjects': [{key: subject.get(key) for key in ('number', 'label', 'name', 'kind', 'character_context_id', 'context_id', 'picture', 'anchors')} for subject in derived.get('subjects') or []],
             'references': derived.get('references') or [],
             'camera': content.get('camera'), 'beats': sequence_prompt.beat_ranges(content, shot) if content.get('beats') else [],
             'soundscape': content.get('soundscape'), 'continuity': content.get('continuity'), 'open_questions': content.get('open_questions') or [],
             'prompt': result.get('prompt'), 'check': result.get('check'), 'written': bool(result), 'stale': shot['stale'],
-            'result': {key: result.get(key) for key in ('id', 'origin', 'model_id', 'created_at')} if result else None})
+            'result': {key: result.get(key) for key in ('id', 'origin', 'model_id', 'created_at', 'generation_seconds')} if result else None})
     review = store.loads(current['review_row']['content'], {}) if current['review_row'] else None
     return {'contract': CONTRACT, **sequence_view(sequence, cuts, current['changed']),
             'cuts': [{'id': cut['id'], 'cut_number': cut['number'], 'start_time': cut['start_time'], 'end_time': cut['end_time']} for cut in timeline['cuts']] if timeline else [],

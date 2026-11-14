@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from . import db, media, sequence_edit, sequence_store as store, sequence_timeline, sequence_view
+from . import db, media, sequence_edit, worker, sequence_store as store, sequence_timeline, sequence_view
 
 router = APIRouter(prefix='/api', tags=['Sequences'])
 
@@ -25,7 +25,7 @@ class SequenceUpdate(BaseModel):
 
 
 class SequenceRunInput(BaseModel):
-    step: Literal['direct', 'bible', 'plan', 'shots', 'review']
+    step: Literal['compile', 'direct', 'bible', 'plan', 'shots', 'review']
     shot_keys: list[str] | None = Field(default=None, max_length=200, description='Only these shots (step shots); omitted writes every shot that needs it.')
     only_missing: bool = Field(default=True, description='With step shots and no shot_keys: skip shots that are written, current and pass the format check.')
     instruction: str = Field(default='', max_length=4000, description='A correction for the shots being written.')
@@ -35,13 +35,26 @@ class SequenceResultUpdate(BaseModel):
     content: dict[str, Any]
 
 
-class SequenceMergeInput(BaseModel):
-    shot_key: str
+class CompilationConfirmInput(BaseModel):
+    result_id: str = Field(description='The current dialogue revision the user reviewed.')
 
 
-class SequenceSplitInput(BaseModel):
+class ShotBoundaryInput(BaseModel):
+    after_cut_id: str = Field(description='The cut before the hard cut whose shot boundary moves.')
+    choice: Literal['keep_cut', 'before_line', 'after_line'] = Field(
+        description='keep_cut: the boundary stays on the hard cut (speech crossing it is divided there). before_line / after_line: it moves into the silence just before or after the phrase the hard cut falls into, so the phrase stays in one shot.')
+
+
+class VoiceSegment(BaseModel):
+    start: float = Field(alias='from', ge=0, description='Seconds from the start of the shot; the first segment always starts at 0.')
+    delivery: Literal['on_screen', 'off_screen', 'inner_voice', 'narrative'] = Field(
+        description='on_screen: visible, lip-synced. off_screen: not in the picture. inner_voice: visible, the mouth does not move. narrative: too far for lip sync; the words play over the picture.')
+
+
+class ShotVoicesInput(BaseModel):
     shot_key: str
-    time: float = Field(description='Episode time in seconds, at least 0.5 s inside the shot.')
+    speaker: str = Field(description='The speaker as the shot names it: the character name, Narrator, or the voice label.')
+    segments: list[VoiceSegment] | None = Field(default=None, max_length=20, description='How the speaker is heard from each start until the next; null lets the director decide again.')
 
 
 def require(conn, sequence_id):
@@ -96,6 +109,9 @@ def create_sequence(episode_id: str, body: SequenceInput):
         title = body.title.strip() or f'Cuts {body.from_cut}–{body.to_cut}'
         conn.execute('INSERT INTO sequences(id,episode_id,title,instruction,first_cut_id,last_cut_id,start_time,end_time,cuts_json) VALUES (?,?,?,?,?,?,?,?,?)',
                      (sequence_id, episode_id, title, body.instruction.strip(), cuts[0]['id'], cuts[-1]['id'], cuts[0]['start_time'], cuts[-1]['end_time'], json.dumps(store.snapshot(cuts))))
+        # The dialogue is compiled first, so it is ready to review by the time the user opens the sequence.
+        sequence_edit.queue_compile(conn, store.get(conn, sequence_id))
+        worker.sync_episode_status(conn, episode_id)
     return detail_or_404(sequence_id)
 
 
@@ -164,17 +180,33 @@ def sequence_result_history(result_id: str):
         return store.history(conn, row['sequence_id'], row['type'], row['shot_key'])
 
 
-@router.post('/sequences/{sequence_id}/plan/merge')
-def merge_shot(sequence_id: str, body: SequenceMergeInput):
-    """Join a planned shot with the one after it (at most 15 s together)."""
-    edit(lambda conn: sequence_edit.reshape(conn, require(conn, sequence_id), body.shot_key))
+@router.post('/sequences/{sequence_id}/compilation/confirm', responses={409: {'description': 'The dialogue has a newer revision than the one confirmed.'}})
+def confirm_compilation(sequence_id: str, body: CompilationConfirmInput):
+    """Confirm the reviewed dialogue. Direction and the shots use it instead of the raw transcript from now on."""
+    edit(lambda conn: sequence_edit.confirm_compilation(conn, require(conn, sequence_id), body.result_id))
     return detail_or_404(sequence_id)
 
 
-@router.post('/sequences/{sequence_id}/plan/split')
-def split_shot(sequence_id: str, body: SequenceSplitInput):
-    """Divide a planned shot in two at an episode time inside it."""
-    edit(lambda conn: sequence_edit.reshape(conn, require(conn, sequence_id), body.shot_key, body.time))
+@router.post('/sequences/{sequence_id}/compilation/use-source')
+def use_source_dialogue(sequence_id: str):
+    """Skip the review: save the original transcript, uncorrected, as the dialogue and confirm it."""
+    edit(lambda conn: sequence_edit.use_source_dialogue(conn, require(conn, sequence_id)))
+    return detail_or_404(sequence_id)
+
+
+@router.put('/sequences/{sequence_id}/boundaries', responses={404: {'description': 'No hard cut follows that cut in this sequence.'}, 409: {'description': 'The sequence has no usable shot plan, or its cuts changed.'},
+                                                         422: {'description': 'That choice is not possible at this hard cut; the detail says why.'}})
+def set_shot_boundary(sequence_id: str, body: ShotBoundaryInput):
+    """Choose where the shot boundary sits at one hard cut. Every cut stays one shot; the two shots beside the boundary must be written again."""
+    edit(lambda conn: sequence_edit.set_boundary(conn, require(conn, sequence_id), body.after_cut_id, body.choice))
+    return detail_or_404(sequence_id)
+
+
+@router.put('/sequences/{sequence_id}/voices', responses={409: {'description': 'The sequence is not directed, or its cuts changed.'}, 422: {'description': 'The speaker is not heard in that shot, or a segment is invalid.'}})
+def set_shot_voices(sequence_id: str, body: ShotVoicesInput):
+    """Decide how one speaker is heard in one shot; the plan keeps it and a rewrite of the shot is queued."""
+    segments = None if body.segments is None else [{'from': item.start, 'delivery': item.delivery} for item in body.segments]
+    edit(lambda conn: sequence_edit.set_voices(conn, require(conn, sequence_id), body.shot_key, body.speaker, segments))
     return detail_or_404(sequence_id)
 
 

@@ -23,7 +23,7 @@ Precedence: human answers > production brief Opening Frame > initial frame descr
 3. **Objects and layout**: foreground, midground and background elements, and how they relate in space.
 4. **Setting**: location type and environment details.
 5. **Lighting and colour**: light source, softness, time of day, palette.
-6. **Style**: keep the style the user's prompt already uses. Otherwise follow the project's context (for example anime cel shading) and do not invent a style.
+6. **Style**: do not state or enforce a style (no medium, art style or rendering technique); the person generating the image chooses it. Keep a style line only when the user's own prompt already has one.
 7. **Constraints**: `no text, subtitles, captions, logos or watermarks`, `no additional characters`, and anything the brief's Continuity section requires.
 
 If the user's generator uses character reference images (for example "Image 2 = Tomoe reference"), keep that syntax and give each reference one job.

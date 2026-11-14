@@ -12,7 +12,7 @@ import os
 import time
 
 from . import db, local_text_runtime, worker
-from . import sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline
+from . import sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, subtitle_store
 
 log = logging.getLogger(__name__)
 
@@ -84,13 +84,95 @@ def ask(job, owner, payload, step, build, response_format, validator, label, fal
 
 # ---------------------------------------------------------------------- steps
 
+WINDOW_LINES = 40
+WINDOW_SECONDS = 45.0
+
+
+def windows_of(lines):
+    """Consecutive runs of lines of at most ``WINDOW_LINES`` lines and ``WINDOW_SECONDS`` seconds, one model call each."""
+    runs, run = [], []
+    for line in lines:
+        if run and (len(run) >= WINDOW_LINES or line['t1'] - run[0]['t0'] > WINDOW_SECONDS):
+            runs.append(run)
+            run = []
+        run.append(line)
+    if run:
+        runs.append(run)
+    return [{'index': number, 'of': len(runs), 'lines': items} for number, items in enumerate(runs, 1)]
+
+
+def run_compile(job, owner, payload, sequence):
+    """Reconcile transcript, subtitles and visual evidence into the dialogue the user reviews, window by window."""
+    with db.connect() as conn:
+        cuts = store.current_cuts(conn, sequence)
+        if cuts is None:
+            raise RuntimeError('The first or last cut of this sequence was archived; create the sequence again')
+        if cuts[-1]['end_time'] - cuts[0]['start_time'] > sequence_timeline.MAX_SEQUENCE_SECONDS + 0.001:
+            raise RuntimeError('The cuts of this sequence now last more than three minutes; create a shorter sequence')
+        changed = store.cuts_changed(sequence, cuts)
+        ctx = evidence.load(conn, sequence, cuts)
+        timeline = store.raw_timeline_for(conn, sequence, cuts)
+        source, fragments, subtitle_source = store.source_fingerprint(conn, sequence, cuts)
+        run = subtitle_store.current_run(sequence['episode_id'], conn)
+    origin, duration = timeline['origin'], timeline['duration']
+    subtitles = [{'id': f'U{number}', 'real': row['id'], 't0': round(row['start_time'] - origin, 3), 't1': round(row['end_time'] - origin, 3), 'text': row['text']}
+                 for number, row in enumerate(subtitle_source, 1)]
+    by_subtitle = {item['id']: item for item in subtitles}
+    roster = {person['name']: person['id'] for person in ctx['characters']}
+    names = list(roster)
+    lines, voices, questions, decided = [], [], [], []
+    usage = {'seconds': 0.0, 'windows': 0}
+    settings, model, user_input = {}, None, {}
+    windows = windows_of(timeline['lines'])
+    for window in windows:
+        ids = [line['id'] for line in window['lines']]
+        sub_ids = [item['id'] for item in subtitles]
+        label = f"Aligning dialogue · part {window['index']}/{window['of']}"
+        worker.stage(job['id'], owner, job['episode_id'], label)
+        answer, model, settings, user_input = ask(job, owner, payload, 'compile',
+                                                  lambda level, window=window: evidence.compile_input(ctx, timeline, window, subtitles, lines, decided, level),
+                                                  direction.compile_format(ids, sub_ids, names), lambda output, ids=ids: direction.validate_compile(output, ids, set(sub_ids), names),
+                                                  label, fallback=lambda window=window: sequence_compile.deterministic_groups(window['lines']))
+        usage['seconds'] += settings.get('summary_generation_seconds') or 0.0
+        usage['windows'] += 1
+        lines.extend(sequence_compile.assemble(answer, window['lines'], by_subtitle, roster))
+        known = {voice['speaker_label'] for voice in decided}
+        decided.extend(voice for voice in answer['voices'] if voice['speaker_label'] not in known)
+        questions.extend(answer['open_questions'])
+    anchors = [edge for line in timeline['lines'] for part in line['parts'] for edge in (part['t0'], part['t1'])] + [edge for item in subtitles for edge in (item['t0'], item['t1'])]
+    lines = sequence_compile.snap(lines, anchors, duration)
+    voices = sequence_compile.settle_voices(lines, decided, timeline['lines'])
+    content = sequence_compile.validate({'lines': lines, 'voices': voices, 'open_questions': questions[:12]}, duration, roster)
+    settings = {**settings, 'summary_generation_seconds': usage['seconds'], 'windows': usage['windows'], 'subtitle_lines': len(subtitle_source), 'source_hash': source}
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        worker.require_lease(conn, job['id'], owner)
+        if changed:
+            store.resnapshot(conn, sequence, cuts)
+        result_id = store.save(conn, sequence['id'], 'compilation', content, model_id=model, job_id=job['id'], prompt=direction.COMPILE_SYSTEM, settings=settings, context=user_input,
+                               expected_current=base_of(payload))
+        store.record_sources(conn, sequence['id'], result_id, source, run['id'] if run else None, len(fragments), len(subtitle_source))
+        if not content['lines']:
+            conn.execute('UPDATE sequences SET reviewed_compilation_id=? WHERE id=?', (result_id, sequence['id']))  # nothing is spoken: there is nothing to review
+        else:
+            conn.execute('UPDATE sequences SET reviewed_compilation_id=NULL WHERE id=?', (sequence['id'],))
+        finish(conn, job)
+
+
 def run_bible(job, owner, payload, sequence):
     with db.connect() as conn:
         state = load_state(conn, sequence, adopt_cuts=True)
     ctx, timeline = state['ctx'], state['timeline']
+    with db.connect() as conn:
+        compiled = store.reviewed_compilation(conn, sequence)
+    # A compilation saved as "the original transcript" was not reviewed by anyone: its voices are only hints.
+    final_voices = compiled['voices'] if compiled is not None and compiled['origin'] != 'source' else None
     worker.stage(job['id'], owner, job['episode_id'], 'Writing the sequence bible')
-    output, model, settings, user_input = ask(job, owner, payload, 'bible', lambda level: evidence.bible_input(ctx, sequence, timeline, level),
+    output, model, settings, user_input = ask(job, owner, payload, 'bible', lambda level: evidence.bible_input(ctx, sequence, timeline, level, final_voices),
                                               direction.bible_format(), lambda answer: direction.validate_bible(answer, ctx, timeline), 'Sequence bible')
+    if final_voices is not None:
+        # The user reviewed who owns each voice; the model only wrote the story around it.
+        output = {**output, 'voices': [{**voice, 'source': 'reviewed'} for voice in final_voices]}
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         worker.require_lease(conn, job['id'], owner)
@@ -118,22 +200,20 @@ def run_plan(job, owner, payload, sequence):
         seen['answer'] = answer
         return direction.validate_plan(answer, timeline, bible)
 
-    def complete():
-        # The model could not produce a valid partition; keep its usable boundaries and add the missing ones.
-        answer = seen.get('answer') if isinstance(seen.get('answer'), dict) else {}
-        shots = sequence_timeline.auto_fix(answer.get('shots'), timeline)
-        for shot in shots:
-            shot['scene'] = shot.get('scene') or (evidence.scene_for(bible, shot['frame_cut']) or {}).get('id')
-        return {'shots': shots, 'notes': answer.get('notes') if isinstance(answer.get('notes'), str) else ''}
-
     output, model, settings, user_input = ask(job, owner, payload, 'plan', lambda level: evidence.plan_input(ctx, sequence, timeline, bible, level),
-                                              direction.plan_format(timeline, bible), validate, 'Shot plan', fallback=complete)
-    content = {'shots': sequence_timeline.to_spans(output['shots'], timeline), 'notes': output.get('notes') or ''}
+                                              direction.plan_format(timeline, bible), validate, 'Shot plan',
+                                              # The model could not produce a valid answer: keep its usable choices and let the app decide the rest.
+                                              fallback=lambda: direction.complete_plan(seen.get('answer'), timeline, bible, ctx))
+    content = direction.plan_content(output, timeline, bible)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         worker.require_lease(conn, job['id'], owner)
         if state['changed']:
             store.resnapshot(conn, sequence, state['cuts'])
+        # The user's voice ranges are in episode time, so they survive a new partition of the same audio.
+        earlier = content_of(store.current(conn, sequence['id'], 'plan')) or {}
+        if earlier.get('voices'):
+            content['voices'] = earlier['voices']
         store.save(conn, sequence['id'], 'plan', content, model_id=model, job_id=job['id'], prompt=direction.PLAN_SYSTEM, settings=settings, context=user_input,
                    expected_current=base_of(payload))
         finish(conn, job)
@@ -145,8 +225,8 @@ def planned_shots(conn, sequence, timeline):
         raise RuntimeError('Plan the shots first')
     problems = sequence_timeline.check_spans(plan['shots'], timeline)
     if problems:
-        raise RuntimeError('The shot plan no longer fits the cuts (' + '; '.join(problems) + '); direct the sequence again')
-    return sequence_timeline.expand(plan['shots'], timeline)
+        raise RuntimeError('The shot plan no longer fits the cuts (' + '; '.join(problems) + '); plan the shots again')
+    return sequence_timeline.expand(plan['shots'], timeline, plan.get('voices'), plan.get('boundaries'))
 
 
 def run_shot(job, owner, payload, sequence):
@@ -215,7 +295,7 @@ def run_review(job, owner, payload, sequence):
         finish(conn, job)
 
 
-STEPS = {'bible': run_bible, 'plan': run_plan, 'shot': run_shot, 'review': run_review}
+STEPS = {'compile': run_compile, 'bible': run_bible, 'plan': run_plan, 'shot': run_shot, 'review': run_review}
 
 
 def process(job_id, owner):

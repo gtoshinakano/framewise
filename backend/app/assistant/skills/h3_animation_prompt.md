@@ -13,7 +13,7 @@ The user pastes a detailed prompt written by their AI director for another app. 
 - Every `<Picture N>`, `<Audio N>`, `<Video N>` label: the same numbers, each with the same meaning. Never add, drop or renumber one.
 - Names and file references as written: character/record names, outfit names ("Winter cloak"), sheet and location names, quoted audio names.
 - Any lines before `subject_definitions:` (the app's picture/audio lines). **Do not retype them.** Start your prompt at `subject_definitions:`, and `check_h3_prompt` puts the original lines back exactly. It also restores “curly-quoted” names.
-- The summary prefix (e.g. `[keyframe completion + reference generation]`), the mode, the style sentence (the project's style lock), and the shot length (the end of the last beat). Change one only when the user asks or it is impossible to keep.
+- The summary prefix (e.g. `[keyframe completion + reference generation]`), the mode, and the shot length (the end of the last beat). Change one only when the user asks or it is impossible to keep.
 - Each `<Subject N>` keeps its picture. You may correct its anchors, but not rebind it to another picture.
 
 ## What you fix from the analysis
@@ -37,7 +37,8 @@ Read only what you need: `get_result(type="production_brief")`, `get_result(type
 ## Format rules (checked by `check_h3_prompt`)
 - Start at `subject_definitions:`. Never write the app's picture/audio lines yourself.
 - Labels exactly `<Picture N>`, `<Subject N>`, `<Audio N>`, `<Video N>`, with angle brackets and a space. In descriptions use `<Subject N>`, not the bare name.
-- detailed_description opens with the style sentence ("The target video is …"), then exactly one `[Shot 1]`, then timed beats `00:00.000-00:02.000: …`. Beats must be contiguous, start at 00:00.000, end at the shot length (at most 15 s), with about 2–3 beats per 10 s.
+- detailed_description holds exactly one `[Shot 1]`, then timed beats `00:00.000-00:02.000: …`. Beats must be contiguous, start at 00:00.000, end at the shot length (at most 15 s), with about 2–3 beats per 10 s.
+- Never name or enforce a visual style (no medium, art style or rendering technique): whoever generates the video chooses it. Describe the look only as that of the supplied picture.
 - Never write the word "cut" (not even "no cut"), never a `---` line, never lettering (write "blank" or "unmarked"). Subtitles and OCR text are never shown.
 - Aim for 200–500 words in detailed_description, every sentence concrete. Keep the whole prompt under 7,000 characters.
 - Modes: with no `<Picture N>` in the original (first/last frame mode), keep it picture-free. For a character-fix prompt (`<Video 1>`, summary `[video editing + …]`), keep that structure and only correct the subjects; no beats are needed.

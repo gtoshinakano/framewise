@@ -9,7 +9,7 @@ import hashlib
 import json
 import os
 
-from . import prompt_context, subtitle_store
+from . import prompt_context, sequence_compile, sequence_prompt, sequence_timeline, subtitle_store
 from .assistant import compact
 from .composition_brief import shot_props, short
 
@@ -110,6 +110,9 @@ def cut_digest(span, results, level=0):
 
 def speaker_of(line, bible=None):
     """Who says a line: the transcript's own character link, else the bible's decision for that voice label."""
+    if line.get('compiled') and line.get('character_name'):
+        # A reviewed line: the user fixed its speaker.
+        return {'name': line['character_name'], 'character_context_id': line.get('character_context_id'), 'attribution': 'reviewed'}
     if line.get('character_context_id') and line.get('character_name'):
         return {'name': line['character_name'], 'character_context_id': line['character_context_id'], 'attribution': 'transcript'}
     voice = next((voice for voice in (bible or {}).get('voices') or [] if voice.get('speaker_label') == line.get('speaker_label')), None)
@@ -193,7 +196,7 @@ def roster(ctx, level=0, timeline=None):
 
 # --------------------------------------------------------------------- inputs
 
-def bible_input(ctx, sequence, timeline, level=0):
+def bible_input(ctx, sequence, timeline, level=0, final_voices=None):
     return {'project': {'title': ctx['project']['title'], 'synopsis': ctx['project']['synopsis'][:(1200, 800, 400, 200)[level]]},
             'episode': ctx['episode']['title'],
             'director_instruction': sequence['instruction'].strip() or None,
@@ -203,27 +206,130 @@ def bible_input(ctx, sequence, timeline, level=0):
             'context_notes': _notes(ctx, level),
             'cuts': [cut_digest(cut, ctx['results'].get(cut['id'], {}), level) for cut in timeline['cuts']],
             'transcript': transcript_text(timeline['lines'], clip=None if level < 3 else 80),
-            'voices': voice_evidence(ctx, timeline),
+            'voices': voice_evidence(ctx, timeline) if final_voices is None else None,
+            'voices_are_final': final_voices,
+            'dialogue_reviewed': reviewed(timeline),
             'pauses': timeline['pauses'] if level < 2 else None}
+
+
+def reviewed(timeline):
+    """True when the lines come from a dialogue compilation the user reviewed (None otherwise, so the key is left out)."""
+    return True if timeline['lines'] and all(line.get('compiled') for line in timeline['lines']) else None
 
 
 def bible_brief(bible, level=0):
     """The parts of a bible later calls need."""
-    brief = {key: bible.get(key) for key in ('logline', 'synopsis', 'style', 'spoken_language', 'arc', 'pacing', 'continuity')}
+    brief = {key: bible.get(key) for key in ('logline', 'synopsis', 'spoken_language', 'arc', 'pacing', 'continuity')}
     brief['scenes'] = [{key: scene.get(key) for key in ('id', 'from_cut', 'to_cut', 'location', 'time_of_day', 'lighting', 'mood', 'scenario')} for scene in bible.get('scenes') or []]
     brief['characters'] = [{key: person.get(key) for key in (('name', 'role', 'anchors', 'outfit', 'arc') if level < 2 else ('name', 'anchors', 'outfit'))} for person in bible.get('characters') or []]
     return brief
 
 
+def compile_input(ctx, timeline, window, subtitles, previous, decided, level=0):
+    """One window of the dialogue compilation: the recognised lines, the subtitles beside them and the evidence for who speaks.
+
+    ``window`` has ``index``, ``of`` and ``lines`` (timeline lines). ``subtitles`` are ``{id: 'U1', t0, t1, text}``
+    on the sequence clock. ``previous`` are the last compiled lines of the window before and ``decided`` its voices.
+    """
+    lines = window['lines']
+    low, high = lines[0]['t0'] - 1.0, lines[-1]['t1'] + 1.0
+    nearby = [sub for sub in subtitles if sub['t1'] > low and sub['t0'] < high]
+    pairs = sequence_compile.pair_subtitles(lines, nearby)
+    cuts = [cut for cut in timeline['cuts'] if cut['t1'] > low and cut['t0'] < high]
+    hints = sequence_compile.continuity_hints(lines, nearby, [cut for cut in cuts if cut['t0'] > 0])
+    voices = voice_evidence(ctx, {**timeline, 'lines': lines})
+    digest = []
+    for cut in cuts:
+        results = ctx['results'].get(cut['id'], {})
+        entry = {'cut': cut['number'], 't': [cut['t0'], cut['t1']], 'on_screen': list(people_in(results)), 'speaking': speaking_in(results)}
+        digest.append({key: value for key, value in entry.items() if value not in (None, [], '')})
+    table = '\n'.join(f"{line['id']} {line['t0']:.2f}-{line['t1']:.2f} {line['speaker_label'] or 'Unknown speaker'}"
+                      + (f" / {line['character_name']}" if line.get('character_name') else '') + f": {line['text']}" for line in lines)
+    payload = {'window': {'part': window['index'], 'of': window['of'], 'spoken_language': ctx.get('spoken_language') or ctx['subtitle_language'] or 'Japanese'},
+               'lines': table,
+               'subtitles': '\n'.join(f"{sub['id']} {sub['t0']:.2f}-{sub['t1']:.2f}: {sub['text']}" for sub in nearby) or 'No subtitle lines were read for this part.',
+               'pairs': {line_id: [f"{item['subtitle']} overlap {item['overlap']}s similarity {item['similarity']}" for item in found] for line_id, found in pairs.items() if found} if level < 3 else None,
+               'hints': [f"{hint['a']}+{hint['b']}: {'; '.join(hint['reasons'])}" for hint in hints],
+               'cuts': digest if level < 2 else None,
+               'characters': [person['name'] for person in ctx['characters']],
+               'voices': voices if level < 2 else None,
+               'previous': [f"{line['t0']:.2f}-{line['t1']:.2f} {line['speaker_label']} / {line['character'] or '?'}: {line['text']}" for line in previous[-(4, 3, 2, 1)[level]:]] or None,
+               'voices_decided': [{key: voice.get(key) for key in ('speaker_label', 'character', 'kind')} for voice in decided] or None}
+    return {key: value for key, value in payload.items() if value not in (None, [], '')}
+
+
+def _hidden_events(ctx, timeline, drops, level):
+    """Motion events of the stretch of a cut's picture that a moved boundary hides (``drops`` is on that cut's clock)."""
+    cut = next(item for item in timeline['cuts'] if item['number'] == drops['cut'])
+    view = prompt_context.video_view((ctx['results'].get(cut['id'], {}).get('video_analysis') or {}).get('content'))
+    found = []
+    for event in (view.get('events') or []) if isinstance(view, dict) else []:
+        try:
+            start, end = (float(part) for part in str(event.get('seconds')).split('-'))
+        except (ValueError, TypeError):
+            continue
+        if end > drops['from'] and start < drops['to']:
+            subject = event.get('subject') if isinstance(event.get('subject'), str) and event.get('subject').strip() else None
+            found.append(f"{event.get('seconds')} s {subject + ': ' if subject else ''}{short(_text(event.get('action')), (24, 16, 10)[min(level, 2)])}")
+    return found[:3]
+
+
+def decision_view(ctx, timeline, boundary, bible, level=0):
+    """One hard cut inside speech as the plan step reads it: the speech, and what each possible choice does to words and pictures."""
+    speech = boundary['speech']
+    lines = {line['id']: line for line in timeline['lines']}
+    first = lines[speech['lines'][0]]
+    who = speaker_of(first, bible)['name']
+    left, right = boundary['after_cut'], boundary['before_cut']
+    if speech['kind'] == 'inside_line':
+        heard = f"{first['id']} ({who}, {first['t0']:.2f}-{first['t1']:.2f}) is being spoken at the hard cut: \"{speech['words_before']}\" before it, \"{speech['words_after']}\" after it"
+    else:
+        second = lines[speech['lines'][1]]
+        heard = f"{first['id']} and {second['id']} ({who}) are one sentence and the hard cut falls in the pause between them: \"{speech['words_before']}\" / \"{speech['words_after']}\""
+    if len(speech['keeps']) > len(speech['lines']):
+        heard += f"; the whole phrase is {speech['keeps'][0]}–{speech['keeps'][-1]} ({speech['phrase'][0]:.2f}-{speech['phrase'][1]:.2f})"
+    phrase = speech['keeps'][0] if len(speech['keeps']) == 1 else f"{speech['keeps'][0]}–{speech['keeps'][-1]}"
+    options = {}
+    for choice, option in boundary['options'].items():
+        if choice == 'keep_cut':
+            text = f"stays at {boundary['t']:.2f}: the shot of cut {left} ends on \"{speech['words_before']}\" and the shot of cut {right} opens on \"{speech['words_after']}\""
+        elif choice == 'before_line':
+            text = (f"moves {abs(option['shift']):.2f} s earlier to {option['t']:.2f}: the shot of cut {right} starts before {phrase} and carries it whole; "
+                    f"cut {left} is hidden from {option['drops']['from']:.1f} to {option['drops']['to']:.1f} s of its own clock")
+        else:
+            text = f"moves {option['shift']:.2f} s later to {option['t']:.2f}: the shot of cut {left} runs on until {phrase} has ended and carries it whole; the first {option['shift']:.2f} s of cut {right} are hidden"
+        if choice != 'keep_cut' and level < 3:
+            hidden = _hidden_events(ctx, timeline, option['drops'], level)
+            text += f"; the hidden picture shows {'; '.join(hidden)}" if hidden else '; no motion event is recorded in the hidden picture'
+        options[choice] = text
+    return {'id': boundary['id'], 'hard_cut': boundary['t'], 'cuts': [left, right], 'speech': heard, 'options': options, 'not_possible': boundary['unavailable'] or None}
+
+
+def parts_of(timeline, cut):
+    """How many shots the app makes of a cut (more than one only for a cut longer than one take)."""
+    try:
+        return len(sequence_timeline.partition(timeline, cut, (cut['t0'], cut['start_time']), (cut['t1'], cut['end_time']))) - 1
+    except sequence_timeline.PlanError:
+        return None
+
+
 def plan_input(ctx, sequence, timeline, bible, level=0):
-    candidates = [{key: candidate[key] for key in ('id', 't', 'kind', 'cut', 'pause', 'crosses_line') if candidate.get(key) is not None} for candidate in timeline['candidates']]
+    cuts = []
+    for cut in timeline['cuts']:
+        entry = cut_digest(cut, ctx['results'].get(cut['id'], {}), max(level, 1))
+        parts = parts_of(timeline, cut)
+        if parts and parts > 1:
+            entry['parts'] = parts
+        cuts.append(entry)
+    decisions = [{key: value for key, value in decision_view(ctx, timeline, boundary, bible, level).items() if value is not None}
+                 for boundary in timeline['boundaries'] if boundary['speech']]
     return {'director_instruction': sequence['instruction'].strip() or None,
+            'dialogue_reviewed': reviewed(timeline),
             'bible': bible_brief(bible, max(level, 1)),
             'sequence_seconds': timeline['duration'],
-            'cuts': [cut_digest(cut, ctx['results'].get(cut['id'], {}), max(level, 1)) for cut in timeline['cuts']],
+            'cuts': cuts,
             'transcript': transcript_text(timeline['lines'], bible, clip=(None, 120, 60, 40)[level]),
-            'pauses': timeline['pauses'] if level < 3 else None,
-            'candidates': candidates}
+            'decisions': decisions or 'No hard cut falls inside speech: every boundary stays on its hard cut.'}
 
 
 def _shift_events(view, offset, duration):
@@ -255,12 +361,8 @@ def scene_for(bible, cut_number):
 
 
 def shot_roster(ctx, bible, shot):
-    """Named characters a shot may put on screen, in first-seen order: the frame cut first, then the other covered cuts."""
-    order = [shot['frame']['cut_id'], *[cut_id for cut_id in shot['cut_ids'] if cut_id != shot['frame']['cut_id']]]
-    people = {}
-    for cut_id in order:
-        for name, character_id in people_in(ctx['results'].get(cut_id, {})).items():
-            people.setdefault(name, character_id)
+    """Named characters a shot may put on screen: those of its own cut (a neighbour whose audio it borrows is not shown)."""
+    people = dict(people_in(ctx['results'].get(shot['cut_id'], {})))
     by_name = {person.get('name'): person for person in bible.get('characters') or []}
     notes = {character['id']: character['notes'] for character in ctx['characters']}
     return [{'name': name, 'character_context_id': character_id, 'anchors': (by_name.get(name) or {}).get('anchors'), 'outfit': (by_name.get(name) or {}).get('outfit'),
@@ -279,9 +381,78 @@ def shot_dialogue(shot, bible):
 
 def shot_parts(ctx, bible, shot):
     """The named characters, the scenario picture and the resolved dialogue of one shot."""
-    scene = scene_for(bible, shot['frame']['cut'])
+    scene = scene_for(bible, shot['cut'])
     scenario = next((item for item in ctx['scenarios'] if scene and scene.get('scenario') and item['title'] == scene['scenario']), None)
     return shot_roster(ctx, bible, shot), scenario, shot_dialogue(shot, bible)
+
+
+def shot_speakers(ctx, timeline, bible, shot):
+    """Per speaker heard in a shot: what they say, where they can be seen, and the ranges the user fixed.
+
+    Only the shot's own cut is pictured. A neighbouring cut whose audio the shot borrows to keep a phrase
+    whole is not shown: the shot's own picture goes on over those seconds, so what that cut showed says
+    nothing about who is seen, and it is left out.
+    """
+    dialogue = shot_dialogue(shot, bible)
+    rows = []
+    for speaker in sequence_prompt.speakers(dialogue):
+        lines = [line for line in dialogue if sequence_prompt.speaker_key(line) == speaker]
+        per_cut = []
+        for span in (cut for cut in timeline['cuts'] if cut['id'] in shot['cut_ids']):
+            plays_at = [round(max(0.0, span['t0'] - shot['t0']), 2), round(min(shot['duration'], span['t1'] - shot['t0']), 2)]
+            if span['id'] != shot['cut_id']:
+                per_cut.append({'cut': span['number'], 'plays_at': plays_at,
+                                'picture': "not shown: only its audio is borrowed, and this shot's own picture goes on over these seconds"})
+                continue
+            results = ctx['results'].get(span['id'], {})
+            direction = ((results.get('video_analysis') or {}).get('content') or {}).get('direction') or {}
+            moving = next((person.get('speaking') for person in direction.get('characters') or [] if isinstance(person, dict) and _text(person.get('character')) == speaker), None)
+            per_cut.append({'cut': span['number'], 'plays_at': plays_at, 'on_screen': speaker in people_in(results), 'mouth_moves': moving if moving in ('yes', 'no', 'unclear') else None,
+                            'picture': "this shot's picture"})
+        fixed = [{'from': item['from'], 'to': item['to'], 'delivery': item['delivery']} for item in shot.get('fixed_voices') or [] if item.get('speaker') == speaker]
+        rows.append({'speaker': speaker, 'lines': [line['line'] for line in lines], 'seconds': round(sum(line['t1'] - line['t0'] for line in lines), 1),
+                     'per_cut': [{key: value for key, value in entry.items() if value is not None} for entry in per_cut],
+                     'fixed_by_user': fixed or None})
+    return [{key: value for key, value in row.items() if value is not None} for row in rows]
+
+
+def _phrase(edge):
+    keeps = edge.get('keeps') or []
+    return 'the phrase' if not keeps else keeps[0] if len(keeps) == 1 else f'{keeps[0]}–{keeps[-1]}'
+
+
+def edge_words(shot, side):
+    """How a shot meets its neighbour on one side, in plain words with seconds on the shot's clock; None at the ends of the sequence."""
+    edge = shot[side]
+    how, opens = edge['how'], side == 'opens'
+    if how in ('start', 'end'):
+        return None
+    shift = abs(edge.get('shift') or 0.0)
+    if how == 'continuation':
+        text = 'continues the take of the previous shot, which showed the earlier part of the same cut' if opens else 'the same cut goes on in the next shot, which continues this take'
+    elif how == 'keep_cut':
+        text = 'opens exactly on the hard cut' if opens else 'ends exactly on the hard cut'
+    elif opens and how == 'before_line':
+        text = (f'starts {shift:.2f} s before its own cut, in the silence before {_phrase(edge)}, and carries that speech whole; '
+                f'until {shift:.2f} s the picture holds the opening state of the still, and the cut\'s own motion starts at {shift:.2f} s')
+    elif opens:
+        text = f'starts {shift:.2f} s into its own cut, after {_phrase(edge)}, which the previous shot finished; what the cut showed before that moment has already happened'
+    elif how == 'before_line':
+        text = f'ends {shift:.2f} s before its own cut ends, in the silence before {_phrase(edge)}, which the next shot carries; the last {shift:.2f} s of the cut are not shown'
+    else:
+        text = (f'runs {shift:.2f} s past the end of its own cut to finish {_phrase(edge)}: from {shot["duration"] - shift:.2f} s to the end it keeps this framing '
+                f'and the speaker\'s acting continues to the last word')
+    split = edge.get('split')
+    if split:
+        lines = ' and '.join(split['lines'])
+        text += (f'; it opens inside {lines}: "{split["before"]}" was heard in the previous shot and "{split["after"]}" is heard here from 0 s' if opens
+                 else f'; it ends inside {lines}: "{split["before"]}" is heard here up to the end and "{split["after"]}" continues in the next shot')
+    result = {'at': 0.0 if opens else shot['duration'], 'how': text}
+    if edge.get('by') == 'user':
+        result['decided_by'] = 'the user'
+    if edge.get('reason'):
+        result['reason'] = edge['reason']
+    return result
 
 
 def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='', previous=None, level=0):
@@ -290,26 +461,26 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
     duration = shot['duration']
     cuts = []
     for span in (cut for cut in timeline['cuts'] if cut['id'] in shot['cut_ids']):
-        results = ctx['results'].get(span['id'], {})
         offset = span['t0'] - shot['t0']
-        is_frame = span['id'] == shot['frame']['cut_id']
-        frame = _without_ids(prompt_context.frame_view((results.get('initial_frame') or {}).get('content')))
-        if isinstance(frame, dict) and not is_frame and level >= 1:
-            frame = {key: frame.get(key) for key in ('composition', 'setting', 'camera', 'visible_characters')}
+        plays_at = [round(max(0.0, offset), 2), round(min(duration, span['t1'] - shot['t0']), 2)]
+        if span['id'] != shot['cut_id']:
+            # A neighbour whose audio this shot borrows so that a phrase stays whole: its picture is not part of this shot.
+            cuts.append({'cut': span['number'], 'plays_at': plays_at, 'picture': 'not shown: only its audio plays in this shot'})
+            continue
+        results = ctx['results'].get(span['id'], {})
         summary = (results.get('summary') or {}).get('content')
         consistency = (results.get('consistency_summary') or {}).get('content') or {}
-        entry = {'cut': span['number'], 'plays_at': [round(max(0.0, offset), 2), round(min(duration, span['t1'] - shot['t0']), 2)],
-                 'supplies_the_initial_frame': is_frame or None,
-                 'first_frame': frame,
+        entry = {'cut': span['number'], 'plays_at': plays_at,
+                 'first_frame': _without_ids(prompt_context.frame_view((results.get('initial_frame') or {}).get('content'))),
                  'motion': _shift_events(prompt_context.video_view((results.get('video_analysis') or {}).get('content')), offset, duration),
                  'user_decisions': results.get('answers'),
                  'cut_summary': summary[:(4200, 2400, 1200, 0)[level]] if isinstance(summary, str) and level < 3 else None,
                  'review': {key: consistency.get(key) for key in ('clear', 'confusing')} if level < 1 and not summary and consistency else None}
         cuts.append({key: value for key, value in entry.items() if value not in (None, '', {}, [])})
-    scene = scene_for(bible, shot['frame']['cut'])
+    scene = scene_for(bible, shot['cut'])
     scenario = next((item for item in ctx['scenarios'] if scene and item['title'] == scene.get('scenario')), None)
     dialogue = [{'line': line['line'], 't': [line['t0'], line['t1']], 'speaker': line['character_name'] or line['speaker_label'] or 'Unknown speaker',
-                 'speaker_known_from': {'transcript': 'user link', 'director': f"sequence bible ({line.get('confidence') or 'unrated'})", 'unknown': 'nobody: unconfirmed voice'}[line['attribution']],
+                 'speaker_known_from': {'reviewed': 'user-reviewed dialogue', 'transcript': 'user link', 'director': f"sequence bible ({line.get('confidence') or 'unrated'})", 'unknown': 'nobody: unconfirmed voice'}[line['attribution']],
                  'text': line['text'], 'continues_from_previous_shot': line['crosses_start'] or None, 'continues_in_next_shot': line['crosses_end'] or None}
                 for line in shot_dialogue(shot, bible)]
     subtitles = []
@@ -318,41 +489,70 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
                      for line in subtitle_store.lines(sequence['episode_id'], shot['start_time'], shot['end_time'], conn=conn)]
 
     def neighbour(other):
-        return {'shot': other['index'], 'cuts': other['source_cuts'], 'seconds': other['duration'], 'intent': other['intent'], 'staging': other['staging'] or None} if other else None
+        return {'shot': other['index'], 'cut': other['cut'], 'seconds': other['duration'], 'intent': other['intent']} if other else None
 
     def ends_with(other):
-        # How the analysis says the previous shot's characters end: its last cut's motion direction.
-        direction = ((ctx['results'].get(other['cut_ids'][-1], {}).get('video_analysis') or {}).get('content') or {}).get('direction') or {}
+        # How the analysis says the previous shot's characters end: its cut's motion direction.
+        direction = ((ctx['results'].get(other['cut_id'], {}).get('video_analysis') or {}).get('content') or {}).get('direction') or {}
         return [{'name': person.get('character'), 'ends': person.get('end')} for person in direction.get('characters') or [] if isinstance(person, dict) and _text(person.get('character')) and _text(person.get('end'))] or None
 
     def opens_with(other):
         # How the next shot's initial frame shows its characters.
-        frame = (ctx['results'].get(other['frame']['cut_id'], {}).get('initial_frame') or {}).get('content') or {}
+        frame = (ctx['results'].get(other['cut_id'], {}).get('initial_frame') or {}).get('content') or {}
         return [{'name': person.get('character'), 'position': person.get('position'), 'pose': person.get('pose')} for person in frame.get('visible_characters') or []
                 if isinstance(person, dict) and _text(person.get('character'))] or None
 
-    frame_cut = next(cut for cut in timeline['cuts'] if cut['id'] == shot['frame']['cut_id'])
+    own = next(cut for cut in timeline['cuts'] if cut['id'] == shot['cut_id'])
+    later = shot['frame']['time'] - own['start_time']
     payload = {
-        'sequence': {key: bible.get(key) for key in ('synopsis', 'style', 'spoken_language', 'arc', 'continuity')},
+        'sequence': {key: bible.get(key) for key in ('synopsis', 'spoken_language', 'arc', 'continuity')},
         'director_instruction': sequence['instruction'].strip() or None,
         'instruction_for_this_shot': instruction.strip() or None,
         'scene': {key: scene.get(key) for key in ('id', 'location', 'time_of_day', 'lighting', 'mood')} if scene else None,
         'scenario_reference': {'title': scenario['title'], 'notes': scenario['content'][:300]} if scenario else None,
-        'shot': {'number': shot['index'], 'of': len(shots), 'seconds': duration, 'source_cuts': shot['source_cuts'], 'intent': shot['intent'], 'staging': shot['staging'] or None,
-                 'merges_cuts': shot['merged'] or None,
+        'shot': {'number': shot['index'], 'of': len(shots), 'seconds': duration, 'cut': shot['cut'], 'part': f"{shot['part'][0]} of {shot['part'][1]}" if shot.get('part') else None,
+                 'audio_from_cuts': shot['source_cuts'] if len(shot['source_cuts']) > 1 else None, 'intent': shot['intent'],
                  'initial_frame': {'from_cut': shot['frame']['cut'],
                                    'is': 'the first frame of that cut, described in its first_frame' if shot['frame']['strategy'] == 'cut_first_frame'
-                                   else f"the frame {shot['frame']['time'] - frame_cut['start_time']:.1f} s into that cut, where the previous shot stopped: derive its state from first_frame plus the motion up to then"},
-                 'ends_before_its_cut_ends': shot['ends_mid_cut'] or None},
+                                   else f"the frame {later:.1f} s into that cut, where the previous shot stopped: derive its state from first_frame plus the motion up to then"
+                                   if shot['frame']['continues_previous_shot']
+                                   else f"the frame {later:.1f} s into that cut (the previous shot ran past the hard cut to finish a phrase): derive its state from first_frame plus the motion up to then"},
+                 'opens': edge_words(shot, 'opens'), 'closes': edge_words(shot, 'closes')},
         'previous_shot': {**neighbour(shots[index - 1]), 'ends_with': ends_with(shots[index - 1]) if level < 3 else None,
                           'hands_over': ((previous or {}).get('continuity') or {}).get('to_next')} if index else None,
         'next_shot': {**neighbour(shots[index + 1]), 'opens_with': opens_with(shots[index + 1]) if level < 3 else None} if index + 1 < len(shots) else None,
         'characters': [{key: value for key, value in person.items() if key != 'character_context_id' and value} for person in shot_roster(ctx, bible, shot)],
         'cuts': cuts,
+        'dialogue_reviewed': reviewed(timeline),
         'dialogue': dialogue or 'Nobody speaks during this shot.',
+        'speakers': shot_speakers(ctx, timeline, bible, shot) or None,
         'subtitles_for_meaning_only': {'language': ctx['subtitle_language'], 'lines': subtitles} if subtitles else None,
     }
+    payload['shot'] = {key: value for key, value in payload['shot'].items() if value is not None}
     return {key: value for key, value in payload.items() if value is not None}
+
+
+def edge_brief(edge):
+    """An edge in a few words for the review: ``after_line +0.80 s keeping L5``, ``keep_cut dividing L7 (reason)``."""
+    how = edge['how']
+    if how in ('start', 'end'):
+        return None
+    text = how if how in ('continuation', 'keep_cut') else f"{how} {edge.get('shift', 0):+.2f} s keeping {_phrase(edge)}"
+    if edge.get('split'):
+        text += f" dividing {' and '.join(edge['split']['lines'])}"
+    if edge.get('reason'):
+        text += f" ({short(edge['reason'], 20)})"
+    return text
+
+
+def voices_text(content, shot, bible):
+    """A written shot's voices in one line, e.g. ``Mai on_screen 0-4.2, narrative 4.2-9 (user); Ken off_screen``."""
+    voices = sequence_prompt.voices_of(content, shot_dialogue(shot, bible), shot['duration'])
+    parts = {}
+    for entry in voices:
+        span = '' if entry['from'] == 0 and entry['to'] >= shot['duration'] - 0.001 else f" {entry['from']:g}-{entry['to']:g}"
+        parts.setdefault(entry['speaker'], []).append(f"{entry['delivery']}{span}{' (user)' if entry.get('fixed') else ''}")
+    return '; '.join(f"{speaker} {', '.join(items)}" for speaker, items in parts.items()) or None
 
 
 def review_input(bible, shots, results, level=0):
@@ -361,12 +561,13 @@ def review_input(bible, shots, results, level=0):
     for shot in shots:
         content = results.get(shot['key']) or {}
         beats = [f"{beat.get('end')}: {short(beat.get('action'), (40, 24, 14, 8)[level])}" for beat in content.get('beats') or [] if isinstance(beat, dict)]
-        rows.append({'shot': shot['index'], 't': [shot['t0'], shot['t1']], 'cuts': shot['source_cuts'], 'scene': shot['scene'], 'intent': shot['intent'], 'staging': shot['staging'] or None,
+        rows.append({'shot': shot['index'], 't': [shot['t0'], shot['t1']], 'cut': shot['cut'], 'part': f"{shot['part'][0]}/{shot['part'][1]}" if shot.get('part') else None,
+                     'scene': shot['scene'], 'intent': shot['intent'], 'opens': edge_brief(shot['opens']), 'closes': edge_brief(shot['closes']),
                      'written': bool(content) or None,
                      'opening_still': content.get('picture_line'), 'subjects': [subject.get('name') for subject in content.get('subjects') or [] if isinstance(subject, dict)],
                      'summary': content.get('summary'), 'camera': (content.get('camera') or {}).get('move'), 'beats': beats,
-                     'speech': [{'line': item.get('line'), 'delivery': item.get('delivery'), 'subject': item.get('subject'),
-                                 'words': next((line['text'][:40] for line in shot['lines'] if line['line'] == item.get('line')), None)} for item in content.get('speech') or [] if isinstance(item, dict)],
+                     'voices': voices_text(content, shot, bible) if content else None,
+                     'lines': [f"{line['line']} {line['character_name'] or line['speaker_label'] or 'Unknown speaker'}: {line['text'][:40]}" for line in shot_dialogue(shot, bible)] or None,
                      'continuity': content.get('continuity') if level < 2 else None})
     return {'bible': bible_brief(bible, level), 'voices': bible.get('voices'), 'shots': [{key: value for key, value in row.items() if value not in (None, [], '')} for row in rows]}
 
@@ -408,9 +609,12 @@ def _hash(value):
 
 def shot_hashes(ctx, bible, shot):
     """Fingerprints of what a shot was written from; a difference later marks the shot stale and says why."""
-    scene = scene_for(bible, shot['frame']['cut'])
+    scene = scene_for(bible, shot['cut'])
     evidence = {cut_id: {kind: (value['id'] if isinstance(value, dict) else _hash(value)) for kind, value in sorted(ctx['results'].get(cut_id, {}).items())} for cut_id in shot['cut_ids']}
-    return {'plan': _hash({key: shot[key] for key in ('start_time', 'end_time', 'frame', 'scene', 'intent', 'staging', 'lines')}),
-            'bible': _hash({'style': bible.get('style'), 'spoken_language': bible.get('spoken_language'), 'characters': bible.get('characters'), 'voices': bible.get('voices'),
+    plan = {key: shot[key] for key in ('start_time', 'end_time', 'frame', 'scene', 'intent', 'opens', 'closes', 'lines')}
+    if shot.get('fixed_voices'):
+        plan['fixed_voices'] = shot['fixed_voices']  # only when set, so shots without any keep their fingerprint
+    return {'plan': _hash(plan),
+            'bible': _hash({'spoken_language': bible.get('spoken_language'), 'characters': bible.get('characters'), 'voices': bible.get('voices'),
                             'scene': scene, 'continuity': bible.get('continuity')}),
             'evidence': _hash(evidence)}

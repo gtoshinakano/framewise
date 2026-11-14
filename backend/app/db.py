@@ -271,9 +271,19 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS sequence_results_idx ON sequence_results(sequence_id,type,shot_key);
+        -- What a dialogue compilation was built from, so the editor can tell when the transcript or subtitles changed since.
+        CREATE TABLE IF NOT EXISTS sequence_compilation_sources (
+            sequence_id TEXT PRIMARY KEY REFERENCES sequences(id) ON DELETE CASCADE,
+            result_id TEXT, source_hash TEXT NOT NULL, subtitle_run_id TEXT, transcript_count INTEGER NOT NULL DEFAULT 0,
+            subtitle_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """)
         from .assistant import store as assistant_store
         assistant_store.init_schema(db)
+        sequence_columns = {row["name"] for row in db.execute("PRAGMA table_info(sequences)")}
+        if "reviewed_compilation_id" not in sequence_columns:
+            # Workflow gate: the compilation revision the user confirmed. Not an approval status on results.
+            db.execute("ALTER TABLE sequences ADD COLUMN reviewed_compilation_id TEXT")
         voice_columns = {row["name"] for row in db.execute("PRAGMA table_info(character_voice_samples)")}
         if "ranges_json" not in voice_columns:
             db.execute("ALTER TABLE character_voice_samples ADD COLUMN ranges_json TEXT")
