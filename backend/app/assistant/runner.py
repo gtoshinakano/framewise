@@ -253,28 +253,30 @@ def merge_usage(total, step, seconds):
 def connect(stack, run, turn, provider, ctx, usage):
     """Open the endpoint for this turn on ``stack``.
 
-    A turn that chose the local model and allows ``gpu_fallback`` is answered by OpenRouter free when
-    visual work holds the GPU (and the worker has an OpenRouter key), instead of waiting for it. The
+    A turn that chose the local model and allows ``gpu_fallback`` is answered by ``providers.gpu_fallback()``
+    (the remote llama.cpp model chosen in the Text engine dialog when it is online, else OpenRouter free when
+    the worker has a key) while visual work holds the GPU, instead of waiting for it. The
     decision is made once per turn; the next turn tries the local model again. The turn row keeps the
     user's choice, so Retry and the next message still start from the local model.
     """
     thinking = bool(turn['thinking'])
     checkpoint = lambda: run.checkpoint(force=True)
-    fallback = providers.registry().get('openrouter') if turn['gpu_fallback'] and provider.id == 'local' else None
-    if fallback is None or not fallback.available()[0]:
+    fallback = providers.gpu_fallback() if turn['gpu_fallback'] and provider.id == 'local' else None
+    if fallback is None:
         return stack.enter_context(provider.session(turn['model'], thinking, checkpoint, run.stage))
     try:
         return stack.enter_context(provider.session(turn['model'], thinking, checkpoint, run.stage, wait_for_gpu=False))
     except local_text_runtime.GpuBusy:
         pass
+    fallback, model = fallback
     run.local = False
-    ctx.provider, ctx.model = fallback.id, providers.FALLBACK_MODEL
-    usage['fallback'] = {'reason': 'gpu_busy', 'from': provider.id, 'provider': fallback.id, 'model': providers.FALLBACK_MODEL}
+    ctx.provider, ctx.model = fallback.id, model
+    usage['fallback'] = {'reason': 'gpu_busy', 'from': provider.id, 'provider': fallback.id, 'model': model}
     with db.connect() as conn:
         run.check(conn)
         store.bump(conn, turn['id'], usage_json=json.dumps(usage))  # Visible while the reply streams.
-    run.stage('GPU busy · answering with OpenRouter free')
-    return stack.enter_context(fallback.session(providers.FALLBACK_MODEL, thinking, checkpoint, run.stage))
+    run.stage('GPU busy · answering with ' + ('the remote llama.cpp server' if fallback.id == 'remote' else 'OpenRouter free'))
+    return stack.enter_context(fallback.session(model, thinking, checkpoint, run.stage))
 
 
 def run_turn(turn_id, owner):
@@ -296,6 +298,15 @@ def run_turn(turn_id, owner):
         run.stage('Preparing model')
         with contextlib.ExitStack() as stack:
             endpoint = connect(stack, run, turn, provider, ctx, usage)
+            server = endpoint.extra.get('_server')
+            if server:
+                usage['server'] = server
+                run.local = server == 'local'
+                if turn['provider'] == 'auto':
+                    ctx.provider, ctx.model = server, endpoint.model
+                with db.connect() as conn:
+                    run.check(conn)
+                    store.bump(conn, turn_id, usage_json=json.dumps(usage))
             usage['context_limit'] = endpoint.context_limit
             usage['load_seconds'] = endpoint.extra.get('_load_seconds', 0)
             schemas = tools.schemas(tools.scope_of(ctx))
@@ -390,18 +401,38 @@ def publish_state():
         conn.execute('UPDATE assistant_worker_state SET providers_json=?,heartbeat=? WHERE id=1', (json.dumps(described), time.time()))
 
 
+MAX_CONCURRENT_TURNS = 3  # this host, the remote PC and OpenRouter can each answer one chat at a time
+
+
 def loop(stop_event):
+    """Claim queued turns in order and run each on its own thread, so a turn waiting for a free server does not hold up the others."""
     last_publish = 0.0
+    active = set()
+    lock = threading.Lock()
+
+    def work(claimed):
+        try:
+            run_turn(*claimed)
+        except Exception:
+            log.exception('Assistant turn thread failed')
+        finally:
+            with lock:
+                active.discard(threading.current_thread())
+
     while not stop_event.is_set():
         try:
             if time.monotonic() - last_publish > 5:
                 publish_state()
                 last_publish = time.monotonic()
-            claimed = claim_turn()
+            with lock:
+                room = len(active) < MAX_CONCURRENT_TURNS
+            claimed = claim_turn() if room else None
             if claimed:
-                run_turn(*claimed)
-                publish_state()
-                last_publish = time.monotonic()
+                thread = threading.Thread(target=work, args=(claimed,), daemon=True, name=f'assistant-turn-{claimed[0][:8]}')
+                with lock:
+                    active.add(thread)
+                thread.start()
+                last_publish = 0.0
             else:
                 stop_event.wait(0.3)
         except Exception:

@@ -377,7 +377,10 @@ def slot_tokens(provider):
     """Context of one generation slot: the local server splits its window between the parallel text jobs."""
     if provider != 'local':
         return 60000
-    from . import local_text_runtime
+    from . import local_text_runtime, remote_text
+    remote = remote_text.bound()
+    if remote is not None:  # a remote lane: the other PC reports each model's per-slot context
+        return remote_text.model_context(remote.model)
     try:
         total = int(os.environ.get('QWEN36_CONTEXT_SIZE', '65536'))
     except ValueError:

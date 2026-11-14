@@ -239,8 +239,8 @@ def process(job_id, owner):
             raise RuntimeError(f"Unknown sequence step: {payload.get('step')}")
         STEPS[payload['step']](job, owner, payload, sequence)
     except SummaryCancelled:
-        if (payload.get('config') or {}).get('text_provider') == 'local' and local_text_runtime.runtime:
-            local_text_runtime.runtime.stop('Cancelled')
+        if (payload.get('config') or {}).get('text_provider') == 'local':
+            local_text_runtime.cancel_local('Cancelled')
         log.info('Sequence job %s was cancelled', job_id)
     except worker.LeaseLost:
         log.info('Sequence job %s lost its lease', job_id)

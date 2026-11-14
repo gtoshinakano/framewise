@@ -13,7 +13,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from . import db, media, worker, frame_source, prompt_context, local_text_runtime
+from . import db, media, worker, frame_source, prompt_context, local_text_runtime, remote_text
 
 log = logging.getLogger(__name__)
 MODEL_ID = "tencent/WeVisOne-VL-4B"
@@ -185,6 +185,14 @@ class SummaryCancelled(Exception):
     """A queued or running summary was cancelled by the user."""
 
 
+class RemoteUnreachable(SummaryCancelled):
+    """The remote text server stopped answering mid-job.
+
+    It derives from ``SummaryCancelled`` so every handler leaves the job alone instead of failing it;
+    the remote lane then puts the job back in the queue (``remote_lane``).
+    """
+
+
 def check_summary_lease(job_id, owner):
     job = db.one("SELECT status,stage,lease_owner FROM jobs WHERE id=?", (job_id,))
     if job and job["stage"] == "Cancelled":
@@ -247,7 +255,13 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
     if provider == 'openrouter' and not key:
         raise RuntimeError("OPENROUTER_API_KEY is not configured for the inference worker")
     model_load_started = time.monotonic()
-    if provider == 'local':
+    remote = remote_text.bound() if provider == 'local' else None
+    if remote is not None:
+        # A remote lane: the other PC's server picks the model by name; the local GPU model is not touched.
+        model = remote.model
+        if progress:
+            progress(1, 3)
+    elif provider == 'local':
         if local_text_runtime.runtime is None:
             raise RuntimeError('Local text model worker is unavailable')
         if progress:
@@ -279,6 +293,19 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
         headers = {**({"Authorization": f"Bearer {key}"} if provider == 'openrouter' else {}), "Content-Type": "application/json"}
         def send():
             nonlocal served_variant, model
+            if remote is not None:
+                request = urllib.request.Request(remote.url, data=json.dumps(payload).encode(), headers={**headers, **remote_text.auth_headers(remote.cfg)}, method="POST")
+                try:
+                    answer = request_json(request, cancel_check, timeout=1200)
+                except urllib.error.HTTPError:
+                    raise
+                except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                    if not remote_text.healthy(remote.cfg):
+                        remote.unreachable = True
+                        raise RemoteUnreachable(f'Remote text server is not reachable: {exc}') from exc
+                    raise
+                served_variant = remote.variant
+                return answer
             if provider == 'local':
                 # The server may be restarted between attempts (the user switched the model), so ask for its
                 # address every time; the request is counted so a switch waits until it has finished.
@@ -300,7 +327,7 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
                 payload['response_format'] = {'type': 'json_object'}
                 result = send()
         except urllib.error.HTTPError as exc:
-            service = 'Local model' if provider == 'local' else 'OpenRouter'
+            service = ('Remote model' if remote is not None else 'Local model') if provider == 'local' else 'OpenRouter'
             detail = ''
             if provider == 'local':
                 try:
@@ -313,7 +340,7 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
             retry_delay(2 ** (attempt + 1), cancel_check)
             continue
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-            last_error = f"{'Local model' if provider == 'local' else 'OpenRouter'} connection or response failed: {str(exc) or type(exc).__name__}"
+            last_error = f"{('Remote model' if remote is not None else 'Local model') if provider == 'local' else 'OpenRouter'} connection or response failed: {str(exc) or type(exc).__name__}"
             if attempt == attempts - 1:
                 raise RuntimeError(last_error) from exc
             retry_delay(2 ** (attempt + 1), cancel_check)
@@ -333,6 +360,8 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
                 usage_out['routed_provider'] = result['provider']
             if provider == 'local':
                 usage_out['model_variant'] = local_text_runtime.known_variant(served_variant)
+                if remote is not None:
+                    usage_out['endpoint'] = 'remote'
                 # llama-server's own timings: decode speed without prompt processing, and how many
                 # speculative draft tokens the model accepted (MTP).
                 timings = result.get('timings') if isinstance(result.get('timings'), dict) else {}
@@ -613,8 +642,7 @@ def process_regen(job_id, owner):
             worker.sync_episode_status(conn, job["episode_id"])
     except SummaryCancelled:
         if payload.get('text_provider') == 'local':
-            if local_text_runtime.runtime:
-                local_text_runtime.runtime.stop('Cancelled')
+            local_text_runtime.cancel_local('Cancelled')
         log.info("Summary job %s was cancelled", job_id)
     except Exception as exc:
         fail_job(job_id, owner, job["episode_id"], exc)
@@ -657,8 +685,7 @@ def process_consistency_summary(job_id, owner):
             worker.sync_episode_status(conn, job['episode_id'])
     except SummaryCancelled:
         if payload.get('config', {}).get('text_provider') == 'local':
-            if local_text_runtime.runtime:
-                local_text_runtime.runtime.stop('Cancelled')
+            local_text_runtime.cancel_local('Cancelled')
         log.info('Consistency summary %s was cancelled', job_id)
     except Exception as exc:
         fail_job(job_id, owner, job['episode_id'], exc)
@@ -699,8 +726,7 @@ def process_review_answers(job_id, owner):
             worker.sync_episode_status(conn, job['episode_id'])
     except SummaryCancelled:
         if payload.get('config', {}).get('text_provider') == 'local':
-            if local_text_runtime.runtime:
-                local_text_runtime.runtime.stop('Cancelled')
+            local_text_runtime.cancel_local('Cancelled')
         log.info('Review answers %s was cancelled', job_id)
     except Exception as exc:
         fail_job(job_id, owner, job['episode_id'], exc)
@@ -801,8 +827,7 @@ def process(job_id, owner):
             worker.sync_episode_status(conn, episode["id"])
     except SummaryCancelled:
         if payload.get('text_only') and item.get('config', {}).get('text_provider', 'openrouter') == 'local':
-            if local_text_runtime.runtime:
-                local_text_runtime.runtime.stop('Cancelled')
+            local_text_runtime.cancel_local('Cancelled')
         log.info('Analysis %s was cancelled', job_id)
     except Exception as exc:
         fail_job(job_id, owner, episode["id"], exc)
@@ -912,22 +937,35 @@ def text_lane(name):
             if runtime.gpu_busy or runtime.switch_pending():  # a model switch waits for running jobs, so claim no new one
                 time.sleep(2)
                 continue
-            claimed = worker.claim_job(worker.TEXT_PIPELINES)
+            cfg = remote_text.config()
+            if cfg['prefer'] == 'remote' and _server_free('remote', cfg):
+                time.sleep(1)  # the remote PC is preferred and has a free lane: let it claim first
+            if not remote_text.pool.try_job('local', cfg):  # chat is waiting, or this host's share for jobs is in use
+                time.sleep(2)
+                continue
+            claimed = worker.claim_job(worker.TEXT_PIPELINES, remote_only=remote_text.remote_only(cfg))
             if not claimed:
+                remote_text.pool.release_job('local')
                 time.sleep(2)
                 continue
             job_id, owner = claimed
             done = threading.Event()
             beat = threading.Thread(target=worker.heartbeat, args=(job_id, owner, done), daemon=True)
             beat.start()
+            slot_held = True
             try:
                 row = db.one("SELECT pipeline,payload_json FROM jobs WHERE id=?", (job_id,))
                 payload = json.loads(row['payload_json'])
                 provider = payload.get('text_provider') if row['pipeline'] == 'regen' else (payload.get('config') or {}).get('text_provider')
+                if provider != 'local':
+                    remote_text.pool.release_job('local')  # OpenRouter jobs use no slot of this server
+                    slot_held = False
                 guard = runtime.chat_session(cancel_check=lambda: check_summary_lease(job_id, owner)) if provider == 'local' else contextlib.nullcontext()
                 with guard:
                     handlers[row['pipeline']](job_id, owner)
             finally:
+                if slot_held:
+                    remote_text.pool.release_job('local')
                 done.set()
                 beat.join(timeout=1)
         except (worker.LeaseLost, SummaryCancelled):
@@ -937,6 +975,106 @@ def text_lane(name):
             time.sleep(2)
 
 
+_remote_active = 0
+_remote_lock = threading.Lock()
+
+
+def _remote_count(delta):
+    global _remote_active
+    with _remote_lock:
+        _remote_active += delta
+        return _remote_active
+
+
+def _server_free(server, cfg):
+    """``server`` could start a text job right now (used to let the preferred server claim first)."""
+    if server == 'local':
+        runtime = local_text_runtime.runtime
+        if not runtime or runtime.gpu_busy or runtime.switch_pending():
+            return False
+    elif not (remote_text.usable(cfg) and remote_text.online()):
+        return False
+    return remote_text.pool.jobs[server] < remote_text.pool.job_limit(server, cfg)
+
+
+def remote_lane(index):
+    """A worker thread for the remote text server (``remote_text``); lane ``index`` runs while ``index < parallel``.
+
+    It claims only local-provider jobs of pipelines routed ``remote`` or ``any`` and runs the ordinary
+    handler bound to the route's model. It never holds a chat session or waits for the local GPU. A job
+    whose server stopped answering goes back to the queue, where a local lane can take it if routing allows.
+    """
+    from . import sequence_pipeline
+    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers, 'sequence': sequence_pipeline.process}
+    while True:
+        try:
+            cfg = remote_text.config()
+            if not remote_text.usable(cfg) or index >= cfg['parallel'] or not remote_text.online():
+                time.sleep(3)
+                continue
+            if cfg['prefer'] == 'local' and _server_free('local', cfg):
+                time.sleep(1)  # this host is preferred and has a free lane: let it claim first
+            if not remote_text.pool.try_job('remote', cfg):  # chat is waiting, or the remote's share for jobs is in use
+                time.sleep(2)
+                continue
+            claimed = worker.claim_job(remote_text.remote_pipelines(cfg), local_provider_only=True)
+            if not claimed:
+                remote_text.pool.release_job('remote')
+                time.sleep(2)
+                continue
+            job_id, owner = claimed
+            pipeline = db.one('SELECT pipeline FROM jobs WHERE id=?', (job_id,))['pipeline']
+            _, model = remote_text.route_for(cfg, pipeline)
+            done = threading.Event()
+            beat = threading.Thread(target=worker.heartbeat, args=(job_id, owner, done), daemon=True)
+            beat.start()
+            _remote_count(1)
+            try:
+                log.info('Remote lane %s runs %s job %s on %s', index, pipeline, job_id, model)
+                with remote_text.bind(cfg, model) as binding:
+                    handlers[pipeline](job_id, owner)
+            finally:
+                remote_text.pool.release_job('remote')
+                _remote_count(-1)
+                done.set()
+                beat.join(timeout=1)
+            if binding.unreachable:
+                remote_text.publish({'state': 'offline', 'detail': 'Stopped answering during a job', 'models': remote_text.state()['models']})
+                if worker.requeue_job(job_id, owner):
+                    log.warning('Remote text server stopped answering; job %s is queued again', job_id)
+                time.sleep(5)  # let the monitor confirm the server before the next claim
+        except (worker.LeaseLost, SummaryCancelled):
+            log.info('Remote lane %s dropped a job it no longer holds', index)
+        except Exception:
+            log.exception('Remote lane %s error', index)
+            time.sleep(2)
+
+
+def remote_monitor():
+    """Probe the remote server every 10 s (at once after a settings change) and publish its state and models."""
+    seen = None
+    last = 0.0
+    while True:
+        try:
+            row = db.one('SELECT enabled,base_url,token,updated_at FROM remote_text_server WHERE id=1') or {}
+            changed = tuple(row.values()) != seen
+            if changed or time.monotonic() - last >= 10:
+                seen, last = tuple(row.values()), time.monotonic()
+                cfg = remote_text.config()
+                result = remote_text.probe(cfg) if remote_text.usable(cfg) else {'state': 'disabled', 'detail': '', 'models': []}
+                remote_text.publish(result, _remote_count(0))
+        except Exception:
+            log.exception('Remote text monitor error')
+        time.sleep(2)
+
+
+def start_remote_text():
+    """The remote server monitor and ``remote_text.MAX_LANES`` lanes; idle lanes cost a settings read every few seconds."""
+    threading.Thread(target=remote_monitor, daemon=True, name='remote-text-monitor').start()
+    for number in range(remote_text.MAX_LANES):
+        threading.Thread(target=remote_lane, args=(number,), daemon=True, name=f'remote-lane-{number}').start()
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     db.init_db()
@@ -944,11 +1082,25 @@ def main():
     start_assistant()
     for number in range(1, local_text_runtime.text_job_concurrency()):
         threading.Thread(target=text_lane, args=(f'text-{number}',), daemon=True, name=f'text-lane-{number}').start()
+    start_remote_text()
     anime_runtime = None
     anime_batch_id = None
     while True:
         try:
-            claimed = worker.claim_job(("analyze", "regen", "consistency_summary", "review_answers", "sequence", "character_detect", "composition_compact", "subtitles"))
+            main_cfg = remote_text.config()
+            # Text jobs need one of this host's job slots (and no chat waiting); visual and other jobs are claimed regardless.
+            text_slot = remote_text.pool.try_job('local', main_cfg)
+            main_pipelines = ("analyze", "character_detect", "composition_compact", "subtitles") + (worker.TEXT_PIPELINES if text_slot else ())
+            try:
+                claimed = worker.claim_job(main_pipelines, remote_only=remote_text.remote_only(main_cfg))
+            except Exception:
+                if text_slot:
+                    remote_text.pool.release_job('local')
+                raise
+            slot_held = bool(text_slot)  # released in the finally below, or at once when the job needs no slot
+            if text_slot and not claimed:
+                remote_text.pool.release_job('local')
+                slot_held = False
             if claimed:
                 job_id, owner = claimed
                 done = threading.Event()
@@ -960,6 +1112,10 @@ def main():
                     kind = db.one("SELECT pipeline FROM jobs WHERE id=?", (job_id,))["pipeline"]
                     job_payload = db.one("SELECT payload_json FROM jobs WHERE id=?", (job_id,))
                     payload = json.loads(job_payload['payload_json'])
+                    kind_provider = payload.get('text_provider') if kind == 'regen' else (payload.get('config') or {}).get('text_provider')
+                    if slot_held and not (kind in worker.TEXT_PIPELINES and kind_provider == 'local'):
+                        remote_text.pool.release_job('local')  # not a local-model text job: it uses no slot of this server
+                        slot_held = False
                     text_only = kind == 'analyze' and payload.get('text_only', False)
                     job_episode = db.one('SELECT episode_id FROM jobs WHERE id=?', (job_id,))['episode_id']
                     anime_batch = kind == 'character_detect' and payload.get('workflow') == 'anime_bulk_v1'
@@ -994,6 +1150,8 @@ def main():
                     else:
                         (process_regen if kind == "regen" else process_consistency_summary if kind == 'consistency_summary' else process_review_answers if kind == 'review_answers' else process_character_detection if kind == 'character_detect' else process)(job_id, owner)
                 finally:
+                    if slot_held:
+                        remote_text.pool.release_job('local')
                     local_text_runtime.runtime.end_gpu_work()
                     done.set()
                     beat.join(timeout=1)

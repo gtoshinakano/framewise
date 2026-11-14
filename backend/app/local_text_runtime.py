@@ -29,15 +29,31 @@ MTP_DEFAULT_ARGS = '--spec-type draft-mtp --spec-draft-n-max 3'
 
 
 def known_variant(variant):
+    """A local variant name, or a ``remote:<model>`` name kept as it is (see ``remote_text``)."""
+    if isinstance(variant, str) and variant.startswith('remote:'):
+        return variant
     return variant if variant in VARIANTS else DEFAULT_VARIANT
 
 
 def model_id_for(variant):
-    return VARIANTS[known_variant(variant)]['id']
+    variant = known_variant(variant)
+    return variant if variant.startswith('remote:') else VARIANTS[variant]['id']
 
 
 def revision_for(variant):
-    return VARIANTS[known_variant(variant)]['revision']
+    """The revision to save with a result; a remote model is recorded by its server-side model id."""
+    variant = known_variant(variant)
+    return variant if variant.startswith('remote:') else VARIANTS[variant]['revision']
+
+
+def cancel_local(detail='Cancelled'):
+    """Stop the local llama-server to abort a cancelled local generation.
+
+    Does nothing on a thread bound to the remote server: its job never used the local model.
+    """
+    from . import remote_text
+    if remote_text.bound() is None and runtime is not None:
+        runtime.stop(detail)
 
 
 def variant_path(variant):

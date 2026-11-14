@@ -5,6 +5,7 @@ export type AssistantUsage = {
   prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; reasoning_tokens?: number; reasoning_tokens_estimated?: number
   cached_tokens?: number; cost?: number; context_tokens?: number; context_limit?: number | null; steps?: number; tool_calls?: number
   seconds?: number; generation_seconds?: number; first_token_seconds?: number | null; load_seconds?: number; tokens_per_second?: number; model?: string
+  server?: 'local' | 'remote'
   fallback?: { reason: 'gpu_busy'; from: string; provider: string; model: string }
 }
 export type ToolCall = { id: string; name: string; arguments: string }
@@ -30,7 +31,7 @@ export type AssistantSession = {
 }
 export type SessionDetail = { session: AssistantSession; messages: AssistantMessage[]; turns: AssistantTurn[]; proposals: AssistantProposal[] }
 export type ProviderModel = { id: string; label?: string; context?: number | null }
-export type ProviderInfo = { id: string; label: string; available: boolean; detail?: string; models: ProviderModel[]; thinking: boolean; managed: boolean; free_model: boolean; context_limit?: number | null; busy?: boolean; fallback_model?: string }
+export type ProviderInfo = { id: string; label: string; available: boolean; detail?: string; models: ProviderModel[]; thinking: boolean; managed: boolean; free_model: boolean; context_limit?: number | null; busy?: boolean; fallback_model?: string; gpu_fallback?: { provider: string; model: string; label: string } | null; servers?: { local: boolean; remote: boolean; prefer: string } }
 export type SkillInfo = { name: string; title: string; description: string; examples: string[]; scope?: 'cut' | 'sequence' | 'any' }
 /** What a chat is about: one cut, or a sequence (its bible, shot plan and shot prompts). */
 export type AssistantScope = { kind: 'cut' | 'sequence'; id: string }

@@ -16,7 +16,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 
 from . import compact
@@ -90,6 +90,9 @@ class LocalQwen(Provider):
         runtime = local_text_runtime.runtime
         variant = runtime.target_variant() if runtime else local_text_runtime.DEFAULT_VARIANT
         info['models'] = [{'id': local_text_runtime.MODEL_ID, 'label': local_text_runtime.VARIANTS[variant]['label'], 'context': self.context_limit()}]
+        fallback = gpu_fallback({'remote': RemoteLlama(), 'openrouter': OpenRouter()})
+        # What answers a turn when visual work holds the GPU and the user allowed a fallback (see ``runner.connect``).
+        info['gpu_fallback'] = {'provider': fallback[0].id, 'model': fallback[1], 'label': f'{fallback[0].label} · {fallback[1]}'} if fallback else None
         return info
 
     @staticmethod
@@ -118,9 +121,10 @@ class LocalQwen(Provider):
             with db.connect() as conn:
                 conn.execute('UPDATE local_text_model_state SET desired_loaded=1 WHERE id=1')
 
+        from .. import remote_text
         if wait_for_gpu:
             keep_loaded()
-        with runtime.chat_session(cancel_check, on_stage, wait=wait_for_gpu):
+        with runtime.chat_session(cancel_check, on_stage, wait=wait_for_gpu), remote_text.pool.chat('local'):
             if not wait_for_gpu:
                 keep_loaded()  # Only once the GPU is ours; a fallback must not queue a model load behind visual work.
             loaded = runtime.process is not None and runtime.process.poll() is None
@@ -139,6 +143,7 @@ class LocalQwen(Provider):
             endpoint = Endpoint(url + '/v1/chat/completions', local_text_runtime.MODEL_ID, context_limit=self.context_limit(), timeout=900, fixed_model=True,
                                 extra={'chat_template_kwargs': {'enable_thinking': bool(thinking)}, 'cache_prompt': True, 'top_p': 0.95, 'top_k': 20})
             endpoint.extra['_load_seconds'] = 0 if loaded else round(time.monotonic() - started, 2)
+            endpoint.extra['_server'] = 'local'
             try:
                 yield endpoint
             finally:
@@ -190,6 +195,106 @@ class OpenRouter(Provider):
                         headers={'Authorization': f"Bearer {os.environ['OPENROUTER_API_KEY'].strip()}", 'X-Title': 'Framewise Cut Assistance'})
 
 
+class RemoteLlama(Provider):
+    """The llama.cpp server on another PC configured in the Text engine dialog (``remote_text``)."""
+    id, label = 'remote', 'Remote llama.cpp'
+
+    def describe(self):
+        from .. import remote_text
+        info = super().describe()
+        models = [{'id': item['id'], 'label': item['id'], 'context': item.get('n_ctx')} for item in remote_text.state()['models'] if isinstance(item, dict) and item.get('id')]
+        info.update(models=models, context_limit=models[0]['context'] if models else None)
+        return info
+
+    def available(self):
+        from .. import remote_text
+        cfg = remote_text.config()
+        if not remote_text.usable(cfg):
+            return False, 'The remote llama.cpp server is not enabled in the Text engine dialog'
+        if not remote_text.online():
+            return False, remote_text.state()['detail'] or 'The remote llama.cpp server is offline'
+        return True, ''
+
+    def endpoint(self, model, thinking):
+        from .. import remote_text
+        ok, detail = self.available()
+        if not ok:
+            raise ProviderError(detail)
+        cfg = remote_text.config()
+        return Endpoint(cfg['base_url'] + '/v1/chat/completions', model, headers=remote_text.auth_headers(cfg), context_limit=remote_text.model_context(model), timeout=900,
+                        extra={'chat_template_kwargs': {'enable_thinking': bool(thinking)}, 'cache_prompt': True, 'top_p': 0.95, 'top_k': 20, '_server': 'remote'})
+
+    @contextmanager
+    def session(self, model, thinking, cancel_check, on_stage):
+        from .. import remote_text
+        with remote_text.pool.chat('remote'):
+            yield self.endpoint(model, thinking)
+
+
+class AutoServer(Provider):
+    """Chat on whichever configured llama.cpp server is free: this host's, or the remote PC's (``remote_text.pick_server``).
+
+    The turn waits while both are busy; job lanes stop claiming meanwhile, so the wait is short.
+    """
+    id, label = 'auto', 'Auto · first free server'
+
+    def available(self):
+        if LocalQwen().available()[0]:
+            return True, ''
+        return RemoteLlama().available()
+
+    def describe(self):
+        info = super().describe()
+        from .. import remote_text
+        cfg = remote_text.config()
+        remote = RemoteLlama()
+        remote_ok = remote.available()[0]
+        local = LocalQwen()
+        limits = [local.context_limit()] + ([remote_text.model_context(remote_text.chat_model(cfg))] if remote_ok else [])
+        info.update(models=[{'id': 'auto', 'label': 'Whichever server is free', 'context': min(limits)}], context_limit=min(limits),
+                    detail='' if info['available'] else 'No llama.cpp server is available',
+                    servers={'local': local.available()[0], 'remote': remote_ok, 'prefer': cfg['prefer']})
+        return info
+
+    @contextmanager
+    def session(self, model, thinking, cancel_check, on_stage, wait_for_gpu=True):
+        from .. import local_text_runtime, remote_text
+        with ExitStack() as stack:
+            with remote_text.pool.chat_wait():
+                on_stage('Waiting for a free server')
+                while True:
+                    choice = remote_text.pick_server()
+                    if choice and choice[0] == 'remote':
+                        endpoint = stack.enter_context(RemoteLlama().session(choice[1], thinking, cancel_check, on_stage))
+                        break
+                    if choice:
+                        try:
+                            endpoint = stack.enter_context(LocalQwen().session(local_text_runtime.MODEL_ID, thinking, cancel_check, on_stage, wait_for_gpu=False))
+                            break
+                        except local_text_runtime.GpuBusy:
+                            pass  # visual work took the GPU after the pick; try the other server or wait
+                    cancel_check()
+                    time.sleep(1)
+            yield endpoint
+
+
+def gpu_fallback(available=None):
+    """``(provider, model)`` that answers a local turn while the GPU is busy, or ``None``.
+
+    The remote's chat model (``remote_text.chat_model``) when the remote is online, else OpenRouter free.
+    """
+    from .. import remote_text
+    available = available if available is not None else registry()
+    remote, openrouter = available.get('remote'), available.get('openrouter')
+    try:
+        model = remote_text.chat_model()
+        if model and remote is not None and remote.available()[0] and any(isinstance(item, dict) and item.get('id') == model for item in remote_text.state()['models']):
+            return remote, model
+    except Exception:
+        pass
+    return (openrouter, FALLBACK_MODEL) if openrouter is not None and openrouter.available()[0] else None
+
+
 class OpenAICompatible(Provider):
     def __init__(self, config):
         self.id = config['id']
@@ -216,7 +321,7 @@ class OpenAICompatible(Provider):
 
 
 def registry():
-    providers = {'local': LocalQwen(), 'openrouter': OpenRouter()}
+    providers = {'auto': AutoServer(), 'local': LocalQwen(), 'openrouter': OpenRouter(), 'remote': RemoteLlama()}
     try:
         configured = json.loads(os.environ.get('ASSISTANT_ENDPOINTS') or '[]')
     except ValueError:

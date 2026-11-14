@@ -51,6 +51,8 @@ class LocalTextTest(unittest.TestCase):
              patch.object(db, 'one', side_effect=[{'pipeline': 'regen'}, {'payload_json': '{}'}, {'episode_id': 'e'}]), \
              patch.object(local_text_runtime, 'text_job_concurrency', return_value=1), \
              patch.object(inference_worker, 'start_assistant') as start_assistant, \
+             patch.object(inference_worker, 'start_remote_text'), \
+             patch.object(inference_worker.remote_text, 'config', return_value={'enabled': False, 'base_url': '', 'routes': {}, 'parallel': 1, 'prefer': 'local', 'chat_reserve': 1, 'assistant_fallback': ''}), \
              patch.object(inference_worker.threading, 'Thread', side_effect=[job_thread, model_thread]) as threads, \
              patch.object(inference_worker, 'process_regen'), \
              patch.object(inference_worker.log, 'exception') as log_error:

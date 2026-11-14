@@ -117,10 +117,25 @@ def cleanup_voice_upload(job):
 # Local text jobs of one episode may run side by side (two llama-server slots); every other
 # pipeline still holds its episode alone.
 TEXT_PIPELINES = ('regen', 'consistency_summary', 'review_answers', 'sequence')
+# The provider a text job was queued with: ``regen`` keeps it at the top of its payload, the others in ``config``.
+JOB_TEXT_PROVIDER_SQL = "COALESCE(json_extract(jobs.payload_json,'$.text_provider'), json_extract(jobs.payload_json,'$.config.text_provider'), 'openrouter')"
 
 
-def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
+def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), remote_only=(), local_provider_only=False):
+    """Lease the next runnable job of ``pipelines``; returns ``(job_id, owner)`` or ``None``.
+
+    Routing to the remote text server (``remote_text``) only concerns jobs queued with the local provider:
+    ``remote_only`` names pipelines whose local-provider jobs this caller leaves to the remote lanes,
+    and ``local_provider_only`` (a remote lane) skips every job that was not queued for the local model.
+    """
+    if not pipelines:
+        return None
     now = time.time()
+    routing = ''
+    if remote_only:
+        routing += f" AND NOT (jobs.pipeline IN ({','.join('?' for _ in remote_only)}) AND {JOB_TEXT_PROVIDER_SQL}='local')"
+    if local_provider_only:
+        routing += f" AND {JOB_TEXT_PROVIDER_SQL}='local'"
     placeholders = ",".join("?" for _ in pipelines)
     text = ",".join(f"'{name}'" for name in TEXT_PIPELINES)
     with db.connect() as conn:
@@ -141,7 +156,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
             for orphan in orphans:
                 conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled because a job it waited for did not finish',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (orphan["id"],))
                 sync_episode_status(conn, orphan["episode_id"])
-        job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND
+        job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}){routing} AND
             (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
             AND (jobs.pipeline NOT IN ('regen','review_answers') OR json_extract(jobs.payload_json,'$.wait_for') IS NULL
                  OR EXISTS (SELECT 1 FROM jobs dep WHERE dep.id=json_extract(jobs.payload_json,'$.wait_for') AND dep.status='done'))
@@ -153,7 +168,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
                 AND NOT ((jobs.pipeline='cutframes' AND other.pipeline IN ('analyze','regen')) OR (other.pipeline='cutframes' AND jobs.pipeline IN ('analyze','regen'))))
             )
             ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
-                     CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid LIMIT 1""", (*pipelines, now, now)).fetchone()
+                     CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid LIMIT 1""", (*pipelines, *remote_only, now, now)).fetchone()
         claimed = None
         if job:
             owner = str(uuid.uuid4())
@@ -166,6 +181,18 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
     for old_job in exhausted:
         cleanup_voice_upload(old_job)
     return claimed
+
+
+def requeue_job(job_id, owner, stage='Waiting for a text worker'):
+    """Give a running job back to the queue without counting the attempt (its worker went away, not the job)."""
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute("SELECT episode_id FROM jobs WHERE id=? AND status='running' AND lease_owner=? AND stage!='Cancelled'", (job_id, owner)).fetchone()
+        if not job:
+            return False
+        conn.execute("UPDATE jobs SET status='queued',stage=?,lease_owner=NULL,lease_until=NULL,attempt_count=MAX(0,attempt_count-1),updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
+        sync_episode_status(conn, job['episode_id'])
+        return True
 
 
 def sync_episode_status(conn, episode_id: str, error: str | None = None):

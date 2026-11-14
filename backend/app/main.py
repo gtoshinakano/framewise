@@ -2366,6 +2366,83 @@ def set_local_text_model(body: LocalModelLoadInput):
     return local_text_model_status()
 
 
+class RemoteTextRoute(BaseModel):
+    mode: Literal['local', 'remote', 'any'] = 'local'
+    model: str = Field(default='', max_length=300)
+
+
+class RemoteTextServerInput(BaseModel):
+    enabled: bool = False
+    base_url: str = Field(default='', max_length=500)
+    token: str | None = Field(default=None, max_length=500, description='Bearer token (llama-server --api-key). Omit to keep the saved token; an empty string clears it.')
+    parallel: int = Field(default=1, ge=1, le=8)
+    routes: dict[str, RemoteTextRoute] = Field(default_factory=dict)
+    assistant_fallback: str = Field(default='', max_length=300)
+    prefer: Literal['local', 'remote'] = 'local'
+    chat_reserve: int = Field(default=1, ge=0, le=8, description='Slots of each server kept free for chat; text jobs never use them.')
+
+
+def remote_text_input(body: RemoteTextServerInput):
+    """Validated values to save or probe; the saved token fills in an omitted one."""
+    from . import remote_text
+    base_url = body.base_url.strip().rstrip('/')
+    if base_url and not remote_text.URL_PATTERN.match(base_url):
+        raise HTTPException(400, 'The address must look like http://192.168.0.20:8080')
+    if body.enabled and not base_url:
+        raise HTTPException(400, 'Enter the address of the remote llama.cpp server')
+    unknown = sorted(set(body.routes) - set(worker.TEXT_PIPELINES))
+    if unknown:
+        raise HTTPException(400, f"Unknown job types: {', '.join(unknown)}")
+    routes = {}
+    for pipeline, route in body.routes.items():
+        model = route.model.strip()
+        if route.mode != 'local' and not model:
+            raise HTTPException(400, f'Choose a remote model for {pipeline}')
+        routes[pipeline] = {'mode': route.mode, 'model': model if route.mode != 'local' else ''}
+    token = body.token.strip() if body.token is not None else None
+    if token is None:
+        token = (db.one('SELECT token FROM remote_text_server WHERE id=1') or {}).get('token') or ''
+    return {'enabled': body.enabled, 'base_url': base_url, 'token': token,
+            'parallel': body.parallel, 'routes': routes, 'assistant_fallback': body.assistant_fallback.strip(),
+            'prefer': body.prefer, 'chat_reserve': body.chat_reserve}
+
+
+@app.get('/api/remote-text-server')
+def get_remote_text_server():
+    """The remote llama.cpp settings (never the token) and the state the inference worker last saw."""
+    import time
+    from . import remote_text
+    cfg = remote_text.config()
+    state = remote_text.state()
+    if time.time() - state['heartbeat'] > 30:
+        state.update(state='worker_offline', detail='Inference worker is not responding')
+    token = cfg.pop('token')
+    from . import local_text_runtime
+    return {**cfg, 'has_token': bool(token), 'state': state, 'effective_routes': remote_text.effective_routes({**cfg, 'enabled': cfg['enabled']}),
+            'local_slots': local_text_runtime.text_job_concurrency()}
+
+
+@app.put('/api/remote-text-server')
+def put_remote_text_server(body: RemoteTextServerInput):
+    import time
+    values = remote_text_input(body)
+    with db.connect() as conn:
+        conn.execute('UPDATE remote_text_server SET enabled=?,base_url=?,token=?,parallel=?,routes_json=?,assistant_fallback=?,prefer=?,chat_reserve=?,updated_at=? WHERE id=1',
+                     (int(values['enabled']), values['base_url'], values['token'], values['parallel'],
+                      json.dumps(values['routes']), values['assistant_fallback'], values['prefer'], values['chat_reserve'], time.time()))
+    return get_remote_text_server()
+
+
+@app.post('/api/remote-text-server/test')
+def test_remote_text_server(body: RemoteTextServerInput):
+    """Ask the (unsaved) address for its models from the API process, so the user can check it before saving."""
+    from . import remote_text
+    values = remote_text_input(body)
+    if not values['base_url']:
+        raise HTTPException(400, 'Enter the address of the remote llama.cpp server')
+    return remote_text.probe(values, timeout=5)
+
+
 @app.post("/api/cuts/{cut_id}/regenerate-summary")
 def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
     cut, config = analysis_config_for_cut(cut_id)

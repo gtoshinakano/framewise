@@ -75,6 +75,20 @@ def init_db():
             local_model TEXT NOT NULL DEFAULT 'standard'
         );
         INSERT OR IGNORE INTO text_generation_settings(id) VALUES (1);
+        -- A llama.cpp server on another PC that takes local-provider text jobs (remote_text.py).
+        CREATE TABLE IF NOT EXISTS remote_text_server (
+            id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 0,
+            base_url TEXT NOT NULL DEFAULT '', token TEXT NOT NULL DEFAULT '',
+            parallel INTEGER NOT NULL DEFAULT 1, routes_json TEXT NOT NULL DEFAULT '{}',
+            assistant_fallback TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL DEFAULT 0,
+            prefer TEXT NOT NULL DEFAULT 'local', chat_reserve INTEGER NOT NULL DEFAULT 1
+        );
+        INSERT OR IGNORE INTO remote_text_server(id) VALUES (1);
+        CREATE TABLE IF NOT EXISTS remote_text_state (
+            id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL DEFAULT 'disabled', detail TEXT NOT NULL DEFAULT '',
+            models_json TEXT NOT NULL DEFAULT '[]', active_jobs INTEGER NOT NULL DEFAULT 0, heartbeat REAL NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO remote_text_state(id) VALUES (1);
         CREATE TABLE IF NOT EXISTS cuts (
             id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
             cut_index INTEGER NOT NULL, start_time REAL NOT NULL, end_time REAL NOT NULL,
@@ -277,6 +291,15 @@ def init_db():
         result_columns = {row["name"] for row in db.execute("PRAGMA table_info(analysis_results)")}
         columns = {row["name"] for row in db.execute("PRAGMA table_info(transcript_segments)")}
         migrating = "status" in result_columns or "status" in columns
+        remote_columns = {row["name"] for row in db.execute("PRAGMA table_info(remote_text_server)")}
+        if "token" not in remote_columns:  # basic-auth username/password gave way to a Bearer token
+            db.execute("ALTER TABLE remote_text_server ADD COLUMN token TEXT NOT NULL DEFAULT ''")
+        for name, ddl in (("prefer", "TEXT NOT NULL DEFAULT 'local'"), ("chat_reserve", "INTEGER NOT NULL DEFAULT 1")):
+            if name not in remote_columns:
+                db.execute(f"ALTER TABLE remote_text_server ADD COLUMN {name} {ddl}")
+        for old in ("username", "password"):
+            if old in remote_columns:
+                db.execute(f"ALTER TABLE remote_text_server DROP COLUMN {old}")
         if "deleted" not in columns:
             db.execute("ALTER TABLE transcript_segments ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
         if "status" in columns:

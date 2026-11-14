@@ -137,6 +137,14 @@ def validate_choice(provider, model, skill=None):
 
 # -------------------------------------------------------------- endpoints
 
+def default_provider(settings, providers):
+    """Chat starts on ``auto`` (whichever server is free) once the remote PC is enabled, else on the saved text provider."""
+    auto = next((item for item in providers if item.get('id') == 'auto' and item.get('available')), None)
+    if auto and (auto.get('servers') or {}).get('remote'):
+        return 'auto'
+    return settings.get('text_provider') or 'local'
+
+
 @router.get('/api/assistant/config')
 def assistant_config():
     """Providers published by the inference worker, skills, and defaults."""
@@ -145,7 +153,7 @@ def assistant_config():
     recent = [row['model'] for row in db.all_rows("SELECT model,MAX(updated_at) AS used FROM assistant_sessions WHERE provider!='local' AND model!='' GROUP BY provider,model ORDER BY used DESC LIMIT 12")]
     return {'worker_online': online, 'providers': providers,
             'skills': [{key: skill[key] for key in ('name', 'title', 'description', 'examples', 'scope')} for skill in skills.all_skills()],
-            'defaults': {'provider': settings.get('text_provider') or 'local', 'openrouter_model': settings.get('openrouter_model') or 'openrouter/free', 'thinking': True},
+            'defaults': {'provider': default_provider(settings, providers), 'openrouter_model': settings.get('openrouter_model') or 'openrouter/free', 'thinking': True},
             'recent_models': recent}
 
 
