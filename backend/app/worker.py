@@ -116,12 +116,13 @@ def cleanup_voice_upload(job):
 
 # Local text jobs of one episode may run side by side (two llama-server slots); every other
 # pipeline still holds its episode alone.
-TEXT_PIPELINES = ('regen', 'consistency_summary', 'review_answers')
+TEXT_PIPELINES = ('regen', 'consistency_summary', 'review_answers', 'sequence')
 
 
 def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
     now = time.time()
     placeholders = ",".join("?" for _ in pipelines)
+    text = ",".join(f"'{name}'" for name in TEXT_PIPELINES)
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         exhausted = conn.execute(f"SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND status='running' AND (lease_until IS NULL OR lease_until<=?) AND attempt_count>=?", (*pipelines, now, MAX_ATTEMPTS)).fetchall()
@@ -148,7 +149,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export")):
                 -- Only a job with a live lease holds the episode. Interrupted jobs (lease
                 -- expired) must not block each other: a bulk batch leaves many at once.
                 AND other.lease_until>?
-                AND NOT (jobs.pipeline IN ('regen','consistency_summary','review_answers') AND other.pipeline IN ('regen','consistency_summary','review_answers'))
+                AND NOT (jobs.pipeline IN ({text}) AND other.pipeline IN ({text}))
                 AND NOT ((jobs.pipeline='cutframes' AND other.pipeline IN ('analyze','regen')) OR (other.pipeline='cutframes' AND jobs.pipeline IN ('analyze','regen'))))
             )
             ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,

@@ -14,7 +14,7 @@ import time
 import uuid
 
 from .. import db, local_text_runtime
-from . import compact, providers, skills, store, tools
+from . import compact, providers, sequence_tools, skills, store, tools
 
 log = logging.getLogger(__name__)
 LEASE_SECONDS = 60
@@ -40,12 +40,33 @@ Ground rules
 {card}"""
 
 
+SEQUENCE_PROMPT = """You are Cut Assistance in Framewise, working on ONE sequence: a range of cuts that is directed as one short video on the original audio and generated shot by shot with MiniMax H3. You help one production user review and correct the direction of that sequence: its bible, its shot plan and the prompts of its shots.
+
+Ground rules
+- The direction was written by a model from analysis results; both can be wrong. Base claims on tool results, say what supports them, and never invent visual details, identities, motion or dialogue.
+- Read with tools instead of guessing, and read only what the question needs. The sequence card below already lists what exists.
+- Plan times are seconds from the start of the sequence; times inside a shot are seconds from the start of that shot.
+- A shot's final prompt is rendered by the app from the shot's direction (a JSON object). You change the direction, never the prompt text: the app writes reference labels, timecodes, spoken words and audio lines.
+- You cannot change stored data directly. Use `propose_shot_edit`, `propose_plan_edit` and `propose_bible_edit`; the user applies each proposal. Never claim something is saved.
+- A change to the plan or the bible makes the affected shots stale; tell the user which shots must be written again.
+- Before proposing a change, load the matching skill with `load_skill` (once per conversation unless it was already loaded):
+{skills}
+- Reply in the user's language, in concise Markdown.
+
+## Sequence card
+{card}"""
+KEPT_TOOL_RESULTS = ('propose_result_edit', 'propose_transcript_edit', 'propose_shot_edit', 'propose_plan_edit', 'propose_bible_edit')
+
+
 class Aborted(Exception):
     """The turn was deleted or its lease moved to another worker."""
 
 
-def system_prompt(cut_id):
-    return SYSTEM_PROMPT.format(skills=skills.index_text(), card=tools.cut_card(cut_id))
+def system_prompt(session):
+    """The standing instructions of a chat: about its sequence when it has one, otherwise about its cut."""
+    if session.get('sequence_id'):
+        return SEQUENCE_PROMPT.format(skills=skills.index_text('sequence'), card=sequence_tools.sequence_card(session['sequence_id']))
+    return SYSTEM_PROMPT.format(skills=skills.index_text(), card=tools.cut_card(session['cut_id']))
 
 
 # ------------------------------------------------------------------ claiming
@@ -101,7 +122,7 @@ def history_messages(session_id, current_turn_id, budget_tokens):
                     has_answer = True
             elif row['role'] == 'tool':
                 content = row['content']
-                if elide_tools and row['tool_name'] not in ('propose_result_edit', 'propose_transcript_edit'):
+                if elide_tools and row['tool_name'] not in KEPT_TOOL_RESULTS:
                     content = compact.dumps({'elided': True, 'summary': row['tool_summary'] or row['tool_name'], 'note': 'Call the tool again if you need this data.'})
                 out.append({'role': 'tool', 'tool_call_id': row['tool_call_id'], 'name': row['tool_name'], 'content': content})
         if turn_rows and turn_rows[0]['turn_id'] != current_turn_id and not has_answer:
@@ -263,7 +284,7 @@ def run_turn(turn_id, owner):
         return
     run = TurnRun(turn, owner, session)
     provider = providers.registry().get(turn['provider'])
-    ctx = tools.ToolContext(cut_id=session['cut_id'], session_id=session['id'], turn_id=turn_id, provider=turn['provider'], model=turn['model'])
+    ctx = tools.ToolContext(cut_id=session['cut_id'], session_id=session['id'], turn_id=turn_id, provider=turn['provider'], model=turn['model'], sequence_id=session.get('sequence_id') or '')
     usage = {'steps': 0, 'tool_calls': 0}
     started = time.monotonic()
     status, error = 'done', None
@@ -277,7 +298,7 @@ def run_turn(turn_id, owner):
             endpoint = connect(stack, run, turn, provider, ctx, usage)
             usage['context_limit'] = endpoint.context_limit
             usage['load_seconds'] = endpoint.extra.get('_load_seconds', 0)
-            schemas = tools.schemas()
+            schemas = tools.schemas(tools.scope_of(ctx))
             budget = int((endpoint.context_limit or 32768) * 0.5)
             nudged = False
             failing = None  # A must_pass tool whose latest result failed.
@@ -285,7 +306,7 @@ def run_turn(turn_id, owner):
             step = 0
             while step < MAX_STEPS:
                 last = step == MAX_STEPS - 1
-                messages = [{'role': 'system', 'content': system_prompt(session['cut_id'])}, *history_messages(session['id'], turn_id, budget)]
+                messages = [{'role': 'system', 'content': system_prompt(session)}, *history_messages(session['id'], turn_id, budget)]
                 if last:
                     messages.append({'role': 'user', 'content': '[Tool budget reached. Answer now with the information you have.]'})
                 elif failing and reminders:

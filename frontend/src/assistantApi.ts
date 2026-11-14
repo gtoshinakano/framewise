@@ -25,20 +25,22 @@ export type AssistantProposal = {
   applied_result_id: string | null; model_id: string | null; provider: string | null; diff: DiffSegment[]; diff_label: string | null; created_at: string; resolved_at: string | null
 }
 export type AssistantSession = {
-  id: string; cut_id: string; title: string; provider: string; model: string; thinking: boolean; created_at: string; updated_at: string
+  id: string; cut_id: string; sequence_id?: string | null; title: string; provider: string; model: string; thinking: boolean; created_at: string; updated_at: string
   message_count?: number; last_status?: TurnStatus | null; pending_proposals?: number
 }
 export type SessionDetail = { session: AssistantSession; messages: AssistantMessage[]; turns: AssistantTurn[]; proposals: AssistantProposal[] }
 export type ProviderModel = { id: string; label?: string; context?: number | null }
 export type ProviderInfo = { id: string; label: string; available: boolean; detail?: string; models: ProviderModel[]; thinking: boolean; managed: boolean; free_model: boolean; context_limit?: number | null; busy?: boolean; fallback_model?: string }
-export type SkillInfo = { name: string; title: string; description: string; examples: string[] }
+export type SkillInfo = { name: string; title: string; description: string; examples: string[]; scope?: 'cut' | 'sequence' | 'any' }
+/** What a chat is about: one cut, or a sequence (its bible, shot plan and shot prompts). */
+export type AssistantScope = { kind: 'cut' | 'sequence'; id: string }
 export type AssistantConfig = { worker_online: boolean; providers: ProviderInfo[]; skills: SkillInfo[]; defaults: { provider: string; openrouter_model: string; thinking: boolean }; recent_models: string[] }
 export type LocalModelStatus = { desired_loaded: boolean; state: string; detail: string }
 
 export const assistantApi = {
   config: () => api<AssistantConfig>('/assistant/config'),
-  sessions: (cutId: string) => api<AssistantSession[]>(`/cuts/${cutId}/assistant/sessions`),
-  createSession: (cutId: string, body: { provider: string; model: string; thinking: boolean }) => api<SessionDetail>(`/cuts/${cutId}/assistant/sessions`, jsonBody(body)),
+  sessions: (scope: AssistantScope) => api<AssistantSession[]>(`/${scope.kind === 'sequence' ? 'sequences' : 'cuts'}/${scope.id}/assistant/sessions`),
+  createSession: (scope: AssistantScope, body: { provider: string; model: string; thinking: boolean }) => api<SessionDetail>(`/${scope.kind === 'sequence' ? 'sequences' : 'cuts'}/${scope.id}/assistant/sessions`, jsonBody(body)),
   session: (sessionId: string) => api<SessionDetail>(`/assistant/sessions/${sessionId}`),
   rename: (sessionId: string, title: string) => api<AssistantSession>(`/assistant/sessions/${sessionId}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   remove: (sessionId: string) => api<{ ok: boolean }>(`/assistant/sessions/${sessionId}`, { method: 'DELETE' }),

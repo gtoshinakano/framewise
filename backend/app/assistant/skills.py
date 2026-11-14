@@ -32,6 +32,7 @@ def parse(text):
     if not NAME.match(meta.get('name', '')) or not meta.get('description'):
         raise ValueError('Skill front matter requires a snake_case name and a description')
     return {'name': meta['name'], 'title': meta.get('title') or meta['name'], 'description': meta['description'],
+            'scope': meta.get('scope') if meta.get('scope') in ('cut', 'sequence', 'any') else 'cut',
             'examples': [item.strip() for item in meta.get('examples', '').split('|') if item.strip()],
             'body': text[match.end():].strip()}
 
@@ -57,5 +58,6 @@ def names():
     return list(_load_all())
 
 
-def index_text():
-    return '\n'.join(f"- {skill['name']}: {skill['description']}" for skill in all_skills())
+def index_text(scope='cut'):
+    """The skills offered to a chat: those of its scope (a cut or a sequence) and those that fit both."""
+    return '\n'.join(f"- {skill['name']}: {skill['description']}" for skill in all_skills() if skill['scope'] in (scope, 'any'))

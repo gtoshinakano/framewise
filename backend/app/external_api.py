@@ -736,4 +736,250 @@ def download_brief_export(job_id: str):
     path = export_path(episode, job_id)
     if not path.is_file():
         raise HTTPException(404, 'Export file unavailable')
-    return FileResponse(path, media_type='application/zip', filename=f'framewise-brief-{job_id}.zip')
+    kind = 'sequence' if db.one("SELECT json_extract(payload_json,'$.kind') AS kind FROM jobs WHERE id=?", (job_id,))['kind'] == 'sequence' else 'brief'
+    return FileResponse(path, media_type='application/zip', filename=f'framewise-{kind}-{job_id}.zip')
+
+
+# ------------------------------------------------------------------ sequences
+
+class SequenceSummary(BaseModel):
+    id: str
+    episode_id: str
+    title: str
+    instruction: str = Field(description="The user's intent for this short video, given to the director model.")
+    start_time: float = Field(description='Episode-relative start of the first cut, in seconds.')
+    end_time: float
+    duration: float = Field(description='Length in seconds; at most 180.')
+    first_cut: int | None = Field(description='Number of the first cut (cut_index + 1) as the cuts are now.')
+    last_cut: int | None
+    cuts_changed: bool = Field(description='True when the cuts were re-detected or edited after the sequence was last directed; direct it again.')
+    cuts_missing: bool = Field(description='True when the first or last cut was archived.')
+    has_bible: bool
+    has_plan: bool
+    has_review: bool
+    shots_planned: int
+    shots_written: int
+    pending_jobs: int
+    created_at: str
+    updated_at: str
+
+
+class SequenceCut(BaseModel):
+    id: str
+    cut_number: int
+    start_time: float
+    end_time: float
+
+
+class SequenceReference(BaseModel):
+    label: str = Field(description='The label the prompt uses: <Picture N> or <Audio 1>.')
+    role: Literal['initial_frame', 'character_sheet', 'scenario', 'original_audio'] = Field(description='What to attach under this label: the shot initial frame, the sheet of the named character, the picture of the scenario, or the shot audio.')
+    character_context_id: str | None = Field(default=None, description='For character_sheet: the character context item.')
+    context_id: str | None = Field(default=None, description='For scenario: the scenario context item.')
+    name: str | None = None
+
+
+class SequenceSubject(BaseModel):
+    number: int
+    label: str = Field(description='<Subject N> as written in the prompt.')
+    name: str
+    kind: Literal['character', 'person', 'scenario'] = Field(description='character has a record; person is someone without one; scenario is the place.')
+    character_context_id: str | None = None
+    context_id: str | None = None
+    picture: int | None = Field(default=None, description='Number of the <Picture N> that carries this subject, or null when it is only seen in the initial frame.')
+    anchors: str | None = None
+
+
+class SequenceLine(BaseModel):
+    line: str = Field(description='Line id on the sequence, for example L7; a line split by a shot boundary appears in both shots with its own words.')
+    t0: float = Field(description='Start in seconds from the start of the shot.')
+    t1: float
+    text: str = Field(description='The transcript words of this shot, verbatim.')
+    speaker_label: str | None = None
+    character_context_id: str | None = None
+    character_name: str | None = None
+    attribution: Literal['transcript', 'director', 'unknown'] | None = Field(default=None, description='transcript: the user linked the line; director: the sequence bible decided the voice; unknown: nobody did.')
+    delivery: Literal['lip_sync', 'off_screen', 'inner_voice', 'narration'] | None = Field(default=None, description='How the shot plays the line; null until the shot is written.')
+    subject: int | None = Field(default=None, description='Subject number that speaks (lip_sync) or thinks (inner_voice) the line.')
+    crosses_start: bool | None = None
+    crosses_end: bool | None = None
+
+
+class SequenceFrame(BaseModel):
+    cut_id: str
+    cut_number: int
+    time: float = Field(description='Episode time of the frame, in seconds.')
+    strategy: Literal['cut_first_frame', 'frame_at_time'] = Field(description='cut_first_frame: the analysed first frame of that cut. frame_at_time: a later moment of the cut, where the previous shot stopped; its description is derived, not observed.')
+    continues_previous_shot: bool = Field(description='True when this shot continues the take of the previous one; the last generated frame of that shot may serve as the initial frame instead.')
+    description: str | None = Field(description='Who is where in the opening still.')
+    still: dict[str, Any] | None = Field(description='The opening still as shot, subjects, layout, setting and lighting.')
+    still_prompt: str | None = Field(description='A generator-agnostic prompt for the still image.')
+    frame_url: str
+    file: str = Field(description='Name of the JPEG in the export ZIP.')
+
+
+class SequenceAudio(BaseModel):
+    start_time: float
+    end_time: float
+    url: str
+    file: str = Field(description='Name of the WAV in the export ZIP; the prompt quotes this name for <Audio 1>.')
+    has_speech: bool
+
+
+class SequenceBeat(BaseModel):
+    start: float
+    end: float
+    action: str
+    hold: bool | None = Field(default=None, description='True for the hold the app adds to a shot shorter than the minimum generation length.')
+
+
+class SequenceShot(BaseModel):
+    index: int = Field(description='One-based position in the sequence.')
+    key: str = Field(description='Stable id of the shot: its episode interval in milliseconds.')
+    start_time: float = Field(description='Episode-relative start of the audio interval, in seconds.')
+    end_time: float
+    t0: float = Field(description='Start in seconds from the start of the sequence.')
+    t1: float
+    duration: float = Field(description='Length of the audio interval the shot covers in the finished video.')
+    generate_seconds: float = Field(description='Length to generate with H3 (the last beat of the prompt ends here); longer than duration for very short shots.')
+    trim_seconds: float | None = Field(description='When set, cut the generated video to this length.')
+    source_cuts: list[int]
+    cut_ids: list[str]
+    merged: bool = Field(description='True when one continuous take covers several source cuts.')
+    starts_mid_cut: bool
+    ends_mid_cut: bool
+    scene: str | None
+    intent: str
+    staging: str
+    initial_frame: SequenceFrame
+    audio: SequenceAudio
+    dialogue: list[SequenceLine]
+    subjects: list[SequenceSubject]
+    references: list[SequenceReference] = Field(description='Every label of the prompt in the order the files must be attached.')
+    camera: dict[str, Any] | None
+    beats: list[SequenceBeat]
+    soundscape: str | None
+    continuity: dict[str, Any] | None
+    open_questions: list[str]
+    prompt: str | None = Field(description='The final MiniMax H3 prompt, from subject_definitions: to non_diegetic_music:. Null until the shot is written.')
+    check: dict[str, Any] | None = Field(description='Format verdict of the prompt: ok, errors, warnings, stats.')
+    written: bool
+    stale: list[str] = Field(description='What changed since the shot was written: plan, bible or evidence. Empty when it is current.')
+    result: dict[str, Any] | None = Field(description='Revision id, origin (model, manual_edit, assistant_edit), model and time of the shot direction.')
+
+
+class SequencePackage(BaseModel):
+    contract: str = Field(description='Version of this document: sequence-v1.')
+    id: str
+    episode_id: str
+    title: str
+    instruction: str
+    start_time: float
+    end_time: float
+    duration: float
+    first_cut: int | None
+    last_cut: int | None
+    cuts_changed: bool
+    cuts_missing: bool
+    created_at: str
+    updated_at: str
+    cuts: list[SequenceCut]
+    audio_url: str = Field(description='The original audio of the whole sequence as WAV.')
+    ready: bool = Field(description='True when every planned shot has a current prompt that passes the format check.')
+    pending: list[int] = Field(description='Indices of shots that are not written, stale or failing the check.')
+    plan_problems: list[str]
+    bible: dict[str, Any] | None = Field(description='The sequence bible: logline, synopsis, style, spoken_language, scenes, characters, voices, arc, pacing, continuity, open_questions.')
+    shots: list[SequenceShot]
+    review: dict[str, Any] | None = Field(description='The continuity review: verdict and issues (shot, shot_key, severity, problem, suggestion).')
+
+
+def _excerpt(episode_id, start, end, name, minimum=0.0):
+    """Prepared episode audio between two times as a WAV download, padded with silence up to ``minimum`` seconds."""
+    episode = main_api().require_episode(episode_id)
+    path = media.episode_dir(episode['project_id'], episode['id']) / 'audio.wav'
+    if not episode['has_audio'] or not path.is_file():
+        raise HTTPException(404, 'Episode audio is not available')
+    try:
+        with wave.open(str(path), 'rb') as source:
+            rate, channels, width = source.getframerate(), source.getnchannels(), source.getsampwidth()
+            first = max(0, min(source.getnframes(), math.floor(start * rate)))
+            last = min(source.getnframes(), math.ceil(end * rate))
+    except (wave.Error, EOFError) as exc:
+        raise HTTPException(409, 'Prepared audio is invalid') from exc
+    if last <= first:
+        raise HTTPException(409, 'The interval has no samples in the available audio')
+    padding = max(0, math.ceil(minimum * rate) - (last - first))
+    length = (last - first + padding) * channels * width
+    header = struct.pack('<4sI4s4sIHHIIHH4sI', b'RIFF', 36 + length, b'WAVE', b'fmt ', 16, 1, channels, rate, rate * channels * width, channels * width, width * 8, b'data', length)
+    return StreamingResponse(_wav_stream(path, first, last - first, header, padding, channels, width), media_type='audio/wav', headers={
+        'Content-Disposition': f'attachment; filename="{name}"', 'Content-Length': str(len(header) + length),
+        'X-Audio-Start-Seconds': str(first / rate), 'X-Audio-End-Seconds': str(last / rate)})
+
+
+def _package(sequence_id):
+    from . import sequence_view
+    package = sequence_view.package(sequence_id)
+    if package is None:
+        raise HTTPException(404, 'Sequence not found')
+    return package
+
+
+def _shot(package, index):
+    shot = next((item for item in package['shots'] if item['index'] == index), None)
+    if shot is None:
+        raise HTTPException(404, 'That shot is not part of the current plan')
+    return shot
+
+
+@router.get('/episodes/{episode_id}/sequences', response_model=list[SequenceSummary], summary="List an episode's sequences")
+def episode_sequences(episode_id: str):
+    """Sequences are ranges of cuts that were directed as one short video on the original audio."""
+    from . import sequences
+    return sequences.list_sequences(episode_id)
+
+
+@router.get('/sequences/{sequence_id}', response_model=SequencePackage, summary='Get a directed sequence: bible, shots and final H3 prompts')
+def sequence_package(sequence_id: str):
+    """The current state of the sequence. Check `ready` before generating; `pending` lists the shots that still need writing."""
+    return _package(sequence_id)
+
+
+@router.post('/sequences/{sequence_id}/exports', response_model=BriefExportStatus, summary='Queue a sequence ZIP with audio, initial frames and prompts')
+def create_sequence_export(sequence_id: str):
+    """Snapshot the package and queue the export; poll `/api/v1/brief-exports/{job_id}` and download from there."""
+    import uuid
+    from . import worker
+    package = _package(sequence_id)
+    if not package['shots']:
+        raise HTTPException(409, 'This sequence has no shot plan yet')
+    job_id = str(uuid.uuid4())
+    with db.connect() as conn:
+        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'brief_export',?)", (job_id, package['episode_id'], json.dumps({'kind': 'sequence', 'sequence': package}, ensure_ascii=False)))
+    worker.wake_event.set()
+    return {'job_id': job_id, 'status': 'queued', 'stage': 'queued', 'error': None, 'download_url': None}
+
+
+AUDIO_RESPONSE = {200: {'content': {'audio/wav': {'schema': {'type': 'string', 'format': 'binary'}}}, 'description': 'PCM WAV of the prepared episode audio (mono 16 kHz).'},
+                  404: {'description': 'Sequence, shot or prepared audio not found.'}}
+
+
+@router.get('/sequences/{sequence_id}/audio', summary='Download the original audio of a sequence', response_class=StreamingResponse, responses=AUDIO_RESPONSE)
+def sequence_audio(sequence_id: str):
+    package = _package(sequence_id)
+    return _excerpt(package['episode_id'], package['start_time'], package['end_time'], f'sequence-{sequence_id}.wav')
+
+
+@router.get('/sequences/{sequence_id}/shots/{index}/audio', summary="Download a shot's slice of the original audio", response_class=StreamingResponse, responses=AUDIO_RESPONSE)
+def sequence_shot_audio(sequence_id: str, index: int,
+                        pad: Annotated[bool, Query(description='Pad the end with silence up to generate_seconds, for shots shorter than the minimum generation length.')] = False):
+    package = _package(sequence_id)
+    shot = _shot(package, index)
+    return _excerpt(package['episode_id'], shot['start_time'], shot['end_time'], shot['audio']['file'], shot['generate_seconds'] if pad else 0.0)
+
+
+@router.get('/sequences/{sequence_id}/shots/{index}/frame', summary="Download a shot's initial frame at the original resolution", response_class=StreamingResponse,
+            responses={200: {'content': {'image/jpeg': {'schema': {'type': 'string', 'format': 'binary'}}}, 'description': 'The frame of the original video at initial_frame.time.'}})
+async def sequence_shot_frame(sequence_id: str, index: int):
+    from . import sequences
+    spec, episode_id = sequences.shot_frame_spec(sequence_id, index=index, width=None)
+    return await main_api().rendered_frame(spec, None, episode_id)

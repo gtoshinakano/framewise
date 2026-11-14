@@ -12,7 +12,7 @@ import { STEP_LABELS, VISUAL_STEPS, activeRunFor, batchCounts, cutStepStates, ha
 
 type BatchQueueResult = { queued?: number; skipped?: number; blocked?: { unknown_characters: number[]; not_detected: number[] } }
 type Optimistic = Partial<Record<StepKey, StepState>>
-type RunKind = 'cut' | 'next' | 'batch' | 'from-here'
+type RunKind = 'cut' | 'next' | 'batch' | 'from-here' | 'redo-all'
 
 function cutList(numbers: number[]) {
   return numbers.slice(0, 8).join(', ') + (numbers.length > 8 ? ` and ${numbers.length - 8} more` : '')
@@ -228,10 +228,12 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
 
   const queueVisual = (kind: RunKind) => perform(`visual-${kind}`, async () => {
     const url = kind === 'batch' ? `/episodes/${episodeId}/visual-analysis`
+      : kind === 'redo-all' ? `/episodes/${episodeId}/visual-analysis?only_missing=false`
       : kind === 'from-here' ? `/episodes/${episodeId}/visual-analysis?from_cut=${cut.cut_index + 1}&characters_resolved=true`
       : `/cuts/${cutId}/analyze`
     const result = await api<BatchQueueResult>(url, { method: 'POST' })
-    return kind === 'batch' ? `Visual analysis queued for ${result.queued ?? 0} cuts; ${result.skipped ?? 0} already complete were skipped.`
+    return kind === 'redo-all' ? `Visual analysis re-run queued for ${result.queued ?? 0} cuts.`
+      : kind === 'batch' ? `Visual analysis queued for ${result.queued ?? 0} cuts; ${result.skipped ?? 0} already complete were skipped.`
       : kind === 'from-here' ? fromHereMessage(cut.cut_index + 1, result) : 'Visual analysis queued for this cut.'
   }, { settings: true, steps: kind === 'cut' || kind === 'next' ? [...VISUAL_STEPS] : [], afterQueued: kind === 'next' ? onNext : undefined })
 
@@ -352,6 +354,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
         </tbody>
       </table>
       <p className="muted mt-1 text-[11px]">Queue visual analysis first. Text steps work from its results.</p>
+      <ActionButton compact className="mt-2" icon={<RotateCcw size={13} />} pending={isPending('visual-redo-all')} disabled={!!batchReason} title={batchReason || `Queue first-frame and video analysis again for all ${batchLabel(counts.all)}, even those already complete. Existing results stay in history as earlier revisions.`} onClick={() => { if (window.confirm(`Re-run visual analysis for all ${batchLabel(counts.all)}, including cuts already analysed?`)) void queueVisual('redo-all') }}>Re-run all visual analysis</ActionButton>
     </section>
 
     {/* Context for the models. */}

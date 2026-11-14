@@ -118,6 +118,17 @@ The **Assistant** tab in the Cut analysis dialog is a per-cut chat with the loca
 - To add other local servers (LM Studio, Ollama, vLLM, another llama-server), set `ASSISTANT_ENDPOINTS` in `.env`, for example `ASSISTANT_ENDPOINTS=[{"id":"lmstudio","label":"LM Studio","base_url":"http://192.168.0.10:1234/v1","models":["qwen3-14b"],"context":32768}]`, then restart the inference worker. Optional keys: `api_key_env` (name of an environment variable holding a key) and `template_thinking` (send `chat_template_kwargs.enable_thinking`). The model must support OpenAI-style tool calling.
 - OpenRouter chats, including the GPU-busy fallback, send this cut's analysis, transcript and notes to OpenRouter (the fallback uses a free model, which may log prompts); paid models may incur charges.
 
+## Sequences: directing a short video
+
+A sequence turns a range of analysed cuts (at most 3 minutes) into the direction of one short video on the original audio. Open the **Sequences** tab of the episode inspector, set the range (select a cut and use "From selected cut" / "To selected cut"), optionally describe what the short video should achieve, and create it.
+
+1. **Direct sequence** writes the sequence bible (story, style, scenes, characters, who owns each voice) and the shot plan, then stops. Shots last at most 15 seconds; hard cuts are kept by default, short cuts may be merged into one take, and long cuts are split at pauses.
+2. Review both on the Direction tab. Edit the bible, merge or split shots, or ask the assistant.
+3. **Write shot prompts** writes one MiniMax H3 prompt per shot (two at a time) and then reviews continuity. Each shot shows its initial frame, its slice of the original audio, the dialogue with characters and the prompt; a shot can be rewritten with an instruction or edited by hand.
+4. **Download ZIP**, or let the video generation app read `/api/v1/sequences/{id}`.
+
+The text model only decides and writes prose. The app computes the timeline, the candidate boundaries, the reference labels, the timecodes and the spoken words, and checks every prompt against the H3 format before it can be downloaded. A shot is marked stale when its plan entry, the bible or the analysis of its cuts changed after it was written.
+
 ## Development
 
 For Docker development with frontend hot reload and automatic API reload, run `COMPOSE_FILE=compose.yml:compose.inference.rocm.yml:compose.dev.yml docker compose up -d` (omit the inference override if you do not use it). Open `http://<APP_BIND_IP>:8080` for Vite hot reload (or use `APP_PORT` if set). Set `APP_BIND_IP` to a LAN-accessible address in `.env` to access Vite from another device. Restart the inference worker after backend changes with `docker compose restart inference-worker`.

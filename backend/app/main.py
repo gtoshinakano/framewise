@@ -60,6 +60,8 @@ async def composition_error_handler(_request, exc):
 app.include_router(storage.router)
 from .assistant.api import router as assistant_router
 app.include_router(assistant_router)
+from .sequences import router as sequences_router
+app.include_router(sequences_router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
 
@@ -303,6 +305,8 @@ def episode_response(episode_id: str):
         payload = json_object_or_empty(job.pop("payload_json"))
         job['workflow'] = payload.get('workflow') if isinstance(payload.get('workflow'), str) else None
         job['stages'] = payload.get('stages') if isinstance(payload.get('stages'), list) else None
+        # Sequence jobs belong to a sequence, not to a cut: the editor shows them in the sequence workspace.
+        job['sequence'] = {'id': payload.get('sequence_id'), 'step': payload.get('step'), 'shot_key': payload.get('shot_key')} if job['pipeline'] == 'sequence' else None
         if job["pipeline"] == "analyze":
             items = payload.get("cuts", [])
         elif job["pipeline"] == "character_detect":
@@ -2528,7 +2532,7 @@ def cancel_inference_job(job_id: str):
         if not job:
             raise HTTPException(404, "Job not found")
         payload = json_object_or_empty(job['payload_json'])
-        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "review_answers", "transcribe", "voice_sample", "character_detect", "composition_compact", "subtitles")) or (job["status"] == "running" and (job["pipeline"] in ("regen", "consistency_summary", "review_answers", "composition_compact", "subtitles") or (job['pipeline'] == 'analyze' and (payload.get('text_only') is True or payload.get('workflow') == 'single_cut_v2'))))
+        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "review_answers", "sequence", "transcribe", "voice_sample", "character_detect", "composition_compact", "subtitles")) or (job["status"] == "running" and (job["pipeline"] in ("regen", "consistency_summary", "review_answers", "sequence", "composition_compact", "subtitles") or (job['pipeline'] == 'analyze' and (payload.get('text_only') is True or payload.get('workflow') == 'single_cut_v2'))))
         if not cancellable:
             raise HTTPException(409, "This job cannot be cancelled while running")
         message = "Cancelled before processing" if job["status"] == "queued" else "Cancelled during processing"

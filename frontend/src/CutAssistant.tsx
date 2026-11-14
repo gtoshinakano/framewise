@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, ArrowDown, ArrowUp, Brain, Check, ChevronRight, Cloud, Cpu, Gauge, Layers, Loader2, MessageSquarePlus, Pencil, RefreshCw, Send, Sparkles, Square, Timer, Trash2, Wrench, X, Zap } from 'lucide-react'
 import type { Cut } from './api'
-import { assistantApi, streamUrl, type AssistantConfig, type AssistantProposal, type AssistantSession, type AssistantTurn, type AssistantUsage, type LocalModelStatus, type ProviderInfo, type SessionDetail, type SkillInfo } from './assistantApi'
+import { assistantApi, streamUrl, type AssistantConfig, type AssistantScope, type AssistantProposal, type AssistantSession, type AssistantTurn, type AssistantUsage, type LocalModelStatus, type ProviderInfo, type SessionDetail, type SkillInfo } from './assistantApi'
 import { ACTIVE_STATUSES, activeTurn, applyStreamEvent, compactDiff, contextShare, formatSeconds, formatTokens, groupTurns, prettyArguments, prettyResult, reasoningTokens, starterText, turnElapsed, type Step, type ToolStep, type TurnView } from './assistantFormat'
 import { CopyButton, Markdown } from './Markdown'
 
 const STREAM_EVENTS = ['snapshot', 'delta', 'message', 'proposal', 'turn', 'done', 'gone'] as const
 const MODEL_STATE: Record<string, string> = { unloaded: 'Unloaded', downloading: 'Downloading', loading: 'Loading', loaded: 'Loaded', generating: 'Generating', unloading: 'Unloading', worker_offline: 'Worker offline', error: 'Error' }
-const storageKey = (cutId: string) => `framewise:assistant:${cutId}`
+// Cut chats keep their historic key (the bare cut id); sequence chats are prefixed.
+const storageKey = (owner: string) => `framewise:assistant:${owner}`
 const readStored = (cutId: string) => { try { return localStorage.getItem(storageKey(cutId)) } catch { return null } }
 const writeStored = (cutId: string, value: string | null) => { try { if (value) localStorage.setItem(storageKey(cutId), value); else localStorage.removeItem(storageKey(cutId)) } catch { /* storage may be unavailable */ } }
 // On by default: a busy GPU should not stop the conversation. Remembered per browser, not per cut.
@@ -34,7 +35,14 @@ function defaultModel(provider: ProviderInfo | undefined, config: AssistantConfi
   return provider.models[0]?.id || ''
 }
 
-export default function CutAssistant({ cut, active, onResultsChanged }: { cut: Cut; active: boolean; onResultsChanged: () => void }) {
+/** A sequence the chat is about, instead of a cut: its id and the line shown under the chat title. */
+export type SequenceChat = { id: string; label: string }
+
+export default function CutAssistant({ cut, sequence, active, onResultsChanged }: { cut?: Cut; sequence?: SequenceChat; active: boolean; onResultsChanged: () => void }) {
+  const scopeKind = sequence ? 'sequence' as const : 'cut' as const
+  const scopeId = sequence ? sequence.id : cut?.id || ''
+  const scope = useMemo<AssistantScope>(() => ({ kind: scopeKind, id: scopeId }), [scopeKind, scopeId])
+  const owner = sequence ? `sequence:${sequence.id}` : scopeId
   const [config, setConfig] = useState<AssistantConfig | null>(null)
   const [sessions, setSessions] = useState<AssistantSession[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -54,23 +62,23 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
   const composer = useRef<HTMLTextAreaElement>(null)
 
   const refreshSessions = useCallback(async () => {
-    const list = await assistantApi.sessions(cut.id)
+    const list = await assistantApi.sessions(scope)
     setSessions(list)
     return list
-  }, [cut.id])
+  }, [scope])
 
-  // Initial load: config, sessions, and the last opened session for this cut.
+  // Initial load: config, sessions, and the last opened session for this cut or sequence.
   useEffect(() => {
     let alive = true
     setLoading(true)
-    Promise.all([assistantApi.config(), assistantApi.sessions(cut.id)]).then(([value, list]) => {
+    Promise.all([assistantApi.config(), assistantApi.sessions(scope)]).then(([value, list]) => {
       if (!alive) return
       setConfig(value); setSessions(list)
-      const remembered = readStored(cut.id)
+      const remembered = readStored(owner)
       setSessionId(list.find(item => item.id === remembered)?.id || list[0]?.id || null)
     }).catch(err => alive && setError((err as Error).message)).finally(() => alive && setLoading(false))
     return () => { alive = false }
-  }, [cut.id])
+  }, [scope, owner])
 
   // Keep provider availability and worker state fresh while the tab is open.
   useEffect(() => {
@@ -80,12 +88,12 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
   }, [active])
 
   useEffect(() => {
-    writeStored(cut.id, sessionId)
+    writeStored(owner, sessionId)
     if (!sessionId) { setDetail(null); return }
     let alive = true
     assistantApi.session(sessionId).then(value => { if (alive) setDetail(value) }).catch(err => alive && setError((err as Error).message))
     return () => { alive = false }
-  }, [sessionId, cut.id])
+  }, [sessionId, owner])
 
   // Model choice: the session's last choice, else the configured defaults.
   useEffect(() => {
@@ -169,7 +177,7 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
       let id = sessionId
       let base = detail
       if (!id || !base) {
-        base = await assistantApi.createSession(cut.id, choice)
+        base = await assistantApi.createSession(scope, choice)
         id = base.session.id
       }
       const result = await assistantApi.send(id, { content, provider: choice.provider, model: choice.model.trim(), thinking: choice.thinking, skill: skillName, gpu_fallback: useFallback })
@@ -238,7 +246,8 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
   }
 
   const activeTitle = sessions.find(item => item.id === sessionId)?.title || detail?.session.title || 'New chat'
-  const starters = (config?.skills || []).flatMap(item => item.examples.map(example => ({ item, example })))
+  // Each chat offers the skills of its own kind: prompt fixing for a cut, direction editing for a sequence.
+  const starters = (config?.skills || []).filter(item => (item.scope || 'cut') === scopeKind || item.scope === 'any').flatMap(item => item.examples.map(example => ({ item, example })))
 
   return <div className={active ? 'grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[250px_minmax(0,1fr)]' : 'hidden'}>
     <aside className="hidden min-h-0 flex-col border-r hairline bg-[#11151d] lg:flex" aria-label="Chat history">
@@ -246,20 +255,20 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
       <p className="label px-3">History · {sessions.length}</p>
       <div className="scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-3">
         {loading && <p className="muted px-2 text-xs">Loading chats…</p>}
-        {!loading && !sessions.length && <p className="muted px-2 text-xs leading-5">No chats for this cut yet. Ask a question to start one.</p>}
+        {!loading && !sessions.length && <p className="muted px-2 text-xs leading-5">No chats for this {scopeKind} yet. Ask a question to start one.</p>}
         {sessions.map(item => <SessionItem key={item.id} item={item} selected={item.id === sessionId} onSelect={() => { stick.current = true; setSessionId(item.id) }} onRename={() => void renameSession(item)} onDelete={() => void removeSession(item)} />)}
       </div>
-      <div className="border-t hairline p-3"><p className="label">Cut frames</p><div className="grid grid-cols-2 gap-2">{(['first', 'last'] as const).map(position => <a key={position} href={`/api/cuts/${cut.id}/frame/${position}`} target="_blank" rel="noreferrer" className="overflow-hidden rounded-md border border-[#343b49] hover:border-[#a58ae8]"><img src={`/api/cuts/${cut.id}/frame/${position}`} alt={`${position} frame`} className="aspect-video w-full object-cover" loading="lazy" /></a>)}</div></div>
+      {cut && !sequence && <div className="border-t hairline p-3"><p className="label">Cut frames</p><div className="grid grid-cols-2 gap-2">{(['first', 'last'] as const).map(position => <a key={position} href={`/api/cuts/${cut.id}/frame/${position}`} target="_blank" rel="noreferrer" className="overflow-hidden rounded-md border border-[#343b49] hover:border-[#a58ae8]"><img src={`/api/cuts/${cut.id}/frame/${position}`} alt={`${position} frame`} className="aspect-video w-full object-cover" loading="lazy" /></a>)}</div></div>}
     </aside>
     <section className="flex min-h-0 flex-col" aria-label="Cut Assistance chat">
       <header className="flex flex-wrap items-center gap-2 border-b hairline px-4 py-2.5">
-        <div className="mr-auto min-w-0"><p className="truncate text-sm font-semibold">{activeTitle}</p><p className="muted text-[11px]">{cut.active ? `Cut ${cut.cut_index + 1}` : 'Archived cut'} · tools read this cut's saved analysis; edits need your approval</p></div>
+        <div className="mr-auto min-w-0"><p className="truncate text-sm font-semibold">{activeTitle}</p><p className="muted text-[11px]">{sequence ? `${sequence.label} · tools read this sequence's direction and the analysis of its cuts; edits need your approval` : `${cut?.active ? `Cut ${cut.cut_index + 1}` : 'Archived cut'} · tools read this cut's saved analysis; edits need your approval`}</p></div>
         <select className="field !w-auto !py-1.5 !text-xs" aria-label="Provider" value={choice?.provider || ''} disabled={!config} onChange={event => { const next = config?.providers.find(item => item.id === event.target.value); if (next && choice) setChoice({ ...choice, provider: next.id, model: defaultModel(next, config) }) }}>
           {(config?.providers || []).map(item => <option key={item.id} value={item.id} disabled={!item.available}>{item.label}{item.available ? '' : ' (unavailable)'}</option>)}
         </select>
         {provider && (provider.models.length && !provider.free_model
           ? <select className="field !w-auto max-w-56 !py-1.5 !text-xs" aria-label="Model" value={choice?.model || ''} onChange={event => choice && setChoice({ ...choice, model: event.target.value })}>{provider.models.map(model => <option key={model.id} value={model.id}>{model.label || model.id}</option>)}</select>
-          : <><input className="field !w-56 !py-1.5 !text-xs" aria-label="Model" list={`assistant-models-${cut.id}`} maxLength={200} value={choice?.model || ''} onChange={event => choice && setChoice({ ...choice, model: event.target.value })} placeholder="provider/model" /><datalist id={`assistant-models-${cut.id}`}>{[config?.defaults.openrouter_model, ...(config?.recent_models || [])].filter((value, index, list): value is string => !!value && list.indexOf(value) === index).map(value => <option key={value} value={value} />)}</datalist></>)}
+          : <><input className="field !w-56 !py-1.5 !text-xs" aria-label="Model" list={`assistant-models-${owner}`} maxLength={200} value={choice?.model || ''} onChange={event => choice && setChoice({ ...choice, model: event.target.value })} placeholder="provider/model" /><datalist id={`assistant-models-${owner}`}>{[config?.defaults.openrouter_model, ...(config?.recent_models || [])].filter((value, index, list): value is string => !!value && list.indexOf(value) === index).map(value => <option key={value} value={value} />)}</datalist></>)}
         <label className="flex items-center gap-1.5 rounded-lg border border-[#303640] px-2.5 py-1.5 text-xs" title="Show the model's reasoning. Uses more tokens and time."><input type="checkbox" checked={!!choice?.thinking} disabled={!provider?.thinking} onChange={event => choice && setChoice({ ...choice, thinking: event.target.checked })} /><Brain size={13} /> Thinking</label>
         {provider?.managed && <LocalModelBadge status={localStatus} working={modelWorking} busy={!!provider.busy} onToggle={() => void toggleLocalModel()} />}
         {provider?.managed && <label className={`flex items-center gap-1.5 rounded-lg border border-[#303640] px-2.5 py-1.5 text-xs ${fallbackReady ? '' : 'opacity-60'}`} title={fallbackReady ? 'When visual analysis is using the GPU, answer with OpenRouter free instead of waiting. OpenRouter then receives this cut\'s analysis.' : openrouter?.available ? 'Restart the inference worker to enable the OpenRouter fallback. Until then replies wait for the GPU.' : openrouter?.detail || 'OpenRouter is not available in the inference worker. Replies wait for the GPU. Set OPENROUTER_API_KEY and restart the worker.'}><input type="checkbox" checked={gpuFallback && fallbackReady} disabled={!fallbackReady} onChange={event => { setGpuFallback(event.target.checked); writeFallback(event.target.checked) }} /><Cloud size={13} /> OpenRouter if GPU busy</label>}
@@ -268,7 +277,7 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
       {(workerOffline || (provider && !provider.available)) && <div role="alert" className="flex items-center gap-2 border-b border-[#5b4a2a] bg-[#2a2216] px-4 py-2 text-xs text-[#ffd59a]"><AlertTriangle size={14} /> {workerOffline ? 'The inference worker is offline. Chat replies run there; start it to continue.' : provider?.detail || `${provider?.label} is unavailable.`}</div>}
       <div ref={scroller} onScroll={event => { const element = event.currentTarget; stick.current = element.scrollHeight - element.scrollTop - element.clientHeight < 140 }} className="scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-4">
         <div className="mx-auto flex max-w-4xl flex-col gap-5">
-          {!views.length && <EmptyState starters={starters} disabled={!!sendBlocker} onPick={pickStarter} />}
+          {!views.length && <EmptyState starters={starters} sequence={!!sequence} disabled={!!sendBlocker} onPick={pickStarter} />}
           {views.map(view => <TurnBlock key={view.id} view={view} now={now} latest={view.turn?.id === lastTurn?.id} onRetry={retry} onResolve={resolveProposal} />)}
         </div>
       </div>
@@ -278,7 +287,7 @@ export default function CutAssistant({ cut, active, onResultsChanged }: { cut: C
           {skill && <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-[#2b2442] px-2.5 py-1 text-[11px] text-[#d6c8ff]"><Sparkles size={12} /> Skill: {skill.title}<button type="button" aria-label="Remove skill" onClick={() => setSkill(null)} className="rounded-full p-0.5 hover:bg-[#3b3260]"><X size={11} /></button></div>}
           <div className="flex items-end gap-2">
             <textarea ref={composer} aria-label="Message Cut Assistance" className="field scrollbar max-h-56 min-h-[44px] flex-1 resize-none !text-sm leading-6" rows={Math.min(8, Math.max(1, draft.split('\n').length))} maxLength={20000} value={draft}
-              placeholder={running ? 'Wait for the reply, or stop it…' : 'Ask about this cut, paste a prompt to fix, or request a correction…'}
+              placeholder={running ? 'Wait for the reply, or stop it…' : sequence ? 'Ask about this sequence, or request a change to a shot, the plan or the bible…' : 'Ask about this cut, paste a prompt to fix, or request a correction…'}
               onChange={event => setDraft(event.target.value)}
               onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (canSend) void send() } }} />
             {running
@@ -324,11 +333,11 @@ function ContextMeter({ used, limit, percent }: { used: number; limit: number | 
   </div>
 }
 
-function EmptyState({ starters, disabled, onPick }: { starters: { item: SkillInfo; example: string }[]; disabled: boolean; onPick: (item: SkillInfo, example: string) => void }) {
+function EmptyState({ starters, sequence, disabled, onPick }: { starters: { item: SkillInfo; example: string }[]; sequence: boolean; disabled: boolean; onPick: (item: SkillInfo, example: string) => void }) {
   return <div className="mx-auto mt-6 max-w-2xl text-center">
     <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[#282438] text-[#bca7ff]"><Sparkles size={21} /></div>
     <h3 className="text-base font-semibold">Cut Assistance</h3>
-    <p className="muted mx-auto mt-2 max-w-lg text-xs leading-5">Chat about this cut's analysis. The assistant reads saved results through tools, loads skills for prompt work, and proposes corrections that you review before they are saved.</p>
+    <p className="muted mx-auto mt-2 max-w-lg text-xs leading-5">{sequence ? "Chat about this sequence's direction. The assistant reads the bible, the shot plan, the shots and the analysis of their cuts, and proposes changes that you review before they are saved. A shot's prompt is rendered and checked again for every proposal." : "Chat about this cut's analysis. The assistant reads saved results through tools, loads skills for prompt work, and proposes corrections that you review before they are saved."}</p>
     <div className="mt-5 grid gap-2 text-left sm:grid-cols-2">
       {starters.map(({ item, example }) => <button key={example} type="button" disabled={disabled} onClick={() => onPick(item, example)} className="rounded-xl border border-[#2f3643] bg-[#161b24] p-3 hover:border-[#a58ae8] disabled:opacity-50">
         <span className="block text-xs font-semibold text-[#e8e2ff]">{example}</span><span className="muted mt-1 block text-[11px] leading-4">{item.description}</span>

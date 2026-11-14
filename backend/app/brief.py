@@ -73,6 +73,10 @@ def write_audio(source_path, target, start, end):
 
 def process_export(job, owner, episode, payload):
     from . import worker
+    if payload.get('kind') == 'sequence':
+        # A directed sequence is exported by the same worker thread and served by the same endpoints.
+        from .sequence_export import process_export as export_sequence
+        return export_sequence(job, owner, episode, payload)
     target = export_path(episode, job['id'])
     target.parent.mkdir(parents=True, exist_ok=True)
     brief = payload['brief']

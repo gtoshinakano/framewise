@@ -14,7 +14,7 @@ export type JobCut = { id: string; cut_index: number | null; title: string; star
 export type VisualStage = 'initial_frame' | 'video_analysis'
 // Jobs queued before subtitles became an episode-wide step, or before the last frame stopped being analyzed, may still list these stages in their history.
 export type JobStage = VisualStage | 'subtitle_ocr' | 'last_frame'
-export type Job = { cuts: JobCut[]; id: string; pipeline: string; workflow?: string | null; stages?: JobStage[] | null; status: string; stage: string; error: string | null; created_at: string; updated_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null }
+export type Job = { cuts: JobCut[]; id: string; pipeline: string; workflow?: string | null; stages?: JobStage[] | null; sequence?: { id: string; step: string; shot_key: string | null } | null; status: string; stage: string; error: string | null; created_at: string; updated_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null }
 export type EpisodeStatus = { status: string; stage: string; error: string | null; job_id: string | null; job_status: string | null }
 export type EpisodeSummary = { id: string; title: string; status: string; stage: string; error: string | null; duration: number | null; created_at: string }
 export type Episode = EpisodeSummary & { project_id: string; original_filename: string; width: number | null; height: number | null; has_audio: boolean; proxy_ready: boolean; settings: Settings; subtitle_language: string | null; subtitles: { language: string | null; run: SubtitleRun | null }; cuts: Cut[]; archived_cuts: Cut[]; chunks: Chunk[]; jobs: Job[] }

@@ -62,6 +62,11 @@ def init_schema(conn):
             conn.execute(f'ALTER TABLE assistant_proposals ADD COLUMN {column} TEXT')
     if 'gpu_fallback' not in {row['name'] for row in conn.execute('PRAGMA table_info(assistant_turns)')}:
         conn.execute('ALTER TABLE assistant_turns ADD COLUMN gpu_fallback INTEGER NOT NULL DEFAULT 0')
+    # A chat about a sequence: sequence_id is set and cut_id is the sequence's first cut (the column is
+    # NOT NULL and gives the tools their project). Cut chats leave it NULL.
+    for table in ('assistant_sessions', 'assistant_proposals'):
+        if 'sequence_id' not in {row['name'] for row in conn.execute(f'PRAGMA table_info({table})')}:
+            conn.execute(f'ALTER TABLE {table} ADD COLUMN sequence_id TEXT REFERENCES sequences(id) ON DELETE CASCADE')
 
 
 def loads(value, default):

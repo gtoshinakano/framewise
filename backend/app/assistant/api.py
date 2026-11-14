@@ -8,8 +8,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import db
-from . import skills, store, tools, transcript_edit
+from .. import db, sequence_edit, sequence_store
+from . import sequence_tools, skills, store, tools, transcript_edit  # sequence_tools registers the sequence chat's tools
 
 router = APIRouter(tags=['Cut Assistance'])
 WORKER_STALE_SECONDS = 30
@@ -84,6 +84,9 @@ def proposal_stale(conn, proposal):
         return (row['content'] if row else '') != proposal['base_content']
     if proposal['target'] == 'transcript':
         return transcript_edit.plan_stale(conn, proposal['payload_json'])
+    if proposal['target'] in tools.SEQUENCE_TARGETS:
+        row = conn.execute('SELECT superseded_by FROM sequence_results WHERE id=?', (proposal['base_result_id'],)).fetchone()
+        return not row or row['superseded_by'] is not None
     if proposal['base_result_id']:
         row = conn.execute('SELECT superseded_by FROM analysis_results WHERE id=?', (proposal['base_result_id'],)).fetchone()
         return not row or row['superseded_by'] is not None
@@ -141,7 +144,7 @@ def assistant_config():
     settings = db.one('SELECT text_provider,local_thinking,openrouter_model FROM text_generation_settings WHERE id=1') or {}
     recent = [row['model'] for row in db.all_rows("SELECT model,MAX(updated_at) AS used FROM assistant_sessions WHERE provider!='local' AND model!='' GROUP BY provider,model ORDER BY used DESC LIMIT 12")]
     return {'worker_online': online, 'providers': providers,
-            'skills': [{key: skill[key] for key in ('name', 'title', 'description', 'examples')} for skill in skills.all_skills()],
+            'skills': [{key: skill[key] for key in ('name', 'title', 'description', 'examples', 'scope')} for skill in skills.all_skills()],
             'defaults': {'provider': settings.get('text_provider') or 'local', 'openrouter_model': settings.get('openrouter_model') or 'openrouter/free', 'thinking': True},
             'recent_models': recent}
 
@@ -153,7 +156,7 @@ def list_sessions(cut_id: str):
         (SELECT COUNT(*) FROM assistant_messages m WHERE m.session_id=s.id AND m.role='user') AS message_count,
         (SELECT t.status FROM assistant_turns t WHERE t.session_id=s.id ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1) AS last_status,
         (SELECT COUNT(*) FROM assistant_proposals p WHERE p.session_id=s.id AND p.status='pending') AS pending_proposals
-        FROM assistant_sessions s WHERE s.cut_id=? ORDER BY s.updated_at DESC, s.rowid DESC''', (cut_id,))
+        FROM assistant_sessions s WHERE s.cut_id=? AND s.sequence_id IS NULL ORDER BY s.updated_at DESC, s.rowid DESC''', (cut_id,))
     return [serialize_session(row) for row in rows]
 
 
@@ -164,6 +167,37 @@ def create_session(cut_id: str, body: SessionInput):
     with db.connect() as conn:
         conn.execute('INSERT INTO assistant_sessions(id,cut_id,title,provider,model,thinking) VALUES (?,?,?,?,?,?)',
                      (session_id, cut_id, body.title.strip(), body.provider, body.model, int(body.thinking)))
+    return session_detail(session_id)
+
+
+def require_sequence(sequence_id):
+    with db.connect() as conn:
+        sequence = sequence_store.get(conn, sequence_id)
+    if not sequence:
+        raise HTTPException(404, 'Sequence not found')
+    return sequence
+
+
+@router.get('/api/sequences/{sequence_id}/assistant/sessions')
+def list_sequence_sessions(sequence_id: str):
+    """Chats about a sequence: its bible, shot plan and shot prompts."""
+    require_sequence(sequence_id)
+    rows = db.all_rows('''SELECT s.*,
+        (SELECT COUNT(*) FROM assistant_messages m WHERE m.session_id=s.id AND m.role='user') AS message_count,
+        (SELECT t.status FROM assistant_turns t WHERE t.session_id=s.id ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1) AS last_status,
+        (SELECT COUNT(*) FROM assistant_proposals p WHERE p.session_id=s.id AND p.status='pending') AS pending_proposals
+        FROM assistant_sessions s WHERE s.sequence_id=? ORDER BY s.updated_at DESC, s.rowid DESC''', (sequence_id,))
+    return [serialize_session(row) for row in rows]
+
+
+@router.post('/api/sequences/{sequence_id}/assistant/sessions')
+def create_sequence_session(sequence_id: str, body: SessionInput):
+    sequence = require_sequence(sequence_id)
+    session_id = str(uuid.uuid4())
+    with db.connect() as conn:
+        # cut_id anchors the session to the project; a sequence chat reads any cut of its range by number.
+        conn.execute('INSERT INTO assistant_sessions(id,cut_id,sequence_id,title,provider,model,thinking) VALUES (?,?,?,?,?,?,?)',
+                     (session_id, sequence['first_cut_id'], sequence_id, body.title.strip(), body.provider, body.model, int(body.thinking)))
     return session_detail(session_id)
 
 
@@ -361,6 +395,18 @@ def apply_proposal(proposal_id: str):
         elif proposal['target'] == 'review_answers':
             conn.execute('INSERT INTO cut_brief_instructions(cut_id,content) VALUES (?,?) ON CONFLICT(cut_id) DO UPDATE SET content=excluded.content,updated_at=CURRENT_TIMESTAMP',
                          (proposal['cut_id'], proposal['content']))
+        elif proposal['target'] in tools.SEQUENCE_TARGETS:
+            # A revision of a sequence result, validated and (for a shot) rendered again exactly like a hand edit.
+            payload = json.loads(proposal['payload_json'])
+            sequence = sequence_store.get(conn, payload['sequence_id'])
+            base = conn.execute('SELECT * FROM sequence_results WHERE id=?', (proposal['base_result_id'],)).fetchone()
+            if not sequence or not base:
+                raise HTTPException(404, 'Sequence not found')
+            content = payload[{'sequence_shot': 'direction', 'sequence_plan': 'plan', 'sequence_bible': 'bible'}[proposal['target']]]
+            try:
+                applied_id = sequence_edit.revise(conn, sequence, dict(base), content, origin='assistant_edit', provenance=provenance)
+            except sequence_edit.EditError as exc:
+                raise HTTPException(exc.status, exc.detail) from exc
         else:
             base = conn.execute('SELECT * FROM analysis_results WHERE id=?', (proposal['base_result_id'],)).fetchone() if proposal['base_result_id'] else None
             structured = proposal['target'] in tools.STRUCTURED

@@ -1,8 +1,9 @@
 import { CUT_FILTERS, matchesAnyFilter, type CutFilterKey } from './cutFilters'
 import { useEffect, useRef, useState, type PointerEvent } from 'react'
-import { AudioLines, BoxSelect, FileText, FileX, Circle, UserCheck, UserX, UserRound, CircleCheck, Clock3, Layers3, LoaderCircle, Scissors } from 'lucide-react'
+import { AudioLines, BoxSelect, Clapperboard, FileText, FileX, Circle, UserCheck, UserX, UserRound, CircleCheck, Clock3, Layers3, LoaderCircle, Scissors } from 'lucide-react'
 import type { AudioSelection, Chunk, Cut, TranscriptSegment, Waveform } from './api'
 import type { AnalysisQueueState } from './analysisQueueStates'
+import type { SequenceSummary } from './sequenceApi'
 
 type Props = {
   activeFilters: ReadonlySet<CutFilterKey>
@@ -28,6 +29,8 @@ type Props = {
   onSelectTranscript: (segment: TranscriptSegment) => void
   audioSelection: AudioSelection | null
   onSelectAudio: (selection: AudioSelection | null) => void
+  sequences: SequenceSummary[]
+  onOpenSequence: (sequenceId: string) => void
 }
 
 function stamp(seconds: number) {
@@ -112,7 +115,7 @@ function blockStyle(item: { start_time: number; end_time: number }, start: numbe
 }
 
 export function Timeline(props: Props) {
-  const { activeFilters, onToggleFilter, onClearFilters, duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, currentTime, seekRevision, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript, audioSelection, onSelectAudio } = props
+  const { activeFilters, onToggleFilter, onClearFilters, duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, currentTime, seekRevision, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript, audioSelection, onSelectAudio, sequences, onOpenSequence } = props
   const [windowSeconds, setWindowSeconds] = useState<number | null>(() => duration > 1800 ? 600 : null)
   const [requestedStart, setRequestedStart] = useState(0)
   const followPlayhead = useRef(true)
@@ -283,6 +286,8 @@ export function Timeline(props: Props) {
       <div className="relative h-12 overflow-hidden rounded-md bg-[#1b202b]">{transcript.some(visible) ? transcript.filter(visible).map(segment => <button key={segment.id} title={`${segment.speaker_label || 'Speaker'}: ${segment.text}`} onClick={() => onSelectTranscript(segment)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedTranscriptId === segment.id ? 'bg-[#c2828e88] text-white' : 'bg-[#8d506566] text-[#f0c8d0]'}`} style={blockStyle(segment, start, span)}><span className="block truncate">{segment.speaker_label || 'Speaker'}</span><span className="block truncate text-[9px] opacity-70">{segment.text}</span></button>) : <div className="muted flex h-full items-center justify-center text-xs">No speech annotations in this window</div>}<SelectionBand selection={audioSelection} start={start} span={span} /></div>
       <div className="flex h-12 items-center gap-2 text-xs text-[#98a1af]"><Layers3 size={16} /> Chunks</div>
       <div className="relative h-12 overflow-hidden rounded-md bg-[#1b202b]">{chunks.filter(visible).map(chunk => <button key={chunk.id} title={`Chunk ${chunk.chunk_index + 1} · ${stamp(chunk.start_time)}–${stamp(chunk.end_time)}`} onClick={() => onSelectChunk(chunk)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedChunkId === chunk.id ? 'bg-[#5d9ca777] text-white' : 'bg-[#3e717e66] text-[#bce7e8]'}`} style={blockStyle(chunk, start, span)}><span className="block truncate">{chunk.title || `Chunk ${chunk.chunk_index + 1}`}</span><span className="block truncate text-[9px] opacity-70">{stamp(chunk.start_time)}</span></button>)}</div>
+      <div className="flex h-10 items-center gap-2 text-xs text-[#98a1af]"><Clapperboard size={16} /> Sequences</div>
+      <div className="relative h-10 overflow-hidden rounded-md bg-[#1b202b]">{sequences.some(visible) ? sequences.filter(visible).map(sequence => <button key={sequence.id} title={`${sequence.title} · cuts ${sequence.first_cut ?? '?'}–${sequence.last_cut ?? '?'} · ${sequence.shots_written}/${sequence.shots_planned} shot prompts${sequence.cuts_changed ? ' · cuts changed' : ''}`} onClick={() => onOpenSequence(sequence.id)} className="cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] bg-[#7d5a3066] px-1 text-left text-[10px] text-[#f1d9b8]" style={blockStyle(sequence, start, span)}><span className="block truncate">{sequence.title}</span><span className="block truncate text-[9px] opacity-70">{sequence.shots_planned ? `${sequence.shots_written}/${sequence.shots_planned} prompts` : 'not directed'}</span></button>) : <div className="muted flex h-full items-center justify-center text-[11px]">{sequences.length ? 'No sequence in this window' : 'Create a sequence in the Sequences tab to direct a range of cuts as one short video'}</div>}</div>
 
     </div></div>
   </section>

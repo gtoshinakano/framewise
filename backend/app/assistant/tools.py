@@ -26,7 +26,9 @@ TEXT_RESULTS = {
 RESULT_TYPES = (*STRUCTURED, 'production_brief', 'review_answers', 'h3_prompt', 'image_prompt')
 LABELS = {'initial_frame': 'initial frame', 'last_frame': 'last frame', 'video_analysis': 'video analysis', 'subtitle_ocr': 'subtitle OCR',
           'consistency_summary': 'consistency summary', 'production_brief': 'production brief', 'review_answers': 'review answers',
-          'h3_prompt': 'H3 prompt', 'image_prompt': 'still image prompt', 'transcript': 'transcript'}
+          'h3_prompt': 'H3 prompt', 'image_prompt': 'still image prompt', 'transcript': 'transcript',
+          'sequence_shot': 'shot prompt', 'sequence_plan': 'shot plan', 'sequence_bible': 'sequence bible'}
+SEQUENCE_TARGETS = ('sequence_shot', 'sequence_plan', 'sequence_bible')
 TEXT_LIMIT, STRUCTURED_LIMIT = 50000, 5000000
 
 
@@ -39,6 +41,7 @@ class ToolContext:
     cut_id: str
     session_id: str = ''
     turn_id: str = ''
+    sequence_id: str = ''  # set in a chat about a sequence; cut_id is then the sequence's first cut
     provider: str = ''
     model: str = ''
     extra: dict = field(default_factory=dict)
@@ -54,20 +57,26 @@ class Tool:
     limit: int = 7000
     raw: bool = False
     must_pass: bool = False  # The runner sends the model back if it answers while this tool's last result has ok=false.
+    scope: str = 'cut'  # 'cut' tools serve the chat about one cut, 'sequence' tools the chat about a sequence, 'any' both
 
 
 REGISTRY: dict[str, Tool] = {}
 
 
-def tool(name, description, properties=None, required=(), summary=None, limit=7000, raw=False, must_pass=False):
+def tool(name, description, properties=None, required=(), summary=None, limit=7000, raw=False, must_pass=False, scope='cut'):
     def register(handler):
-        REGISTRY[name] = Tool(name, description, {'type': 'object', 'properties': properties or {}, 'required': list(required)}, handler, summary, limit, raw, must_pass)
+        REGISTRY[name] = Tool(name, description, {'type': 'object', 'properties': properties or {}, 'required': list(required)}, handler, summary, limit, raw, must_pass, scope)
         return handler
     return register
 
 
-def schemas():
-    return [{'type': 'function', 'function': {'name': item.name, 'description': item.description, 'parameters': item.parameters}} for item in REGISTRY.values()]
+def scope_of(ctx):
+    return 'sequence' if ctx.sequence_id else 'cut'
+
+
+def schemas(scope='cut'):
+    return [{'type': 'function', 'function': {'name': item.name, 'description': item.description, 'parameters': item.parameters}}
+            for item in REGISTRY.values() if item.scope in (scope, 'any')]
 
 
 def validate(spec, args):
@@ -97,8 +106,9 @@ def validate(spec, args):
 def execute(ctx, name, arguments):
     """Run a tool call. Returns (content for the model, UI summary, ok)."""
     spec = REGISTRY.get(name)
-    if spec is None:
-        return compact.dumps({'error': f'Unknown tool {name}. Available: {", ".join(REGISTRY)}'}), f'Unknown tool {name}', False
+    available = [item.name for item in REGISTRY.values() if item.scope in (scope_of(ctx), 'any')]
+    if spec is None or spec.name not in available:
+        return compact.dumps({'error': f'Unknown tool {name}. Available: {", ".join(available)}'}), f'Unknown tool {name}', False
     try:
         args = json.loads(arguments or '{}') if isinstance(arguments, str) else arguments
         args = validate(spec, args)
@@ -364,11 +374,13 @@ def get_subtitles(ctx, args):
                        'crosses_cut': line['crosses_cut'] or None} for line in context['lines']] or 'no subtitle overlaps this cut'}
 
 
-@tool('get_characters', 'Characters of this project (exact names, short notes) and the character boxes detected in this cut.',
-      summary=lambda args, value: 'Read characters')
+@tool('get_characters', 'Characters of this project (exact names, short notes) and, in a cut chat, the character boxes detected in this cut.',
+      summary=lambda args, value: 'Read characters', scope='any')
 def get_characters(ctx, args):
     cut = load_cut(ctx.cut_id)
     rows = db.all_rows("SELECT title,content FROM context_items WHERE project_id=? AND kind='character' AND (episode_id IS NULL OR episode_id=?) ORDER BY title", (cut['project_id'], cut['episode_id']))
+    if ctx.sequence_id:
+        return {'characters': [{'name': row['title'], 'notes': row['content'][:240]} for row in rows] or 'no character notes'}
     stale, detections = detection_rows(cut)
     return {'characters': [{'name': row['title'], 'notes': row['content'][:240]} for row in rows] or 'no character notes',
             'boxes_in_cut': [{'frame': row['position'], 'name': row['name'] or 'unlabeled', 'label': row['label_source']} for row in detections] or 'none',
@@ -377,7 +389,7 @@ def get_characters(ctx, args):
 
 @tool('get_context_notes', 'Project synopsis and context notes (world, scenario, chapter, object, general).',
       {'kind': {'type': 'string', 'enum': ['chapter_synopsis', 'chapter_happenings', 'world', 'scenario', 'object', 'general']}},
-      summary=lambda args, value: 'Read context notes')
+      summary=lambda args, value: 'Read context notes', scope='any')
 def get_context_notes(ctx, args):
     cut = load_cut(ctx.cut_id)
     where, params = "kind!='character'", [cut['project_id'], cut['episode_id']]
@@ -440,7 +452,7 @@ def find_in_results(ctx, args):
 
 @tool('load_skill', 'Load the full guide for a skill listed in the system prompt. Load it before doing that kind of task.',
       {'name': {'type': 'string', 'enum': skills.names()}}, ('name',),
-      summary=lambda args, value: f"Loaded skill: {(skills.get(args['name']) or {}).get('title', args['name'])}", raw=True)
+      summary=lambda args, value: f"Loaded skill: {(skills.get(args['name']) or {}).get('title', args['name'])}", raw=True, scope='any')
 def load_skill(ctx, args):
     skill = skills.get(args['name'])
     if not skill:
@@ -639,6 +651,10 @@ def create_proposal(ctx, result_type, base, content, summary, diff_base=None, di
         title, kind = 'Review answers', 'review_answers'
     elif result_type == 'transcript':
         title, kind = 'Transcript', 'transcript'
+    elif result_type in SEQUENCE_TARGETS:
+        # A sequence proposal shows readable text (the rendered prompt, the plan as lines) and applies ``payload``.
+        title, kind = (payload or {}).get('title') or LABELS[result_type].capitalize(), result_type
+        base = {'id': base['id'], 'content': before or ''} if base else None
     elif result_type in TEXT_RESULTS:
         title, kind = (base['title'] if base else TEXT_RESULTS[result_type]['title']), (base['kind'] if base else TEXT_RESULTS[result_type]['kind'])
     else:
@@ -648,11 +664,11 @@ def create_proposal(ctx, result_type, base, content, summary, diff_base=None, di
         if replace_pending and ctx.turn_id:
             # A re-checked draft replaces this turn's earlier unsaved draft of the same kind.
             conn.execute("UPDATE assistant_proposals SET status='discarded',resolved_at=CURRENT_TIMESTAMP WHERE turn_id=? AND target=? AND status='pending'", (ctx.turn_id, result_type))
-        conn.execute('''INSERT INTO assistant_proposals(id,session_id,turn_id,cut_id,target,title,kind,base_result_id,base_content,content,summary,model_id,provider,diff_base,diff_label,payload_json)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        conn.execute('''INSERT INTO assistant_proposals(id,session_id,turn_id,cut_id,target,title,kind,base_result_id,base_content,content,summary,model_id,provider,diff_base,diff_label,payload_json,sequence_id)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                      (proposal_id, ctx.session_id, ctx.turn_id or None, ctx.cut_id, result_type, title, kind, base['id'] if base else None,
                       base['content'] if base else (before or ''), content, summary[:500], ctx.model, ctx.provider, diff_base, diff_label,
-                      json.dumps(payload, ensure_ascii=False) if payload is not None else None))
+                      json.dumps(payload, ensure_ascii=False) if payload is not None else None, ctx.sequence_id or None))
         if ctx.turn_id:
             store.bump(conn, ctx.turn_id)
     return proposal_id

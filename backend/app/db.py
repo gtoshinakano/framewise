@@ -235,6 +235,28 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS character_voice_samples_character_idx ON character_voice_samples(character_context_id);
+        -- Sequences: a user-chosen range of cuts directed as one short video. Their results are
+        -- revision chains like analysis_results (parent_id / superseded_by) and have no approval status.
+        CREATE TABLE IF NOT EXISTS sequences (
+            id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            title TEXT NOT NULL DEFAULT '', instruction TEXT NOT NULL DEFAULT '',
+            first_cut_id TEXT NOT NULL, last_cut_id TEXT NOT NULL,
+            start_time REAL NOT NULL, end_time REAL NOT NULL,
+            cuts_json TEXT NOT NULL DEFAULT '[]', settings_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS sequences_episode_idx ON sequences(episode_id,start_time);
+        CREATE TABLE IF NOT EXISTS sequence_results (
+            id TEXT PRIMARY KEY, sequence_id TEXT NOT NULL REFERENCES sequences(id) ON DELETE CASCADE,
+            type TEXT NOT NULL, shot_key TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL, rendered TEXT,
+            origin TEXT NOT NULL DEFAULT 'model', model_id TEXT,
+            job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+            prompt TEXT, settings_json TEXT NOT NULL DEFAULT '{}', context_json TEXT NOT NULL DEFAULT '{}',
+            parent_id TEXT, superseded_by TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS sequence_results_idx ON sequence_results(sequence_id,type,shot_key);
         """)
         from .assistant import store as assistant_store
         assistant_store.init_schema(db)
@@ -401,15 +423,16 @@ def init_db():
         CREATE TRIGGER IF NOT EXISTS composition_character_update AFTER UPDATE OF title ON context_items BEGIN
             UPDATE composition_changes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cut_id IN (SELECT c.id FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE e.project_id=NEW.project_id);
         END;
+        -- Sequence jobs write sequence results only, so they leave the cuts' composition watermarks alone.
         DROP TRIGGER IF EXISTS composition_job_insert;
         DROP TRIGGER IF EXISTS composition_job_status;
-        CREATE TRIGGER composition_job_insert AFTER INSERT ON jobs WHEN NEW.pipeline NOT IN ('brief_export','composition_compact') BEGIN
+        CREATE TRIGGER composition_job_insert AFTER INSERT ON jobs WHEN NEW.pipeline NOT IN ('brief_export','composition_compact','sequence') BEGIN
             UPDATE composition_changes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cut_id IN (SELECT id FROM cuts WHERE episode_id=NEW.episode_id);
         END;
-        CREATE TRIGGER composition_job_status AFTER UPDATE OF status ON jobs WHEN NEW.pipeline NOT IN ('brief_export','composition_compact') AND NEW.status!=OLD.status BEGIN
+        CREATE TRIGGER composition_job_status AFTER UPDATE OF status ON jobs WHEN NEW.pipeline NOT IN ('brief_export','composition_compact','sequence') AND NEW.status!=OLD.status BEGIN
             UPDATE composition_changes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cut_id IN (SELECT id FROM cuts WHERE episode_id=NEW.episode_id);
         END;
-        CREATE TRIGGER composition_job_delete AFTER DELETE ON jobs WHEN OLD.pipeline NOT IN ('brief_export','composition_compact') BEGIN
+        CREATE TRIGGER composition_job_delete AFTER DELETE ON jobs WHEN OLD.pipeline NOT IN ('brief_export','composition_compact','sequence') BEGIN
             UPDATE composition_changes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE cut_id IN (SELECT id FROM cuts WHERE episode_id=OLD.episode_id);
         END;
         CREATE TRIGGER composition_compact_job_insert AFTER INSERT ON jobs WHEN NEW.pipeline='composition_compact' AND json_valid(NEW.payload_json) BEGIN

@@ -234,7 +234,15 @@ def retry_delay(seconds, cancel_check):
         time.sleep(min(0.5, remaining))
 
 
-def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=False, progress=None, cancel_check=None, plain_text=False, provider='openrouter', thinking=False, usage_out=None, text_validator=None):
+def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=False, progress=None, cancel_check=None, plain_text=False, provider='openrouter', thinking=False, usage_out=None, text_validator=None,
+              response_format=None, validator=None, temperature=0.2):
+    """Ask the text model for a JSON object (or plain text) and return ``(output, model)``.
+
+    ``validator`` takes the parsed object and returns the value to hand back; a ``ValueError`` it raises
+    is sent to the model together with its previous answer, so it corrects that answer instead of
+    starting over. ``response_format`` replaces the plain ``json_object`` format, usually with a
+    ``json_schema``; a server that cannot build the grammar is asked again in plain JSON.
+    """
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if provider == 'openrouter' and not key:
         raise RuntimeError("OPENROUTER_API_KEY is not configured for the inference worker")
@@ -252,11 +260,11 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
     else:
         url = 'https://openrouter.ai/api/v1/chat/completions'
     served_variant = None
-    payload = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": evidence}], "temperature": 0.2, "max_tokens": max_tokens}
+    payload = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": evidence}], "temperature": temperature, "max_tokens": max_tokens}
     if provider == 'local':
         payload['chat_template_kwargs'] = {'enable_thinking': thinking}
     if not plain_text:
-        payload["response_format"] = {"type": "json_object"}
+        payload["response_format"] = response_format or {"type": "json_object"}
     last_error = "unknown response error"
     # Some routes return incomplete JSON or exhaust the output budget on hidden
     # reasoning. Retry boundedly, without sending truncated output back as context.
@@ -269,17 +277,28 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
         if progress:
             progress(attempt + 1, attempts)
         headers = {**({"Authorization": f"Bearer {key}"} if provider == 'openrouter' else {}), "Content-Type": "application/json"}
-        try:
+        def send():
+            nonlocal served_variant, model
             if provider == 'local':
                 # The server may be restarted between attempts (the user switched the model), so ask for its
                 # address every time; the request is counted so a switch waits until it has finished.
                 with local_text_runtime.runtime.request(cancel_check) as (server_url, served_variant):
                     request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps(payload).encode(), headers=headers, method="POST")
-                    result = request_json(request, cancel_check, timeout=1200)
+                    answer = request_json(request, cancel_check, timeout=1200)
                 model = local_text_runtime.model_id_for(served_variant)
-            else:
-                request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
-                result = request_json(request, cancel_check, timeout=180)
+                return answer
+            request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
+            return request_json(request, cancel_check, timeout=180)
+        try:
+            try:
+                result = send()
+            except urllib.error.HTTPError as exc:
+                if exc.code not in (400, 422, 500) or (payload.get('response_format') or {}).get('type') != 'json_schema':
+                    raise
+                # A server that cannot build the grammar still answers in plain JSON; the validator checks the structure.
+                log.warning('%s rejected the JSON schema (HTTP %s); asking again in plain JSON', provider, exc.code)
+                payload['response_format'] = {'type': 'json_object'}
+                result = send()
         except urllib.error.HTTPError as exc:
             service = 'Local model' if provider == 'local' else 'OpenRouter'
             detail = ''
@@ -346,6 +365,8 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
             output = json.loads(content)
             if not isinstance(output, dict):
                 raise ValueError("response was not a JSON object")
+            if validator is not None:
+                return validator(output), model if provider == 'local' else result.get("model") or model
             for field in fields:
                 value = output.get(field)
                 if summary_topics:
@@ -368,6 +389,14 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
             if attempt < attempts - 1:
                 # Keep the original evidence, but don't compound context with
                 # invalid, truncated, or potentially very long model output.
+                if validator is not None:
+                    # Structured answers are corrected, not rewritten: the model sees its own answer and the exact problems.
+                    parsed = last_error not in ("response was truncated", "response was empty") and isinstance(rejected, str) and rejected.lstrip().startswith('{') and len(rejected) <= 24000
+                    payload["messages"] = payload["messages"][:2] + ([{"role": "assistant", "content": rejected}, {"role": "user", "content": "Your answer has these problems: " + last_error + " Correct them and return the complete JSON object again; keep everything that was not a problem."}] if parsed
+                                                                     else [{"role": "user", "content": "The previous response was invalid (" + last_error + "). Return the complete JSON object."}])
+                    if last_error in ("response was truncated", "response was empty"):
+                        payload["max_tokens"] = min(max_tokens * 2, 12288)
+                    continue
                 repair = "The previous response was invalid (" + last_error + "). Return the complete requested format, without reasoning, in at most 4096 UTF-8 bytes." if plain_text and text_validator else "The previous response was empty. Return the analysis as nonempty plain text." if plain_text else "The previous response was invalid (" + last_error + "). Return a complete JSON object with every required field: " + ", ".join(fields) + (". Each field must be an object with nonempty string content and confidence exactly high, medium, low, or unknown." if summary_topics else ". Each field must be a nonempty string.") + " Preserve evidence uncertainty and do not omit any field or supplied dialogue."
                 payload["messages"] = payload["messages"][:2] + [{"role": "user", "content": repair}]
                 if last_error in ("response was truncated", "response was empty"):
@@ -875,7 +904,8 @@ def text_lane(name):
     they release the GPU, and the lane claims nothing while visual work owns the GPU.
     """
     import contextlib
-    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers}
+    from . import sequence_pipeline
+    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers, 'sequence': sequence_pipeline.process}
     runtime = local_text_runtime.runtime
     while True:
         try:
@@ -918,7 +948,7 @@ def main():
     anime_batch_id = None
     while True:
         try:
-            claimed = worker.claim_job(("analyze", "regen", "consistency_summary", "review_answers", "character_detect", "composition_compact", "subtitles"))
+            claimed = worker.claim_job(("analyze", "regen", "consistency_summary", "review_answers", "sequence", "character_detect", "composition_compact", "subtitles"))
             if claimed:
                 job_id, owner = claimed
                 done = threading.Event()
@@ -946,6 +976,9 @@ def main():
                     elif kind == 'subtitles':
                         from . import subtitle_pipeline
                         subtitle_pipeline.process(job_id, owner)
+                    elif kind == 'sequence':
+                        from . import sequence_pipeline
+                        sequence_pipeline.process(job_id, owner)
                     elif anime_batch:
                         from . import anime_bulk
                         if anime_runtime is None:
