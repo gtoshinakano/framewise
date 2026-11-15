@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { boundaryChoices, changeAt, clock, deciderLabel, deliveryLabel, edgeTags, issueInstruction, issuesFor, progress, promptSections, rangeSeconds, shotStatus, speakerRanges, stage, staleText } from '../src/sequenceView.ts'
+import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, deliveryLabel, edgeTags, issueInstruction, issuesFor, progress, promptSections, rangeSeconds, revisionLabel, rulerStep, shotStatus, speakerRanges, spokenTimes, stage, staleText, timecode, timecodeSegments, versionNote } from '../src/sequenceView.ts'
 
 const shot = (index, extra = {}) => ({ index, key: `k${index}`, t0: (index - 1) * 4, t1: index * 4, duration: 4, stale: [], job: null, result: { check: { ok: true } }, ...extra })
 const detail = (extra = {}) => ({ sequence: { cuts_changed: false, cuts_missing: false }, missing: [], plan_problems: [], bible: {}, plan: {}, shots: [shot(1), shot(2)], jobs: [], ...extra })
@@ -106,4 +106,65 @@ test('voice ranges: your ranges win over the director, and a change from the pla
   assert.deepEqual(changeAt(speakerRanges(written, [], 'Mai', 10), 5, 'on_screen'), [{ from: 0, delivery: 'narrative' }, { from: 4, delivery: 'on_screen' }])
   assert.equal(deliveryLabel('narrative'), 'Narrative')
   assert.equal(deliveryLabel(null), 'Director decides')
+})
+
+test('a prompt version says what caused it', () => {
+  const version = (extra = {}) => ({ number: 2, origin: 'model', instruction: null, trigger: null, ...extra })
+  assert.equal(revisionLabel(version({ number: 1 })), 'Written by the director')
+  assert.equal(revisionLabel(version()), 'Rewritten by the director')
+  assert.equal(revisionLabel(version({ instruction: 'Keep the camera still.' })), 'Rewritten with your instruction')
+  assert.equal(revisionLabel(version({ number: 1, instruction: 'Keep the camera still.' })), 'Written with your instruction')
+  assert.equal(revisionLabel(version({ trigger: 'voices' })), 'Rewritten after you changed the voices')
+  assert.equal(revisionLabel(version({ origin: 'manual_edit', instruction: 'ignored' })), 'Edited by you')
+  assert.equal(revisionLabel(version({ origin: 'assistant_edit' })), 'Edited with the assistant')
+})
+
+test('the current version names its instruction, voice change or assistant edit', () => {
+  const result = (extra = {}) => ({ origin: 'model', parent_id: 'p', instruction: null, trigger: null, assistant_summary: null, ...extra })
+  assert.equal(versionNote(result()), null)
+  assert.equal(versionNote(result({ origin: 'manual_edit' })), null)
+  assert.equal(versionNote(result({ instruction: 'Keep the camera still.' })), 'Rewritten with your instruction: “Keep the camera still.”')
+  assert.equal(versionNote(result({ trigger: 'voices' })), 'Rewritten after you changed the voices')
+  assert.equal(versionNote(result({ origin: 'assistant_edit', assistant_summary: 'Cooler light' })), 'Edited with the assistant: Cooler light')
+  assert.equal(versionNote(result({ instruction: 'a'.repeat(10) }), 4), 'Rewritten with your instruction: “aaaa…”')
+})
+
+test('a change counts the words it adds and removes', () => {
+  assert.deepEqual(changeSize(null), { added: 0, removed: 0 })
+  assert.deepEqual(changeSize([{ op: 'equal', text: 'Hero waves ' }, { op: 'delete', text: 'warm low sun' }, { op: 'insert', text: ' cool light ' }, { op: 'equal', text: '.' }]), { added: 2, removed: 3 })
+})
+
+test('timecode writes MM:SS.mmm like the prompt', () => {
+  assert.equal(timecode(0), '00:00.000')
+  assert.equal(timecode(2.239), '00:02.239')
+  assert.equal(timecode(75.26), '01:15.260')
+  assert.equal(timecode(59.9996), '01:00.000')
+  assert.equal(timecode(-1), '00:00.000')
+})
+
+test('timecodes in a prompt line become clickable times and the line is kept whole', () => {
+  const join = parts => parts.map(part => part.text).join('')
+  const beat = '00:00.000-00:02.900: <Subject 1> walks. At 00:00.076, <Subject 1> (S1) says: <d>[Japanese] 好きだった</d> At 00:02.239, an off-screen voice is heard: <d>[Japanese] ずっと。</d>'
+  const parts = timecodeSegments(beat)
+  assert.equal(join(parts), beat)
+  assert.deepEqual(parts.filter(part => part.t !== null).map(part => [part.text, part.t]), [['00:00.000', 0], ['00:02.900', 2.9], ['00:00.076', 0.076], ['00:02.239', 2.239]])
+  const sound = 'Night air hums. <Subject 1> speaks the words of <Audio 1> in its voice, lips in sync, from 00:00.076 to 00:02.239. An off-screen voice speaks the words of <Audio 1> from 00:02.239 to 01:03.500; no lips move.'
+  assert.equal(join(timecodeSegments(sound)), sound)
+  assert.deepEqual(timecodeSegments(sound).filter(part => part.t !== null).map(part => part.t), [0.076, 2.239, 2.239, 63.5])
+  assert.deepEqual(timecodeSegments('<Audio 1> is the original sound of this shot, “shot-03.wav”.'), [{ text: '<Audio 1> is the original sound of this shot, “shot-03.wav”.', t: null }])
+  assert.deepEqual(timecodeSegments(''), [{ text: '', t: null }])
+  // Not the prompt's shape: a clock time, a longer number, or fewer milliseconds.
+  assert.ok(timecodeSegments('at 12:30 or 100:00.000 or 00:01.5 or 1:00.000').every(part => part.t === null))
+})
+
+test('spoken times come from the At sentences only', () => {
+  const prompt = 'detailed_description:\n00:00.000-00:02.900: Walks. At 00:00.076, <Subject 1> (S1) says: <d>[Japanese] a</d> At 00:02.239, a voice is heard: <d>[Japanese] b</d>\noverall_soundscape:\nfrom 00:00.076 to 00:02.239.'
+  assert.deepEqual(spokenTimes(prompt), [0.076, 2.239])
+  assert.deepEqual(spokenTimes(null), [])
+})
+
+test('the ruler gets coarser as the sequence gets longer', () => {
+  assert.equal(rulerStep(12), 1)
+  assert.equal(rulerStep(60), 5)
+  assert.equal(rulerStep(180), 10)
 })

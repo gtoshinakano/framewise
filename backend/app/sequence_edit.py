@@ -72,12 +72,13 @@ def needs_writing(view):
     return not view['result'] or bool(view['stale']) or not (view['result']['check'] or {}).get('ok')
 
 
-def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction=''):
+def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='', trigger=None):
     """Queue a step of the direction and return the new job ids.
 
     ``direct`` writes the bible and then the plan and stops there; ``shots`` writes every shot that is
     missing, stale or failing its check (or exactly ``shot_keys``) and reviews the sequence after a whole
-    batch; ``bible``, ``plan`` and ``review`` run that one step again.
+    batch; ``bible``, ``plan`` and ``review`` run that one step again. ``trigger`` says why shots are
+    rewritten when the user did not write an instruction (``voices``), for the shot's history.
     """
     if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (sequence['episode_id'],)).fetchone():
         raise EditError(409, 'Wait for media preparation or detection to finish')
@@ -135,7 +136,8 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
         batch = str(uuid.uuid4())
         for view in targets:
             job_ids.append(store.insert_job(conn, sequence, {'step': 'shot', 'shot_key': view['key'], 'config': config, 'base_id': view['result']['id'] if view['result'] else None,
-                                                            'instruction': instruction.strip(), 'batch_id': batch, 'then_review': shot_keys is None}))
+                                                            'instruction': instruction.strip(), 'batch_id': batch, 'then_review': shot_keys is None,
+                                                            **({'trigger': trigger} if trigger else {})}))
     elif step == 'review':
         if any(job['step'] == 'review' for job in pending):
             raise EditError(409, 'A review is already queued or running')
@@ -276,7 +278,7 @@ def set_voices(conn, sequence, shot_key, speaker, segments):
             conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'",
                          ('Cancelled: the voices of this shot changed', job['id']))
     if not any(job['step'] == 'shot' and job['shot_key'] == shot_key for job in store.pending_jobs(conn, sequence['id'])):
-        queue(conn, sequence, 'shots', shot_keys=[shot_key])
+        queue(conn, sequence, 'shots', shot_keys=[shot_key], trigger='voices')
     return plan_id
 
 

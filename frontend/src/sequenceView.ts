@@ -1,11 +1,47 @@
 // Pure helpers of the sequence workspace: no React and no fetch, so the node tests can import them.
-import type { BoundaryChoice, Decider, Delivery, FixedVoice, ReviewIssue, SequenceBoundary, SequenceDetail, SequenceShot, ShotEdge, ShotVoice, StaleReason } from './sequenceApi'
+import type { DiffSegment } from './assistantApi'
+import type { BoundaryChoice, Decider, Delivery, FixedVoice, ReviewIssue, SequenceBoundary, SequenceDetail, SequenceShot, ShotEdge, ShotResult, ShotRevision, ShotVoice, StaleReason } from './sequenceApi'
 
 /** Seconds as m:ss.s, the clock every time in the workspace uses. */
 export function clock(seconds: number) {
   const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0)
   const tenths = Math.round(safe * 10)
   return `${Math.floor(tenths / 600)}:${String(Math.floor(tenths % 600 / 10)).padStart(2, '0')}.${tenths % 10}`
+}
+
+/** Seconds as MM:SS.mmm, exactly as the H3 prompt writes its timecodes (`h3_prompt.fmt`). */
+export function timecode(seconds: number) {
+  const millis = Math.round(Math.max(0, Number.isFinite(seconds) ? seconds : 0) * 1000)
+  const minutes = Math.floor(millis / 60000), rest = millis % 60000
+  return `${String(minutes).padStart(2, '0')}:${String(Math.floor(rest / 1000)).padStart(2, '0')}.${String(rest % 1000).padStart(3, '0')}`
+}
+
+// The shape `h3_prompt.fmt` writes: two-digit minutes, two-digit seconds, milliseconds.
+// A sentence may end right after one ("from 00:00.076 to 00:02.239."), so only a digit or ".digit" around it disqualifies it.
+const TIMECODE = /(?<![\d:]|\d\.)(\d{2}):(\d{2}\.\d{3})(?!\d|\.\d)/g
+const SPOKEN_AT = /\bAt (\d{2}):(\d{2}\.\d{3})\b/g
+
+/** A prompt line split around its timecodes; `t` is the shot second a timecode names, null for plain text. Joined, the parts give the line back. */
+export function timecodeSegments(line: string): { text: string; t: number | null }[] {
+  const parts: { text: string; t: number | null }[] = []
+  let last = 0
+  for (const match of line.matchAll(TIMECODE)) {
+    if (match.index > last) parts.push({ text: line.slice(last, match.index), t: null })
+    parts.push({ text: match[0], t: Number(match[1]) * 60 + Number(match[2]) })
+    last = match.index + match[0].length
+  }
+  if (last < line.length || !parts.length) parts.push({ text: line.slice(last), t: null })
+  return parts
+}
+
+/** When each spoken line starts in a shot, from the prompt's `At MM:SS.mmm` sentences. */
+export function spokenTimes(prompt: string | null | undefined) {
+  return [...(prompt || '').matchAll(SPOKEN_AT)].map(match => Number(match[1]) * 60 + Number(match[2]))
+}
+
+/** Seconds between labelled ticks on a timeline of this length. */
+export function rulerStep(duration: number) {
+  return duration <= 20 ? 1 : duration <= 75 ? 5 : duration <= 180 ? 10 : 30
 }
 
 export type Tone = 'good' | 'busy' | 'warn' | 'bad' | 'idle'
@@ -185,6 +221,37 @@ export function promptSections(prompt: string) {
     else if (sections.length && line.trim()) sections[sections.length - 1].lines.push(line)
   }
   return sections
+}
+
+/** Why a version of a shot's prompt was written, in a few words. */
+export function revisionLabel(revision: Pick<ShotRevision, 'number' | 'origin' | 'instruction' | 'trigger'>) {
+  if (revision.origin === 'manual_edit') return 'Edited by you'
+  if (revision.origin === 'assistant_edit') return 'Edited with the assistant'
+  const verb = revision.number === 1 ? 'Written' : 'Rewritten'
+  if (revision.instruction) return `${verb} with your instruction`
+  if (revision.trigger === 'voices') return `${verb} after you changed the voices`
+  return `${verb} by the director`
+}
+
+/** What caused the current version of a shot, for the line above its prompt; null when nothing but the director wrote it. */
+export function versionNote(result: Pick<ShotResult, 'origin' | 'parent_id' | 'instruction' | 'trigger' | 'assistant_summary'>, limit = 240) {
+  const label = revisionLabel({ number: result.parent_id ? 2 : 1, origin: result.origin, instruction: result.instruction, trigger: result.trigger ?? null })
+  const clip = (text: string) => text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text
+  if (result.origin === 'assistant_edit') return result.assistant_summary ? `${label}: ${clip(result.assistant_summary)}` : label
+  if (result.origin !== 'model') return null
+  if (result.instruction) return `${label}: “${clip(result.instruction)}”`
+  return result.trigger === 'voices' ? label : null
+}
+
+/** How many words a change adds and removes. */
+export function changeSize(diff: DiffSegment[] | null | undefined) {
+  const words = (text: string) => text.split(/\s+/).filter(Boolean).length
+  const size = { added: 0, removed: 0 }
+  for (const part of diff || []) {
+    if (part.op === 'insert') size.added += words(part.text)
+    else if (part.op === 'delete') size.removed += words(part.text)
+  }
+  return size
 }
 
 /** Length of an inclusive range of cuts, or null when the numbers do not name existing cuts in order. */

@@ -1,12 +1,15 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, Check, Clapperboard, Download, LoaderCircle, MessageSquare, Pencil, Play, RefreshCw, Save, Sparkles, Square, WandSparkles, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, Clapperboard, Download, History as HistoryIcon, LoaderCircle, MessageSquare, Pencil, Play, RefreshCw, Save, Sparkles, Square, WandSparkles, X } from 'lucide-react'
 import { mediaUrl } from './api'
 import CutAssistant from './CutAssistant'
 import DialogueTab from './DialogueTab'
-import { PlayerProvider, PlayerSlot, SourcePlayer, usePlayer } from './SourcePlayer'
+import { PlayerProvider, PlayerSlot, SourcePlayer, usePlayer, usePlayerValue } from './SourcePlayer'
+import SequenceTimeline from './SequenceTimeline'
+import type { DiffSegment } from './assistantApi'
+import { DiffText } from './DiffText'
 import { CopyButton } from './Markdown'
-import { sequenceApi, shotFrameUrl, type Bible, type BoundaryChoice, type Delivery, type RunStep, type SequenceBoundary, type SequenceDetail, type SequenceShot, type ShotDialogue } from './sequenceApi'
-import { boundaryChoices, changeAt, clock, deciderLabel, DELIVERIES, deliveryLabel, edgeTags, hasOwnVoices, issueInstruction, issuesFor, progress, promptSections, shotStatus, speakerRanges, stage, staleText, type Tone } from './sequenceView'
+import { sequenceApi, shotFrameUrl, type Bible, type BoundaryChoice, type Delivery, type RunStep, type SequenceBoundary, type SequenceDetail, type SequenceShot, type ShotDialogue, type ShotHistory } from './sequenceApi'
+import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, DELIVERIES, deliveryLabel, edgeTags, hasOwnVoices, issueInstruction, issuesFor, progress, promptSections, revisionLabel, shotStatus, speakerRanges, stage, staleText, timecode, timecodeSegments, versionNote, type Tone } from './sequenceView'
 
 type Tab = 'dialogue' | 'direction' | 'shots' | 'assistant'
 const TONES: Record<Tone, string> = { good: 'bg-[#173a2b] text-[#9ff0c8]', busy: 'bg-[#2b2442] text-[#d6c8ff]', warn: 'bg-[#4a3a17] text-[#ffd59a]', bad: 'bg-[#3d2025] text-[#ffaaa7]', idle: 'bg-[#262b35] text-[#aeb5c1]' }
@@ -134,7 +137,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
         {assistantMounted && <CutAssistant sequence={{ id: sequenceId, label }} active={tab === 'assistant'} onResultsChanged={() => { void load(); onChanged() }} />}
         {tab === 'dialogue' && <DialogueTab detail={detail} proxyReady={proxyReady} working={!!working} act={act} run={run} onContinue={() => setTab('direction')} />}
         {tab === 'direction' && <DirectionTab detail={detail} working={!!working || active} act={act} run={run} onOpenShot={key => { setSelectedKey(key); setTab('shots') }} />}
-        {tab === 'shots' && <ShotsTab detail={detail} selected={selected} onSelect={setSelectedKey} proxyReady={proxyReady} working={!!working} act={act} run={run} />}
+        {tab === 'shots' && <ShotsTab detail={detail} selected={selected} onSelect={setSelectedKey} proxyReady={proxyReady} working={!!working} act={act} run={run} onOpenAssistant={() => setTab('assistant')} />}
       </>}
     </div>
   </div></PlayerProvider>
@@ -275,18 +278,37 @@ function BibleView({ bible }: { bible: Bible }) {
   </div>
 }
 
-function ShotsTab({ detail, selected, onSelect, proxyReady, working, act, run }: {
-  detail: SequenceDetail; selected?: SequenceShot; onSelect: (key: string) => void; proxyReady: boolean; working: boolean; act: Act; run: Run
+function ShotsTab({ detail, selected, onSelect, proxyReady, working, act, run, onOpenAssistant }: {
+  detail: SequenceDetail; selected?: SequenceShot; onSelect: (key: string) => void; proxyReady: boolean; working: boolean; act: Act; run: Run; onOpenAssistant: () => void
 }) {
   // Whether the opening still covers the shared video; kept while the user moves from shot to shot.
   const [showFrame, setShowFrame] = useState(!proxyReady)
+  const player = usePlayer()
+  // A seek into another shot waits here until that shot's detail has set the player's range (which moves to its start).
+  const pending = useRef<Pending | null>(null)
+  const takePending = useCallback((key: string) => {
+    const want = pending.current
+    if (!want || want.key !== key) return null
+    // Cleared after the effect has run (twice under StrictMode), not inside it.
+    setTimeout(() => { if (pending.current === want) pending.current = null }, 0)
+    return want
+  }, [])
+  const pick = useCallback((shot: SequenceShot, seconds: number, play: boolean) => {
+    const time = shot.start_time + seconds
+    setShowFrame(false)
+    if (shot.key === selected?.key) { if (play) player.playFrom(time); else player.seek(time) }
+    else { pending.current = { key: shot.key, time, play }; onSelect(shot.key) }
+  }, [player, selected?.key, onSelect])
+  useEffect(() => { if (selected) document.getElementById(`shot-nav-${selected.key}`)?.scrollIntoView({ block: 'nearest' }) }, [selected?.key])
   if (!detail.shots.length) return <div className="muted p-12 text-sm leading-6">There is no shot plan yet. Direct the sequence on the Direction tab first.</div>
-  return <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[17rem_minmax(0,1fr)] lg:overflow-hidden">
+  return <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5 lg:overflow-hidden">
+    <SequenceTimeline detail={detail} selectedKey={selected?.key} onPick={pick} />
+    <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[17rem_minmax(0,1fr)] lg:overflow-hidden">
     <nav aria-label="Shots" className="scrollbar min-h-0 space-y-1.5 lg:overflow-y-auto lg:pr-1">
       {detail.shots.map(shot => {
         const status = shotStatus(shot)
         const issues = issuesFor(detail.review?.content.issues, shot)
-        return <button key={shot.key} type="button" onClick={() => onSelect(shot.key)} aria-current={selected?.key === shot.key} className={`flex w-full items-center gap-2.5 rounded-lg border p-2 text-left ${selected?.key === shot.key ? 'border-[#e0a96d] bg-[#2a2319]' : 'border-[#2f3643] bg-[#161b24] hover:border-[#5a4a35]'}`}>
+        return <button key={shot.key} id={`shot-nav-${shot.key}`} type="button" onClick={() => onSelect(shot.key)} aria-current={selected?.key === shot.key} className={`flex w-full items-center gap-2.5 rounded-lg border p-2 text-left ${selected?.key === shot.key ? 'border-[#e0a96d] bg-[#2a2319]' : 'border-[#2f3643] bg-[#161b24] hover:border-[#5a4a35]'}`}>
           <img src={shotFrameUrl(detail.sequence.id, shot.key)} alt="" loading="lazy" className="h-12 w-20 shrink-0 rounded bg-black object-cover" />
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1.5"><span className="text-xs font-semibold">Shot {shot.index}</span><Tag tone={status.tone}>{status.label}</Tag>{issues.length > 0 && <Tag tone={issues.some(issue => issue.severity === 'fix') ? 'bad' : 'warn'}>{issues.length} issue{issues.length > 1 ? 's' : ''}</Tag>}</span>
@@ -296,29 +318,44 @@ function ShotsTab({ detail, selected, onSelect, proxyReady, working, act, run }:
         </button>
       })}
     </nav>
-    {selected && <ShotDetail key={selected.key} detail={detail} shot={selected} proxyReady={proxyReady} showFrame={showFrame} onShowFrame={setShowFrame} working={working} act={act} run={run} />}
+    {selected && <ShotDetail key={selected.key} detail={detail} shot={selected} proxyReady={proxyReady} showFrame={showFrame} onShowFrame={setShowFrame} takePending={takePending} working={working} act={act} run={run} onOpenAssistant={onOpenAssistant} />}
+    </div>
   </div>
 }
 
-function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, working, act, run }: {
-  detail: SequenceDetail; shot: SequenceShot; proxyReady: boolean; showFrame: boolean; onShowFrame: (value: boolean) => void; working: boolean; act: Act; run: Run
+/** A seek (or play) requested for a shot that is not selected yet; `time` is in episode seconds. */
+type Pending = { key: string; time: number; play: boolean }
+
+function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePending, working, act, run, onOpenAssistant }: {
+  detail: SequenceDetail; shot: SequenceShot; proxyReady: boolean; showFrame: boolean; onShowFrame: (value: boolean) => void
+  takePending: (key: string) => Pending | null; working: boolean; act: Act; run: Run; onOpenAssistant: () => void
 }) {
   const player = usePlayer()
-  // Selecting a shot only moves the playhead of the video that is already loaded.
-  useEffect(() => { player.setRange({ start: shot.start_time, end: shot.end_time }, true) }, [player, shot.start_time, shot.end_time])
+  // Selecting a shot only moves the playhead of the video that is already loaded; a click on the timeline then seeks or plays inside it.
+  useEffect(() => {
+    player.setRange({ start: shot.start_time, end: shot.end_time }, true)
+    const want = takePending(shot.key)
+    if (want) { if (want.play) player.playFrom(want.time); else player.seek(want.time) }
+  }, [player, shot.key, shot.start_time, shot.end_time, takePending])
+  // A timecode of the prompt is a second of this shot: play the source from there.
+  const playAt = useCallback((seconds: number) => { onShowFrame(false); player.playFrom(shot.start_time + seconds) }, [player, shot.start_time, onShowFrame])
   const result = shot.result
   const [view, setView] = useState<'read' | 'raw' | 'edit'>('read')
   const [instruction, setInstruction] = useState('')
+  // The versions below the prompt; opened by a rewrite so the change is in view when it lands.
+  const [historyOpen, setHistoryOpen] = useState(false)
   const issues = issuesFor(detail.review?.content.issues, shot)
   const dialogue: ShotDialogue[] = result?.derived.dialogue || shot.lines
   const sections = useMemo(() => result?.prompt ? promptSections(result.prompt) : [], [result?.prompt])
   const status = shotStatus(shot)
   const busy = working || !!shot.job
+  const note = result ? versionNote(result) : null
   return <div className="scrollbar flex min-h-0 flex-col gap-4 lg:overflow-y-auto lg:pr-1">
     <div className="grid shrink-0 gap-4 xl:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
       <div>
         <PlayerSlot className="aspect-video">
           {(showFrame || !proxyReady) && <img src={shotFrameUrl(detail.sequence.id, shot.key)} alt={`Initial frame of shot ${shot.index}`} className="absolute inset-0 z-10 h-full w-full bg-black object-contain" />}
+          {proxyReady && <ShotClock shot={shot} sequenceStart={detail.sequence.start_time} />}
         </PlayerSlot>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button type="button" className="btn btn-quiet !px-2.5 !py-1.5 !text-xs" disabled={!proxyReady} onClick={() => { onShowFrame(false); player.playRange(shot.start_time, shot.end_time) }} title="Play this shot of the source video"><Play size={12} /> Play shot</button>
@@ -362,24 +399,128 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, working,
       </header>
       <div className="p-4">
         {!result ? <p className="muted text-xs leading-5">{shot.job ? 'The director is writing this shot…' : 'This shot has no prompt yet. “Write shot prompts” writes every missing shot; the button below writes only this one.'}</p> : <>
+          {note && <p className="mb-3 border-l-2 border-[#e0a96d] pl-2.5 text-xs leading-5 text-[#e8ebf1]">{note}</p>}
           {result.check && !result.check.ok && <ul className="mb-3 list-disc space-y-1 rounded-lg bg-[#3d2025] p-2.5 pl-6 text-xs leading-5 text-[#ffaaa7]">{result.check.errors.map((item, index) => <li key={index}>{item}</li>)}</ul>}
           {!!result.check?.warnings.length && <ul className="mb-3 list-disc space-y-1 rounded-lg bg-[#262b35] p-2.5 pl-6 text-[11px] leading-5 text-[#c9cfda]">{result.check.warnings.map((item, index) => <li key={index}>{item}</li>)}</ul>}
           {view === 'edit' ? <>
             <p className="muted mb-2 text-[11px] leading-5">You edit the direction; the app renders the prompt again and checks it. Write names, not labels: labels, timecodes and spoken words are added for you.</p>
             <JsonEditor value={result.content} saving={working} onCancel={() => setView('read')} onSave={content => void act('shot', () => sequenceApi.revise(result.id, content)).then(saved => { if (saved) setView('read') })} />
-          </> : view === 'raw' ? <pre className="scrollbar max-h-[36rem] overflow-auto whitespace-pre-wrap rounded-lg border border-[#2b3240] bg-[#0f131a] p-3 font-mono text-[11px] leading-5 text-[#c9cfda]">{result.prompt}</pre>
-            : <div className="space-y-4">{sections.map(section => <div key={section.name}><p className="label !mb-1">{section.title}</p><div className="space-y-1.5 text-[13px] leading-6 text-[#e8ebf1]">{section.lines.map((line, index) => <p key={index} className={/^\d{2}:\d{2}/.test(line) ? 'border-l-2 border-[#5a4a35] pl-2.5' : ''}>{line}</p>)}</div></div>)}</div>}
+          </> : view === 'raw' ? <pre className="scrollbar max-h-[36rem] overflow-auto whitespace-pre-wrap rounded-lg border border-[#2b3240] bg-[#0f131a] p-3 font-mono text-[11px] leading-5 text-[#c9cfda]">{(result.prompt || '').split('\n').map((line, index) => <Fragment key={index}>{index > 0 && '\n'}<PromptLine line={line} shot={shot} disabled={!proxyReady} onPlay={playAt} /></Fragment>)}</pre>
+            : <div className="space-y-4">{sections.map(section => <div key={section.name}><p className="label !mb-1">{section.title}</p><div className="space-y-1.5 text-[13px] leading-6 text-[#e8ebf1]">{section.lines.map((line, index) => <p key={index} className={/^\d{2}:\d{2}/.test(line) ? 'border-l-2 border-[#5a4a35] pl-2.5' : ''}><PromptLine line={line} shot={shot} disabled={!proxyReady} onPlay={playAt} /></p>)}</div></div>)}</div>}
           {result.derived.references && <p className="muted mt-4 text-[11px] leading-5">References to attach, in this order: {result.derived.references.map(reference => `${reference.label} ${reference.role === 'initial_frame' ? 'initial frame' : reference.role === 'character_sheet' ? `sheet of ${reference.name}` : reference.role === 'scenario' ? `scenario “${reference.name}”` : `audio ${result.derived.audio_file || ''}`}`).join(' · ')}</p>}
           {result.derived.still_prompt && <details className="mt-3 rounded-lg border hairline bg-[#171c25] text-xs"><summary className="cursor-pointer px-3 py-2 font-semibold text-[#aeb5c1] hover:text-white">Still image prompt for the initial frame</summary><div className="border-t hairline p-3"><pre className="whitespace-pre-wrap font-mono text-[11px] leading-5 text-[#c9cfda]">{result.derived.still_prompt}</pre><div className="mt-2"><CopyButton text={result.derived.still_prompt} label="Copy still prompt" /></div></div></details>}
           {result.content.open_questions.length > 0 && <div className="mt-3"><p className="label !mb-1">Open questions</p><ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-[#ffd59a]">{result.content.open_questions.map((question, index) => <li key={index}>{question}</li>)}</ul></div>}
+          <PromptHistory sequenceId={detail.sequence.id} shot={shot} open={historyOpen} onToggle={setHistoryOpen} onOpenAssistant={onOpenAssistant} />
         </>}
       </div>
       <footer className="flex flex-wrap items-end gap-2 border-t hairline p-3">
         <label className="min-w-0 flex-1"><span className="label !mb-1">Instruction for a rewrite (optional)</span><input className="field !py-2 !text-xs" maxLength={4000} value={instruction} onChange={event => setInstruction(event.target.value)} placeholder="For example: she is off screen for the first line; keep the camera static" /></label>
-        <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy || !detail.bible} onClick={() => void run('shots', { shot_keys: [shot.key], instruction: instruction.trim() }).then(queued => { if (queued) setInstruction('') })} title="The director writes this shot again from the current bible, plan and analysis"><Sparkles size={13} /> {result ? 'Rewrite this shot' : 'Write this shot'}</button>
+        <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy || !detail.bible} onClick={() => void run('shots', { shot_keys: [shot.key], instruction: instruction.trim() }).then(queued => { if (queued) { setInstruction(''); if (result) setHistoryOpen(true) } })} title="The director writes this shot again from the current bible, plan and analysis"><Sparkles size={13} /> {result ? 'Rewrite this shot' : 'Write this shot'}</button>
       </footer>
     </section>
   </div>
+}
+
+/** A line of the prompt with each timecode as a button that plays the source from that second of the shot. */
+function PromptLine({ line, shot, disabled, onPlay }: { line: string; shot: SequenceShot; disabled: boolean; onPlay: (seconds: number) => void }) {
+  return <>{timecodeSegments(line).map((part, index) => {
+    if (part.t === null) return part.text
+    // The hold that pads a shot shorter than H3's minimum has no source picture behind it.
+    const beyond = part.t > shot.duration + 0.0005
+    return <button key={index} type="button" disabled={disabled || beyond} onClick={() => onPlay(part.t!)}
+      title={beyond ? `${part.text} is past the end of this shot (${timecode(shot.duration)}): the generated hold, trimmed away` : `Play the source from ${part.text} of this shot (episode ${clock(shot.start_time + part.t)})`}
+      className={`rounded px-0.5 font-mono tabular-nums ${beyond ? 'cursor-default text-[#8b93a3]' : 'bg-[#123840] text-[#a6eef7] hover:bg-[#1d5967] hover:text-white disabled:cursor-default disabled:bg-transparent disabled:text-inherit'}`}>{part.text}</button>
+  })}</>
+}
+
+/** The playhead on the shot's own clock (the prompt's MM:SS.mmm), over the video; only this badge re-renders while it plays. */
+function ShotClock({ shot, sequenceStart }: { shot: SequenceShot; sequenceStart: number }) {
+  const [at, inSequence] = usePlayerValue(time => `${timecode(Math.min(shot.duration, Math.max(0, time - shot.start_time)))}|${clock(time - sequenceStart)}`).split('|')
+  return <div className="pointer-events-none absolute left-2 top-2 z-20 rounded-md bg-black/75 px-2 py-1 font-mono tabular-nums text-white" title="Playhead from the start of this shot, as the prompt writes its times" aria-label={`Playhead at ${at} of the shot`}>
+    <span className="text-sm">{at}</span><span className="text-[11px] text-[#aeb5c1]"> / {timecode(shot.duration)}</span>
+    <span className="block text-[10px] text-[#aeb5c1]">sequence {inSequence}</span>
+  </div>
+}
+
+/** Every version of a shot's prompt below the current one, newest first: what caused it and what changed against the version before. */
+function PromptHistory({ sequenceId, shot, open, onToggle, onOpenAssistant }: {
+  sequenceId: string; shot: SequenceShot; open: boolean; onToggle: (open: boolean) => void; onOpenAssistant: () => void
+}) {
+  const [history, setHistory] = useState<ShotHistory | null>(null)
+  const [error, setError] = useState('')
+  const resultId = shot.result?.id
+  // Loaded only while open, and again when a new version lands or a rewrite is queued or starts.
+  useEffect(() => {
+    if (!open) return
+    let live = true
+    sequenceApi.shotHistory(sequenceId, shot.key).then(value => { if (live) { setHistory(value); setError('') } }, (err: Error) => { if (live) setError(err.message) })
+    return () => { live = false }
+  }, [open, sequenceId, shot.key, resultId, shot.job])
+  const count = history?.revisions.length ?? 0
+  const waiting = history?.proposals.length ?? 0
+  return <details open={open} onToggle={event => onToggle(event.currentTarget.open)} className="group/history mt-4 rounded-lg border hairline bg-[#171c25] text-xs">
+    <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 font-semibold text-[#aeb5c1] hover:text-white">
+      <ChevronDown size={14} className="-rotate-90 transition-transform group-open/history:rotate-0" aria-hidden /><HistoryIcon size={13} aria-hidden />
+      Instructions and changes{count ? ` · ${count} version${count > 1 ? 's' : ''}` : ''}
+      {waiting > 0 && <Tag tone="busy">{waiting} from the assistant, not applied</Tag>}
+    </summary>
+    <div className="space-y-2 border-t hairline p-3">
+      {error && <p role="alert" className="text-[11px] text-[#ffaaa7]">{error}</p>}
+      {!history && !error && <p className="muted flex items-center gap-1.5 text-[11px]"><LoaderCircle size={12} className="animate-spin" /> Loading the versions…</p>}
+      {history?.pending && <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#5a4a8c] bg-[#1a1730] px-3 py-2 text-[#d6c8ff]">
+        <LoaderCircle size={13} className="animate-spin" /><span className="font-semibold">{history.pending.status === 'running' ? 'Rewriting now' : 'Rewrite queued'}</span>
+        <span className="min-w-0 flex-1 text-[#e8ebf1]">{history.pending.instruction ? `with your instruction: “${history.pending.instruction}”` : history.pending.trigger === 'voices' ? 'after you changed the voices' : 'without an instruction'}</span>
+      </div>}
+      {history?.proposals.map(proposal => <ChangeRow key={proposal.id} open={false} diff={proposal.diff} prompt={proposal.prompt}
+        heading={<><Tag tone={proposal.stale ? 'warn' : 'busy'}>{proposal.stale ? 'Outdated' : 'Not applied'}</Tag><span className="font-semibold text-[#e8ebf1]">Proposed in the Assistant tab</span><Size diff={proposal.diff} /><span className="muted ml-auto font-mono text-[10px]">{proposal.created_at.slice(0, 16)}</span></>}
+        why={<Why asked={proposal.request} said={proposal.summary} />}
+        actions={<button type="button" className="!text-[11px] text-[#c3aeff] underline" onClick={onOpenAssistant}>{proposal.stale ? 'Open the Assistant to ask again' : 'Open the Assistant to apply or discard'}</button>} />)}
+      {history?.revisions.map((revision, index) => <ChangeRow key={revision.id} open={index === 0} diff={revision.diff} prompt={revision.prompt}
+        heading={<><span className="font-mono text-[11px] font-semibold text-[#e8ebf1]">v{revision.number}</span>{index === 0 && <Tag tone="good">Current</Tag>}
+          <span className="font-semibold text-[#e8ebf1]">{revisionLabel(revision)}</span><Size diff={revision.diff} />{revision.check_ok === false && <Tag tone="bad">format errors</Tag>}
+          <span className="muted ml-auto font-mono text-[10px]">{revision.created_at.slice(0, 16)}{revision.generation_seconds ? ` · ${took(revision.generation_seconds)}` : ''}</span></>}
+        why={revision.assistant ? <Why asked={revision.assistant.request} said={revision.assistant.summary} />
+          : revision.instruction ? <Why instruction={revision.instruction} />
+          : revision.trigger === 'voices' ? <p className="muted text-[11px]">You changed how a speaker is heard in this shot; the director wrote it again around your voices.</p>
+          : revision.number > 1 && revision.origin === 'model' ? <p className="muted text-[11px]">No instruction: the director wrote it again from the current bible, plan and analysis.</p> : null} />)}
+      {history && count <= 1 && !history.pending && !waiting && <p className="muted text-[11px]">This is the first version. Rewrites, your edits and changes from the Assistant tab will appear here with what changed.</p>}
+    </div>
+  </details>
+}
+
+/** One version (or proposed version) of a prompt: what caused it, then its change as a diff, or the whole prompt on request. */
+function ChangeRow({ heading, why, diff, prompt, open, actions }: { heading: ReactNode; why?: ReactNode; diff: DiffSegment[] | null; prompt: string; open: boolean; actions?: ReactNode }) {
+  const [full, setFull] = useState(false)
+  const changed = !!diff?.some(part => part.op !== 'equal')
+  return <details open={open} className="group/change rounded-lg border border-[#2b3240] bg-[#11151d]">
+    <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-2 hover:bg-[#161b24]"><ChevronDown size={13} className="-rotate-90 text-[#8b93a3] transition-transform group-open/change:rotate-0" aria-hidden />{heading}</summary>
+    <div className="space-y-2 border-t border-[#2b3240] px-3 py-2.5">
+      {why}
+      {full || changed ? <div className={`scrollbar overflow-y-auto whitespace-pre-wrap rounded-lg border border-[#2b3240] bg-[#0f131a] p-2.5 font-mono text-[11px] leading-5 ${full ? 'max-h-[28rem] text-[#c9cfda]' : 'max-h-72 text-[#9ea6b5]'}`}>
+        {full ? prompt : <DiffText segments={diff || []} />}
+      </div> : <p className="muted text-[11px]">{diff ? 'The prompt did not change.' : 'The first version of this prompt.'}</p>}
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" className="!text-[11px] text-[#e0a96d] underline" onClick={() => setFull(!full)}>{full ? (changed ? 'Show changes' : 'Hide prompt') : changed ? 'Show full prompt' : 'Show prompt'}</button>
+        <CopyButton text={prompt} label="Copy this version" />
+        {actions}
+      </div>
+    </div>
+  </details>
+}
+
+/** What the user asked for: a rewrite instruction, or a chat request and the assistant's summary of its change. */
+function Why({ instruction, asked, said }: { instruction?: string; asked?: string | null; said?: string }) {
+  return <div className="space-y-1 text-[11px] leading-5">
+    {instruction && <p className="border-l-2 border-[#e0a96d] pl-2.5 text-[#e8ebf1]"><span className="muted">Your instruction: </span>“{instruction}”</p>}
+    {asked && <p className="border-l-2 border-[#e0a96d] pl-2.5 text-[#e8ebf1]"><span className="muted">You asked: </span>“{asked}”</p>}
+    {said && <p className="border-l-2 border-[#5a4a8c] pl-2.5 text-[#d6c8ff]"><span className="muted">Assistant: </span>{said}</p>}
+  </div>
+}
+
+function Size({ diff }: { diff: DiffSegment[] | null }) {
+  if (!diff) return null
+  const size = changeSize(diff)
+  return <Tag tone="idle" title="Words added and removed against the version before">{size.added || size.removed ? `+${size.added} −${size.removed} words` : 'no change'}</Tag>
 }
 
 function frameText(shot: SequenceShot) {

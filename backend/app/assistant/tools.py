@@ -6,7 +6,6 @@ Register a tool with the ``@tool`` decorator. The handler receives a
 sees minified, pruned payloads. Handlers must not import FastAPI: they run in
 the inference worker process.
 """
-import difflib
 import json
 import re
 import uuid
@@ -14,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .. import db, prompt_context, subtitle_store
+from ..text_diff import diff_segments  # noqa: F401  (re-exported for the proposal cards and tests)
 from . import compact, h3_prompt, skills, store, transcript_edit
 from .transcript_edit import join_text, merged_transcript, transcript_rows  # noqa: F401  (re-exported for callers and tests)
 
@@ -592,43 +592,6 @@ def pretty(result_type, text):
         except (TypeError, ValueError):
             return text or ''
     return text or ''
-
-
-def diff_segments(old, new, limit=60000):
-    """Word-level diff segments for the proposal card."""
-    if len(old) + len(new) > limit:
-        lines = difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm='', n=2)
-        return [{'op': 'equal', 'text': '\n'.join(list(lines)[2:])}]
-    # ASCII words, whitespace runs and single other characters: JSON quotes stay out of
-    # word edits and Japanese text (no spaces) is compared character by character.
-    split = lambda text: re.findall(r'[A-Za-z0-9_]+|\s+|[^\sA-Za-z0-9_]', text)
-    a, b = split(old), split(new)
-    opcodes = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
-    segments, deleted, inserted = [], '', ''
-
-    def close():
-        nonlocal deleted, inserted
-        if deleted:
-            segments.append({'op': 'delete', 'text': deleted})
-        if inserted:
-            segments.append({'op': 'insert', 'text': inserted})
-        deleted = inserted = ''
-
-    for index, (op, i1, i2, j1, j2) in enumerate(opcodes):
-        if op == 'equal':
-            text = ''.join(a[i1:i2])
-            between = 0 < index < len(opcodes) - 1 and (deleted or inserted)
-            if between and len(text) <= 2 and not text.strip():
-                # Merge "a person" -> "Tomoe Koga" into one edit instead of word-by-word pairs.
-                deleted, inserted = deleted + text, inserted + text
-                continue
-            close()
-            segments.append({'op': 'equal', 'text': text})
-        else:
-            deleted += ''.join(a[i1:i2])
-            inserted += ''.join(b[j1:j2])
-    close()
-    return segments
 
 
 def short_diff(old, new, limit=700):

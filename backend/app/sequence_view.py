@@ -4,9 +4,12 @@ Both are assembled from current data on every read: the cuts as they are now, th
 plan, shots and review, and for each shot whether what it was written from has changed since
 (``stale``). ``package`` is the contract ``sequence-v1`` that the video generation app downloads.
 """
-from . import db, sequence_compile, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline
+from . import db, sequence_compile, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, text_diff
 
 CONTRACT = 'sequence-v1'
+REQUEST_CHARS = 1000
+# What the user typed in the Assistant chat turn that made a proposal ``p``.
+CHAT_REQUEST = "(SELECT m.content FROM assistant_messages m WHERE m.turn_id=p.turn_id AND m.role='user' ORDER BY m.seq LIMIT 1)"
 
 
 def state(conn, sequence):
@@ -96,7 +99,56 @@ def shot_result(row):
     return {'id': row['id'], 'content': store.loads(row['content'], {}), 'prompt': row['rendered'], 'check': settings.get('check'), 'derived': settings.get('derived') or {},
             'generation_seconds': settings.get('summary_generation_seconds'), 'model_variant': usage.get('model_variant'), 'decode_tokens_per_second': usage.get('decode_tokens_per_second'),
             'origin': row['origin'], 'model_id': row['model_id'], 'job_id': row['job_id'], 'parent_id': row['parent_id'], 'created_at': row['created_at'],
-            'instruction': settings.get('instruction'), 'completed_by_app': settings.get('completed_by_app')}
+            'instruction': settings.get('instruction'), 'trigger': settings.get('trigger'), 'completed_by_app': settings.get('completed_by_app'),
+            'assistant_summary': (settings.get('assistant_edit') or {}).get('summary')}
+
+
+def clip(text, limit=REQUEST_CHARS):
+    text = (text or '').strip()
+    return text[:limit] + ('…' if len(text) > limit else '') if text else None
+
+
+def shot_history(conn, sequence_id, shot_key):
+    """Every version of one shot's prompt, newest first, with why it was written and what changed.
+
+    Each revision is diffed against the version it replaced and says what caused it: the user's
+    instruction, a voice change (``trigger``), a hand edit, or an Assistant chat request (``assistant``).
+    ``pending`` is a rewrite that is queued or running; ``proposals`` are the Assistant tab's changes to
+    this shot that wait for the user to apply them.
+    """
+    rows = [dict(row) for row in conn.execute("""SELECT id,parent_id,origin,model_id,rendered,settings_json,created_at FROM sequence_results
+        WHERE sequence_id=? AND type='shot' AND shot_key=? ORDER BY rowid""", (sequence_id, shot_key))]
+    settings = [store.loads(row['settings_json'], {}) for row in rows]
+    edits = [item.get('assistant_edit') if isinstance(item.get('assistant_edit'), dict) else None for item in settings]
+    asked = [edit['proposal_id'] for edit in edits if edit and edit.get('proposal_id')]
+    requests = {}
+    if asked:
+        requests = {row['id']: row['request'] for row in conn.execute(
+            f"SELECT p.id,{CHAT_REQUEST} AS request FROM assistant_proposals p WHERE p.id IN ({','.join('?' * len(asked))})", asked)}
+    by_id = {row['id']: row for row in rows}
+    revisions = []
+    for number, (row, extra, edit) in enumerate(zip(rows, settings, edits), 1):
+        before = by_id.get(row['parent_id']) if row['parent_id'] else (rows[number - 2] if number > 1 else None)
+        prompt = row['rendered'] or ''
+        revisions.append({
+            'id': row['id'], 'number': number, 'origin': row['origin'], 'model_id': row['model_id'], 'created_at': row['created_at'],
+            'instruction': extra.get('instruction'), 'trigger': extra.get('trigger'),
+            'assistant': {'request': clip(requests.get(edit.get('proposal_id'))), 'summary': edit.get('summary') or '', 'provider': edit.get('provider'),
+                          'model': edit.get('model'), 'session_id': edit.get('session_id')} if edit else None,
+            'model_variant': (extra.get('usage') or {}).get('model_variant'), 'generation_seconds': extra.get('summary_generation_seconds'),
+            'check_ok': (extra.get('check') or {}).get('ok'), 'prompt': prompt,
+            'diff': text_diff.diff_segments(before['rendered'] or '', prompt) if before else None})
+    job = conn.execute("""SELECT status,json_extract(payload_json,'$.instruction') AS instruction,json_extract(payload_json,'$.trigger') AS reason FROM jobs
+        WHERE pipeline='sequence' AND status IN ('queued','running') AND json_extract(payload_json,'$.sequence_id')=? AND json_extract(payload_json,'$.step')='shot'
+        AND json_extract(payload_json,'$.shot_key')=? ORDER BY rowid DESC LIMIT 1""", (sequence_id, shot_key)).fetchone()
+    current = rows[-1]['id'] if rows else None
+    proposals = [{'id': row['id'], 'created_at': row['created_at'], 'summary': row['summary'], 'request': clip(row['request']), 'provider': row['provider'],
+                  'model': row['model_id'], 'stale': row['base_result_id'] != current, 'prompt': row['content'], 'diff': text_diff.diff_segments(row['base_content'] or '', row['content'])}
+                 for row in conn.execute(f"""SELECT p.id,p.created_at,p.summary,p.provider,p.model_id,p.base_result_id,p.base_content,p.content,{CHAT_REQUEST} AS request
+                     FROM assistant_proposals p WHERE p.sequence_id=? AND p.target='sequence_shot' AND p.status='pending' AND json_extract(p.payload_json,'$.shot_key')=?
+                     ORDER BY p.created_at DESC,p.rowid DESC""", (sequence_id, shot_key))]
+    return {'revisions': revisions[::-1], 'pending': {'status': job['status'], 'instruction': job['instruction'] or None, 'trigger': job['reason']} if job else None,
+            'proposals': proposals}
 
 
 def result_view(row):

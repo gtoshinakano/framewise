@@ -54,6 +54,11 @@ def shot_answer(speakers=(), seconds=2.0):
         'open_questions': []}
 
 
+def sides(diff):
+    """The texts before and after a diff."""
+    return ''.join(part['text'] for part in diff if part['op'] != 'insert'), ''.join(part['text'] for part in diff if part['op'] != 'delete')
+
+
 class SequenceBase(unittest.TestCase):
     setUp_base = analysis_tests.AnalysisTest.setUp
     tearDown = analysis_tests.AnalysisTest.tearDown
@@ -342,6 +347,43 @@ class SequenceFlowTest(SequenceBase):
         self.assertEqual(wrong.status_code, 422)
         self.assertIn('spoken_language', wrong.json()['detail'])
         self.assertEqual(self.client.put(f"/api/sequence-results/{detail['review']['id']}", json={'content': {}}).status_code, 409)
+
+    def test_shot_history_lists_instructions_and_prompt_changes(self):
+        sequence_id = self.written()
+        key = self.detail(sequence_id)['shots'][2]['key']
+        url = f'/api/sequences/{sequence_id}/shots/{key}/history'
+        first = self.client.get(url).json()
+        self.assertEqual(([item['number'] for item in first['revisions']], first['revisions'][0]['diff'], first['pending'], first['proposals']), ([1], None, None, []))
+        # A rewrite with an instruction: the history shows it while it waits, then diffs the new prompt against the old one.
+        self.run_step(sequence_id, 'shots', shot_keys=[key], instruction='Make the light cooler.')
+        self.assertEqual(self.client.get(url).json()['pending'], {'status': 'queued', 'instruction': 'Make the light cooler.', 'trigger': None})
+        cooler = 'Cool blue evening light falls from the right while the shop windows glow.'
+        self.answers['shot'] = lambda data: {**shot_answer([item['speaker'] for item in data.get('speakers') or []], data['shot']['seconds']), 'light': cooler}
+        self.assertEqual(self.work(), 1)
+        history = self.client.get(url).json()
+        newest, oldest = history['revisions']
+        self.assertEqual((newest['number'], newest['origin'], newest['instruction'], newest['trigger'], newest['check_ok'], history['pending']), (2, 'model', 'Make the light cooler.', None, True, None))
+        self.assertIsNone(oldest['diff'])
+        self.assertEqual(sides(newest['diff']), (oldest['prompt'], newest['prompt']))
+        self.assertIn(cooler, newest['prompt'])
+        self.assertIn('Cool', ''.join(part['text'] for part in newest['diff'] if part['op'] == 'insert'))
+        self.assertIn('warm', ''.join(part['text'] for part in newest['diff'] if part['op'] == 'delete'))
+        # A hand edit is a revision of its own.
+        result = self.detail(sequence_id)['shots'][2]['result']
+        edited = self.client.put(f"/api/sequence-results/{result['id']}", json={'content': {**result['content'], 'framing_lock': 'Head and shoulders only.'}})
+        self.assertEqual(edited.status_code, 200, edited.text)
+        newest = self.client.get(url).json()['revisions'][0]
+        self.assertEqual((newest['number'], newest['origin'], newest['instruction']), (3, 'manual_edit', None))
+        self.assertIn('Head and shoulders only', ''.join(part['text'] for part in newest['diff'] if part['op'] == 'insert'))
+        # A voice change rewrites the shot without an instruction; the history says why.
+        saved = self.client.put(f'/api/sequences/{sequence_id}/voices', json={'shot_key': key, 'speaker': 'Hero', 'segments': [{'from': 0, 'delivery': 'narrative'}]})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(self.client.get(url).json()['pending'], {'status': 'queued', 'instruction': None, 'trigger': 'voices'})
+        self.assertEqual(self.work(), 1)
+        newest = self.client.get(url).json()['revisions'][0]
+        self.assertEqual((newest['number'], newest['instruction'], newest['trigger']), (4, None, 'voices'))
+        self.assertEqual(self.detail(sequence_id)['shots'][2]['result']['trigger'], 'voices')
+        self.assertEqual(self.client.get(f'/api/sequences/missing/shots/{key}/history').status_code, 404)
 
     def test_a_boundary_inside_speech_can_be_moved_by_hand(self):
         self.interrupt()

@@ -1,4 +1,5 @@
 import { api, jsonBody } from './api'
+import type { DiffSegment } from './assistantApi'
 
 /** A range of cuts directed as one short video on the original audio. */
 export type SequenceInfo = {
@@ -53,7 +54,21 @@ export type ShotResult = {
   derived: { references?: ShotReference[]; dialogue?: ShotDialogue[]; voices?: ShotVoice[]; still_prompt?: string; audio_file?: string }
   origin: string; model_id: string | null; job_id: string | null; parent_id: string | null; created_at: string; instruction: string | null; completed_by_app: string | null
   generation_seconds: number | null; model_variant: string | null; decode_tokens_per_second: number | null
+  /** Why the director rewrote it without an instruction (`voices`: the user changed how a speaker is heard). */
+  trigger?: string | null
+  /** The assistant's one-line description when the version was applied from the Assistant tab. */
+  assistant_summary?: string | null
 }
+/** One version of a shot's prompt and what caused it; `diff` compares its prompt with the version it replaced (null for the first). */
+export type ShotRevision = {
+  id: string; number: number; origin: string; model_id: string | null; created_at: string; instruction: string | null; trigger: string | null
+  /** Set for a change applied from the Assistant tab: what the user asked in the chat and the assistant's summary. */
+  assistant: { request: string | null; summary: string; provider: string | null; model: string | null; session_id: string | null } | null
+  model_variant: string | null; generation_seconds: number | null; check_ok: boolean | null; prompt: string; diff: DiffSegment[] | null
+}
+/** A change to a shot proposed in the Assistant tab that waits to be applied or discarded there. */
+export type ShotProposal = { id: string; created_at: string; summary: string; request: string | null; provider: string | null; model: string | null; stale: boolean; prompt: string; diff: DiffSegment[] }
+export type ShotHistory = { revisions: ShotRevision[]; pending: { status: 'queued' | 'running'; instruction: string | null; trigger: string | null } | null; proposals: ShotProposal[] }
 export type StaleReason = 'plan' | 'bible' | 'evidence'
 export type SequenceShot = {
   index: number; key: string; t0: number; t1: number; start_time: number; end_time: number; duration: number; generate_seconds: number; trim_seconds: number | null
@@ -119,6 +134,8 @@ export const sequenceApi = {
   remove: (id: string) => api<{ ok: boolean }>(`/sequences/${id}`, { method: 'DELETE' }),
   run: (id: string, body: { step: RunStep; shot_keys?: string[]; only_missing?: boolean; instruction?: string }) => api<{ queued: number; job_ids: string[] }>(`/sequences/${id}/run`, jsonBody(body)),
   cancel: (id: string) => api<{ cancelled: number }>(`/sequences/${id}/cancel`, { method: 'POST' }),
+  /** Every version of a shot's prompt, newest first, with the rewrite in progress and the Assistant's unapplied proposals. */
+  shotHistory: (id: string, shotKey: string) => api<ShotHistory>(`/sequences/${id}/shots/${encodeURIComponent(shotKey)}/history`),
   revise: (resultId: string, content: unknown) => api<SequenceDetail>(`/sequence-results/${resultId}`, { method: 'PUT', body: JSON.stringify({ content }) }),
   confirmDialogue: (id: string, resultId: string) => api<SequenceDetail>(`/sequences/${id}/compilation/confirm`, jsonBody({ result_id: resultId })),
   useSourceDialogue: (id: string) => api<SequenceDetail>(`/sequences/${id}/compilation/use-source`, { method: 'POST' }),

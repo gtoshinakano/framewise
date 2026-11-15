@@ -113,6 +113,29 @@ class SequenceAssistantTest(pipeline_tests.SequenceBase):
         self.assertTrue(self.proposals()[0]['stale'])
         self.assertEqual(self.client.post(f"/api/assistant/proposals/{made['proposal_id']}/apply").status_code, 409)
 
+    def test_shot_history_shows_assistant_requests_and_proposals(self):
+        turn = 'turn-light'
+        with db.connect() as conn:
+            conn.execute("INSERT INTO assistant_turns(id,session_id,provider,model,status) VALUES (?,?,'fake','fake-model','done')", (turn, self.session['id']))
+            conn.execute("INSERT INTO assistant_messages(id,session_id,turn_id,seq,role,content) VALUES ('ask',?,?,1,'user','Make the light in shot 2 cooler.')", (self.session['id'], turn))
+        ctx = tools.ToolContext(cut_id=self.session['cut_id'], session_id=self.session['id'], turn_id=turn, provider='fake', model='fake-model', sequence_id=self.sequence_id)
+        made, _, _ = self.run_tool('propose_shot_edit', {'shot': 2, 'set': [{'path': 'light', 'value': 'Cool evening light from the right.'}], 'summary': 'Cooler light'}, ctx)
+        key = self.detail(self.sequence_id)['shots'][1]['key']
+        url = f'/api/sequences/{self.sequence_id}/shots/{key}/history'
+        history = self.client.get(url).json()
+        self.assertEqual(len(history['revisions']), 1)
+        proposal, = history['proposals']
+        self.assertEqual((proposal['id'], proposal['request'], proposal['summary'], proposal['stale']), (made['proposal_id'], 'Make the light in shot 2 cooler.', 'Cooler light', False))
+        self.assertEqual(pipeline_tests.sides(proposal['diff']), (history['revisions'][0]['prompt'], proposal['prompt']))
+        self.assertIn('Cool', ''.join(part['text'] for part in proposal['diff'] if part['op'] == 'insert'))
+        self.assertEqual(self.client.post(f"/api/assistant/proposals/{made['proposal_id']}/apply").status_code, 200)
+        history = self.client.get(url).json()
+        newest, oldest = history['revisions']
+        self.assertEqual((history['proposals'], newest['origin'], newest['instruction']), ([], 'assistant_edit', None))
+        self.assertEqual((newest['assistant']['request'], newest['assistant']['summary'], newest['assistant']['session_id']), ('Make the light in shot 2 cooler.', 'Cooler light', self.session['id']))
+        self.assertEqual(pipeline_tests.sides(newest['diff']), (oldest['prompt'], newest['prompt']))
+        self.assertEqual(self.detail(self.sequence_id)['shots'][1]['result']['assistant_summary'], 'Cooler light')
+
     def test_plan_and_bible_edits(self):
         updated, label, ok = self.run_tool('propose_plan_edit', {'action': 'update', 'cut': 2, 'intent': 'Hero answers the friend.', 'summary': 'Sharper intent'})
         self.assertEqual((ok, label, updated['shots_after'], updated.get('shots_to_write_again'), updated.get('written_shots_that_disappear')), (True, 'Proposed a plan change (update at cut 2)', 3, None, None))

@@ -230,6 +230,15 @@ def shot_frame_spec(sequence_id, shot_key=None, index=None, width=480):
     return {'source': source, 'time': shot['frame']['time'], 'start': cut['start_time'], 'end': cut['end_time'], 'width': width, 'last': False, 'seek_tolerance': .000002, 'probe_padding': 0}, episode['id']
 
 
+@router.get('/sequences/{sequence_id}/shots/{shot_key}/history')
+def shot_prompt_history(sequence_id: str, shot_key: str):
+    """Every version of a shot's prompt, newest first: why it was written (your instruction, a voice change, a hand edit or an
+    Assistant request) and what changed against the version before. Also the rewrite in progress and the Assistant's unapplied proposals."""
+    with db.connect() as conn:
+        require(conn, sequence_id)
+        return sequence_view.shot_history(conn, sequence_id, shot_key)
+
+
 @router.get('/sequences/{sequence_id}/shots/{shot_key}/frame', response_class=Response,
             responses={200: {'content': {'image/jpeg': {'schema': {'type': 'string', 'format': 'binary'}}}, 'description': 'Preview of the initial frame of a planned shot'}})
 async def shot_frame(sequence_id: str, shot_key: str):

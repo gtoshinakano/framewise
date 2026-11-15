@@ -248,7 +248,8 @@ def run_shot(job, owner, payload, sequence):
     output, model, settings, user_input = ask(job, owner, payload, 'shot', inputs.__getitem__, direction.shot_format(shot, roster, dialogue),
                                               lambda answer: direction.validate_shot(answer, shot, bible, roster, scenario, dialogue), f"Shot {shot['index']}")
     prompt, verdict, derived = sequence_prompt.build(shot, output, bible, roster, scenario, dialogue)
-    settings.update(check=verdict, derived=derived, hashes=evidence.shot_hashes(ctx, bible, shot), instruction=payload.get('instruction') or None)
+    settings.update(check=verdict, derived=derived, hashes=evidence.shot_hashes(ctx, bible, shot), instruction=payload.get('instruction') or None,
+                    trigger=payload.get('trigger'))
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         worker.require_lease(conn, job['id'], owner)

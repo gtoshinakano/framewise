@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { AlertTriangle, ArrowDown, ArrowUp, Brain, Check, ChevronRight, Cloud, Cpu, Gauge, Layers, Loader2, MessageSquarePlus, Pencil, RefreshCw, Send, Sparkles, Square, Timer, Trash2, Wrench, X, Zap } from 'lucide-react'
 import type { Cut } from './api'
 import { assistantApi, streamUrl, type AssistantConfig, type AssistantScope, type AssistantProposal, type AssistantSession, type AssistantTurn, type AssistantUsage, type LocalModelStatus, type ProviderInfo, type SessionDetail, type SkillInfo } from './assistantApi'
-import { ACTIVE_STATUSES, activeTurn, applyStreamEvent, compactDiff, contextShare, formatSeconds, formatTokens, groupTurns, prettyArguments, prettyResult, reasoningTokens, starterText, turnElapsed, type Step, type ToolStep, type TurnView } from './assistantFormat'
+import { ACTIVE_STATUSES, activeTurn, applyStreamEvent, contextShare, formatSeconds, formatTokens, groupTurns, prettyArguments, prettyResult, reasoningTokens, starterText, turnElapsed, type Step, type ToolStep, type TurnView } from './assistantFormat'
+import { DiffText } from './DiffText'
 import { CopyButton, Markdown } from './Markdown'
 
 const STREAM_EVENTS = ['snapshot', 'delta', 'message', 'proposal', 'turn', 'done', 'gone'] as const
@@ -421,14 +422,13 @@ function ProposalCard({ proposal, onResolve }: { proposal: AssistantProposal; on
   const [full, setFull] = useState(prompt)
   const pending = proposal.status === 'pending'
   const badge = proposal.status === 'applied' ? [prompt ? 'Saved to cut' : 'Applied', 'bg-[#173a2b] text-[#9ff0c8]'] : proposal.status === 'discarded' ? [prompt ? 'Replaced or discarded' : 'Discarded', 'bg-[#262b35] text-[#aeb5c1]'] : proposal.stale ? ['Outdated', 'bg-[#4a3a17] text-[#ffd59a]'] : [prompt ? 'Not saved' : 'Pending approval', 'bg-[#2b2442] text-[#d6c8ff]']
-  const segments = useMemo(() => compactDiff(proposal.diff), [proposal.diff])
   const changed = proposal.diff.some(segment => segment.op !== 'equal')
   async function act(action: 'apply' | 'discard') { setWorking(true); try { await onResolve(proposal, action) } finally { setWorking(false) } }
   return <div className={`rounded-xl border p-3 ${pending && !proposal.stale ? 'border-[#5a4a8c] bg-[#1a1730]' : 'border-[#2b3240] bg-[#11151d]'}`}>
     <div className="flex flex-wrap items-center gap-2">{prompt ? <Sparkles size={13} className="text-[#c3aeff]" /> : <Pencil size={13} className="text-[#c3aeff]" />}<span className="text-xs font-semibold">{prompt ? `Corrected ${proposal.label}` : `Proposed change · ${proposal.label}`}</span><span className={`rounded px-1.5 py-0.5 text-[10px] ${badge[1]}`}>{badge[0]}</span><span className="ml-auto"><CopyButton text={proposal.content} label={prompt ? 'Copy prompt' : 'Copy text'} /></span></div>
     {proposal.summary && <p className="mt-1.5 text-xs text-[#c9cfda]">{proposal.summary}</p>}
     <div className={`scrollbar mt-2 overflow-y-auto whitespace-pre-wrap rounded-lg border border-[#2b3240] bg-[#0f131a] p-2.5 font-mono text-[11px] leading-5 ${full ? 'max-h-[28rem] text-[#c9cfda]' : 'max-h-72 text-[#9ea6b5]'}`}>
-      {full ? proposal.content : segments.map((segment, index) => <span key={index} className={segment.op === 'insert' ? 'diff-insert' : segment.op === 'delete' ? 'diff-delete' : ''}>{segment.text}</span>)}
+      {full ? proposal.content : <DiffText segments={proposal.diff} />}
     </div>
     <div className="mt-2 flex flex-wrap items-center gap-2">
       {(changed || !full) && <button type="button" className="!text-[11px] text-[#c3aeff] underline" onClick={() => setFull(!full)}>{full ? `Show changes${proposal.diff_label ? ` vs ${proposal.diff_label}` : ''}` : prompt ? 'Show full prompt' : 'Show full text'}</button>}
