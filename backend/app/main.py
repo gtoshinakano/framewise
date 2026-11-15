@@ -1014,15 +1014,9 @@ def preview_voice_ranges(audio, ranges):
         raise HTTPException(404, 'Episode audio is not ready')
     output = io.BytesIO()
     try:
-        with wave.open(str(audio), 'rb') as source, wave.open(output, 'wb') as target:
-            target.setparams(source.getparams())
-            for item in ranges:
-                start = round(item['start_time'] * source.getframerate())
-                end = min(source.getnframes(), round(item['end_time'] * source.getframerate()))
-                if start >= source.getnframes() or end <= start:
-                    raise HTTPException(400, 'Excerpt is outside the available audio')
-                source.setpos(start)
-                target.writeframes(source.readframes(end - start))
+        media.write_wav_ranges(audio, ranges, output)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except (wave.Error, EOFError) as exc:
         raise HTTPException(400, 'Episode audio could not be previewed') from exc
     return Response(content=output.getvalue(), media_type='audio/wav')

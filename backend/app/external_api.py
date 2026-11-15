@@ -764,172 +764,249 @@ class SequenceSummary(BaseModel):
     updated_at: str
 
 
-class SequenceCut(BaseModel):
+class SequenceModel(BaseModel):
+    """Keys are left out when they have no value; the documented ones are the only ones."""
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+
+
+class SequenceCut(SequenceModel):
+    number: int = Field(description='Cut number (cut_index + 1) as the cuts are now.')
     id: str
-    cut_number: int
-    start_time: float
-    end_time: float
+    at: float = Field(description='Start on the sequence clock, in seconds.')
+    duration: float
 
 
-class SequenceReference(BaseModel):
-    label: str = Field(description='The label the prompt uses: <Picture N> or <Audio 1>.')
-    role: Literal['initial_frame', 'character_sheet', 'scenario', 'original_audio'] = Field(description='What to attach under this label: the shot initial frame, the sheet of the named character, the picture of the scenario, or the shot audio.')
-    character_context_id: str | None = Field(default=None, description='For character_sheet: the character context item.')
-    context_id: str | None = Field(default=None, description='For scenario: the scenario context item.')
-    name: str | None = None
-
-
-class SequenceSubject(BaseModel):
-    number: int
-    label: str = Field(description='<Subject N> as written in the prompt.')
-    name: str
-    kind: Literal['character', 'person', 'scenario'] = Field(description='character has a record; person is someone without one; scenario is the place.')
+class SequenceSpeaker(SequenceModel):
+    name: str = Field(description="The name the shots' voices use: the character, Narrator, the diarization label of an unresolved voice, or Unknown speaker.")
+    kind: Literal['character', 'narrator', 'voice', 'unknown'] = Field(description='character has a record; voice is a diarization label nobody resolved; unknown has no label at all.')
     character_context_id: str | None = None
-    context_id: str | None = None
-    picture: int | None = Field(default=None, description='Number of the <Picture N> that carries this subject, or null when it is only seen in the initial frame.')
-    anchors: str | None = None
+    speaker_labels: list[str] | None = Field(default=None, description="Diarization labels of this speaker's lines.")
 
 
-class SequenceLine(BaseModel):
-    line: str = Field(description='Line id on the sequence, for example L7; a line split by a shot boundary appears in both shots with its own words.')
-    t0: float = Field(description='Start in seconds from the start of the shot.')
-    t1: float
-    text: str = Field(description='The transcript words of this shot, verbatim.')
-    speaker_label: str | None = None
-    character_context_id: str | None = None
-    character_name: str | None = None
-    attribution: Literal['reviewed', 'transcript', 'director', 'unknown'] | None = Field(default=None, description='reviewed: the user reviewed the dialogue; transcript: the user linked the line; director: the sequence bible decided the voice; unknown: nobody did.')
-    speaker: str | None = Field(default=None, description='The speaker as the shot\'s voices name it: the character name, Narrator, or the voice label.')
-    delivery: Literal['on_screen', 'off_screen', 'inner_voice', 'narrative'] | None = Field(default=None, description="How the shot plays the line: its speaker's voice range at the middle of the line (see the shot's voices). Null until the shot is written.")
-    subject: int | None = Field(default=None, description='Subject number that carries the voice: lip-synced (on_screen), with the mouth still (inner_voice), or far away (narrative).')
-    fixed_by_user: bool | None = Field(default=None, description='True when the user decided this delivery.')
-    crosses_start: bool | None = None
-    crosses_end: bool | None = None
+class SequenceIssue(SequenceModel):
+    shots: list[int] | None = Field(default=None, description='The shots it concerns (an issue that reads the same in several shots is listed once); absent for the whole sequence.')
+    line: str | None = Field(default=None, description='The line it concerns (L7).')
+    severity: Literal['error', 'warning', 'info'] = Field(description='error: fix it in Framewise before generating. warning: decide or look before generating. info: how to generate.')
+    kind: Literal['review', 'check_error', 'check_warning', 'open_question', 'unknown_speaker', 'derived_frame', 'padded_shot', 'no_sheet', 'unlinked_subject',
+                  'missing_reference', 'stale', 'not_written', 'cuts_changed', 'cuts_missing', 'plan_problem', 'template_unavailable']
+    text: str
 
 
-class SequenceVoice(BaseModel):
-    speaker: str = Field(description='The character name, Narrator, or the voice label of an unresolved voice.')
-    start: float = Field(alias='from', description='Second of the shot from which this delivery holds.')
-    to: float = Field(description='Second of the shot at which it ends (the next range of the speaker, or the end of the shot).')
-    delivery: Literal['on_screen', 'off_screen', 'inner_voice', 'narrative'] = Field(
-        description='on_screen: visible with the mouth visible, lip-synced. off_screen: not in the picture. inner_voice: visible, the mouth does not move for the words. narrative: too far for lip sync; the words play over the picture.')
-    subject: str | None = Field(default=None, description='Name of the subject who carries the voice.')
-    subject_number: int | None = Field(default=None, description='Its <Subject N> number in the prompt.')
-    fixed_by_user: bool = Field(default=False, description='True when the user decided this range in the Shots tab.')
+class SequenceRevision(SequenceModel):
+    id: str = Field(description='Result id of this revision.')
+    origin: str = Field(description='model, manual_edit, assistant_edit, or source (the dialogue used as transcribed).')
+    model_id: str | None = None
+    created_at: str
+    revision: int = Field(description='Position in its revision chain; 1 is the first version.')
+    generation_seconds: float | None = None
 
 
-class SequenceFixedVoice(BaseModel):
-    speaker: str
-    start: float = Field(alias='from', description='Second of the shot.')
-    to: float
-    delivery: Literal['on_screen', 'off_screen', 'inner_voice', 'narrative']
+class SequenceProvenance(SequenceModel):
+    bible: SequenceRevision | None = None
+    plan: SequenceRevision | None = None
+    compilation: SequenceRevision | None = None
+    review: SequenceRevision | None = None
+    shots: dict[str, SequenceRevision] | None = Field(default=None, description='Each written shot by its index.')
 
 
-class SequenceFrame(BaseModel):
-    cut_id: str
-    cut_number: int
-    time: float = Field(description='Episode time of the frame, in seconds.')
-    strategy: Literal['cut_first_frame', 'frame_at_time'] = Field(description='cut_first_frame: the analysed first frame of that cut. frame_at_time: a later moment of the cut (the next part of a cut longer than one take, or just after a phrase the previous shot finished across the hard cut); its description is derived, not observed.')
-    continues_previous_shot: bool = Field(description='True for the next part of a cut longer than one take (the previous shot showed the same cut); the last generated frame of that shot may serve as the initial frame instead.')
-    description: str | None = Field(description='Who is where in the opening still.')
-    still: dict[str, Any] | None = Field(description='The opening still as shot, subjects, layout, setting and lighting.')
-    still_prompt: str | None = Field(description='A generator-agnostic prompt for the still image.')
-    frame_url: str
-    file: str = Field(description='Name of the JPEG in the export ZIP.')
+class SequenceSubtitleState(SequenceModel):
+    language: str | None = Field(default=None, description="The burned-in subtitles' language, as the user stated it.")
+    extracted: bool = Field(description='False when the episode has no extracted burned-in subtitles; shots then have no subtitles.')
 
 
-class SequenceAudio(BaseModel):
-    start_time: float
-    end_time: float
-    url: str
-    file: str = Field(description='Name of the WAV in the export ZIP; the prompt quotes this name for <Audio 1>.')
-    has_speech: bool
+class SequenceEdge(SequenceModel):
+    how: Literal['start', 'continuation', 'keep_cut', 'before_line', 'after_line'] = Field(
+        description="start: the sequence starts. continuation: the next part of the same long cut. keep_cut: exactly on the hard cut. before_line/after_line: moved off the hard cut by shift seconds "
+                    "into the silence before or after a phrase, so it stays in one shot (the shot borrows that much of the neighbouring cut's audio, never its picture).")
+    boundary: str | None = Field(default=None, description='Id of the hard cut (K1…).')
+    shift: float | None = Field(default=None, description='Seconds the boundary moved off the hard cut (negative: earlier); absent when it sits on the cut.')
+    keeps: list[str] | None = Field(default=None, description='Line ids the moved boundary keeps whole.')
+    splits: list[str] | None = Field(default=None, description='Line ids the edge divides: the words stop in one shot and go on in the next.')
+    reason: str | None = Field(default=None, description="The director's or the user's reason for the choice.")
+    by: Literal['director', 'app', 'user'] | None = None
 
 
-class SequenceBeat(BaseModel):
+class SequenceBeat(SequenceModel):
     start: float
     end: float
-    action: str
-    hold: bool | None = Field(default=None, description='True for the hold the app adds to a shot shorter than the minimum generation length.')
+    action: str | None = None
+    hold: bool | None = Field(default=None, description='The hold the app adds to a shot shorter than 5 s: everyone keeps the final pose, the camera stays.')
 
 
-class SequenceEdge(BaseModel):
-    how: Literal['start', 'end', 'continuation', 'keep_cut', 'before_line', 'after_line'] = Field(
-        description='start/end: the edge of the sequence. continuation: the next or previous part of the same long cut. keep_cut: exactly on the hard cut. before_line/after_line: moved off the hard cut by shift seconds into the silence before or after a phrase, so the phrase stays in one shot (the shot borrows that much of the neighbouring cut\'s audio, never its picture).')
-    boundary: str | None = Field(default=None, description='Id of the hard cut (K1…).')
-    shift: float | None = Field(default=None, description='Seconds the boundary moved off the hard cut (negative: earlier).')
-    hard_cut: float | None = Field(default=None, description='The hard cut, in seconds from the start of the sequence.')
-    keeps: list[str] | None = Field(default=None, description='Line ids the moved boundary keeps whole.')
-    split: dict[str, Any] | None = Field(default=None, description='Speech the edge divides: lines, the words before it and the words after it.')
-    reason: str | None = Field(default=None, description="The director's (or the user's) reason for this choice.")
-    by: Literal['director', 'app', 'user'] | None = Field(default=None, description='Who chose it.')
+class SequenceContinuity(SequenceModel):
+    from_previous: str | None = Field(default=None, description='What must match the end of the previous shot.')
+    to_next: str | None = Field(default=None, description='Full view only: the state this shot hands over.')
 
 
-class SequenceShot(BaseModel):
-    index: int = Field(description='One-based position in the sequence.')
-    key: str = Field(description='Stable id of the shot: its episode interval in milliseconds.')
-    start_time: float = Field(description='Episode-relative start of the audio interval, in seconds.')
-    end_time: float
-    t0: float = Field(description='Start in seconds from the start of the sequence.')
+class SequenceFrame(SequenceModel):
+    description: str | None = Field(default=None, description="Who is where in the opening frame, as the prompt's <Picture 1> line says it.")
+    description_source: Literal['observed', 'derived'] = Field(
+        description="observed: the analysed first frame of the shot's cut. derived: a later moment of the cut that was never analysed; the director inferred it from the first frame and the motion.")
+    derived_from: str | None = Field(default=None, description='For a derived description: what it was inferred from.')
+    continues_previous_shot: bool | None = Field(default=None, description='The next part of a long cut: the last generated frame of the previous shot may serve as the opening image instead.')
+    at: float | None = Field(default=None, description='Full view only: where the frame lies in the source, in seconds from the start of the shot.')
+
+
+class SequenceVoice(SequenceModel):
+    speaker: str = Field(description='Speaker id (SP1…) in speakers.')
+    start: float = Field(alias='from', description='Second of the shot from which this delivery holds.')
+    to: float
+    delivery: Literal['on_screen', 'off_screen', 'inner_voice', 'narrative'] = Field(
+        description='on_screen: visible with the mouth visible, lip-synced. off_screen: not in the picture. inner_voice: visible, the mouth does not move for the words. narrative: too far for lip sync; the words play over the picture.')
+    subject: int | None = Field(default=None, description='<Subject N> that carries the voice.')
+    fixed: bool | None = Field(default=None, description='The user decided this range in Framewise.')
+
+
+class SequenceCandidate(SequenceModel):
+    character_context_id: str
+    name: str
+    confidence: Literal['low', 'medium'] = Field(description='A heuristic, never high: Framewise keeps no voice-match score.')
+    reason: str
+
+
+class SequenceLine(SequenceModel):
+    id: str = Field(description='Line id on the sequence (L7); a line divided by a shot edge appears in both shots with its own words.')
+    speaker: str = Field(description='Speaker id (SP1…) in speakers.')
+    t0: float
     t1: float
-    duration: float = Field(description='Length of the audio interval the shot covers in the finished video.')
-    generate_seconds: float = Field(description='Length to generate with H3 (the last beat of the prompt ends here); longer than duration for very short shots.')
-    trim_seconds: float | None = Field(description='When set, cut the generated video to this length.')
-    cut: int = Field(description='Number of the cut this shot is: every cut is one shot, and its picture is the only one shown.')
-    cut_id: str
-    part: list[int] | None = Field(default=None, description='[part, of] for a cut longer than one take, which is divided into consecutive parts.')
-    source_cuts: list[int] = Field(description='Cuts whose audio the shot plays: its own cut, plus a neighbour when a boundary moved to keep a phrase whole.')
-    cut_ids: list[str]
-    merged: bool = Field(description='Always false: shots are never merged.')
-    starts_mid_cut: bool = Field(description='True when the shot starts after its cut starts (a later part, or after a phrase the previous shot finished).')
-    ends_mid_cut: bool
-    opens: SequenceEdge = Field(description='How the shot meets the previous one.')
-    closes: SequenceEdge = Field(description='How the shot meets the next one.')
-    scene: str | None
-    intent: str
-    staging: str = Field(description='Always empty; see opens and closes.')
-    initial_frame: SequenceFrame
-    audio: SequenceAudio
-    dialogue: list[SequenceLine]
-    voices: list[SequenceVoice] | None = Field(default=None, description='How each speaker is heard in this shot, as time ranges per speaker. Null until the shot is written.')
-    fixed_voices: list[SequenceFixedVoice] | None = Field(default=None, description='The ranges the user decided for this shot; the director writes the shot around them.')
-    subjects: list[SequenceSubject]
-    references: list[SequenceReference] = Field(description='Every label of the prompt in the order the files must be attached.')
-    camera: dict[str, Any] | None
-    beats: list[SequenceBeat]
-    soundscape: str | None
-    continuity: dict[str, Any] | None
-    open_questions: list[str]
-    prompt: str | None = Field(description='The final MiniMax H3 prompt, from subject_definitions: to non_diegetic_music:. Null until the shot is written.')
-    check: dict[str, Any] | None = Field(description='Format verdict of the prompt: ok, errors, warnings, stats.')
-    written: bool
-    stale: list[str] = Field(description='What changed since the shot was written: plan, bible or evidence. Empty when it is current.')
-    result: dict[str, Any] | None = Field(description='Revision id, origin (model, manual_edit, assistant_edit), model and time of the shot direction.')
+    text: str = Field(description='The words of this shot, verbatim from the reviewed dialogue or the transcript.')
+    by: Literal['reviewed', 'transcript', 'director', 'unknown'] = Field(
+        description='Who decided the speaker. reviewed: the user reviewed the dialogue. transcript: the user linked the line. director: the sequence bible. unknown: nobody.')
+    crosses_start: bool | None = None
+    crosses_end: bool | None = None
+    candidate: SequenceCandidate | None = Field(default=None, description='For a line nobody attributed: advice only; the stored decision stays unknown.')
 
 
-class SequencePackage(BaseModel):
-    contract: str = Field(description='Version of this document: sequence-v1.')
+class SequenceSubject(SequenceModel):
+    n: int = Field(description='<Subject n> in the prompt.')
+    name: str = Field(description='The name the prompt uses.')
+    kind: Literal['character', 'person', 'object', 'place', 'unknown', 'scenario'] = Field(description='character has a record; scenario is the place of a scenario note.')
+    character_context_id: str | None = None
+    context_id: str | None = Field(default=None, description='For scenario: the scenario context item.')
+    picture: int | None = Field(default=None, description='<Picture N> that carries this subject; absent when it is only seen in the initial frame.')
+    linked_by: Literal['prompt', 'name'] | None = Field(default=None, description='prompt: the prompt itself names the record. name: the app matched the name afterwards; the prompt gives it no sheet.')
+    record_name: str | None = Field(default=None, description='The record name, when the prompt calls the character something shorter.')
+    kind_guessed: bool | None = Field(default=None, description="The kind is the app's guess from the opening frame's analysis.")
+    anchors: str | None = Field(default=None, description='Full view only.')
+    keep: str | None = Field(default=None, description='Full view only.')
+
+
+class SequencePicture(SequenceModel):
+    role: Literal['initial_frame', 'character_sheet', 'scenario'] = Field(description='Entry N is <Picture N>.')
+    subject: int | None = Field(default=None, description='The subject whose sheet or scenario picture this is.')
+
+
+class SequenceShotSubtitle(SequenceModel):
+    t0: float
+    t1: float
+    text: str
+    crosses_shot: bool | None = Field(default=None, description='The subtitle starts before or ends after this shot.')
+
+
+class SequenceCheck(SequenceModel):
+    ok: bool
+    errors: list[str] | None = None
+    warnings: list[str] | None = None
+    stats: dict[str, Any] | None = Field(default=None, description='Full view only.')
+
+
+class SequenceShot(SequenceModel):
+    index: int = Field(description='One-based position; files are named shot-NN.')
+    key: str | None = Field(default=None, description='Full view only: stable id, the episode interval in milliseconds.')
+    cut: int | None = Field(default=None, description='The cut this shot is; its picture is the only one shown.')
+    part: list[int] | None = Field(default=None, description='[part, of] for a cut longer than one take.')
+    at: float | None = Field(default=None, description='Start on the sequence clock; episode time = start_time + at + shot seconds.')
+    duration: float | None = Field(default=None, description='Length in the finished video.')
+    generate_seconds: float | None = Field(default=None, description='Only for shots shorter than 5 s: the length to generate (the prompt ends on a hold); trim the result to duration.')
+    source_cuts: list[int] | None = Field(default=None, description='Only when the shot plays a neighbour\'s audio: every cut whose audio it plays.')
+    opens: SequenceEdge | None = Field(default=None, description='Only in a one-shot slice: how the shot meets the previous one (the previous shot\'s closes).')
+    closes: SequenceEdge | None = Field(default=None, description='How the shot meets the next one; absent for the last shot.')
+    scene: str | None = None
+    intent: str | None = None
+    camera: dict[str, Any] | None = Field(default=None, description='move, and amplitude, speed and detail when it moves.')
+    beats: list[SequenceBeat] | None = None
+    soundscape: str | None = Field(default=None, description='Full view only.')
+    continuity: SequenceContinuity | None = None
+    initial_frame: SequenceFrame | None = None
+    voices: list[SequenceVoice] | None = Field(default=None, description='How each speaker is heard, as ranges; a line takes its speaker\'s range at its midpoint.')
+    lines: list[SequenceLine] | None = None
+    line_map: dict[str, str] | None = Field(default=None, description='Line id to the template slot 1.M (M: order by start among the lines of shot-NN.wav).')
+    subjects: list[SequenceSubject] | None = None
+    pictures: list[SequencePicture] | None = None
+    subtitles: list[SequenceShotSubtitle] | None = None
+    check: SequenceCheck | None = None
+    stale: list[str] | None = Field(default=None, description='What changed since the shot was written: plan, bible, evidence.')
+    written: bool | None = Field(default=None, description='Present (false) only while the shot has no direction.')
+    prompt: str | None = Field(default=None, description='Full view or include=prompts: the final H3 prompt (also shot-NN-prompt.txt).')
+    prompt_template: str | None = Field(default=None, description='Full view or include=prompts: the prompt with {language}, {line 1.M}, {start 1.M}, {end 1.M} placeholders.')
+    still_prompt: str | None = Field(default=None, description='Full view or include=prompts: a prompt for the opening still (also shot-NN-still.txt).')
+    still: dict[str, Any] | None = Field(default=None, description='Full view only: the opening still as shot, subjects, layout, setting and lighting.')
+
+
+class SequencePackage(SequenceModel):
+    contract: Literal['sequence-v2']
+    view: Literal['lean', 'full']
     id: str
     episode_id: str
     title: str
-    instruction: str
-    start_time: float
-    end_time: float
+    instruction: str | None = None
+    start_time: float = Field(description='Episode time of the sequence start; the only episode offset in the document.')
     duration: float
-    first_cut: int | None
-    last_cut: int | None
-    cuts_changed: bool
-    cuts_missing: bool
     created_at: str
     updated_at: str
-    cuts: list[SequenceCut]
-    audio_url: str = Field(description='The original audio of the whole sequence as WAV.')
     ready: bool = Field(description='True when every planned shot has a current prompt that passes the format check.')
-    pending: list[int] = Field(description='Indices of shots that are not written, stale or failing the check.')
-    plan_problems: list[str]
-    bible: dict[str, Any] | None = Field(description='The sequence bible: logline, synopsis, style, spoken_language, scenes, characters, voices, arc, pacing, continuity, open_questions.')
-    shots: list[SequenceShot]
-    review: dict[str, Any] | None = Field(description='The continuity review: verdict and issues (shot, shot_key, severity, problem, suggestion).')
+    pending: list[int] | None = Field(default=None, description='Shots that are not written, stale or failing the check.')
+    cuts_changed: bool | None = None
+    cuts_missing: bool | None = None
+    plan_problems: list[str] | None = None
+    cuts: list[SequenceCut] | None = None
+    speakers: dict[str, SequenceSpeaker] | None = Field(default=None, description='Speaker ids used by voices and lines.')
+    bible: dict[str, Any] | None = Field(default=None, description='logline, synopsis, spoken_language, arc, pacing, scenes, characters, voices, continuity (its open questions are in issues).')
+    subtitles: SequenceSubtitleState | None = None
+    issues: list[SequenceIssue] | None = Field(default=None, description='Everything to look at or decide, most severe first.')
+    review: dict[str, Any] | None = Field(default=None, description="The continuity review's verdict (its issues are in issues).")
+    provenance: SequenceProvenance | None = None
+    shots: list[SequenceShot] | None = None
+
+
+class SequenceDigestIssue(SequenceModel):
+    shots: list[int] | None = Field(default=None, description='The shots with this same issue; absent for the whole sequence.')
+    line: str | None = None
+    severity: Literal['error', 'warning', 'info']
+    kind: str
+    text: str = Field(description='Shortened; the lean view has the full text.')
+
+
+class SequenceDigestShot(SequenceModel):
+    n: int
+    cut: str = Field(description='Cut number, with part/of for a long cut.')
+    at: float
+    dur: float
+    gen: float | None = Field(default=None, description='Generated length when longer than dur.')
+    closes: str = Field(description='How the shot meets the next one (the next shot opens with it): how, hard cut, shift, lines it splits; end for the last shot.')
+    frame: Literal['observed', 'derived']
+    voices: list[str] | None = Field(default=None, description='speaker, delivery (on, off, inner, over) and range; (user) when the user decided it.')
+    lines: list[str] | None = Field(default=None, description='Line id, speaker (? candidate), first words.')
+    refs: str | None = Field(default=None, description='Pictures the prompt attaches besides <Picture 1> (the initial frame) and <Audio 1> (shot-NN.wav).')
+    state: str | None = Field(default=None, description='Present only when the shot is not ready: not written, stale: …, or check errors.')
+
+
+class SequenceDigest(SequenceModel):
+    contract: Literal['sequence-v2']
+    view: Literal['digest']
+    id: str
+    title: str
+    duration: float
+    cuts: str | None = None
+    ready: bool
+    pending: list[int] | None = None
+    cuts_changed: bool | None = None
+    cuts_missing: bool | None = None
+    plan_problems: list[str] | None = None
+    bible: dict[str, Any] | None = None
+    subtitles: SequenceSubtitleState | None = None
+    issues: list[SequenceDigestIssue] | None = None
+    shots: list[SequenceDigestShot] | None = None
 
 
 def _excerpt(episode_id, start, end, name, minimum=0.0):
@@ -955,19 +1032,24 @@ def _excerpt(episode_id, start, end, name, minimum=0.0):
         'X-Audio-Start-Seconds': str(first / rate), 'X-Audio-End-Seconds': str(last / rate)})
 
 
-def _package(sequence_id):
-    from . import sequence_view
-    package = sequence_view.package(sequence_id)
-    if package is None:
+def _sequences():
+    from . import sequence_package
+    return sequence_package
+
+
+def _document(sequence_id):
+    found = _sequences().document(sequence_id)
+    if found is None:
         raise HTTPException(404, 'Sequence not found')
-    return package
+    return found
 
 
-def _shot(package, index):
-    shot = next((item for item in package['shots'] if item['index'] == index), None)
-    if shot is None:
-        raise HTTPException(404, 'That shot is not part of the current plan')
-    return shot
+def _package_call(function, *args):
+    packages = _sequences()
+    try:
+        return function(*args)
+    except packages.PackageError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
 
 
 @router.get('/episodes/{episode_id}/sequences', response_model=list[SequenceSummary], summary="List an episode's sequences")
@@ -977,23 +1059,38 @@ def episode_sequences(episode_id: str):
     return sequences.list_sequences(episode_id)
 
 
-@router.get('/sequences/{sequence_id}', response_model=SequencePackage, summary='Get a directed sequence: bible, shots and final H3 prompts')
-def sequence_package(sequence_id: str):
-    """The current state of the sequence. Check `ready` before generating; `pending` lists the shots that still need writing."""
-    return _package(sequence_id)
+@router.get('/sequences/{sequence_id}', response_model=SequencePackage | SequenceDigest, summary='Get a directed sequence (contract sequence-v2): digest, lean or full view, or one shot',
+            responses={404: {'description': 'Sequence, or the shot asked for, not found.'}, 422: {'description': 'Unknown view, include or field.'}})
+def sequence_package(sequence_id: str,
+                     view: Annotated[Literal['lean', 'full', 'digest'], Query(description='digest: about 5 KB to read first. lean (default): no prompt texts. full: everything.')] = 'lean',
+                     shot: Annotated[int | None, Query(ge=1, description="One shot (by index) with its speakers, issues and opening edge; the bible is left out.")] = None,
+                     fields: Annotated[str, Query(description='Comma-separated shot keys to keep (index is always kept), for example lines,voices,initial_frame.')] = '',
+                     include: Annotated[str, Query(description='prompts: add prompt, prompt_template and still_prompt to the lean view.')] = ''):
+    """Check `ready` and `issues` before generating. Keys without a value are left out; shot times are seconds from the start of the shot."""
+    full, _ = _document(sequence_id)
+    result = _package_call(_sequences().project, full, view, include, shot, fields)
+    (SequenceDigest if view == 'digest' else SequencePackage).model_validate(result)
+    return JSONResponse(result)
 
 
-@router.post('/sequences/{sequence_id}/exports', response_model=BriefExportStatus, summary='Queue a sequence ZIP with audio, initial frames and prompts')
-def create_sequence_export(sequence_id: str):
+@router.post('/sequences/{sequence_id}/exports', response_model=BriefExportStatus, summary='Queue a sequence ZIP: digest, lean JSON, audio, frames, strips and prompts',
+             responses={409: {'description': 'The sequence has no shot plan yet.'}, 422: {'description': 'Unknown include.'}})
+def create_sequence_export(sequence_id: str,
+                           include: Annotated[str, Query(description='Comma-separated optional files: sequence_audio (sequence.wav), references (character crops, scene frames, voice samples), clips (silent source clip per shot).')] = ''):
     """Snapshot the package and queue the export; poll `/api/v1/brief-exports/{job_id}` and download from there."""
     import uuid
+    from datetime import datetime, timezone
     from . import worker
-    package = _package(sequence_id)
-    if not package['shots']:
+    packages = _sequences()
+    includes = _package_call(packages.selection, include, packages.EXPORT_INCLUDES, 'include')
+    full, assets = _document(sequence_id)
+    if not full.get('shots'):
         raise HTTPException(409, 'This sequence has no shot plan yet')
     job_id = str(uuid.uuid4())
+    payload = {'kind': 'sequence', 'contract': packages.CONTRACT, 'sequence': full, 'assets': assets, 'include': sorted(includes),
+               'queued_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
     with db.connect() as conn:
-        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'brief_export',?)", (job_id, package['episode_id'], json.dumps({'kind': 'sequence', 'sequence': package}, ensure_ascii=False)))
+        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'brief_export',?)", (job_id, full['episode_id'], json.dumps(payload, ensure_ascii=False)))
     worker.wake_event.set()
     return {'job_id': job_id, 'status': 'queued', 'stage': 'queued', 'error': None, 'download_url': None}
 
@@ -1004,16 +1101,15 @@ AUDIO_RESPONSE = {200: {'content': {'audio/wav': {'schema': {'type': 'string', '
 
 @router.get('/sequences/{sequence_id}/audio', summary='Download the original audio of a sequence', response_class=StreamingResponse, responses=AUDIO_RESPONSE)
 def sequence_audio(sequence_id: str):
-    package = _package(sequence_id)
-    return _excerpt(package['episode_id'], package['start_time'], package['end_time'], f'sequence-{sequence_id}.wav')
+    interval = _package_call(_sequences().sequence_interval, sequence_id)
+    return _excerpt(interval['episode_id'], interval['start_time'], interval['end_time'], f'sequence-{sequence_id}.wav')
 
 
 @router.get('/sequences/{sequence_id}/shots/{index}/audio', summary="Download a shot's slice of the original audio", response_class=StreamingResponse, responses=AUDIO_RESPONSE)
 def sequence_shot_audio(sequence_id: str, index: int,
                         pad: Annotated[bool, Query(description='Pad the end with silence up to generate_seconds, for shots shorter than the minimum generation length.')] = False):
-    package = _package(sequence_id)
-    shot = _shot(package, index)
-    return _excerpt(package['episode_id'], shot['start_time'], shot['end_time'], shot['audio']['file'], shot['generate_seconds'] if pad else 0.0)
+    spec = _package_call(_sequences().shot_spec, sequence_id, index)
+    return _excerpt(spec['episode_id'], spec['start_time'], spec['end_time'], spec['audio_file'], spec['generate_seconds'] if pad else 0.0)
 
 
 @router.get('/sequences/{sequence_id}/shots/{index}/frame', summary="Download a shot's initial frame at the original resolution", response_class=StreamingResponse,

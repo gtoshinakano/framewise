@@ -138,6 +138,46 @@ class RenderTest(unittest.TestCase):
         self.assertIn('the ambience and timing to match', prompt)
         self.assertEqual([item['label'] for item in derived['references']], ['<Picture 1>', '<Audio 1>'])
 
+    def template(self, content=None, dialogue=DIALOGUE, scenario=SCENARIO, bible=BIBLE):
+        normal, prompt, verdict, derived = self.build(content, scenario=scenario, dialogue=dialogue)
+        return prompt, *sequence_prompt.template(shot(), normal, bible, derived['subjects'], derived['dialogue'], prompt)
+
+    def test_prompt_template_replaces_language_words_and_line_times_only(self):
+        prompt, text, slots = self.template()
+        self.assertEqual(slots, {'L4': '1.1', 'L5': '1.2', 'L6': '1.3'})
+        self.assertIsNotNone(text)
+        self.assertIn('At {start 1.1}, <Subject 1> (S1) says: <d>[{language}] {line 1.1}</d>', text)
+        self.assertIn('At {start 1.3}, the voice of <Subject 2> is heard while its lips stay closed: <d>[{language}] {line 1.3}</d>', text)
+        self.assertIn('lips in sync, from {start 1.1} to {end 1.1}.', text)
+        self.assertIn('00:00.000-00:04.000:', text)  # beat times are not line times
+        self.assertNotIn('おはよう', text)
+        self.assertNotIn('Japanese', text)
+        self.assertEqual(sequence_prompt.fill(text, sequence_prompt.slot_values(DIALOGUE, slots, BIBLE)), prompt)
+        dubbed = sequence_prompt.fill(text, {'language': 'English', 'line 1.1': 'Morning.', 'start 1.1': '00:00.700'})
+        self.assertIn('At 00:00.700, <Subject 1> (S1) says: <d>[English] Morning.</d>', dubbed)
+        self.assertIn('{line 1.2}', dubbed)  # a placeholder without a value stays
+
+    def test_template_numbers_lines_by_start_and_joins_runs_of_one_voice(self):
+        dialogue = [line('L9', 3.0, 3.8, 'まって', 'Mai Sakurajima'), line('L8', 0.5, 2.0, 'おはよう', 'Mai Sakurajima')]
+        dialogue[1]['crosses_start'] = True  # the end of a line the previous shot began still gets its own slot here
+        content = answer()
+        content['voices'] = content['voices'][:1]
+        prompt, text, slots = self.template(content, dialogue=dialogue)
+        self.assertEqual(slots, {'L8': '1.1', 'L9': '1.2'})
+        self.assertIn('lips in sync, from {start 1.1} to {end 1.2}.', text)  # one run of Mai's voice range
+        self.assertEqual(sequence_prompt.fill(text, sequence_prompt.slot_values(dialogue, slots, BIBLE)), prompt)
+
+    def test_silent_shot_template_is_the_prompt_and_a_mismatch_gives_none(self):
+        content = answer()
+        content.update(subjects=[], voices=[], picture_line='An empty platform at dusk.', shot_line='A wide shot of the empty platform.')
+        prompt, text, slots = self.template(content, dialogue=[], scenario=None)
+        self.assertEqual((text, slots), (prompt, {}))
+        self.assertNotIn('{', text)
+        # A prompt that the stored direction no longer renders (another spoken language in the bible now) has no template.
+        prompt, text, slots = self.template(bible={'spoken_language': 'Korean'})
+        self.assertIsNone(text)
+        self.assertEqual(slots, {'L4': '1.1', 'L5': '1.2', 'L6': '1.3'})
+
     def test_only_four_character_sheets_are_attached(self):
         roster = [{'name': f'Person{number}', 'character_context_id': f'id{number}'} for number in range(1, 6)]
         content = {'subjects': [{'name': person['name'], 'anchors': 'a', 'keep': 'b'} for person in roster]}

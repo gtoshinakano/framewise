@@ -243,8 +243,11 @@ def spoken(dialogue, content, subjects, duration=None):
     return lines
 
 
-def speech_sentence(line, language):
-    at, words = h3_prompt.fmt(line['t0']), f"<d>[{language}] {line['text']}</d>"
+def speech_sentence(line, language, slot=None):
+    """One spoken line as H3 writes it; with ``slot`` (``1.M``) its start and words become placeholders of the prompt template."""
+    at = f'{{start {slot}}}' if slot else h3_prompt.fmt(line['t0'])
+    text = f'{{line {slot}}}' if slot else line['text']
+    words = f'<d>[{language}] {text}</d>'
     if line['delivery'] == 'on_screen':
         return f"At {at}, <Subject {line['subject']}> (S{line['subject']}) says: {words}"
     if line['delivery'] == 'inner_voice':
@@ -256,18 +259,27 @@ def speech_sentence(line, language):
     return f"At {at}, an off-screen voice is heard: {words}"
 
 
-def audio_lines(lines):
-    """What ``<Audio 1>`` drives, per speaker and voice range: whose lips follow it, and which words nobody on screen mouths."""
+def audio_lines(lines, slots=None):
+    """What ``<Audio 1>`` drives, per speaker and voice range: whose lips follow it, and which words nobody on screen mouths.
+
+    With ``slots`` (line id to ``1.M``) a run's span names the start of its first line and the end of its last one as placeholders.
+    """
     if not lines:
         return ['<Audio 1> carries no speech; match its ambience and timing.']
     runs = {}
     for line in lines:
         key = (line['speaker'], tuple(line['range'] or ()), line['delivery'], line['subject'])
-        run = runs.setdefault(key, {'t0': line['t0'], 't1': line['t1'], **line})
-        run['t0'], run['t1'] = min(run['t0'], line['t0']), max(run['t1'], line['t1'])
+        run = runs.setdefault(key, {'t0': line['t0'], 't1': line['t1'], **line, 'first': line['line'], 'last': line['line']})
+        if line['t0'] < run['t0']:
+            run['t0'], run['first'] = line['t0'], line['line']
+        if line['t1'] > run['t1']:
+            run['t1'], run['last'] = line['t1'], line['line']
     out = []
     for run in sorted(runs.values(), key=lambda item: item['t0']):
-        span = f"from {h3_prompt.fmt(run['t0'])} to {h3_prompt.fmt(run['t1'])}"
+        if slots:
+            span = f"from {{start {slots[run['first']]}}} to {{end {slots[run['last']]}}}"
+        else:
+            span = f"from {h3_prompt.fmt(run['t0'])} to {h3_prompt.fmt(run['t1'])}"
         subject = f"<Subject {run['subject']}>" if run['subject'] else None
         if run['delivery'] == 'on_screen':
             out.append(f"{subject} speaks the words of <Audio 1> in its voice, lips in sync, {span}.")
@@ -301,9 +313,13 @@ def voice_notes(subjects, lines):
     return notes
 
 
-def render(shot, content, bible, subjects, dialogue):
-    """The H3 prompt of a shot, from ``subject_definitions:`` to ``non_diegetic_music:``."""
-    language = bible.get('spoken_language') or 'Japanese'
+def render(shot, content, bible, subjects, dialogue, slots=None):
+    """The H3 prompt of a shot, from ``subject_definitions:`` to ``non_diegetic_music:``.
+
+    With ``slots`` (line id to ``1.M``, see ``line_slots``) the result is the prompt template: the spoken language, each
+    line's words and the times taken from a line are placeholders, every other time stays as written.
+    """
+    language = '{language}' if slots else spoken_language(bible)
     lines = spoken(dialogue, content, subjects, shot['duration'])
 
     definitions = [f"<Picture 1> is the first frame of [Shot 1]: {sentence(content.get('picture_line'))}"]
@@ -334,10 +350,11 @@ def render(shot, content, bible, subjects, dialogue):
             if detail:
                 parts.append(detail)
         last = index == len(ranges) - 1
-        parts.extend(speech_sentence(line, language) for line in lines if beat['start'] <= line['t0'] < beat['end'] or (last and line['t0'] >= beat['end']))
+        parts.extend(speech_sentence(line, language, slots[line['line']] if slots else None) for line in lines
+                     if beat['start'] <= line['t0'] < beat['end'] or (last and line['t0'] >= beat['end']))
         description.append(f"{h3_prompt.fmt(beat['start'])}-{h3_prompt.fmt(beat['end'])}: {' '.join(parts)}")
 
-    soundscape = ' '.join([sentence(label_names(content.get('soundscape'), subjects)), *audio_lines(lines)]).strip()
+    soundscape = ' '.join([sentence(label_names(content.get('soundscape'), subjects)), *audio_lines(lines, slots)]).strip()
     return '\n'.join([
         'subject_definitions:', *definitions, '',
         'summary:', f"{h3_prompt.OMNI_PREFIX} {sentence(label_names(content.get('summary'), subjects))}", '',
@@ -345,6 +362,53 @@ def render(shot, content, bible, subjects, dialogue):
         'detailed_description:', *description, '',
         'overall_soundscape:', soundscape, '',
         'non_diegetic_music:', 'N/A'])
+
+
+def spoken_language(bible):
+    return (bible or {}).get('spoken_language') or 'Japanese'
+
+
+# Placeholders of a prompt template: the spoken language, and per line of the shot's one audio file its
+# words, start, end and length (``duration`` is never written by the app; a consumer may use it).
+SLOT = re.compile(r'\{(language|(?:line|start|end|duration) \d+\.\d+)\}')
+
+
+def line_slots(dialogue):
+    """``line_map`` of a shot: each spoken line's slot ``1.M``, M its order by start time among the lines of the shot's audio."""
+    ordered = sorted(dialogue, key=lambda line: (line['t0'], line['line']))
+    return {line['line']: f'1.{number}' for number, line in enumerate(ordered, 1)}
+
+
+def slot_values(dialogue, slots, bible):
+    """What each placeholder stands for in the prompt as written."""
+    values = {'language': spoken_language(bible)}
+    for line in dialogue:
+        slot = slots[line['line']]
+        values.update({f'line {slot}': line['text'], f'start {slot}': h3_prompt.fmt(line['t0']), f'end {slot}': h3_prompt.fmt(line['t1']),
+                       f'duration {slot}': f"{max(0.0, line['t1'] - line['t0']):.3f}"})
+    return values
+
+
+def fill(text, values):
+    """A prompt template with its placeholders replaced; a placeholder without a value is left as it is."""
+    return SLOT.sub(lambda match: values.get(match.group(1), match.group(0)), text)
+
+
+def template(shot, content, bible, subjects, dialogue, prompt):
+    """``(prompt_template, line_map)`` of a written shot.
+
+    The template is rendered from the stored direction like the prompt itself, never by searching the prose,
+    and kept only when filling it with the shot's own words and times gives back the stored prompt exactly;
+    otherwise (the plan or the bible changed since the shot was written) it is None.
+    """
+    slots = line_slots(dialogue)
+    if not prompt:
+        return None, slots
+    try:
+        text = render(shot, content, bible, subjects, dialogue, slots)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None, slots
+    return (text if fill(text, slot_values(dialogue, slots, bible)) == prompt else None), slots
 
 
 def still_prompt(content, bible):

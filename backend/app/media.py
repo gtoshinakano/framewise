@@ -4,6 +4,7 @@ import math
 import re
 import subprocess
 import tempfile
+import wave
 from collections import deque
 from pathlib import Path
 
@@ -300,3 +301,90 @@ def step_frame_boundary(source: Path, boundary: float, direction: int, *, after_
     if not 0 <= target < len(stamps):
         raise ValueError('No further frame is available in that direction')
     return stamps[target]
+
+
+# --------------------------------------------------------------- export images and excerpts (ffmpeg only: the API image has no Pillow)
+
+LABEL_FONT = Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
+
+
+def _label(textfile: Path, size: int) -> str:
+    """drawtext reading the label from a file, so no character of it needs escaping in the filter graph."""
+    font = f"fontfile='{LABEL_FONT}':" if LABEL_FONT.is_file() else ''
+    return f"drawtext={font}textfile='{textfile}':expansion=none:x=8:y=8:fontsize={size}:fontcolor=white:box=1:boxcolor=black@0.65:boxborderw=6"
+
+
+def tile_images(items: list[tuple[Path | None, str]], output: Path, columns: int, size: tuple[int, int] = (384, 216), timeout: float | None = 180):
+    """One JPEG grid: each image scaled into a ``size`` tile with its label, in rows of ``columns``. A missing image is a black tile labelled missing."""
+    if not items:
+        raise ValueError('No images to tile')
+    width, height = size
+    columns = max(1, min(columns, len(items)))
+    with tempfile.TemporaryDirectory(prefix='framewise-tiles-') as temp:
+        args, chains = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y'], []
+        for number, (path, label) in enumerate(items):
+            if path is not None and Path(path).is_file() and Path(path).stat().st_size:
+                args += ['-i', str(path)]
+            else:
+                args += ['-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:d=1']
+                label = f'{label} (missing)'
+            textfile = Path(temp) / f'label-{number}.txt'
+            textfile.write_text(label, encoding='utf-8')
+            chains.append(f'[{number}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuvj420p,'
+                          f'{_label(textfile, max(12, height // 12))}[t{number}]')
+        if len(items) == 1:
+            graph = chains[0].replace('[t0]', '[out]')
+        else:
+            layout = '|'.join(f'{(index % columns) * width}_{(index // columns) * height}' for index in range(len(items)))
+            graph = ';'.join(chains) + ';' + ''.join(f'[t{index}]' for index in range(len(items))) + f'xstack=inputs={len(items)}:layout={layout}:fill=black[out]'
+        temp_output = output.with_name(f'{output.stem}.partial.jpg')
+        try:
+            run([*args, '-filter_complex', graph, '-map', '[out]', '-frames:v', '1', '-q:v', '3', str(temp_output)], timeout)
+            temp_output.replace(output)
+        finally:
+            temp_output.unlink(missing_ok=True)
+
+
+def scale_image(source: Path, output: Path, width: int, timeout: float | None = 60):
+    """A smaller copy of a JPEG, never wider than ``width``."""
+    run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', str(source), '-vf', f"scale=w='min(iw,{width})':h=-2", '-frames:v', '1', '-q:v', '3', str(output)], timeout)
+
+
+def crop_image(source: Path, output: Path, box: tuple[float, float, float, float], timeout: float | None = 60):
+    """Crop a JPEG to ``box`` given as fractions (x1, y1, x2, y2) of its width and height, at its own resolution."""
+    x1, y1, x2, y2 = (min(1.0, max(0.0, float(value))) for value in box)
+    if x2 - x1 <= 0 or y2 - y1 <= 0:
+        raise ValueError('The crop box is empty')
+    crop = f"crop=w='trunc({x2 - x1:.6f}*iw)':h='trunc({y2 - y1:.6f}*ih)':x='trunc({x1:.6f}*iw)':y='trunc({y1:.6f}*ih)'"
+    run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', str(source), '-vf', crop, '-frames:v', '1', '-q:v', '2', str(output)], timeout)
+
+
+def cut_clip(source: Path, output: Path, start: float, end: float, height: int = 360, timeout: float | None = 300):
+    """A silent H.264 excerpt of ``[start, end)``, at most ``height`` lines high."""
+    if end <= start:
+        raise ValueError('The clip interval is empty')
+    run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', f'{start:.6f}', '-i', str(source), '-t', f'{end - start:.6f}', '-an',
+         '-vf', f"scale=w=-2:h='min(ih,{height})'", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(output)], timeout)
+
+
+def write_wav_ranges(audio: Path, ranges: list[dict], target):
+    """The ranges of a WAV (episode seconds) one after another, written to a path or a binary file object. Raises ValueError for a range outside the audio."""
+    with wave.open(str(audio), 'rb') as source, wave.open(target if not isinstance(target, Path) else str(target), 'wb') as out:
+        out.setparams(source.getparams())
+        for item in ranges:
+            start = round(item['start_time'] * source.getframerate())
+            end = min(source.getnframes(), round(item['end_time'] * source.getframerate()))
+            if start >= source.getnframes() or end <= start:
+                raise ValueError('Excerpt is outside the available audio')
+            source.setpos(start)
+            out.writeframes(source.readframes(end - start))
+
+
+def pad_wav(source: Path, target: Path, seconds: float):
+    """A copy of a WAV with silence appended up to ``seconds``."""
+    with wave.open(str(source), 'rb') as audio, wave.open(str(target), 'wb') as out:
+        out.setparams(audio.getparams())
+        frames = audio.getnframes()
+        out.writeframes(audio.readframes(frames))
+        missing = max(0, math.ceil(seconds * audio.getframerate()) - frames)
+        out.writeframes(b'\x00' * (missing * audio.getnchannels() * audio.getsampwidth()))

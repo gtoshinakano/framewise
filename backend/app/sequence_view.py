@@ -1,12 +1,11 @@
-"""Read models of a sequence: the editor's detail view and the download package.
+"""Read models of a sequence: the editor's detail view, built on ``state``.
 
-Both are assembled from current data on every read: the cuts as they are now, the current bible,
+Everything is assembled from current data on every read: the cuts as they are now, the current bible,
 plan, shots and review, and for each shot whether what it was written from has changed since
-(``stale``). ``package`` is the contract ``sequence-v1`` that the video generation app downloads.
+(``stale``). The download for other apps (contract ``sequence-v2``) is ``sequence_package``.
 """
 from . import db, sequence_compile, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, text_diff
 
-CONTRACT = 'sequence-v1'
 REQUEST_CHARS = 1000
 # What the user typed in the Assistant chat turn that made a proposal ``p``.
 CHAT_REQUEST = "(SELECT m.content FROM assistant_messages m WHERE m.turn_id=p.turn_id AND m.role='user' ORDER BY m.seq LIMIT 1)"
@@ -213,51 +212,3 @@ def detail(sequence_id):
             'shots': shots, 'review': result_view(current['review_row']),
             'ready': is_ready(current, shots), 'jobs': jobs,
             'limits': {'sequence_seconds': sequence_timeline.MAX_SEQUENCE_SECONDS, 'shot_seconds': sequence_timeline.MAX_SHOT_SECONDS, 'min_generate_seconds': sequence_timeline.MIN_GENERATE_SECONDS}}
-
-
-def package(sequence_id):
-    """The sequence as the video generation app downloads it (contract ``sequence-v1``), or None."""
-    with db.connect() as conn:
-        sequence = store.get(conn, sequence_id)
-        if not sequence:
-            return None
-        current = state(conn, sequence)
-    cuts, timeline, bible = current['cuts'], current['timeline'], current['bible'] or {}
-    base = f'/api/v1/sequences/{sequence_id}'
-    views, shots = shot_views(current), []
-    for shot in views:
-        result = shot['result'] or {}
-        content, derived = result.get('content') or {}, result.get('derived') or {}
-        dialogue = derived.get('dialogue')
-        if dialogue is None:  # not written yet: the lines with their speakers, without a delivery decision
-            dialogue = [{**{key: line.get(key) for key in ('line', 't0', 't1', 'text', 'speaker_label', 'character_context_id', 'character_name', 'attribution', 'compiled', 'crosses_start', 'crosses_end')},
-                         'speaker': sequence_prompt.speaker_key(line), 'delivery': None, 'subject': None} for line in evidence.shot_dialogue(shot, bible)]
-        else:  # shots written before voices existed carry per-line values of the old vocabulary
-            dialogue = [{**line, 'delivery': sequence_prompt.delivery_of(line.get('delivery'))} for line in dialogue]
-        shots.append({
-            'index': shot['index'], 'key': shot['key'], 'start_time': shot['start_time'], 'end_time': shot['end_time'], 't0': shot['t0'], 't1': shot['t1'],
-            'duration': shot['duration'], 'generate_seconds': shot['generate_seconds'], 'trim_seconds': shot['trim_seconds'],
-            'cut': shot['cut'], 'cut_id': shot['cut_id'], 'part': shot['part'],
-            'source_cuts': shot['source_cuts'], 'cut_ids': shot['cut_ids'], 'merged': False, 'starts_mid_cut': shot['starts_mid_cut'], 'ends_mid_cut': shot['ends_mid_cut'],
-            'opens': shot['opens'], 'closes': shot['closes'],
-            'scene': shot['scene'], 'intent': shot['intent'], 'staging': '',
-            'initial_frame': {'cut_id': shot['frame']['cut_id'], 'cut_number': shot['frame']['cut'], 'time': shot['frame']['time'], 'strategy': shot['frame']['strategy'],
-                              'continues_previous_shot': shot['frame']['continues_previous_shot'], 'description': content.get('picture_line'), 'still': content.get('still'),
-                              'still_prompt': derived.get('still_prompt'), 'frame_url': f"{base}/shots/{shot['index']}/frame", 'file': f"shot-{shot['index']:02d}-initial.jpg"},
-            'audio': {'start_time': shot['start_time'], 'end_time': shot['end_time'], 'url': f"{base}/shots/{shot['index']}/audio", 'file': sequence_prompt.audio_file(shot), 'has_speech': bool(dialogue)},
-            'dialogue': dialogue,
-            'voices': derived.get('voices') if result else None,
-            'fixed_voices': shot['fixed_voices'] or None,
-            'subjects': [{key: subject.get(key) for key in ('number', 'label', 'name', 'kind', 'character_context_id', 'context_id', 'picture', 'anchors')} for subject in derived.get('subjects') or []],
-            'references': derived.get('references') or [],
-            'camera': content.get('camera'), 'beats': sequence_prompt.beat_ranges(content, shot) if content.get('beats') else [],
-            'soundscape': content.get('soundscape'), 'continuity': content.get('continuity'), 'open_questions': content.get('open_questions') or [],
-            'prompt': result.get('prompt'), 'check': result.get('check'), 'written': bool(result), 'stale': shot['stale'],
-            'result': {key: result.get(key) for key in ('id', 'origin', 'model_id', 'created_at', 'generation_seconds')} if result else None})
-    review = store.loads(current['review_row']['content'], {}) if current['review_row'] else None
-    return {'contract': CONTRACT, **sequence_view(sequence, cuts, current['changed']),
-            'cuts': [{'id': cut['id'], 'cut_number': cut['number'], 'start_time': cut['start_time'], 'end_time': cut['end_time']} for cut in timeline['cuts']] if timeline else [],
-            'audio_url': f'{base}/audio', 'ready': is_ready(current, views),
-            'pending': [shot['index'] for shot in views if not shot['result'] or shot['stale'] or not (shot['result']['check'] or {}).get('ok')],
-            'plan_problems': current['plan_problems'],
-            'bible': bible or None, 'shots': shots, 'review': review}
