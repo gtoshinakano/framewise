@@ -38,6 +38,7 @@ def sequence_view(sequence, cuts, changed):
     return {'id': sequence['id'], 'episode_id': sequence['episode_id'], 'title': sequence['title'], 'instruction': sequence['instruction'],
             'start_time': start, 'end_time': end, 'duration': round(end - start, 3), 'first_cut': numbers[0] if numbers else None, 'last_cut': numbers[-1] if numbers else None,
             'cuts_changed': bool(changed and cuts is not None), 'cuts_missing': cuts is None, 'shot_points': store.shot_points(sequence),
+            'extension': store.extension(sequence),
             'created_at': sequence['created_at'], 'updated_at': sequence['updated_at']}
 
 
@@ -198,6 +199,18 @@ def is_ready(current, shots):
     return bool(shots) and not current['changed'] and all(shot['result'] and (shot['result']['check'] or {}).get('ok') and not shot['stale'] for shot in shots)
 
 
+def next_cut_view(conn, sequence, cuts):
+    """The cut that could be added at the end: whether it fits and is analysed, and the words that run on into it."""
+    following = store.next_cut(conn, sequence, cuts) if cuts else None
+    if following is None:
+        return None
+    seconds = following['end_time'] - cuts[0]['start_time']
+    return {'id': following['id'], 'number': following['cut_index'] + 1, 'start_time': following['start_time'], 'end_time': following['end_time'],
+            'seconds': round(following['end_time'] - following['start_time'], 3), 'fits': seconds <= sequence_timeline.MAX_SEQUENCE_SECONDS + 0.001,
+            'ready': not evidence.missing_cuts(evidence.load(conn, sequence, [following]), [following]),
+            'speech': store.speech_past_end(conn, sequence, cuts, following)}
+
+
 def detail(sequence_id):
     with db.connect() as conn:
         sequence = store.get(conn, sequence_id)
@@ -207,6 +220,7 @@ def detail(sequence_id):
         pending = store.pending_jobs(conn, sequence_id)
         jobs = store.recent_jobs(conn, sequence_id)
         compilation = compilation_view(conn, sequence, current, pending)
+        following = next_cut_view(conn, sequence, current['cuts'])
     cuts, timeline = current['cuts'], current['timeline']
     shots = shot_views(current, pending)
     return {'sequence': sequence_view(sequence, cuts, current['changed']),
@@ -217,5 +231,5 @@ def detail(sequence_id):
                          'lines': [{key: line[key] for key in ('id', 't0', 't1', 'text', 'speaker_label', 'character_name', 'character_context_id')} for line in timeline['lines']]} if timeline else None,
             'compilation': compilation, 'bible': result_view(current['bible_row']), 'plan': result_view(current['plan_row']), 'plan_problems': current['plan_problems'],
             'shots': shots, 'review': result_view(current['review_row']),
-            'ready': is_ready(current, shots), 'jobs': jobs,
+            'ready': is_ready(current, shots), 'jobs': jobs, 'next_cut': following,
             'limits': {'sequence_seconds': sequence_timeline.MAX_SEQUENCE_SECONDS, 'shot_seconds': sequence_timeline.MAX_SHOT_SECONDS, 'min_generate_seconds': sequence_timeline.MIN_GENERATE_SECONDS}}

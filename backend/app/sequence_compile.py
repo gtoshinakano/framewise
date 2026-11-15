@@ -301,6 +301,43 @@ def validate(content, duration, roster):
     return {'lines': lines, 'voices': voices, 'open_questions': [_text(item) for item in content.get('open_questions') or [] if _text(item)][:12]}
 
 
+# ------------------------------------------------------------------ extension
+
+def tail_lines(lines, from_t):
+    """The timeline lines from ``from_t`` on, for compiling only a cut added at the end of a sequence.
+
+    A word belongs to the side its midpoint lies on, exactly as ``sequence_timeline.speech_lines`` clipped the
+    range before it grew, so no word is compiled twice. Returns ``(tail, crossed)``: ``crossed`` are the ids of
+    the words before ``from_t`` of lines that run on past it (the phrase the old end cut in half).
+    """
+    tail, crossed = [], set()
+    for line in lines:
+        after = [part for part in line['parts'] if (part['t0'] + part['t1']) / 2 >= from_t + EPSILON]
+        if not after:
+            continue
+        before = [part for part in line['parts'] if (part['t0'] + part['t1']) / 2 < from_t + EPSILON]
+        crossed.update(part['id'] for part in before if part.get('id'))
+        tail.append({**line, 't0': after[0]['t0'], 't1': max(part['t1'] for part in after), 'text': parts_text(after), 'parts': after})
+    return tail, crossed
+
+
+def append_lines(existing, added, voices, questions, crossed):
+    """An existing compilation with the lines of an added cut after it; ready for ``validate``.
+
+    The existing lines and voice decisions stay exactly as the user left them. The line whose phrase the old
+    end cut in half (it holds a word of ``crossed``) is marked ``continues_next``, so the planner keeps the
+    phrase whole if it can and the user sees it among the lines to review. Only voice labels that are new are added.
+    """
+    lines = [dict(line) for line in existing.get('lines') or []]
+    holder = max((line for line in lines if crossed & set(line.get('source_ids') or [])), key=lambda line: (line['t0'], line['t1']), default=None)
+    if holder is not None:
+        holder['continues_next'] = True
+    known = {voice.get('speaker_label') for voice in existing.get('voices') or []}
+    return {'lines': lines + [dict(line) for line in added],
+            'voices': [*(existing.get('voices') or []), *(voice for voice in voices if voice['speaker_label'] not in known)],
+            'open_questions': [*questions, *(existing.get('open_questions') or [])][:12]}  # the added cut's questions first: they are the ones to answer now
+
+
 # ------------------------------------------------------------------ consumers
 
 def merged_lines(content, origin):

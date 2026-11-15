@@ -495,7 +495,7 @@ def shot_issues(shot, content, frame, written, template, check):
     if frame['description_source'] == 'derived':
         add('warning', 'derived_frame', 'The initial frame is a later, unanalysed moment of the cut: its description is derived (initial_frame.derived_from). Check it against shot-NN-initial.jpg.')
     if shot.get('generate_seconds'):
-        add('info', 'padded_shot', 'Shorter than 5 s: generate generate_seconds (the prompt ends on a hold), trim to duration; shot-NN-ref.wav is the audio padded to that length.')
+        add('info', 'padded_shot', 'Shorter than 5 s: generate generate_seconds (the prompt ends on a hold), trim to duration; shot-NN-ref.wav is the original audio from the start of the shot for that length.')
     for subject in shot.get('subjects') or []:
         if subject.get('linked_by') == 'name' and not subject.get('picture'):
             add('warning', 'no_sheet', f"{subject.get('record_name') or subject['name']} has no character sheet in the prompt: the cut's analysis did not mark them, so <Picture 1> is the only "

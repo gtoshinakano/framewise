@@ -192,7 +192,7 @@ class JobDetail(BaseModel):
     id: str
     episode_id: str
     pipeline: str
-    status: str
+    status: str = Field(description='queued, running, done, failed or cancelled (a cancelled job is never a failure).')
     stage: str
     error: str | None
     attempt_count: int
@@ -647,7 +647,7 @@ class CompositionBrief(CompositionModel):
 
 class BriefExportStatus(BaseModel):
     job_id: str
-    status: str
+    status: str = Field(description='queued, running, done, failed or cancelled.')
     stage: str
     error: str | None
     download_url: str | None
@@ -1109,9 +1109,10 @@ def sequence_audio(sequence_id: str):
 
 @router.get('/sequences/{sequence_id}/shots/{index}/audio', summary="Download a shot's slice of the original audio", response_class=StreamingResponse, responses=AUDIO_RESPONSE)
 def sequence_shot_audio(sequence_id: str, index: int,
-                        pad: Annotated[bool, Query(description='Pad the end with silence up to generate_seconds, for shots shorter than the minimum generation length.')] = False):
+                        pad: Annotated[bool, Query(description="For shots shorter than the minimum generation length: continue with the original audio after the shot up to generate_seconds (silence only where the episode audio ends).")] = False):
     spec = _package_call(_sequences().shot_spec, sequence_id, index)
-    return _excerpt(spec['episode_id'], spec['start_time'], spec['end_time'], spec['audio_file'], spec['generate_seconds'] if pad else 0.0)
+    end = max(spec['end_time'], spec['start_time'] + spec['generate_seconds']) if pad else spec['end_time']
+    return _excerpt(spec['episode_id'], spec['start_time'], end, spec['audio_file'], spec['generate_seconds'] if pad else 0.0)
 
 
 @router.get('/sequences/{sequence_id}/shots/{index}/frame', summary="Download a shot's initial frame at the original resolution", response_class=StreamingResponse,

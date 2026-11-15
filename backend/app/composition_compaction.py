@@ -244,7 +244,7 @@ def enqueue(requests, *, retry_failed=False):
             existing = conn.execute("""SELECT status FROM jobs WHERE pipeline='composition_compact'
                 AND json_valid(payload_json) AND json_extract(payload_json,'$.cut_id')=?
                 AND json_extract(payload_json,'$.input_hash')=? ORDER BY rowid DESC LIMIT 1""", (cut_id,digest)).fetchone()
-            if existing and (existing['status'] in ('queued','running') or (existing['status']=='failed' and not retry_failed)):
+            if existing and (existing['status'] in ('queued','running') or (existing['status'] in ('failed','cancelled') and not retry_failed)):
                 continue
             provider = settings['text_provider'] if settings else 'openrouter'
             payload = {**request, 'text_provider':provider, 'local_thinking':bool(settings['local_thinking']) if settings else False,

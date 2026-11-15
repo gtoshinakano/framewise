@@ -154,32 +154,6 @@ class BulkDetectionTest(unittest.TestCase):
         self.assertEqual(labels.count('ctx'), 1)
         self.assertEqual(labels.count(None), 1)
 
-    def test_manual_label_travels_along_the_same_cut_track(self):
-        self.standard_gallery()
-        frames = [{'position': 'first', 'time': 2, 'image_size': [100, 80]}, {'position': 'last', 'time': 2.5, 'image_size': [100, 80]}]
-        with db.connect() as conn:
-            conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id,phase) VALUES ('cur','c2',2,4,?,'test','boxes')", (json.dumps(frames),))
-            conn.execute("INSERT INTO character_detections(id,run_id,position,box_json) VALUES ('mine-first','cur','first',?)", (json.dumps(LEFT),))
-            conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('mine-last','cur','last',?,'ctx2','manual')", (json.dumps(LEFT),))
-            conn.execute("UPDATE cuts SET no_characters=1 WHERE id='c1'")
-        self.colors['mine-last'] = PURPLE
-        with patch.object(anime_matching, 'confident_match', return_value=None):
-            runs = self.run_episode(Runtime(Embedder()), [(LEFT, PURPLE)], [(LEFT, PURPLE)], path='character-detection')
-        first, last = runs['c2']['detections']
-        self.assertEqual((first['character_context_id'], first['label_source']), ('ctx2', 'auto'))
-        self.assertIn('track', first['match_reason'])
-        self.assertEqual((last['character_context_id'], last['label_source']), ('ctx2', 'manual'))
-
-    def test_adjacent_cut_reuses_a_unique_appearance(self):
-        self.standard_gallery()
-        runtime = Runtime(Embedder(), [[LEFT], []])
-        purple = Embedder().embed([Image.new('RGB', (4, 4), PURPLE)])[0]
-        runtime.previous_cut = {'episode_id': 'e', 'end_time': 0, 'tracks': [{'character_id': 'ctx2', 'embedding': purple}]}
-        with patch.object(anime_matching, 'confident_match', return_value=None):
-            runs = self.run_episode(runtime, [(LEFT, PURPLE)], [])
-        detection = runs['c1']['detections'][0]
-        self.assertEqual(detection['character_context_id'], 'ctx2')
-        self.assertIn('preceding cut', detection['match_reason'])
 
     def test_rerun_redoes_automatic_labels_and_never_touches_manual_ones(self):
         self.standard_gallery()

@@ -99,7 +99,7 @@ class TextChainTest(unittest.TestCase):
         self.assertEqual(claimed[0], self.jobs('consistency_summary')['c2'])
         for pipeline in ('review_answers', 'regen'):
             row = db.one('SELECT status,stage FROM jobs WHERE id=?', (self.jobs(pipeline)['c1'],))
-            self.assertEqual((row['status'], row['stage']), ('failed', 'Cancelled'))
+            self.assertEqual((row['status'], row['stage']), ('cancelled', 'Cancelled'))
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (self.jobs('review_answers')['c2'],))['status'], 'queued')
 
     def test_answers_use_the_consistency_summary_written_by_the_chain_and_the_latest_saved_answers(self):

@@ -33,7 +33,7 @@ export default function TranscribeRangePanel({ episodeId, duration, currentTime,
   const byHand = lines.filter(segment => segment.origin !== 'model')
   const speakers = new Set(lines.map(segment => segment.speaker_label).filter(Boolean)).size
   const latest = jobs.find(job => job.pipeline === 'transcribe')
-  const failure = latest?.status === 'failed' && latest.stage !== 'Cancelled' ? latest.error : null
+  const failure = latest?.status === 'failed' ? latest.error : null
   const status = latest?.status === 'queued' ? 'Queued for the audio worker.' : latest?.status === 'running' ? latest.stage : latest?.status === 'done' && latest.stage !== 'Complete' ? `Last run: ${latest.stage}` : ''
   useEffect(() => { setError('') }, [selection?.start, selection?.end])
   useEffect(() => { if (!byHand.length) setReplaceManual(false) }, [byHand.length])

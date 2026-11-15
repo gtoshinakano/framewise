@@ -40,9 +40,7 @@ def _event(kind, status, at=None, seconds=0.0, job_id=None, detail=None, label=N
 def _job_status(job):
     if job['status'] == 'done':
         return 'done'
-    if job['status'] == 'failed':
-        return 'cancelled' if job['stage'] == 'Cancelled' else 'failed'
-    return job['status']  # queued / running
+    return job['status']  # queued / running / failed / cancelled
 
 
 def _job_seconds(job, now):

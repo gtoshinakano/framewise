@@ -99,7 +99,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
   const activeReview = reviewJobs.find(job => job.status === 'queued' || job.status === 'running')
   const latestReview = reviewJobs[0]
   const latestReviewDone = reviewJobs.find(job => job.status === 'done')
-  const reviewFailure = !activeReview && latestReview?.status === 'failed' && latestReview.stage !== 'Cancelled' ? latestReview.error : null
+  const reviewFailure = !activeReview && latestReview?.status === 'failed' ? latestReview.error : null
   useEffect(() => {
     if (!instructionsLoaded) return
     const doneId = latestReviewDone?.id ?? null
@@ -161,7 +161,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
     } catch { setCopyStatus('failed') }
     finally { field.remove(); previousFocus?.focus() }
   }
-  const failure = !activeJob && latestJob?.status === 'failed' && latestJob.stage !== 'Cancelled' ? latestJob.error : null
+  const failure = !activeJob && latestJob?.status === 'failed' ? latestJob.error : null
   const answersDirty = humanInstructions !== savedInstructions
   const summaryDirty = draft.content !== draft.original
   const [view, setView] = useState<SummaryView>(() => storedView() ?? 'read')

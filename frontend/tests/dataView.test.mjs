@@ -45,7 +45,7 @@ test('run facts come from nested snapshots in source order', () => {
 })
 
 test('duration is formatted from UTC timestamps', () => {
-  assert.equal(durationText('2026-11-04 12:00:00', '2026-11-04 12:02:05'), '2m 5s')
-  assert.equal(durationText('2026-11-04 12:00:00', '2026-11-04 13:05:00'), '1h 5m')
+  assert.equal(durationText('2026-11-04 12:00:00', '2026-11-04 12:02:05'), '2m 05s')
+  assert.equal(durationText('2026-11-04 12:00:00', '2026-11-04 13:05:00'), '65m 00s')
   assert.equal(durationText(null, null), '')
 })

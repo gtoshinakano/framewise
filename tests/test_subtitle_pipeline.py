@@ -135,7 +135,7 @@ class SubtitleJobTest(unittest.TestCase):
         self.assertEqual(episode['subtitles'], {'language': 'Brazilian Portuguese', 'run': None})
         self.assertEqual(self.client.post('/api/episodes/e/subtitles', json={'language': 'pt'}).status_code, 409)
         self.assertEqual(self.client.post(f'/api/jobs/{job_id}/cancel').status_code, 200)
-        self.assertEqual(db.one('SELECT status,stage FROM jobs WHERE id=?', (job_id,)), {'status': 'failed', 'stage': 'Cancelled'})
+        self.assertEqual(db.one('SELECT status,stage FROM jobs WHERE id=?', (job_id,)), {'status': 'cancelled', 'stage': 'Cancelled'})
 
     # -- the job ------------------------------------------------------------------------------------
 
@@ -288,7 +288,7 @@ class SubtitleJobTest(unittest.TestCase):
             cancel_check()
 
         self.run_job(reader=cancelling)
-        self.assertEqual(db.one('SELECT status,stage FROM jobs WHERE id=?', (job_id,)), {'status': 'failed', 'stage': 'Cancelled'})
+        self.assertEqual(db.one('SELECT status,stage FROM jobs WHERE id=?', (job_id,)), {'status': 'cancelled', 'stage': 'Cancelled'})
         self.assertEqual(db.one('SELECT status,error FROM subtitle_runs'), {'status': 'failed', 'error': 'Cancelled'})
         self.assertEqual(db.one('SELECT COUNT(*) AS n FROM subtitle_readings')['n'], 1)
         self.assertIsNone(self.client.get('/api/episodes/e/subtitles').json()['run'])

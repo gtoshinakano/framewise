@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import db, media, worker, cut_history, storage, frame_source, frame_cache, subtitle_store, audio_worker, prompt_context
+from . import db, media, worker, cut_history, storage, frame_source, frame_cache, subtitle_store, audio_worker, prompt_context, job_kinds, runs
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
 
@@ -64,6 +64,8 @@ from .chat_gateway import router as chat_gateway_router
 app.include_router(chat_gateway_router)
 from .sequences import router as sequences_router
 app.include_router(sequences_router)
+from .queue_api import router as queue_router
+app.include_router(queue_router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
 
@@ -310,6 +312,9 @@ def episode_response(episode_id: str):
         job['stages'] = payload.get('stages') if isinstance(payload.get('stages'), list) else None
         # Sequence jobs belong to a sequence, not to a cut: the editor shows them in the sequence workspace.
         job['sequence'] = {'id': payload.get('sequence_id'), 'step': payload.get('step'), 'shot_key': payload.get('shot_key')} if job['pipeline'] == 'sequence' else None
+        kind = job_kinds.kind_of(job['pipeline'])
+        job['actions'] = {'cancel': job['status'] in ('queued', 'running') and kind.can_cancel(job['status'], payload),
+                          'retry': job['status'] in ('failed', 'cancelled') and kind.retry(payload)}
         if job["pipeline"] == "analyze":
             items = payload.get("cuts", [])
         elif job["pipeline"] == "character_detect":
@@ -536,7 +541,9 @@ def get_episode_status(episode_id: str):
     if not episode:
         raise HTTPException(404, "Episode not found")
     latest = db.one("SELECT id,status FROM jobs WHERE episode_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (episode_id,))
-    return {**episode, "job_id": latest["id"] if latest else None, "job_status": latest["status"] if latest else None}
+    with db.connect() as conn:
+        queue = runs.summary(conn, episode_id)
+    return {**episode, "job_id": latest["id"] if latest else None, "job_status": latest["status"] if latest else None, "queue": queue}
 
 
 @app.patch("/api/episodes/{episode_id}")
@@ -1932,7 +1939,7 @@ def summary_request_preview(cut_id: str, source: Literal["current", "failed", "f
         if source == "failed":
             rows = conn.execute("""SELECT j.id,j.stage,j.error,j.finished_at,j.payload_json,a.evidence_json
                 FROM jobs j JOIN analysis_job_cuts a ON a.job_id=j.id
-                WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status='failed' AND a.cut_id=? AND a.completed=0
+                WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('failed','cancelled') AND a.cut_id=? AND a.completed=0
                 ORDER BY j.created_at DESC,j.rowid DESC""", (cut["episode_id"], cut_id)).fetchall()
             for row in rows:
                 snapshot = json_object_or_empty(row["payload_json"])
@@ -1953,7 +1960,7 @@ def summary_request_preview(cut_id: str, source: Literal["current", "failed", "f
                 raise HTTPException(404, "No failed analysis with saved frame evidence is available for this cut")
         elif source == "failed_summary":
             row = conn.execute("""SELECT id,stage,error,finished_at,payload_json FROM jobs
-                WHERE episode_id=? AND pipeline='regen' AND status='failed' AND stage!='Cancelled'
+                WHERE episode_id=? AND pipeline='regen' AND status='failed'
                 AND json_extract(payload_json,'$.cut_id')=? AND json_extract(payload_json,'$.result_type')='summary'
                 ORDER BY created_at DESC,rowid DESC LIMIT 1""", (cut['episode_id'], cut_id)).fetchone()
             if not row:
@@ -1996,7 +2003,7 @@ def retry_analysis_request(cut_id: str, body: AnalysisRequestRetry):
             raise HTTPException(409, "Wait for media preparation or cut detection to finish")
         if conn.execute("SELECT 1 FROM jobs j WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running') AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (cut['episode_id'], cut_id)).fetchone():
             raise HTTPException(409, 'An analysis for this cut is already queued or running')
-        old = conn.execute("SELECT * FROM jobs WHERE id=? AND episode_id=? AND pipeline='analyze' AND status='failed'", (body.source_job_id, cut['episode_id'])).fetchone()
+        old = conn.execute("SELECT * FROM jobs WHERE id=? AND episode_id=? AND pipeline='analyze' AND status IN ('failed','cancelled')", (body.source_job_id, cut['episode_id'])).fetchone()
         saved = conn.execute("SELECT evidence_json,completed FROM analysis_job_cuts WHERE job_id=? AND cut_id=?", (body.source_job_id, cut_id)).fetchone()
         if not old or not saved or saved['completed']:
             raise HTTPException(409, "The failed analysis evidence is no longer available")
@@ -2517,7 +2524,7 @@ def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
                 raise HTTPException(409, "The saved summary changed since the request was prepared; refresh the preview")
             if body.request_override is not None:
                 payload["request_override"] = validate_summary_request(body.request_override)
-            if body.source_job_id and not conn.execute("SELECT 1 FROM jobs WHERE id=? AND episode_id=? AND pipeline='regen' AND status='failed' AND json_extract(payload_json,'$.cut_id')=?", (body.source_job_id, cut['episode_id'], cut_id)).fetchone():
+            if body.source_job_id and not conn.execute("SELECT 1 FROM jobs WHERE id=? AND episode_id=? AND pipeline='regen' AND status IN ('failed','cancelled') AND json_extract(payload_json,'$.cut_id')=?", (body.source_job_id, cut['episode_id'], cut_id)).fetchone():
                 raise HTTPException(409, "The failed summary run is no longer available")
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (job_id, cut["episode_id"], "regen", json.dumps(payload), body.source_job_id))
             worker.sync_episode_status(conn, cut["episode_id"])
@@ -2634,45 +2641,25 @@ def cancel_all_queued_jobs():
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         jobs = conn.execute("SELECT * FROM jobs WHERE status='queued' AND pipeline!='brief_export'").fetchall()
-        conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled before processing',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE status='queued' AND pipeline!='brief_export'")
-        for episode_id in {job['episode_id'] for job in jobs if job['pipeline'] != 'composition_compact'}:
-            worker.sync_episode_status(conn, episode_id)
-    for job in jobs:
-        worker.cleanup_voice_upload(job)
-    _sweep_idle_character_frames({job['episode_id'] for job in jobs if job['pipeline'] == 'character_detect'})
-    return {"cancelled": len(jobs)}
-
-
-def _sweep_idle_character_frames(episode_ids):
-    """Remove temporary boundary frames once an episode has no pending character jobs."""
-    from . import anime_bulk
-    for episode_id in episode_ids:
-        row = db.one("SELECT project_id FROM episodes WHERE id=?", (episode_id,))
-        if row and not db.one("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='character_detect' AND status IN ('queued','running')", (episode_id,)):
-            anime_bulk.clear_episode_frames(row['project_id'], episode_id)
+        changed = worker.cancel_jobs(conn, jobs)
+    worker.after_cancel(changed)
+    return {"cancelled": len(changed)}
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 def cancel_inference_job(job_id: str):
-    """Cancel queued inference or a supported running inference job."""
+    """Cancel a queued job, or a running one whose kind can stop at its next checkpoint (``job_kinds``)."""
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        job, payload = runs.job_payload(conn, job_id)
         if not job:
             raise HTTPException(404, "Job not found")
-        payload = json_object_or_empty(job['payload_json'])
-        cancellable = (job["status"] == "queued" and job["pipeline"] in ("analyze", "regen", "consistency_summary", "review_answers", "sequence", "transcribe", "voice_sample", "character_detect", "composition_compact", "subtitles")) or (job["status"] == "running" and (job["pipeline"] in ("regen", "consistency_summary", "review_answers", "sequence", "composition_compact", "subtitles") or (job['pipeline'] == 'analyze' and (payload.get('text_only') is True or payload.get('workflow') == 'single_cut_v2'))))
-        if not cancellable:
-            raise HTTPException(409, "This job cannot be cancelled while running")
-        message = "Cancelled before processing" if job["status"] == "queued" else "Cancelled during processing"
-        conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (message, job_id))
-        import time
-        conn.execute("UPDATE analysis_job_stages SET status='cancelled',finished_at=?,error=? WHERE job_id=? AND status='running'", (time.time(), message, job_id))
-        if job['pipeline'] == 'consistency_summary':
-            conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled because the preceding consistency summary was cancelled',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE pipeline='regen' AND status='queued' AND json_extract(payload_json,'$.depends_on_consistency')=?", (job_id,))
-        if job['pipeline'] != 'composition_compact':
-            worker.sync_episode_status(conn, job["episode_id"])
-    worker.cleanup_voice_upload(job)
+        if job['status'] not in ('queued', 'running'):
+            raise HTTPException(409, "This job has already finished")
+        if not job_kinds.kind_of(job['pipeline']).can_cancel(job['status'], payload):
+            raise HTTPException(409, "This job cannot be cancelled while running" if job['status'] == 'running' else "This job cannot be cancelled")
+        changed = worker.cancel_jobs(conn, [job])
+    worker.after_cancel(changed)
     return {"ok": True}
 
 
@@ -2685,7 +2672,7 @@ def retry_analysis(job_id: str):
             job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not job:
                 raise HTTPException(404, "Job not found")
-            if job['pipeline'] == 'composition_compact' and job['status'] == 'failed':
+            if job['pipeline'] == 'composition_compact' and job['status'] in ('failed', 'cancelled'):
                 from . import composition_compaction
                 payload = json_object_or_empty(job['payload_json'])
                 try:
@@ -2700,8 +2687,8 @@ def retry_analysis(job_id: str):
                 retry_id = str(uuid.uuid4())
                 conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
                 return {'job_id': retry_id}
-            if job["pipeline"] != "analyze" or job["status"] != "failed":
-                raise HTTPException(409, "Only failed analysis jobs can be retried")
+            if job["pipeline"] != "analyze" or job["status"] not in ("failed", "cancelled"):
+                raise HTTPException(409, "Only failed or cancelled analysis jobs can be retried")
             if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (job["episode_id"],)).fetchone():
                 raise HTTPException(409, "Wait for media preparation or cut detection to finish")
             for item in json.loads(job["payload_json"])["cuts"]:

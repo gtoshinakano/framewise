@@ -28,7 +28,7 @@ class CancelQueueTest(unittest.TestCase):
         self.assertEqual(db.one("SELECT status FROM jobs WHERE id='finished'")['status'], 'done')
         for job_id in ('detection', 'prepare', 'voice'):
             job = db.one('SELECT status,stage,finished_at FROM jobs WHERE id=?', (job_id,))
-            self.assertEqual((job['status'], job['stage']), ('failed', 'Cancelled'))
+            self.assertEqual((job['status'], job['stage']), ('cancelled', 'Cancelled'))
             self.assertIsNotNone(job['finished_at'])
         self.assertEqual(db.one("SELECT status FROM episodes WHERE id='e'")['status'], 'processing')
         self.assertEqual(db.one("SELECT status FROM episodes WHERE id='e2'")['status'], 'ready')

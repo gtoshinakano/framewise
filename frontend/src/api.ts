@@ -1,3 +1,4 @@
+import type { QueueSummary } from './queueView'
 export type AnalysisConfig = { frame_mode: 'per_second' | 'endpoints' | 'uniform'; frame_count: number; video_width: number; video_height: number; video_fps: number; video_frame_budget: number | null; context_ids: string[]; detection_queries: string[]; additional_context: string; text_provider: 'local' | 'openrouter'; local_thinking: boolean; openrouter_model: string }
 export type Settings = { proxy_width: number; proxy_crf: number; proxy_preset: 'ultrafast' | 'superfast' | 'veryfast' | 'faster' | 'fast' | 'medium'; frame_interval: number; scene_threshold: number; chunk_duration: number }
 export type Cut = { id: string; cut_index: number; active: boolean; analysis_enabled: boolean; no_characters?: boolean; has_analysis_results?: boolean; has_summary?: boolean; has_boxes?: boolean; has_characters?: boolean; has_unlabeled_boxes?: boolean; has_visual_results?: boolean; has_consistency_summary?: boolean; last_job_failed?: boolean; start_time: number; end_time: number; first_frame_time: number; last_frame_time: number; title: string; description: string; notes: string; results: Record<string, unknown> }
@@ -14,8 +15,11 @@ export type JobCut = { id: string; cut_index: number | null; title: string; star
 export type VisualStage = 'initial_frame' | 'video_analysis'
 // Jobs queued before subtitles became an episode-wide step, or before the last frame stopped being analyzed, may still list these stages in their history.
 export type JobStage = VisualStage | 'subtitle_ocr' | 'last_frame'
-export type Job = { cuts: JobCut[]; id: string; pipeline: string; workflow?: string | null; stages?: JobStage[] | null; sequence?: { id: string; step: string; shot_key: string | null } | null; status: string; stage: string; error: string | null; created_at: string; updated_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null }
-export type EpisodeStatus = { status: string; stage: string; error: string | null; job_id: string | null; job_status: string | null }
+// What the queue may do with a job (backend job_kinds): cancel it now, or retry it after it failed or was cancelled.
+export type JobActions = { cancel: boolean; retry: boolean }
+// `cancelled` is its own status since 2026-11-15; older cancels were `failed` with the stage `Cancelled`.
+export type Job = { actions?: JobActions; cuts: JobCut[]; id: string; pipeline: string; workflow?: string | null; stages?: JobStage[] | null; sequence?: { id: string; step: string; shot_key: string | null } | null; status: string; stage: string; error: string | null; created_at: string; updated_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null }
+export type EpisodeStatus = { status: string; stage: string; error: string | null; job_id: string | null; job_status: string | null; queue: QueueSummary }
 export type EpisodeSummary = { id: string; title: string; status: string; stage: string; error: string | null; duration: number | null; created_at: string }
 export type Episode = EpisodeSummary & { project_id: string; original_filename: string; width: number | null; height: number | null; has_audio: boolean; proxy_ready: boolean; settings: Settings; subtitle_language: string | null; subtitles: { language: string | null; run: SubtitleRun | null }; cuts: Cut[]; archived_cuts: Cut[]; chunks: Chunk[]; jobs: Job[]; cut_history?: CutHistory }
 // The latest cut edit Undo would reverse and the one Redo would apply again (backend cut_history.py).

@@ -298,6 +298,9 @@ def init_db():
         if "shot_points_json" not in sequence_columns:
             # Shot boundaries the user placed on the Dialogue timeline: [{after_cut_id, time}] in episode seconds.
             db.execute("ALTER TABLE sequences ADD COLUMN shot_points_json TEXT")
+        if "extension_json" not in sequence_columns:
+            # Workflow marker of a cut added to the range: {cut_id, cut, from_time, rewrite_shots}; cleared when the direction is queued again.
+            db.execute("ALTER TABLE sequences ADD COLUMN extension_json TEXT")
         voice_columns = {row["name"] for row in db.execute("PRAGMA table_info(character_voice_samples)")}
         if "ranges_json" not in voice_columns:
             db.execute("ALTER TABLE character_voice_samples ADD COLUMN ranges_json TEXT")
@@ -377,6 +380,12 @@ def init_db():
         ):
             if column not in job_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+        # The queue lists failures that still need the user (runs.attention) until they are run again or dismissed.
+        if 'dismissed_at' not in job_columns:
+            db.execute('ALTER TABLE jobs ADD COLUMN dismissed_at TEXT')
+            # Failures from before the queue tracked them would otherwise all ask for attention at once.
+            db.execute("UPDATE jobs SET dismissed_at=CURRENT_TIMESTAMP WHERE status='failed' AND COALESCE(finished_at,updated_at) < datetime('now','-1 day')")
+        db.execute('CREATE INDEX IF NOT EXISTS jobs_episode_created_idx ON jobs(episode_id,created_at)')
         cut_columns = {row["name"] for row in db.execute("PRAGMA table_info(cuts)")}
         if "active" not in cut_columns:
             db.execute("ALTER TABLE cuts ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
@@ -391,8 +400,9 @@ def init_db():
         CREATE TRIGGER IF NOT EXISTS jobs_started AFTER UPDATE OF status ON jobs
         WHEN NEW.status='running' AND OLD.status='queued'
         BEGIN UPDATE jobs SET started_at=CURRENT_TIMESTAMP WHERE id=NEW.id; END;
-        CREATE TRIGGER IF NOT EXISTS jobs_finished AFTER UPDATE OF status ON jobs
-        WHEN NEW.status IN ('done','failed') AND OLD.status IN ('queued','running')
+        DROP TRIGGER IF EXISTS jobs_finished;
+        CREATE TRIGGER jobs_finished AFTER UPDATE OF status ON jobs
+        WHEN NEW.status IN ('done','failed','cancelled') AND OLD.status IN ('queued','running')
         BEGIN UPDATE jobs SET finished_at=CURRENT_TIMESTAMP WHERE id=NEW.id; END;
         """)
         db.execute("CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status,lease_until,created_at)")
@@ -402,6 +412,9 @@ def init_db():
         trigger_drops = '\n'.join('DROP TRIGGER "' + trigger['name'].replace('"', '""') + '";'
                                   for trigger in db.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'composition_%'").fetchall())
         db.executescript('BEGIN IMMEDIATE;\n' + trigger_drops + """
+        -- Cancelling is its own outcome (2026-11-15). Older cancels were stored as failures with the stage
+        -- 'Cancelled'; converting them here, while the composition triggers are dropped, leaves the watermarks alone.
+        UPDATE jobs SET status='cancelled' WHERE status='failed' AND stage='Cancelled';
         CREATE TABLE IF NOT EXISTS composition_changes (
             cut_id TEXT PRIMARY KEY REFERENCES cuts(id) ON DELETE CASCADE,
             updated_at TEXT NOT NULL

@@ -12,7 +12,7 @@ import os
 import time
 
 from . import db, local_text_runtime, worker
-from . import sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, subtitle_store
+from . import sequence_compile, sequence_direction as direction, sequence_edit, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, subtitle_store
 
 log = logging.getLogger(__name__)
 
@@ -101,8 +101,43 @@ def windows_of(lines):
     return [{'index': number, 'of': len(runs), 'lines': items} for number, items in enumerate(runs, 1)]
 
 
+def compile_windows(job, owner, payload, ctx, timeline, source_lines, subtitles, previous=(), decided=()):
+    """Ask Qwen for the dialogue of ``source_lines``, window by window.
+
+    ``previous`` are compiled lines before them and ``decided`` the voices already settled; both are context
+    the model continues from. Returns the compiled lines, the voices it newly decided, its open questions and
+    the provenance of the last call.
+    """
+    by_subtitle = {item['id']: item for item in subtitles}
+    roster = {person['name']: person['id'] for person in ctx['characters']}
+    names = list(roster)
+    sub_ids = [item['id'] for item in subtitles]
+    lines, found, questions = [], [], []
+    out = {'model': None, 'settings': {}, 'input': {}, 'seconds': 0.0, 'windows': 0}
+    for window in windows_of(source_lines):
+        ids = [line['id'] for line in window['lines']]
+        label = f"Aligning dialogue · part {window['index']}/{window['of']}"
+        worker.stage(job['id'], owner, job['episode_id'], label)
+        answer, out['model'], out['settings'], out['input'] = ask(
+            job, owner, payload, 'compile',
+            lambda level, window=window: evidence.compile_input(ctx, timeline, window, subtitles, [*previous, *lines], [*decided, *found], level),
+            direction.compile_format(ids, sub_ids, names), lambda output, ids=ids: direction.validate_compile(output, ids, set(sub_ids), names),
+            label, fallback=lambda window=window: sequence_compile.deterministic_groups(window['lines']))
+        out['seconds'] += out['settings'].get('summary_generation_seconds') or 0.0
+        out['windows'] += 1
+        lines.extend(sequence_compile.assemble(answer, window['lines'], by_subtitle, roster))
+        known = {voice['speaker_label'] for voice in [*decided, *found]}
+        found.extend(voice for voice in answer['voices'] if voice['speaker_label'] not in known)
+        questions.extend(answer['open_questions'])
+    return {**out, 'lines': lines, 'decided': found, 'questions': questions}
+
+
 def run_compile(job, owner, payload, sequence):
-    """Reconcile transcript, subtitles and visual evidence into the dialogue the user reviews, window by window."""
+    """Reconcile transcript, subtitles and visual evidence into the dialogue the user reviews, window by window.
+
+    With ``payload.extend_from`` (a cut was added at the end, see ``sequence_edit.extend``) only the words after
+    that time are compiled and appended to the current dialogue, which keeps every edit the user made.
+    """
     with db.connect() as conn:
         cuts = store.current_cuts(conn, sequence)
         if cuts is None:
@@ -114,49 +149,83 @@ def run_compile(job, owner, payload, sequence):
         timeline = store.raw_timeline_for(conn, sequence, cuts)
         source, fragments, subtitle_source = store.source_fingerprint(conn, sequence, cuts)
         run = subtitle_store.current_run(sequence['episode_id'], conn)
+        base = store.current(conn, sequence['id'], 'compilation')
+        extend_from, was_current = payload.get('extend_from'), False
+        if extend_from is not None and base is not None and cuts[0]['start_time'] < extend_from < cuts[-1]['end_time']:
+            # The sources were current before the cut was added only if they matched the range as it was then.
+            earlier = [cut for cut in cuts if cut['end_time'] <= extend_from + 0.001]
+            saved = conn.execute('SELECT source_hash FROM sequence_compilation_sources WHERE sequence_id=?', (sequence['id'],)).fetchone()
+            was_current = not saved or bool(earlier) and saved['source_hash'] == store.source_fingerprint(conn, sequence, earlier)[0]
+        else:
+            extend_from = None
     origin, duration = timeline['origin'], timeline['duration']
     subtitles = [{'id': f'U{number}', 'real': row['id'], 't0': round(row['start_time'] - origin, 3), 't1': round(row['end_time'] - origin, 3), 'text': row['text']}
                  for number, row in enumerate(subtitle_source, 1)]
-    by_subtitle = {item['id']: item for item in subtitles}
     roster = {person['name']: person['id'] for person in ctx['characters']}
-    names = list(roster)
-    lines, voices, questions, decided = [], [], [], []
-    usage = {'seconds': 0.0, 'windows': 0}
-    settings, model, user_input = {}, None, {}
-    windows = windows_of(timeline['lines'])
-    for window in windows:
-        ids = [line['id'] for line in window['lines']]
-        sub_ids = [item['id'] for item in subtitles]
-        label = f"Aligning dialogue · part {window['index']}/{window['of']}"
-        worker.stage(job['id'], owner, job['episode_id'], label)
-        answer, model, settings, user_input = ask(job, owner, payload, 'compile',
-                                                  lambda level, window=window: evidence.compile_input(ctx, timeline, window, subtitles, lines, decided, level),
-                                                  direction.compile_format(ids, sub_ids, names), lambda output, ids=ids: direction.validate_compile(output, ids, set(sub_ids), names),
-                                                  label, fallback=lambda window=window: sequence_compile.deterministic_groups(window['lines']))
-        usage['seconds'] += settings.get('summary_generation_seconds') or 0.0
-        usage['windows'] += 1
-        lines.extend(sequence_compile.assemble(answer, window['lines'], by_subtitle, roster))
-        known = {voice['speaker_label'] for voice in decided}
-        decided.extend(voice for voice in answer['voices'] if voice['speaker_label'] not in known)
-        questions.extend(answer['open_questions'])
+    if extend_from is not None:
+        return extend_compile(job, owner, payload, sequence, cuts, changed, ctx, timeline, subtitles, roster, base, extend_from - origin, was_current,
+                              (source, run, fragments, subtitle_source))
+    found = compile_windows(job, owner, payload, ctx, timeline, timeline['lines'], subtitles)
     anchors = [edge for line in timeline['lines'] for part in line['parts'] for edge in (part['t0'], part['t1'])] + [edge for item in subtitles for edge in (item['t0'], item['t1'])]
-    lines = sequence_compile.snap(lines, anchors, duration)
-    voices = sequence_compile.settle_voices(lines, decided, timeline['lines'])
-    content = sequence_compile.validate({'lines': lines, 'voices': voices, 'open_questions': questions[:12]}, duration, roster)
-    settings = {**settings, 'summary_generation_seconds': usage['seconds'], 'windows': usage['windows'], 'subtitle_lines': len(subtitle_source), 'source_hash': source}
+    lines = sequence_compile.snap(found['lines'], anchors, duration)
+    voices = sequence_compile.settle_voices(lines, found['decided'], timeline['lines'])
+    content = sequence_compile.validate({'lines': lines, 'voices': voices, 'open_questions': found['questions'][:12]}, duration, roster)
+    settings = {**found['settings'], 'summary_generation_seconds': found['seconds'], 'windows': found['windows'], 'subtitle_lines': len(subtitle_source), 'source_hash': source}
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         worker.require_lease(conn, job['id'], owner)
         if changed:
             store.resnapshot(conn, sequence, cuts)
-        result_id = store.save(conn, sequence['id'], 'compilation', content, model_id=model, job_id=job['id'], prompt=direction.COMPILE_SYSTEM, settings=settings, context=user_input,
-                               expected_current=base_of(payload))
+        result_id = store.save(conn, sequence['id'], 'compilation', content, model_id=found['model'], job_id=job['id'], prompt=direction.COMPILE_SYSTEM, settings=settings,
+                               context=found['input'], expected_current=base_of(payload))
         store.record_sources(conn, sequence['id'], result_id, source, run['id'] if run else None, len(fragments), len(subtitle_source))
         if not content['lines']:
             conn.execute('UPDATE sequences SET reviewed_compilation_id=? WHERE id=?', (result_id, sequence['id']))  # nothing is spoken: there is nothing to review
         else:
             conn.execute('UPDATE sequences SET reviewed_compilation_id=NULL WHERE id=?', (sequence['id'],))
         finish(conn, job)
+        sequence_edit.continue_extension(conn, store.get(conn, sequence['id']))
+
+
+def extend_compile(job, owner, payload, sequence, cuts, changed, ctx, timeline, subtitles, roster, base, old_duration, was_current, sources):
+    """Compile the words after ``old_duration`` (the cut added at the end) and append them to the current dialogue.
+
+    The model sees the user's last lines and voice decisions as context. The new lines are merged onto
+    whatever dialogue is current when the job commits, so a save the user made meanwhile is kept. When the
+    added cut has no speech, no revision is written and a confirmed dialogue stays confirmed, so the
+    direction is redone at once (``sequence_edit.continue_extension``).
+    """
+    source, run, fragments, subtitle_source = sources
+    duration = timeline['duration']
+    tail, crossed = sequence_compile.tail_lines(timeline['lines'], old_duration)
+    existing = store.loads(base['content'], {})
+    found = {'lines': [], 'decided': [], 'questions': [], 'model': None, 'settings': {}, 'input': {}, 'seconds': 0.0, 'windows': 0}
+    if tail:
+        found = compile_windows(job, owner, payload, ctx, timeline, tail, subtitles, existing.get('lines') or [], existing.get('voices') or [])
+    nearby = [item for item in subtitles if item['t1'] > old_duration]
+    anchors = [edge for line in tail for part in line['parts'] for edge in (part['t0'], part['t1'])] + [edge for item in nearby for edge in (item['t0'], item['t1'])]
+    added = sequence_compile.snap(found['lines'], anchors, duration)
+    voices = sequence_compile.settle_voices(added, found['decided'], tail)
+    settings = {**found['settings'], 'summary_generation_seconds': found['seconds'], 'windows': found['windows'], 'subtitle_lines': len(subtitle_source), 'source_hash': source,
+                'extended_with_cut': payload.get('extend_cut'), 'extended_from': round(old_duration, 3)}
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        worker.require_lease(conn, job['id'], owner)
+        if changed:
+            store.resnapshot(conn, sequence, cuts)
+        latest = store.current(conn, sequence['id'], 'compilation')
+        if added:
+            content = sequence_compile.validate(sequence_compile.append_lines(store.loads(latest['content'], {}), added, voices, found['questions'], crossed), duration, roster)
+            result_id = store.save(conn, sequence['id'], 'compilation', content, model_id=found['model'], job_id=job['id'], prompt=direction.COMPILE_SYSTEM, settings=settings,
+                                   context=found['input'], expected_current=latest['id'])
+            # The added lines have not been reviewed yet.
+            conn.execute('UPDATE sequences SET reviewed_compilation_id=NULL WHERE id=?', (sequence['id'],))
+        else:
+            result_id = latest['id']
+        if was_current:
+            store.record_sources(conn, sequence['id'], result_id, source, run['id'] if run else None, len(fragments), len(subtitle_source))
+        finish(conn, job, 'Complete' if added else 'Complete · no speech in the added cut')
+        sequence_edit.continue_extension(conn, store.get(conn, sequence['id']))
 
 
 def run_bible(job, owner, payload, sequence):
@@ -182,7 +251,8 @@ def run_bible(job, owner, payload, sequence):
                    expected_current=base_of(payload))
         if payload.get('then_plan'):
             plan = store.current(conn, sequence['id'], 'plan')
-            store.insert_job(conn, sequence, {'step': 'plan', 'config': payload.get('config') or {}, 'base_id': plan['id'] if plan else None})
+            store.insert_job(conn, sequence, {'step': 'plan', 'config': payload.get('config') or {}, 'base_id': plan['id'] if plan else None,
+                                              **({'then_shots': True} if payload.get('then_shots') else {})})
         finish(conn, job)
 
 
@@ -217,6 +287,12 @@ def run_plan(job, owner, payload, sequence):
         store.save(conn, sequence['id'], 'plan', content, model_id=model, job_id=job['id'], prompt=direction.PLAN_SYSTEM, settings=settings, context=user_input,
                    expected_current=base_of(payload))
         finish(conn, job)
+        if payload.get('then_shots'):
+            # A cut was added to a sequence whose shots were written: they are written again on the new plan, then reviewed.
+            try:
+                sequence_edit.queue(conn, store.get(conn, sequence['id']), 'shots')
+            except sequence_edit.EditError as exc:
+                log.info('Sequence %s: shots not queued after the plan: %s', sequence['id'], exc.detail)
 
 
 def planned_shots(conn, sequence, timeline):
@@ -265,7 +341,7 @@ def queue_review_after(conn, job, payload, sequence):
     if not batch or not payload.get('then_review'):
         return
     others = [row['status'] for row in conn.execute("SELECT status FROM jobs WHERE pipeline='sequence' AND id!=? AND json_extract(payload_json,'$.batch_id')=?", (job['id'], batch))]
-    if any(status in ('queued', 'running', 'failed') for status in others):
+    if any(status in ('queued', 'running', 'failed', 'cancelled') for status in others):
         return
     if conn.execute("SELECT 1 FROM jobs WHERE pipeline='sequence' AND status IN ('queued','running') AND json_extract(payload_json,'$.sequence_id')=? AND json_extract(payload_json,'$.step')='review'", (sequence['id'],)).fetchone():
         return

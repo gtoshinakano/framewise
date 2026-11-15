@@ -159,6 +159,19 @@ def run_sequence(sequence_id: str, body: SequenceRunInput):
     return {'queued': len(job_ids), 'job_ids': job_ids}
 
 
+@router.post('/sequences/{sequence_id}/extend', responses={409: {'description': 'No cut follows the sequence, the added cut is not analysed, or jobs are queued or running.'},
+                                                    422: {'description': 'With the next cut the sequence would last more than three minutes.'}})
+def extend_sequence(sequence_id: str):
+    """Add the episode's next cut to the end of the sequence, for speech that runs on past its last cut.
+
+    Only the added cut's dialogue is compiled and appended; the reviewed dialogue keeps its edits. Once the
+    dialogue is saved again (at once when nobody speaks in the added cut), the sequence is directed again and,
+    if it had shot prompts, every shot is written again and reviewed.
+    """
+    edit(lambda conn: sequence_edit.extend(conn, require(conn, sequence_id)))
+    return detail_or_404(sequence_id)
+
+
 @router.post('/sequences/{sequence_id}/cancel')
 def cancel_sequence_jobs(sequence_id: str):
     return {'cancelled': edit(lambda conn: sequence_edit.cancel(conn, require(conn, sequence_id)))}

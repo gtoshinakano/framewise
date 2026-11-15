@@ -87,6 +87,7 @@ export function SequencePanel({ episodeId, cuts, selectedCut, sequences, onChang
             <Chip on={sequence.shots_planned > 0 && sequence.shots_written >= sequence.shots_planned}>{sequence.shots_written}/{sequence.shots_planned} prompts</Chip>
             <Chip on={sequence.has_review}>Review</Chip>
           </span>
+          {sequence.extension && !sequence.cuts_missing && <span className="mt-2 flex items-center gap-1 text-[11px] text-[#9ff0c8]"><Plus size={12} aria-hidden /> Cut {sequence.extension.cuts.join(', ')} added{sequence.dialogue === 'review' ? ': review its lines' : ''}</span>}
           {(sequence.cuts_changed || sequence.cuts_missing) && <span className="mt-2 flex items-center gap-1 text-[11px] text-[#ffd59a]"><AlertTriangle size={12} aria-hidden /> {sequence.cuts_missing ? 'Its cuts were archived' : 'Cuts changed: direct it again'}</span>}
         </button>
         <button type="button" onClick={() => void remove(sequence)} className="rounded-lg border border-[#343b49] px-2 text-[#929aa9] hover:border-[#5b3439] hover:text-[#ffaaa7]" aria-label={`Delete sequence ${sequence.title}`} title="Delete sequence"><Trash2 size={14} /></button>

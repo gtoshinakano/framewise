@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyVoice, changed, counts, diff, lineProblems, mergeNext, needsReview, nudge, setSpeaker, setText, splitAt, visibleLines } from '../src/compilationView.ts'
+import { applyVoice, changed, counts, diff, isNew, lineProblems, mergeNext, needsReview, nudge, setSpeaker, setText, splitAt, visibleLines } from '../src/compilationView.ts'
 
 const line = (id, t0, t1, text, extra = {}) => ({ id, t0, t1, text, original_text: text, subtitle_text: null, speaker_label: 'SPEAKER_01', character: 'Hero', character_context_id: 'h',
   continues_next: false, confidence: 'high', note: '', source_ids: [`s${id}`], subtitle_ids: [], parts: [{ t0, t1, text }], ...extra })
@@ -59,7 +59,7 @@ test('review flags and filters', () => {
   assert.equal(changed(lines[3]), true)
   assert.deepEqual(visibleLines(lines, 'review').map(item => item.id), ['C2', 'C3'])
   assert.deepEqual(visibleLines(lines, 'changed').map(item => item.id), ['C4'])
-  assert.deepEqual(counts(lines), { total: 4, review: 2, changed: 1 })
+  assert.deepEqual(counts(lines), { total: 4, review: 2, changed: 1, added: 0 })
 })
 
 test('the difference highlights corrected kanji', () => {
@@ -67,4 +67,13 @@ test('the difference highlights corrected kanji', () => {
   assert.equal(parts.filter(part => part.kind === 'del').map(part => part.text).join(''), '意見')
   assert.equal(parts.map(part => part.text).filter((_, index) => parts[index].kind !== 'del').join(''), '今日はいい天気')
   assert.deepEqual(diff('同じ', '同じ'), [{ text: '同じ', kind: 'same' }])
+})
+
+test('lines of an added cut are new and count as lines to review', () => {
+  const lines = [line('C1', 1, 2, 'はい'), line('C2', 3.7, 4, 'ちょっと', { continues_next: true }), line('C3', 3.95, 4.6, '待って'), line('C4', 5, 6, 'じゃあね')]
+  assert.deepEqual(lines.map(item => isNew(item, 4)), [false, false, true, true])  // a new line may start just before the old end, its middle may not
+  assert.equal(isNew(lines[3], null), false)
+  assert.deepEqual(counts(lines, 4), { total: 4, review: 3, changed: 0, added: 2 })
+  assert.deepEqual(counts(lines), { total: 4, review: 1, changed: 0, added: 0 })
+  assert.deepEqual(visibleLines(lines, 'review', 4).map(item => item.id), ['C2', 'C3', 'C4'])
 })

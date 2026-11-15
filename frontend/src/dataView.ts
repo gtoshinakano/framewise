@@ -1,5 +1,7 @@
 // Pure helpers behind the run-details viewer: decide how a saved value should be shown.
 
+import { formatRunTime } from './queueView.ts'
+
 export type Parsed = { kind: 'json'; value: unknown; fenced: boolean } | { kind: 'text'; text: string }
 
 const FENCE = /^```(?:json|JSON)?\s*\n([\s\S]*?)\n?```\s*$/
@@ -127,6 +129,5 @@ export function durationText(start: string | null, end: string | null): string {
   const from = Date.parse(`${start.replace(' ', 'T')}Z`)
   const to = end ? Date.parse(`${end.replace(' ', 'T')}Z`) : Date.now()
   if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return ''
-  const seconds = Math.round((to - from) / 1000)
-  return seconds >= 3600 ? `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m` : seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`
+  return formatRunTime(Math.round((to - from) / 1000))
 }

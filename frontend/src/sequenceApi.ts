@@ -9,6 +9,14 @@ export type SequenceInfo = {
   first_cut: number | null; last_cut: number | null; cuts_changed: boolean; cuts_missing: boolean; created_at: string; updated_at: string
   /** Boundaries the user placed; they are final for the director. */
   shot_points?: ShotPoint[]
+  /** Cuts added at the end that still wait for the direction to be redone; lines from `from_time` (episode seconds) on are new. */
+  extension?: SequenceExtension | null
+}
+export type SequenceExtension = { cut_ids: string[]; cuts: number[]; from_time: number; rewrite_shots: boolean }
+/** The cut after the sequence: whether it can be added and the words that run on into it. */
+export type NextCut = {
+  id: string; number: number; start_time: number; end_time: number; seconds: number; fits: boolean; ready: boolean
+  speech: { text_before: string; words_after: string } | null
 }
 export type DialogueState = 'none' | 'running' | 'review' | 'confirmed'
 export type SequenceSummary = SequenceInfo & { dialogue?: DialogueState; has_bible: boolean; has_plan: boolean; has_review: boolean; shots_planned: number; shots_written: number; pending_jobs: number }
@@ -127,7 +135,7 @@ export type SequenceDetail = {
   sequence: SequenceInfo; compilation: DialogueView; cuts: SequenceCut[]; missing: number[]
   timeline: { duration: number; pauses: [number, number][]; boundaries: SequenceBoundary[]; lines: SequenceLine[] } | null
   bible: SequenceResult<Bible> | null; plan: SequenceResult<Plan> | null; plan_problems: string[]
-  shots: SequenceShot[]; review: SequenceResult<Review> | null; ready: boolean; jobs: SequenceJob[]
+  shots: SequenceShot[]; review: SequenceResult<Review> | null; ready: boolean; jobs: SequenceJob[]; next_cut?: NextCut | null
   limits: { sequence_seconds: number; shot_seconds: number; min_generate_seconds: number }
 }
 export type RunStep = 'compile' | 'direct' | 'bible' | 'plan' | 'shots' | 'review'
@@ -141,6 +149,8 @@ export const sequenceApi = {
   remove: (id: string) => api<{ ok: boolean }>(`/sequences/${id}`, { method: 'DELETE' }),
   run: (id: string, body: { step: RunStep; shot_keys?: string[]; only_missing?: boolean; instruction?: string }) => api<{ queued: number; job_ids: string[] }>(`/sequences/${id}/run`, jsonBody(body)),
   cancel: (id: string) => api<{ cancelled: number }>(`/sequences/${id}/cancel`, { method: 'POST' }),
+  /** Add the episode's next cut to the end; its dialogue is compiled and appended, then the whole direction follows. */
+  extend: (id: string) => api<SequenceDetail>(`/sequences/${id}/extend`, { method: 'POST' }),
   /** Every version of a shot's prompt, newest first, with the rewrite in progress and the Assistant's unapplied proposals. */
   shotHistory: (id: string, shotKey: string) => api<ShotHistory>(`/sequences/${id}/shots/${encodeURIComponent(shotKey)}/history`),
   revise: (resultId: string, content: unknown) => api<SequenceDetail>(`/sequence-results/${resultId}`, { method: 'PUT', body: JSON.stringify({ content }) }),

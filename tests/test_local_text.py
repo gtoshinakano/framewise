@@ -96,7 +96,8 @@ class LocalTextTest(unittest.TestCase):
         self.assertEqual(response.json()['queued'], 2)
         self.assertEqual(self.client.post('/api/episodes/e/visual-analysis').json()['queued'], 0)
         jobs = db.all_rows("SELECT payload_json FROM jobs ORDER BY rowid")
-        self.assertEqual([json.loads(j['payload_json'])['cuts'][0]['cut_id'] for j in jobs], ['c1','c2'])
+        self.assertEqual(len(jobs), 1)  # one job covers every cut so each model loads once
+        self.assertEqual([cut['cut_id'] for cut in json.loads(jobs[0]['payload_json'])['cuts']], ['c1', 'c2'])
         self.assertTrue(all(json.loads(j['payload_json'])['auto_consistency'] is False for j in jobs))
 
     def test_older_episode_analysis_route_queues_only_visual_jobs(self):
@@ -106,10 +107,10 @@ class LocalTextTest(unittest.TestCase):
         self.assertEqual(data['queued'], 2)
         self.assertEqual(data['job_id'], data['job_ids'][0])
         jobs = db.all_rows('SELECT pipeline,payload_json FROM jobs ORDER BY rowid')
-        self.assertEqual(len(jobs), 2)
-        for job in jobs:
-            payload = json.loads(job['payload_json'])
-            self.assertEqual((job['pipeline'], payload['workflow'], payload['auto_consistency']), ('analyze', 'single_cut_v2', False))
+        self.assertEqual(len(jobs), 1)
+        payload = json.loads(jobs[0]['payload_json'])
+        self.assertEqual(len(payload['cuts']), 2)
+        self.assertEqual((jobs[0]['pipeline'], payload['workflow'], payload['auto_consistency']), ('analyze', 'single_cut_v2', False))
         repeated = self.client.post('/api/episodes/e/analyze').json()
         self.assertEqual((repeated['queued'], repeated['job_id']), (0, None))
 
@@ -171,7 +172,7 @@ class LocalTextTest(unittest.TestCase):
         ids=self.client.post('/api/episodes/e/text-processing', json={}).json()['job_ids']
         self.client.post('/api/jobs/'+ids[0]+'/cancel')
         dependent = db.one('SELECT status,stage FROM jobs WHERE id=?',(ids[1],))
-        self.assertEqual((dependent['status'], dependent['stage']), ('failed', 'Cancelled'))
+        self.assertEqual((dependent['status'], dependent['stage']), ('cancelled', 'Cancelled'))
         self.assertIsNone(worker.claim_job(('regen',)))  # the other cut's brief waits for its consistency summary
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='done' WHERE id=?", (ids[2],))

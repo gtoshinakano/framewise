@@ -1,13 +1,14 @@
-import { BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
+import { AlertTriangle, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
 import { LocalModelControl } from './LocalModelControl'
 import { Menu, type MenuEntry } from './Popover'
+import { attentionText, attentionTitle, counterText, counterTitle, type QueueSummary } from './queueView'
 
 export type CharacterStep = 'character-boxes' | 'character-detection' | 'character-detection-all' | 'character-detection-rerun'
 
 const go = (path: string) => { window.location.hash = path }
 
 /** The episode editor's top bar: where you are, the episode-wide actions grouped in menus, and the queue. */
-export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, queue, onOpenQueue, onOpenSettings, onDeleteEpisode }: {
+export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, queue, running, onOpenQueue, onOpenSettings, onDeleteEpisode }: {
   projectId?: string
   projectTitle?: string
   episodeTitle?: string
@@ -21,8 +22,11 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   onCharacterStep: (step: CharacterStep) => void
   onDetectCuts: () => void
   onPrepare: () => void
-  queue: { completed: number; total: number; running: boolean; failed: number }
-  onOpenQueue: () => void
+  /** The episode's queue counter (backend runs.summary); null until the first status poll. */
+  queue: QueueSummary | null
+  /** Anything of this episode running, GPU or media work. */
+  running: boolean
+  onOpenQueue: (focus?: 'attention') => void
   onOpenSettings: () => void
   onDeleteEpisode: () => void
 }) {
@@ -62,11 +66,16 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
           <Menu label="Media" items={cutItems} align="end" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md" aria-label="Media actions" title="Media actions"><ChevronDown size={14} aria-hidden /></button>} />
         </>}
       <span className="mx-1 hidden h-5 w-px bg-[#333945] sm:block" aria-hidden />
-      <button type="button" onClick={onOpenQueue} className="icon-btn icon-btn-md icon-btn-text" title="Runs, queue & history" aria-label={`Runs, queue and history: ${queue.completed} of ${queue.total} finished${queue.failed ? `, ${queue.failed} failed` : ''}`}>
-        {queue.running ? <LoaderCircle size={16} className="animate-spin text-[#f5c678] motion-reduce:animate-none" aria-hidden /> : <ListChecks size={16} aria-hidden />}
-        <span className="hidden sm:inline">Queue</span><span className="font-mono tabular-nums">{queue.completed}/{queue.total}</span>
-        {queue.failed > 0 && <span className="badge badge-danger" title={`${queue.failed} failed`}>{queue.failed}</span>}
+      <button type="button" onClick={() => onOpenQueue()} className="icon-btn icon-btn-md icon-btn-text" title={counterTitle(queue)} aria-label={`Queue and history. ${counterTitle(queue)}`}>
+        {running || queue?.busy ? <LoaderCircle size={16} className="animate-spin text-[#f5c678] motion-reduce:animate-none" aria-hidden /> : <ListChecks size={16} aria-hidden />}
+        <span className="hidden sm:inline">Queue</span>
+        {counterText(queue) && <span className="font-mono tabular-nums">{counterText(queue)}</span>}
+        {!!queue?.stopping && <span className="text-[11px] font-semibold text-[#f5c678]">Stopping</span>}
       </button>
+      {!!queue?.attention && <button type="button" onClick={() => onOpenQueue('attention')} title={attentionTitle(queue.attention)} aria-label={attentionTitle(queue.attention)}
+        className="inline-flex h-8 items-center gap-1 whitespace-nowrap rounded-lg border border-[#63363e] bg-[#2b191f] px-2 text-xs font-semibold text-[#ff9fa7] hover:bg-[#3a2027]">
+        <AlertTriangle size={13} aria-hidden />{attentionText(queue.attention)}
+      </button>}
       <LocalModelControl compact />
       <Menu label="Episode" items={episodeItems} align="end" width="w-72" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md" aria-label="Episode menu" title="Episode menu"><MoreHorizontal size={16} aria-hidden /></button>} />
     </div>

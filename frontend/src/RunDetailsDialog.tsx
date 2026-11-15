@@ -18,7 +18,7 @@ type ResultView = 'output' | 'prompt' | 'context' | 'settings'
 
 const pipelineName = (job: Job) => job.pipeline === 'regen' ? 'Cut summary' : job.pipeline === 'consistency_summary' ? 'Consistency summary' : 'Visual analysis'
 const stageTone = (status: string): Tone => status === 'done' || status === 'complete' ? 'green' : status === 'running' ? 'purple' : status === 'failed' || status === 'interrupted' ? 'red' : 'grey'
-const statusWord = (status: string) => status === 'done' ? 'Succeeded' : status === 'failed' ? 'Failed' : status === 'running' ? 'Running' : status === 'queued' ? 'Queued' : status
+const statusWord = (status: string) => status === 'done' ? 'Succeeded' : status === 'failed' ? 'Failed' : status === 'running' ? 'Running' : status === 'queued' ? 'Queued' : status === 'cancelled' ? 'Cancelled' : status
 const hasData = (value: unknown) => value !== null && value !== undefined && !(typeof value === 'object' && Object.keys(value as object).length === 0) && value !== ''
 
 function ResultCard({ result, job }: { result: AnalysisResult; job: Job }) {

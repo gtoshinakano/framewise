@@ -104,7 +104,7 @@ class VisualStageJobsTest(unittest.TestCase):
              patch.object(single_cut_pipeline.video_model, 'analyze_video', side_effect=cancel_video):
             inference_worker.process(*worker.claim_job(('analyze',)))
         job = db.one('SELECT status,stage FROM jobs WHERE id=?', (job_id,))
-        self.assertEqual((job['status'],job['stage']), ('failed','Cancelled'))
+        self.assertEqual((job['status'],job['stage']), ('cancelled','Cancelled'))
         self.assertEqual(db.one('SELECT status FROM analysis_job_stages WHERE job_id=?', (job_id,))['status'], 'cancelled')
         self.assertEqual(len(self.client.get('/api/cuts/c1/structured-analysis').json()), 0)
         response = self.client.post(f'/api/jobs/{job_id}/retry')

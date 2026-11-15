@@ -844,7 +844,10 @@ class AnalysisTest(unittest.TestCase):
                 thread.join(timeout=3)
                 self.assertFalse(thread.is_alive(), 'Worker should stop waiting for the provider')
                 job = db.one('SELECT status,stage,error,lease_owner,finished_at FROM jobs WHERE id=?', (job_id,))
-                self.assertEqual((job['status'], job['stage'], job['error'], job['lease_owner']), ('failed', 'Cancelled', 'Cancelled during processing', None))
+                # Cancelled, not failed; the worker keeps the lease until it lets go (worker.heartbeat releases it).
+                self.assertEqual((job['status'], job['stage'], job['error'], job['lease_owner']), ('cancelled', 'Cancelled', 'Cancelled during processing', claimed[1]))
+                worker.release_lease(*claimed)
+                self.assertIsNone(db.one('SELECT lease_owner FROM jobs WHERE id=?', (job_id,))['lease_owner'])
                 self.assertIsNotNone(job['finished_at'])
                 self.assertEqual(worker.claim_job(('regen',))[0], next_id)
             finally:
@@ -860,7 +863,8 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(worker.claim_job(('analyze',))[0], job_id)
         self.assertEqual(self.client.post('/api/jobs/' + job_id + '/cancel').status_code, 200)
         job = db.one('SELECT status,stage,lease_owner FROM jobs WHERE id=?', (job_id,))
-        self.assertEqual((job['status'], job['stage'], job['lease_owner']), ('failed', 'Cancelled', None))
+        self.assertEqual((job['status'], job['stage']), ('cancelled', 'Cancelled'))
+        self.assertIsNotNone(job['lease_owner'], 'the worker still holds a cancelled job until it lets go')
         self.assertEqual(self.client.post('/api/jobs/' + job_id + '/retry').status_code, 200)
 
     def test_summary_jobs_for_different_cuts_can_be_queued_without_duplicate_same_cut(self):

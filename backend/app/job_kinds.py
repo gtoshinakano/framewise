@@ -1,0 +1,209 @@
+"""What each kind of queued job is, for the queue and run history (``runs.py``).
+
+One ``Kind`` per ``jobs.pipeline``: its name, whether it runs on the GPU (and so counts in the episode's
+queue counter), when it can be cancelled or retried, which cuts, sequence or stretch of audio it works on,
+how many individual GPU steps it holds, and what it is "about" so a failure counts as dealt with once the
+same thing is run again. Everything here reads the job's payload only; ``runs.py`` adds what needs the
+database (current cut numbers, sequence titles, finished stages).
+
+A new pipeline needs one entry in ``KINDS`` (``tests/test_runs.py`` checks every pipeline a worker claims).
+"""
+from dataclasses import dataclass, field
+from typing import Callable
+
+STAGE_LABELS = {'initial_frame': 'Initial frame', 'video_analysis': 'Video analysis', 'subtitle_ocr': 'Subtitle detection and OCR', 'last_frame': 'Last frame'}
+# The stages a visual job runs when its payload names none (single_cut_pipeline.ALL_STAGES).
+DEFAULT_STAGES = ('initial_frame', 'video_analysis')
+SEQUENCE_STEPS = {'compile': 'Dialogue', 'bible': 'Bible', 'plan': 'Plan', 'shot': 'Shot', 'review': 'Review'}
+
+
+def _cut_ref(cut_id, snapshot=None):
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    return {'id': cut_id, 'snapshot': {key: snapshot.get(key) for key in ('cut_index', 'title', 'start_time', 'end_time')}}
+
+
+def _one_cut(payload):
+    cut_id = payload.get('cut_id')
+    if not isinstance(cut_id, str) or not cut_id:
+        return []
+    context = payload.get('context')
+    snapshot = payload.get('cut') or (context.get('cut') if isinstance(context, dict) else None)
+    return [_cut_ref(cut_id, snapshot)]
+
+
+def _analysis_cuts(payload):
+    items = payload.get('cuts')
+    refs = []
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and isinstance(item.get('cut_id'), str):
+            context = item.get('context')
+            refs.append(_cut_ref(item['cut_id'], context.get('cut') if isinstance(context, dict) else None))
+    return refs
+
+
+def _frame_cuts(payload):
+    ids = payload.get('cut_ids') if isinstance(payload.get('cut_ids'), list) else []
+    ids = [*ids, *(payload[key] for key in ('cut_id', 'next_cut_id') if isinstance(payload.get(key), str))]
+    seen = []
+    for cut_id in ids:
+        if isinstance(cut_id, str) and cut_id not in seen:
+            seen.append(cut_id)
+    return [_cut_ref(cut_id) for cut_id in seen]
+
+
+def _export_cuts(payload):
+    if payload.get('kind') == 'sequence':
+        return []
+    brief = payload.get('brief') if isinstance(payload.get('brief'), dict) else {}
+    cuts = payload.get('asset_cuts') or brief.get('cuts')
+    refs, seen = [], set()
+    for item in cuts if isinstance(cuts, list) else []:
+        cut_id = item.get('id') if isinstance(item, dict) else None
+        if isinstance(cut_id, str) and cut_id not in seen:
+            seen.add(cut_id)
+            refs.append(_cut_ref(cut_id, {**item, 'cut_index': item.get('cut_index', (item.get('cut_number') or 0) - 1 if item.get('cut_number') else None)}))
+    return refs
+
+
+def _no_cuts(payload):
+    return []
+
+
+def stages_of(payload):
+    stages = payload.get('stages')
+    if isinstance(stages, list) and stages:
+        return [stage for stage in stages if isinstance(stage, str)]
+    return list(DEFAULT_STAGES) if payload.get('workflow') == 'single_cut_v2' else []
+
+
+def _analysis_label(payload):
+    stages = stages_of(payload)
+    if payload.get('workflow') == 'single_cut_v2':
+        return STAGE_LABELS.get(stages[0], 'Visual analysis') if len(stages) == 1 else 'Visual analysis'
+    return 'Text analysis (older run)' if payload.get('text_only') else 'Visual analysis (older run)'
+
+
+def _character_label(payload):
+    if payload.get('workflow') != 'anime_bulk_v1':
+        return 'Character detection (older run)'
+    return {'boxes': 'Character boxes', 'recognize': 'Character recognition'}.get(payload.get('phase'), 'Character detection')
+
+
+def _sequence_label(payload):
+    return f"Sequence {SEQUENCE_STEPS.get(payload.get('step'), 'step').lower()}"
+
+
+def _export_label(payload):
+    return 'Sequence download' if payload.get('kind') == 'sequence' else 'Brief download'
+
+
+def _summary_label(payload):
+    return 'Cut summary' if payload.get('result_type', 'summary') == 'summary' or payload.get('production_brief') else 'Text result'
+
+
+def _transcribe_range(payload):
+    span = payload.get('range')
+    if isinstance(span, dict) and all(isinstance(span.get(key), (int, float)) for key in ('start_time', 'end_time')):
+        return {'start': span['start_time'], 'end': span['end_time']}
+    return None
+
+
+def _voice_range(payload):
+    ranges = [item for item in payload.get('ranges') or [] if isinstance(item, dict)]
+    starts = [item['start_time'] for item in ranges if isinstance(item.get('start_time'), (int, float))]
+    ends = [item['end_time'] for item in ranges if isinstance(item.get('end_time'), (int, float))]
+    return {'start': min(starts), 'end': max(ends)} if starts and ends else None
+
+
+def _transcribe_key(payload):
+    span = _transcribe_range(payload)
+    return f"transcribe:{span['start']:.3f}-{span['end']:.3f}" if span else 'transcribe:all'
+
+
+def _cut_keys(prefix):
+    return lambda payload, cut_ids: [f'{prefix}:{cut_id}' for cut_id in cut_ids]
+
+
+def _analysis_keys(payload, cut_ids):
+    return [f'analyze:{cut_id}:{stage}' for cut_id in cut_ids for stage in stages_of(payload) or ['legacy']]
+
+
+@dataclass(frozen=True)
+class Kind:
+    """How the queue describes and handles one pipeline."""
+    pipeline: str
+    title: str
+    gpu: bool
+    label: Callable[[dict], str] | None = None
+    cuts: Callable[[dict], list] = _no_cuts
+    # Whether a queued / running job of this kind can be cancelled from the queue.
+    cancel_queued: bool = True
+    cancel_running: Callable[[dict], bool] = lambda payload: False
+    # ``POST /api/jobs/{id}/retry`` supports a failed or cancelled job of this kind.
+    retry: Callable[[dict], bool] = lambda payload: False
+    # Individual GPU steps the job holds; visual analysis counts one per cut and stage.
+    stage_units: bool = False
+    # What the job is about: a later job with the same keys deals with a failure (``runs.attention``).
+    keys: Callable[[dict, list], list] = lambda payload, cut_ids: []
+    # Episode-wide work states the stretch of audio it covers.
+    audio_range: Callable[[dict], dict | None] = lambda payload: None
+    # Failures of these kinds ask for the user's attention; downloads requested by other apps do not.
+    attention: bool = True
+    description: str = field(default='')
+
+    def name(self, payload):
+        return self.label(payload) if self.label else self.title
+
+    def can_cancel(self, status, payload):
+        if status == 'queued':
+            return self.cancel_queued
+        return status == 'running' and self.cancel_running(payload)
+
+    def units(self, payload):
+        if self.stage_units:
+            return max(1, len(self.cuts(payload)) * max(1, len(stages_of(payload))))
+        return 1
+
+
+def _always(payload):
+    return True
+
+
+KINDS = {kind.pipeline: kind for kind in (
+    Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
+         # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
+         cancel_running=lambda payload: payload.get('workflow') == 'single_cut_v2' or payload.get('text_only') is True,
+         retry=_always),
+    Kind('character_detect', 'Character detection', True, label=_character_label, cuts=_one_cut, keys=_cut_keys('character_detect'),
+         # Bulk detection keeps one lease per cut and skips a cut whose lease is gone; the older workflow cannot stop midway.
+         cancel_running=lambda payload: payload.get('workflow') == 'anime_bulk_v1'),
+    Kind('consistency_summary', 'Consistency summary', True, cuts=_one_cut, keys=_cut_keys('consistency_summary'), cancel_running=_always),
+    Kind('review_answers', 'Production decisions draft', True, cuts=_one_cut, keys=_cut_keys('review_answers'), cancel_running=_always),
+    Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always),
+    Kind('composition_compact', 'Composition brief', True, cuts=_one_cut, keys=_cut_keys('composition_compact'), cancel_running=_always,
+         retry=_always, attention=False),
+    Kind('sequence', 'Sequence', True, label=_sequence_label, cancel_running=_always,
+         keys=lambda payload, cut_ids: [f"sequence:{payload.get('sequence_id')}:{payload.get('step')}:{payload.get('shot_key') or ''}"]),
+    Kind('subtitles', 'Subtitle extraction', True, cancel_running=_always, keys=lambda payload, cut_ids: [f"subtitles:{payload.get('language') or ''}"]),
+    Kind('transcribe', 'Transcription', True, audio_range=_transcribe_range, cancel_running=_always,
+         keys=lambda payload, cut_ids: [_transcribe_key(payload)]),
+    Kind('voice_sample', 'Voice sample', True, audio_range=_voice_range, cancel_running=_always,
+         keys=lambda payload, cut_ids: [f"voice_sample:{payload.get('character_context_id')}"]),
+    # Media work runs on the CPU in the API process: listed, never counted, not cancellable while it runs.
+    Kind('prepare', 'Prepare media', False, cancel_queued=False, keys=lambda payload, cut_ids: ['prepare']),
+    Kind('hardcuts', 'Hard-cut detection', False, cuts=_one_cut, cancel_queued=False,
+         keys=lambda payload, cut_ids: [f'hardcuts:{cut_id}' for cut_id in cut_ids] or ['hardcuts']),
+    Kind('cutframes', 'Cut previews', False, cuts=_frame_cuts, cancel_queued=False,
+         keys=lambda payload, cut_ids: [f'cutframes:{cut_id}' for cut_id in cut_ids]),
+    Kind('brief_export', 'Download', False, label=_export_label, cuts=_export_cuts, cancel_queued=False, attention=False),
+)}
+
+def kind_of(pipeline):
+    """The registry entry of a pipeline; unknown pipelines are listed under their own name and never counted."""
+    kind = KINDS.get(pipeline)
+    if kind:
+        return kind
+    return Kind(pipeline, str(pipeline or 'run').replace('_', ' ').capitalize(), False, cancel_queued=False)
+
+
+GPU_PIPELINES = tuple(name for name, kind in KINDS.items() if kind.gpu)

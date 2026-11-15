@@ -9,7 +9,8 @@ file is listed in ``manifest.json`` with its size and sha256; a file that cannot
 
 Always: ``sequence.json`` (lean view), ``overview.json`` (digest), ``manifest.json``, ``contact-sheet.jpg``,
 ``sequence.srt`` (when the range has burned-in subtitle lines), and per shot ``shot-NN.wav`` (exact),
-``shot-NN-ref.wav`` (padded to the generated length, only for shots shorter than 5 s), ``shot-NN-initial.jpg``,
+``shot-NN-ref.wav`` (only for shots shorter than 5 s: the original audio from the shot's start for the generated length,
+silence only where the episode audio ends), ``shot-NN-initial.jpg``,
 ``shot-NN-last.jpg``, ``shot-NN-strip.jpg``, ``preview/shot-NN.jpg``, ``shot-NN-prompt.txt``,
 ``shot-NN-prompt-template.txt`` and ``shot-NN-still.txt``. On request (``include``): ``sequence.wav``,
 ``shot-NN-clip.mp4`` and ``references/`` (character crops, scene frames, voice samples).
@@ -160,6 +161,25 @@ def process_export(job, owner, episode, payload):
             os.replace(archive, target)
 
 
+def reference_audio(audio, folder, spec, exact):
+    """The original audio from the shot's start for ``generate_seconds``: the shot itself, then what follows it in the episode.
+
+    Silence is added only where the episode audio ends first. Returns the file and its manifest fields.
+    """
+    continued = folder / 'continued.wav'
+    write_audio(audio, continued, spec['start_time'], spec['start_time'] + spec['generate_seconds'])
+    heard = seconds_of(continued)
+    ref = continued
+    if spec['generate_seconds'] - heard > 0.001:
+        ref = folder / 'ref.wav'
+        media.pad_wav(continued, ref, spec['generate_seconds'])
+    total = seconds_of(ref)
+    silence = round(total - heard, 3)
+    source = f"original audio from the shot's start for generate_seconds: {name(spec['index'], '.wav')}, then the audio that follows it"
+    return ref, {'audio_seconds': exact, 'continued_seconds': round(heard - exact, 3), 'silence_seconds': silence if silence > 0.001 else None, 'padded_seconds': total,
+                 'source': source + ('; silence where the episode audio ends' if silence > 0.001 else '')}
+
+
 def write_shots(job, owner, episode, worker, out, temp, specs, shots, audio, source, include):
     """Per shot audio, frames, strip, preview, texts and clip; returns the initial JPEG of each shot for the contact sheet."""
     initials = {}
@@ -186,10 +206,8 @@ def write_shots(job, owner, episode, worker, out, temp, specs, shots, audio, sou
                 exact = seconds_of(wav)
                 out.add_file(wav, name(index, '.wav'), 'shot_audio', shot=index, seconds=exact, source='original audio, exact shot interval')
                 if spec['generate_seconds'] - exact > 0.001:
-                    padded = folder / 'padded.wav'
-                    media.pad_wav(wav, padded, spec['generate_seconds'])
-                    out.add_file(padded, name(index, '-ref.wav'), 'shot_audio_padded', shot=index, audio_seconds=exact, padded_seconds=seconds_of(padded),
-                                 source=f"{name(index, '.wav')} with silence up to generate_seconds")
+                    ref, meta = reference_audio(audio, folder, spec, exact)
+                    out.add_file(ref, name(index, '-ref.wav'), 'shot_audio_padded', shot=index, **meta)
             except AUDIO_ERRORS as exc:
                 out.error('shot_audio', exc, shot=index, path=name(index, '.wav'))
             jobs = frames.get(index)

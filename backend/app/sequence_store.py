@@ -54,6 +54,18 @@ def cuts_changed(sequence, cuts):
     return cuts is None or snapshot(cuts) != loads(sequence['cuts_json'], [])
 
 
+def next_cut(conn, sequence, cuts):
+    """The first active cut after the sequence's last cut, or None at the end of the episode."""
+    row = conn.execute('SELECT * FROM cuts WHERE episode_id=? AND active=1 AND cut_index>? ORDER BY cut_index LIMIT 1', (sequence['episode_id'], cuts[-1]['cut_index'])).fetchone()
+    return dict(row) if row else None
+
+
+def extension(sequence):
+    """The cut the user added to the range and is still waiting for the direction to be redone: ``{cut_id, cut, from_time, rewrite_shots}`` or None."""
+    found = loads(sequence.get('extension_json'), {})
+    return found or None
+
+
 def resnapshot(conn, sequence, cuts):
     """Adopt the current cuts as the sequence's range (done when a new direction is queued)."""
     conn.execute('UPDATE sequences SET start_time=?,end_time=?,cuts_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
@@ -136,6 +148,22 @@ def timeline_for(conn, sequence, cuts, points=None):
     compiled = reviewed_compilation(conn, sequence)
     lines = sequence_compile.merged_lines(compiled, start) if compiled is not None else transcript_lines(conn, sequence['episode_id'], start, end)
     return sequence_timeline.build(cuts, lines, envelope, event_starts(conn, cuts), shot_points(sequence) if points is None else points)
+
+
+def speech_past_end(conn, sequence, cuts, following):
+    """The first spoken line that runs on past the sequence's end into ``following``: ``{text_before, words_after}`` or None.
+
+    Uses the rule of ``sequence_timeline.speech_lines``: a word belongs to the side its midpoint lies on, so the
+    words after the end are the ones the sequence leaves out.
+    """
+    end = cuts[-1]['end_time']
+    for line in transcript_lines(conn, sequence['episode_id'], max(cuts[0]['start_time'], end - 30), following['end_time']):
+        before = [part for part in line['parts'] if (part['start_time'] + part['end_time']) / 2 < end]
+        after = [part for part in line['parts'] if (part['start_time'] + part['end_time']) / 2 >= end]
+        if before and after:
+            return {'text_before': sequence_timeline.words([{'text': part['text']} for part in before]),
+                    'words_after': sequence_timeline.words([{'text': part['text']} for part in after])}
+    return None
 
 
 def raw_timeline_for(conn, sequence, cuts):

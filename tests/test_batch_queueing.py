@@ -107,7 +107,7 @@ class BatchQueueingTest(unittest.TestCase):
         with db.connect() as conn:
             conn.execute("INSERT INTO context_items(id,project_id,kind,title) VALUES ('hero','p','character','Hero')")
             conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('r','c1',0,2,'[]','t')")
-            conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('d1','r','first','[1,1,2,2]','hero'),('d2','r','last','[1,1,2,2]',NULL)")
+            conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('d1','r','first','[1,1,2,2]','hero'),('d2','r','first','[1,1,2,2]',NULL)")
         for stage in ('video_analysis', 'consistency_summary'):
             self.seed_result('c1', stage)
         self.seed_result('c2', 'video_analysis')
@@ -124,7 +124,7 @@ class BatchQueueingTest(unittest.TestCase):
             conn.execute("INSERT INTO context_items(id,project_id,kind,title) VALUES ('hero','p','character','Hero')")
             conn.execute("UPDATE cuts SET no_characters=1 WHERE id='c1'")                      # marked: settled
             for run, cut, start, end in (('r2', 'c2', 2, 4), ('r3', 'c3', 4, 6)):
-                conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES (?,?,?,?,'[]','t')", (run, cut, start, end))
+                conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES (?,?,?,?,'[{\"position\":\"first\",\"time\":0,\"image_size\":[100,80]}]','t')", (run, cut, start, end))
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('d2','r2','first','[1,1,2,2]','hero')")  # c2: all named
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('d3','r3','first','[1,1,2,2]',NULL)")    # c3: unknown box
         result = main.queue_episode_visual_analysis('e', from_cut=2, characters_resolved=True)  # c4 was never detected

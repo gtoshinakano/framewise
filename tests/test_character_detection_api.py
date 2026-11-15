@@ -181,7 +181,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
     def test_bulk_detection_queues_missing_stale_and_failed_cuts_once(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO cuts(id,episode_id,cut_index,start_time,end_time,active,analysis_enabled) VALUES ('c3','e',2,4,6,1,0),('c4','e',-1,6,8,0,1),('c5','e',3,8,10,1,1)")
-            conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('done','c1',0,2,'[]','test'),('stale','c2',2,3,'[]','test')")
+            conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('done','c1',0,2,'[{\"position\":\"first\"}]','test'),('stale','c2',2,3,'[{\"position\":\"first\"}]','test')")
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('failed','e','character_detect','failed')")
             conn.execute("INSERT INTO character_detection_runs(id,cut_id,job_id,cut_start,cut_end,frames_json,model_id,phase) VALUES ('partial','c5','failed',8,10,'[]','test','boxes')")
         response = self.client.post('/api/episodes/e/character-detection-all')
@@ -201,7 +201,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
     def test_bulk_detection_empty_missing_episode_and_conflicting_work(self):
         self.assertEqual(self.client.post('/api/episodes/missing/character-detection').status_code, 404)
         with db.connect() as conn:
-            conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('r1','c1',0,2,'[]','test'),('r2','c2',2,4,'[]','test')")
+            conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('r1','c1',0,2,'[{\"position\":\"first\"}]','test'),('r2','c2',2,4,'[{\"position\":\"first\"}]','test')")
         self.assertEqual(self.client.post('/api/episodes/e/character-detection').json(), {'queued': 0, 'job_ids': []})
         with db.connect() as conn:
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('busy','e','hardcuts','queued')")

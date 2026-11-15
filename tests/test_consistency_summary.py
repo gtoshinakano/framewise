@@ -96,7 +96,7 @@ class MotionDirectionEvidenceTest(unittest.TestCase):
 
     def test_reviewer_prompt_is_about_the_three_generation_steps(self):
         for expected in ('a still image of the opening frame', 'the dialogue audio', 'animates the still', 'speaking', 'inner voice', 'NOT an issue',
-                         'has NOT thereby left', 'the box wins', 'Never reproduce subtitle text'):
+                         'is not thereby gone', 'Never reproduce subtitle text'):
             self.assertIn(expected, SYSTEM)
         self.assertNotIn('ending-frame descriptions', SYSTEM)
 

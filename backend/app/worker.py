@@ -146,16 +146,14 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
             if job['pipeline'] not in ('brief_export', 'composition_compact'):
                 sync_episode_status(conn, job["episode_id"], "Interrupted too many times; run the pipeline again")
         # A chained text job (payload.wait_for) is held until the job it names is done. If that job
-        # failed, was cancelled or is gone, the waiting job can never run, so fail it now.
+        # failed, was cancelled or is gone, the waiting job can never run, so cancel it now.
         while True:  # cancelling one job can orphan the next link of its chain
             orphans = conn.execute(f"""SELECT id,episode_id FROM jobs WHERE status='queued' AND pipeline IN ('regen','review_answers') AND pipeline IN ({placeholders})
                 AND json_extract(payload_json,'$.wait_for') IS NOT NULL
                 AND NOT EXISTS (SELECT 1 FROM jobs dep WHERE dep.id=json_extract(jobs.payload_json,'$.wait_for') AND dep.status IN ('queued','running','done'))""", pipelines).fetchall()
             if not orphans:
                 break
-            for orphan in orphans:
-                conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error='Cancelled because a job it waited for did not finish',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (orphan["id"],))
-                sync_episode_status(conn, orphan["episode_id"])
+            cancel_jobs(conn, orphans, WAITED_FOR_FAILED)
         job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}){routing} AND
             (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
             AND (jobs.pipeline NOT IN ('regen','review_answers') OR json_extract(jobs.payload_json,'$.wait_for') IS NULL
@@ -193,6 +191,72 @@ def requeue_job(job_id, owner, stage='Waiting for a text worker'):
         conn.execute("UPDATE jobs SET status='queued',stage=?,lease_owner=NULL,lease_until=NULL,attempt_count=MAX(0,attempt_count-1),updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
         sync_episode_status(conn, job['episode_id'])
         return True
+
+
+WAITED_FOR_FAILED = 'Cancelled because a job it waited for did not finish'
+# Pipelines that never move the episode's own status (exports and the composition cache).
+SIDE_PIPELINES = ('brief_export', 'composition_compact')
+
+
+def cancel_jobs(conn, jobs, reason=None):
+    """Cancel queued or running jobs inside the caller's transaction and return the rows that changed.
+
+    Cancelled is its own status, never a failure. The stage stays ``Cancelled`` because text handlers
+    poll it (``inference_worker.check_summary_lease``). A running job keeps its lease owner: its worker
+    holds the GPU until the job's next checkpoint, ``heartbeat`` keeps that lease alive meanwhile (the
+    queue shows the job as stopping) and releases it when the worker lets go. Queued jobs that wait for a
+    cancelled job (``payload.wait_for``, ``depends_on_consistency``) can never run and are cancelled with it.
+    Call ``after_cancel`` with the returned rows once the transaction has committed.
+    """
+    pending = [(job, reason) for job in jobs]
+    changed, seen, episodes = [], set(), set()
+    now = time.time()
+    while pending:
+        job, why = pending.pop(0)
+        if job['id'] in seen:
+            continue
+        seen.add(job['id'])
+        current = conn.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
+        if not current or current['status'] not in ('queued', 'running'):
+            continue
+        running = current['status'] == 'running'
+        message = why or ('Cancelled during processing' if running else 'Cancelled before processing')
+        lease = '' if running else ',lease_owner=NULL,lease_until=NULL'
+        conn.execute(f"UPDATE jobs SET status='cancelled',stage='Cancelled',error=?{lease},updated_at=CURRENT_TIMESTAMP WHERE id=?", (message, current['id']))
+        conn.execute("UPDATE analysis_job_stages SET status='cancelled',finished_at=?,error=? WHERE job_id=? AND status='running'", (now, message, current['id']))
+        changed.append(current)
+        if current['pipeline'] not in SIDE_PIPELINES:
+            episodes.add(current['episode_id'])
+        for dependent in conn.execute("SELECT * FROM jobs WHERE status='queued' AND json_extract(payload_json,'$.wait_for')=?", (current['id'],)).fetchall():
+            pending.append((dependent, WAITED_FOR_FAILED))
+        if current['pipeline'] == 'consistency_summary':
+            for dependent in conn.execute("SELECT * FROM jobs WHERE status='queued' AND pipeline='regen' AND json_extract(payload_json,'$.depends_on_consistency')=?", (current['id'],)).fetchall():
+                pending.append((dependent, 'Cancelled because the preceding consistency summary was cancelled'))
+    for episode_id in episodes:
+        sync_episode_status(conn, episode_id)
+    return changed
+
+
+def after_cancel(jobs):
+    """Clean-up for cancelled jobs once their transaction has committed."""
+    for job in jobs:
+        cleanup_voice_upload(job)
+    sweep_character_frames({job['episode_id'] for job in jobs if job['pipeline'] == 'character_detect'})
+
+
+def sweep_character_frames(episode_ids):
+    """Remove the temporary first frames of bulk character detection once an episode has no pending detection."""
+    for episode_id in episode_ids:
+        row = db.one('SELECT project_id FROM episodes WHERE id=?', (episode_id,))
+        if row and not db.one("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='character_detect' AND (status IN ('queued','running') OR (status='cancelled' AND lease_owner IS NOT NULL))", (episode_id,)):
+            from . import anime_bulk
+            anime_bulk.clear_episode_frames(row['project_id'], episode_id)
+
+
+def release_lease(job_id: str, owner: str):
+    """The worker has let go of a job: a cancelled job stops showing as stopping."""
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET lease_owner=NULL,lease_until=NULL WHERE id=? AND lease_owner=? AND status NOT IN ('queued','running')", (job_id, owner))
 
 
 def sync_episode_status(conn, episode_id: str, error: str | None = None):
@@ -245,17 +309,28 @@ def analysis_stage(job_id: str, owner: str, cut_id: str, key: str, label: str):
 
 
 def heartbeat(job_id: str, owner: str, done: threading.Event):
-    while not done.wait(HEARTBEAT_SECONDS):
+    """Renew the job's lease until ``done`` is set.
+
+    A cancelled job keeps its lease while its worker is still inside it (the GPU is busy until the next
+    checkpoint), so the queue can show it as stopping; the lease is released when the worker lets go.
+    """
+    try:
+        while not done.wait(HEARTBEAT_SECONDS):
+            try:
+                with db.connect() as conn:
+                    changed = conn.execute("UPDATE jobs SET lease_until=? WHERE id=? AND status IN ('running','cancelled') AND lease_owner=?",
+                                           (time.time() + LEASE_SECONDS, job_id, owner)).rowcount
+                    if changed:
+                        conn.execute("UPDATE analysis_job_stages SET last_seen_at=? WHERE job_id=? AND status='running'", (time.time(), job_id))
+                if not changed:
+                    return
+            except Exception:
+                log.exception("Could not renew media job lease: %s", job_id)
+    finally:
         try:
-            with db.connect() as conn:
-                changed = conn.execute("UPDATE jobs SET lease_until=? WHERE id=? AND status='running' AND lease_owner=?",
-                                       (time.time() + LEASE_SECONDS, job_id, owner)).rowcount
-                if changed:
-                    conn.execute("UPDATE analysis_job_stages SET last_seen_at=? WHERE job_id=? AND status='running'", (time.time(), job_id))
-            if not changed:
-                return
+            release_lease(job_id, owner)
         except Exception:
-            log.exception("Could not renew media job lease: %s", job_id)
+            log.exception('Could not release job lease: %s', job_id)
 
 
 def work_loop(pipelines=("prepare", "hardcuts", "cutframes")):

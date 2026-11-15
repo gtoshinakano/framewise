@@ -2,7 +2,6 @@ import { LocalModelControl } from './LocalModelControl'
 import Storage from './Storage'
 import AnalysisDialog from './AnalysisDialog'
 import { adjacentCut, nextNeedingAction, useCutFilters } from './cutFilters'
-import { analysisQueueProgress } from './queueProgress'
 import { analysisQueueStates } from './analysisQueueStates'
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { ArrowLeft, ArrowRight, ChevronRight, Clapperboard, Film, FolderOpen, Layers3, Merge, PanelLeftOpen, Pause, Play, Plus, Redo2, Save, Scissors, Trash2, Undo2, UploadCloud, Video, X } from 'lucide-react'
@@ -21,6 +20,7 @@ import { InspectorRail, type InspectorTab } from './InspectorRail'
 import { CutInspector } from './CutInspector'
 import { ChunkInspector } from './ChunkInspector'
 import { QueueDrawer } from './QueueDrawer'
+import type { QueueSummary } from './queueView'
 import { EpisodeSettingsDialog } from './EpisodeSettingsDialog'
 import { IconButton } from './EditorUi'
 import { useCutEdits } from './useCutEdits'
@@ -171,13 +171,6 @@ function ContextLibrary({ projectId, episodes }: { projectId: string; episodes: 
 
 const DEFAULT_CUTS_WIDTH = 260
 const MIN_TIMELINE = 160
-// Failures this recent keep a red badge on the queue button.
-const RECENT_FAILURE_MS = 12 * 3600 * 1000
-
-function recentFailures(jobs: Job[], now: number) {
-  return jobs.filter(job => job.status === 'failed' && job.stage !== 'Cancelled' && now - Date.parse(`${(job.finished_at || job.updated_at).replace(' ', 'T')}Z`) < RECENT_FAILURE_MS).length
-}
-
 function Editor({ id }: { id: string }) {
   const toast = useToast()
   const [episode, setEpisode] = useState<Episode | null>(null)
@@ -203,8 +196,10 @@ function Editor({ id }: { id: string }) {
   const refreshSequences = useCallback(() => { void sequenceApi.list(id).then(setSequences).catch(() => {}) }, [id])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
-  const [queueOpen, setQueueOpen] = useState(false)
+  // The queue drawer, opened at the top or at Needs attention.
+  const [queueOpen, setQueueOpen] = useState<false | 'top' | 'attention'>(false)
   const closeQueue = useCallback(() => setQueueOpen(false), [])
+  const [queueSummary, setQueueSummary] = useState<QueueSummary | null>(null)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [cutsCollapsed, setCutsCollapsed] = usePref('editor.cutsCollapsed', false)
   const [timelineHeight, setTimelineHeight] = usePref<number | null>('editor.timelineHeight', null)
@@ -213,14 +208,10 @@ function Editor({ id }: { id: string }) {
   const latestEpisode = useRef<Episode | null>(null)
   const lastFullRefresh = useRef(0)
   const waveformVersion = useRef<string | null>(null)
-  const queueSession = useRef<{ episodeId: string; jobs: Set<string> }>({ episodeId: id, jobs: new Set() })
-  const [queueProgress, setQueueProgress] = useState({ completed: 0, total: 0 })
   const showEpisode = useCallback((value: Episode) => {
     latestEpisode.current = value
-    if (queueSession.current.episodeId !== id) queueSession.current = { episodeId: id, jobs: new Set() }
-    setQueueProgress(analysisQueueProgress(value.jobs, queueSession.current.jobs))
     setEpisode(value)
-  }, [id])
+  }, [])
   const refresh = useCallback(async () => {
     try {
       const value = await api<Episode>(`/episodes/${id}`)
@@ -246,16 +237,19 @@ function Editor({ id }: { id: string }) {
   }, [id, showEpisode])
   useEffect(() => {
     let active = true
-    void refresh()
-    const timer = setInterval(async () => {
+    setQueueSummary(null)
+    const tick = async () => {
       try {
         const status = await api<EpisodeStatus>(`/episodes/${id}/status`)
         if (!active) return
+        setQueueSummary(status.queue)
         const current = latestEpisode.current
-        const changed = !current || status.status !== current.status || status.stage !== current.stage || status.job_id !== (current.jobs[0]?.id || null)
+        const changed = !current || current.id !== id || status.status !== current.status || status.stage !== current.stage || status.job_id !== (current.jobs[0]?.id || null)
         if (changed || status.status === 'queued' || status.status === 'processing' || Date.now() - lastFullRefresh.current > 30000) await refresh()
       } catch (err) { if (active) setLoadError((err as Error).message) }
-    }, 2500)
+    }
+    void tick()
+    const timer = setInterval(tick, 2500)
     return () => { active = false; clearInterval(timer) }
   }, [id, refresh])
   // Cut Assistance edits the transcript outside this editor; reload it as soon as a proposal is applied.
@@ -298,17 +292,6 @@ function Editor({ id }: { id: string }) {
     } catch (err) { fail(err) } finally { setBulkDetectionWorking(false) }
   }
   async function detectWithin(threshold: number) { if (!selected) return; try { const result = await api<{ job_id: string }>(`/cuts/${selected.id}/detect-hardcuts`, jsonBody({ scene_threshold: threshold })); setCutDetection({ cutId: selected.id, jobId: result.job_id }); await refresh() } catch (err) { fail(err) } }
-  const [cancelQueueWorking, setCancelQueueWorking] = useState(false)
-  async function cancelQueuedJobs() {
-    if (cancelQueueWorking || !window.confirm('Cancel every queued job in all episodes? Running jobs continue.')) return
-    setCancelQueueWorking(true)
-    try {
-      const result = await api<{ cancelled: number }>('/jobs/cancel-queued', { method: 'POST' })
-      await refresh()
-      toast({ tone: 'success', message: result.cancelled ? `Cancelled ${result.cancelled} queued ${result.cancelled === 1 ? 'job' : 'jobs'} across all episodes. Running jobs continue.` : 'There are no queued jobs to cancel.' })
-    } catch (err) { fail(err) } finally { setCancelQueueWorking(false) }
-  }
-  async function cancelJob(jobId: string) { try { await api(`/jobs/${jobId}/cancel`, { method: 'POST' }); await refresh() } catch (err) { fail(err) } }
   async function toggleAnalysis() { if (!selected) return; try { await api<Cut>(`/cuts/${selected.id}/analysis-enabled`, { method: 'PUT', body: JSON.stringify({ analysis_enabled: !selected.analysis_enabled }) }); await refresh() } catch (err) { fail(err) } }
   async function saveNotes(notes: Pick<Cut, 'title' | 'description' | 'notes'>) { if (!selected) return; try { await api<Cut>(`/cuts/${selected.id}`, { method: 'PUT', body: JSON.stringify({ ...notes, results: selected.results }) }); await refresh(); toast({ tone: 'success', message: `Saved the notes of cut ${selected.cut_index + 1}.` }) } catch (err) { fail(err) } }
   async function saveChunk(chunk: Chunk) { try { await api<Chunk>(`/chunks/${chunk.id}`, { method: 'PUT', body: JSON.stringify({ title: chunk.title, notes: chunk.notes }) }); await refresh(); toast({ tone: 'success', message: `Saved chunk ${chunk.chunk_index + 1}.` }) } catch (err) { fail(err) } }
@@ -361,7 +344,7 @@ function Editor({ id }: { id: string }) {
     <EditorHeader projectId={episode?.project_id} projectTitle={project?.title} episodeTitle={episode?.title} status={episode?.status || 'queued'} stage={episode?.stage}
       hasCuts={!!episode?.cuts.length} mediaBlocked={busy ? 'Wait for the running jobs to finish.' : ''} characterBlock={characterBlock} onCharacterStep={step => void queueCharacterStep(step)}
       onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}
-      queue={{ ...queueProgress, running: jobs.some(job => job.status === 'running'), failed: recentFailures(jobs, Date.now()) }} onOpenQueue={() => setQueueOpen(true)}
+      queue={queueSummary} running={jobs.some(job => job.status === 'running')} onOpenQueue={focus => setQueueOpen(focus || 'top')}
       onOpenSettings={() => setSettingsOpen(true)} onDeleteEpisode={() => void remove()} />
     {!episode ? <div className="muted p-12">{loadError || 'Loading episode…'}</div> : <div className="editor-workspace" style={workspaceStyle}>
       <aside className="editor-cuts scrollbar" hidden={cutsCollapsed} aria-label="Cut list">
@@ -407,7 +390,9 @@ function Editor({ id }: { id: string }) {
     </div>}
     {episode && analysisOpen && selected && <AnalysisDialog cut={selected} cuts={episode.cuts} previousCut={selected.active ? adjacentCut(episode.cuts, selected, -1, cutFilters.active) : undefined} nextCut={selected.active ? adjacentCut(episode.cuts, selected, 1, cutFilters.active) : undefined} onNavigate={cut => selectCut(cut, true)} episodeId={id} proxyReady={episode.proxy_ready} waveform={waveform} transcript={transcript} hasAudio={episode.has_audio} preparingAudio={jobs.some(job => job.pipeline === 'prepare' && active(job))} busy={analysisBusy} jobs={jobs} jobsKey={jobs.map(job => `${job.id}-${job.status}-${job.stage}`).join('|')} frameVersion={frameVersion} onStarted={refresh} onClose={closeAnalysis} />}
     {episode && sequenceOpen && <SequenceDialog key={sequenceOpen} sequenceId={sequenceOpen} episodeId={id} proxyReady={episode.proxy_ready} onClose={closeSequence} onChanged={refreshSequences} />}
-    {episode && queueOpen && <QueueDrawer jobs={jobs} cuts={[...episode.cuts, ...episode.archived_cuts]} onClose={closeQueue} onSelectCut={openCutAnalysis} onChanged={refresh} onCancelJob={jobId => void cancelJob(jobId)} onCancelAllQueued={() => void cancelQueuedJobs()} cancelling={cancelQueueWorking} />}
+    {episode && queueOpen && <QueueDrawer episodeId={id} focus={queueOpen === 'attention' ? 'attention' : null} onClose={closeQueue} onChanged={refresh} onSummary={setQueueSummary}
+      onOpenCut={cutId => { const cut = [...episode.cuts, ...episode.archived_cuts].find(item => item.id === cutId); if (cut) openCutAnalysis(cut); else toast({ tone: 'error', message: 'That cut no longer exists.' }) }}
+      onOpenSequence={setSequenceOpen} />}
     {episode && settingsOpen && <EpisodeSettingsDialog episode={episode} initial={episode.settings} onSave={saveSettings} onDelete={() => void remove()} onClose={closeSettings} />}
   </div>
 }

@@ -103,12 +103,20 @@ export function changed(line: CompiledLine) {
   return line.text.trim() !== line.original_text.trim()
 }
 
-export function visibleLines(lines: CompiledLine[], filter: Filter) {
-  return lines.filter(line => filter === 'all' || (filter === 'review' ? needsReview(line) : changed(line)))
+/** A line of a cut added at the end of the sequence (`newFrom`, seconds on the sequence clock, is where the range ended before);
+ *  every word of such a line lies after that point, so its middle does too. */
+export function isNew(line: CompiledLine, newFrom?: number | null) {
+  return newFrom != null && (line.t0 + line.t1) / 2 >= newFrom
 }
 
-export function counts(lines: CompiledLine[]) {
-  return { total: lines.length, review: lines.filter(needsReview).length, changed: lines.filter(changed).length }
+const toReview = (line: CompiledLine, newFrom?: number | null) => needsReview(line) || isNew(line, newFrom)
+
+export function visibleLines(lines: CompiledLine[], filter: Filter, newFrom?: number | null) {
+  return lines.filter(line => filter === 'all' || (filter === 'review' ? toReview(line, newFrom) : changed(line)))
+}
+
+export function counts(lines: CompiledLine[], newFrom?: number | null) {
+  return { total: lines.length, review: lines.filter(line => toReview(line, newFrom)).length, changed: lines.filter(changed).length, added: lines.filter(line => isNew(line, newFrom)).length }
 }
 
 export type DiffPart = { text: string; kind: 'same' | 'del' | 'add' }

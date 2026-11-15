@@ -92,7 +92,8 @@ export function stage(detail: SequenceDetail): { key: Stage; hint: string } {
   if (detail.sequence.cuts_missing) return { key: 'recreate', hint: 'The first or last cut of this sequence was archived. Create the sequence again.' }
   if (counts.step === 'compile') return { key: 'compiling', hint: 'Qwen is compiling the dialogue…' }
   const dialogue = detail.compilation
-  if (!detail.bible && dialogue?.has_speech && dialogue.state !== 'confirmed' && dialogue.state !== 'running') return { key: 'review', hint: dialogue.state === 'none' ? 'Compile the dialogue first: Qwen matches the transcript with the subtitles.' : 'Review the dialogue, then save it. The director starts from it.' }
+  const added = detail.sequence.extension
+  if ((!detail.bible || added) && dialogue?.has_speech && dialogue.state !== 'confirmed' && dialogue.state !== 'running') return { key: 'review', hint: dialogue.state === 'none' ? 'Compile the dialogue first: Qwen matches the transcript with the subtitles.' : added ? `${added.cuts.length > 1 ? `Cuts ${added.cuts.join(', ')} were` : `Cut ${added.cuts[0]} was`} added: review the new lines and save the dialogue. The direction is then redone.` : 'Review the dialogue, then save it. The director starts from it.' }
   if (counts.step === 'bible' || counts.step === 'plan') return { key: 'directing', hint: counts.step === 'bible' ? 'Writing the sequence bible…' : 'Planning the shots…' }
   if (counts.running + counts.queued) return { key: 'writing', hint: counts.step === 'review' ? 'Reviewing continuity…' : `Writing shot prompts: ${counts.ready}/${counts.shots} ready.` }
   if (detail.missing.length) return { key: 'analyse', hint: `Cut${detail.missing.length > 1 ? 's' : ''} ${detail.missing.join(', ')} need a first-frame and a video analysis before the sequence can be directed.` }

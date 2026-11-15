@@ -29,7 +29,7 @@ export default function SubtitlePanel({ episodeId, ready, busy, savedLanguage, r
   const active = jobs.find(job => job.pipeline === 'subtitles' && ['queued', 'running'].includes(job.status))
   const transcribing = jobs.some(job => ['transcribe', 'voice_sample'].includes(job.pipeline) && ['queued', 'running'].includes(job.status))
   const latest = jobs.find(job => job.pipeline === 'subtitles')
-  const failure = latest && latest.status === 'failed' && latest.stage !== 'Cancelled' ? latest.error : null
+  const failure = latest && latest.status === 'failed' ? latest.error : null
   useEffect(() => { if (savedLanguage) setLanguage(current => current || savedLanguage) }, [savedLanguage])
   useEffect(() => {
     if (!open) return

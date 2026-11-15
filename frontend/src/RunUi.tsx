@@ -1,6 +1,7 @@
 import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { AlertTriangle, CheckCircle2, Circle, Clock, Info, Loader2, X, XCircle } from 'lucide-react'
 import { STATE_TEXT, stateTone, type StepState } from './runState'
+import { formatRunTime } from './queueView'
 
 export type Tone = 'green' | 'purple' | 'amber' | 'red' | 'grey' | 'blue'
 
@@ -29,7 +30,7 @@ export function StateChip({ state, label }: { state: StepState; label?: string }
 
 /** Job status words used in the history table and the run-details header. */
 export function jobTone(status: string): Tone {
-  return status === 'Succeeded' || status === 'done' ? 'green' : status === 'Failed' || status === 'failed' ? 'red' : status === 'Running' || status === 'running' ? 'purple' : status === 'Queued' || status === 'queued' || status === 'Waiting' ? 'amber' : status === 'Cancelled' || status === 'Not completed' ? 'grey' : 'grey'
+  return status === 'Succeeded' || status === 'done' ? 'green' : status === 'Failed' || status === 'failed' ? 'red' : status === 'Running' || status === 'running' ? 'purple' : status === 'Queued' || status === 'queued' || status === 'Waiting' ? 'amber' : status === 'Cancelled' || status === 'cancelled' || status === 'Not completed' ? 'grey' : 'grey'
 }
 
 export function JobChip({ status }: { status: string }) {
@@ -47,9 +48,9 @@ export function ActionButton({ icon, pending = false, variant = 'quiet', compact
 
 const parseUtc = (value: string) => Date.parse(`${value.replace(' ', 'T')}${/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? '' : 'Z'}`)
 
+/** Run lengths in minutes and seconds everywhere (`42s`, `5m 03s`, `75m 10s`). */
 export function formatElapsed(seconds: number) {
-  const total = Math.max(0, Math.floor(seconds))
-  return total >= 3600 ? `${Math.floor(total / 3600)}h ${Math.floor(total % 3600 / 60)}m` : total >= 60 ? `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, '0')}s` : `${total}s`
+  return formatRunTime(seconds)
 }
 
 /** Ticks on its own timer, so only this span re-renders every second. */

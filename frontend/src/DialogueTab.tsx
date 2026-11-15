@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Check, Crosshair, LoaderCircle, Merge, Minus, Pause, Play, Plus, RefreshCw, Save, Scissors, Trash2, Undo2, WandSparkles, X } from 'lucide-react'
-import { applyVoice, changed, counts, diff, lineAt, mergeNext, nudge, payload, problemsById, sameContent, setEdge, setSpeaker, setText, speakerOptions, splitAt, visibleLines, type Filter } from './compilationView'
+import { applyVoice, changed, counts, diff, isNew, lineAt, mergeNext, nudge, payload, problemsById, sameContent, setEdge, setSpeaker, setText, speakerOptions, splitAt, visibleLines, type Filter } from './compilationView'
 import DialogueTimeline from './DialogueTimeline'
 import { boundaryMarkers, limits, lineColour, openingFrame, placePoint, pointWarnings, samePoints, type Marker } from './dialogueTimeline'
 import { PlayerSlot, usePlayer, usePlayerValue } from './SourcePlayer'
@@ -35,13 +35,13 @@ function TimeEdit({ label, value, onChange, onNudge, onPlayhead }: { label: stri
 }
 
 type RowProps = {
-  line: CompiledLine; selected: boolean; active: boolean; playing: boolean; colour: string; shotsInside: string; problems: string[]; duration: number
+  line: CompiledLine; selected: boolean; active: boolean; playing: boolean; colour: string; shotsInside: string; problems: string[]; duration: number; added: boolean
   options: { value: string; label: string }[]; characters: { id: string; name: string }[]
   onSelect: (id: string) => void; onPlay: (line: CompiledLine) => void; onEdit: (id: string, edit: (line: CompiledLine) => CompiledLine) => void
   onMerge: (id: string) => void; onSplit: (id: string) => void; onDelete: (id: string) => void; playhead: () => number
 }
 
-const Row = memo(function Row({ line, selected, active, playing, colour, shotsInside, problems, duration, options, characters, onSelect, onPlay, onEdit, onMerge, onSplit, onDelete, playhead }: RowProps) {
+const Row = memo(function Row({ line, selected, active, playing, colour, shotsInside, problems, duration, added, options, characters, onSelect, onPlay, onEdit, onMerge, onSplit, onDelete, playhead }: RowProps) {
   const edited = changed(line)
   const marks = edited ? diff(line.original_text, line.text) : []
   const border = active ? 'border-[#e0a96d] bg-[#2a2319]' : selected ? 'border-[#7d6542] bg-[#1d222c]' : 'border-[#2f3643] bg-[#161b24]'
@@ -54,6 +54,7 @@ const Row = memo(function Row({ line, selected, active, playing, colour, shotsIn
       <span className="muted text-[11px]">to</span>
       <TimeEdit label={`${line.id} end`} value={line.t1} onChange={value => onEdit(line.id, item => setEdge(item, 't1', value, duration))} onNudge={delta => onEdit(line.id, item => nudge(item, 't1', delta, duration))} onPlayhead={() => onEdit(line.id, item => setEdge(item, 't1', playhead(), duration))} />
       <span className="muted font-mono text-[10px]">{(line.t1 - line.t0).toFixed(1)} s · {line.id}{line.speaker_label ? ` · ${line.speaker_label}` : ''}</span>
+      {added && <Chip tone="good" title="A line of the cut you added; review it before saving">new</Chip>}
       {edited && <Chip tone="busy" title="The words differ from the recognised text">corrected</Chip>}
       {line.confidence === 'low' && <Chip tone="warn" title={line.note || 'Qwen was not sure'}>unsure</Chip>}
       {line.continues_next && <Chip tone="warn" title="This utterance continues in the next line">continues</Chip>}
@@ -162,8 +163,10 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const dialogueDirty = !!draft && !!result && !sameContent(draft, result.content)
   const pointsDirty = !samePoints(points, JSON.parse(savedKey) as ShotPoint[])
   const dirty = dialogueDirty || pointsDirty
-  const stats = counts(lines)
-  const shown = useMemo(() => visibleLines(lines, filter), [lines, filter])
+  // Lines of a cut added at the end are new until the direction is redone; they count as lines to review.
+  const newFrom = info.extension ? info.extension.from_time - info.start_time : null
+  const stats = counts(lines, newFrom)
+  const shown = useMemo(() => visibleLines(lines, filter, newFrom), [lines, filter, newFrom])
   const activeId = usePlayerValue(time => lineAt(lines, time - info.start_time)?.id ?? null)
   const cuts = detail.cuts
   const markers = useMemo(() => boundaryMarkers(detail.timeline?.boundaries ?? [], detail.shots, points, info.start_time), [detail.timeline, detail.shots, points, info.start_time])
@@ -197,10 +200,10 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const release = useCallback((item: Marker) => setPoints(current => placePoint(current, item.after_cut_id, null)), [])
   const pickLine = useCallback((line: CompiledLine) => {
     setSelected(line.id)
-    if (!visibleLines([line], filter).length) setFilter('all')
+    if (!visibleLines([line], filter, newFrom).length) setFilter('all')
     player.seek(info.start_time + line.t0)
     requestAnimationFrame(() => document.getElementById(`line-${line.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
-  }, [player, info.start_time, filter])
+  }, [player, info.start_time, filter, newFrom])
 
   // Keyboard: j/k (or the arrows) move between lines, Space plays the selected one; typing in a field is left alone.
   function onKeyDown(event: React.KeyboardEvent) {
@@ -237,7 +240,8 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
     })
     if (!ok) return
     onContinue()
-    if (!detail.bible) void run('direct')
+    // After a cut was added the server directs the sequence again by itself once the dialogue is confirmed.
+    if (!detail.bible && !info.extension) void run('direct')
   }
   function rerun() {
     const warning = dirty ? 'Qwen will compile the dialogue again and your unsaved edits will be lost. Continue?' : 'Qwen will compile the dialogue again from the transcript and the subtitles. The current version stays in the history, but must be saved again. Continue?'
@@ -252,6 +256,21 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
     return labels.map(label => ({ label, voice: draft?.voices.find(voice => voice.speaker_label === label), count: lines.filter(line => line.speaker_label === label).length }))
   }, [draft, lines])
 
+  const nextCut = detail.next_cut
+  const rewrite = !!info.extension?.rewrite_shots || detail.shots.some(shot => shot.result)
+  const directed = !!(detail.bible || detail.plan)
+  const addBlocked = !nextCut ? '' : !nextCut.fits ? `With cut ${nextCut.number} the sequence would last more than ${clock(detail.limits.sequence_seconds)}`
+    : !nextCut.ready ? `Cut ${nextCut.number} needs a first-frame and a video analysis first` : dirty ? 'Save your changes first' : busy ? 'Wait for the running jobs to finish' : ''
+  function addCut() {
+    if (!nextCut || addBlocked) return
+    const then = directed ? ` Once the new lines are saved (at once if nobody speaks in it), the bible and the shot plan are written again${rewrite ? ', then every shot prompt is rewritten and reviewed' : ''}.` : ''
+    if (window.confirm(`Add cut ${nextCut.number} (${nextCut.seconds.toFixed(1)} s) to the end of this sequence? Qwen compiles its lines and adds them to your dialogue; your edits stay.${then}`))
+      void act('extend', () => sequenceApi.extend(info.id))
+  }
+  const addButton = nextCut && <span title={addBlocked || `Add cut ${nextCut.number} (${nextCut.seconds.toFixed(1)} s) to the end of the sequence`}>
+    <button type="button" className="btn btn-quiet !px-2.5 !py-1 !text-[11px]" disabled={!!addBlocked} onClick={addCut}><Plus size={12} /> Add cut {nextCut.number}</button></span>
+  const speechHint = !info.extension && nextCut?.speech ? nextCut.speech : null
+  const added = info.extension ? (info.extension.cuts.length > 1 ? `Cuts ${info.extension.cuts[0]}–${info.extension.cuts[info.extension.cuts.length - 1]}` : `Cut ${info.extension.cuts[0]}`) : ''
   const banner = view.stale ? 'The transcript or the subtitles changed after this dialogue was compiled. Re-run Qwen to pick the changes up (your edits would be replaced).' : detail.sequence.cuts_changed ? 'The cuts of this sequence changed. Direct the sequence again after reviewing the dialogue.' : ''
 
   return <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,24rem)_15rem_minmax(0,1fr)] lg:overflow-hidden" onKeyDown={onKeyDown}>
@@ -291,8 +310,14 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
           <div className="flex gap-1 rounded-lg border hairline p-0.5" role="tablist" aria-label="Filter lines">{([['all', `All ${stats.total}`], ['review', 'To review'], ['changed', 'Corrected']] as const).map(([value, text]) =>
             <button key={value} role="tab" aria-selected={filter === value} onClick={() => setFilter(value)} className={`rounded-md px-2.5 py-1 !text-[11px] font-semibold ${filter === value ? 'bg-[#3a2f1f] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{text}</button>)}</div>
         </>}
+        {!speechHint && addButton}
       </header>
       {banner && <p role="status" className="flex shrink-0 items-start gap-2 bg-[#4a3a17] px-4 py-2 text-xs leading-5 text-[#ffd59a]"><AlertTriangle size={14} className="mt-0.5 shrink-0" /> {banner}</p>}
+      {info.extension && state !== 'running' && <p role="status" className="flex shrink-0 items-start gap-2 bg-[#173a2b] px-4 py-2 text-xs leading-5 text-[#9ff0c8]"><Plus size={14} className="mt-0.5 shrink-0" />
+        <span>{added} added. {stats.added ? `Its ${stats.added} line${stats.added > 1 ? 's are' : ' is'} marked new; review ${stats.added > 1 ? 'them' : 'it'}, then Save & continue: ` : 'Save & continue: '}
+          {directed ? `the bible and the shot plan are written again${rewrite ? ', then every shot prompt is rewritten and reviewed' : ''}.` : 'the director starts from this dialogue.'}</span></p>}
+      {speechHint && nextCut && <p role="status" className="flex shrink-0 flex-wrap items-center gap-2 bg-[#2b2442] px-4 py-2 text-xs leading-5 text-[#d6c8ff]"><AlertTriangle size={14} className="shrink-0" />
+        <span className="min-w-0 flex-1">Speech runs on past the end of the sequence into cut {nextCut.number}: “{speechHint.text_before}” <strong className="text-white">“{speechHint.words_after}”</strong></span>{addButton}</p>}
 
       {state === 'running' ? <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center"><LoaderCircle size={22} className="animate-spin text-[#d6c8ff]" /><p className="text-sm font-semibold">Qwen is compiling the dialogue…</p><p className="muted max-w-md text-xs leading-5">{compileJob?.stage || 'Queued'}. It matches the transcript with the subtitles, corrects the wording, joins lines that were cut in half and proposes speakers. You review it here when it finishes; whether a speaker is seen speaking is decided per shot later.</p></div>
         : !draft ? <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
@@ -304,7 +329,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
           : <>
             <ol className="scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto p-3" aria-label="Dialogue lines">
               {shown.map(line => <Row key={line.id} line={line} selected={selected === line.id} active={activeId === line.id} playing={!paused && playingId === line.id}
-                colour={colours.get(line.id) ?? lineColour(0)} shotsInside={inside.get(line.id) ?? ''} problems={problems[line.id] || []} duration={duration} options={options} characters={characters}
+                colour={colours.get(line.id) ?? lineColour(0)} shotsInside={inside.get(line.id) ?? ''} problems={problems[line.id] || []} duration={duration} added={isNew(line, newFrom)} options={options} characters={characters}
                 onSelect={setSelected} onPlay={play} onEdit={edit} onMerge={merge} onSplit={split} onDelete={remove} playhead={playhead} />)}
               {!shown.length && <li className="muted p-6 text-center text-sm">{lines.length ? 'No line matches this filter.' : 'Nobody speaks in this range.'}</li>}
             </ol>

@@ -42,8 +42,9 @@ export const CutRunHistory = memo(function CutRunHistory({ cutId, jobs, stages, 
           const when = job.finished_at ? ['Finished', job.finished_at] : job.started_at ? ['Started', job.started_at] : ['Queued', job.created_at]
           const mine = stages.filter(stage => stage.job_id === job.id)
           const running = job.status === 'running' || job.status === 'queued'
-          const canCancel = job.pipeline === 'analyze' && job.workflow === 'single_cut_v2' && running
-          const canRetry = job.pipeline === 'analyze' && job.workflow === 'single_cut_v2' && job.status === 'failed'
+          // What may be done comes from the backend's job registry (job_kinds.py).
+          const canCancel = !!job.actions?.cancel && running
+          const canRetry = !!job.actions?.retry
           const waiting = job.workflow === 'single_cut_v2' ? STAGE_ORDER.filter(([key]) => (!job.stages || job.stages.includes(key)) && !mine.some(stage => stage.stage_key === key)) : []
           return <tr key={job.id} className="align-top">
             <td className={`rounded-l-lg border-l-4 bg-[#1e2430] px-2 py-2 ${EDGE[jobTone(outcome.status)]}`}>

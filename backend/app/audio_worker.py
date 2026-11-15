@@ -298,6 +298,10 @@ def process(job_id, owner):
                     conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id) VALUES (?,?,?,?,?,?,?,'model',?,?)",
                         (str(uuid.uuid4()), episode['id'], word['start_time'], word['end_time'], word['text'], speaker, character_id, ASR + ' + ' + ALIGNER + ' + ' + DIARIZATION, job_id))
                 finish(conn, job_id, episode['id'])
+    except worker.LeaseLost:
+        # Cancelled while it ran (worker.after_cancel already removed an uploaded voice), or taken over:
+        # nothing more is written for it, and an upload a new owner may still need stays.
+        log.info('Audio job %s stopped: it was cancelled', job_id)
     except Exception as exc:
         log.exception('Audio job failed: %s', job_id)
         with db.connect() as conn:

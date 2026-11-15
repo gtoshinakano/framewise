@@ -62,6 +62,25 @@ class ArithmeticTest(unittest.TestCase):
         corrected = compile_math.validate({'lines': [{'t0': 1.0, 't1': 2.0, 'text': '今日は', 'parts': parts}]}, 5.0, {})['lines'][0]
         self.assertEqual(compile_math.parts_text(corrected['parts']), '今日は')
 
+    def test_tail_keeps_the_words_after_the_old_end_by_their_midpoint(self):
+        crossing = {**line(2, 3.6, 4.6, 'ちょっと待って', 'SPEAKER_03'), 'parts': [{'id': 'a', 't0': 3.6, 't1': 3.9, 'text': 'ちょっと'}, {'id': 'b', 't0': 3.95, 't1': 4.6, 'text': '待って'}]}
+        tail, crossed = compile_math.tail_lines([line(1, 0.4, 1.2, 'こんにちは'), crossing, line(3, 5.0, 6.0, 'じゃあね')], 4.0)
+        self.assertEqual([(item['id'], item['t0'], item['t1'], item['text']) for item in tail], [('L2', 3.95, 4.6, '待って'), ('L3', 5.0, 6.0, 'じゃあね')])
+        self.assertEqual(crossed, {'a'})  # the word the old range kept; '待って' starts before 4.0 but its middle is after it
+
+    def test_appending_keeps_every_existing_line_and_voice_and_marks_the_phrase_cut_in_half(self):
+        existing = {'lines': [{'id': 'C1', 't0': 0.4, 't1': 1.2, 'text': '直した', 'source_ids': ['t1'], 'continues_next': False},
+                              {'id': 'C2', 't0': 3.6, 't1': 3.9, 'text': 'ちょっと', 'source_ids': ['a'], 'continues_next': False}],
+                    'voices': [{'speaker_label': 'SPEAKER_03', 'character': 'Hero'}], 'open_questions': ['old']}
+        added = [{'id': 'C1', 't0': 3.95, 't1': 4.6, 'text': '待って', 'source_ids': ['b']}]
+        voices = [{'speaker_label': 'SPEAKER_03', 'character': None}, {'speaker_label': 'SPEAKER_04', 'character': None}]
+        merged = compile_math.append_lines(existing, added, voices, ['new'], {'a'})
+        self.assertEqual([(item['text'], item['continues_next']) for item in merged['lines'][:2]], [('直した', False), ('ちょっと', True)])
+        self.assertEqual(merged['lines'][2]['text'], '待って')
+        self.assertEqual([(voice['speaker_label'], voice['character']) for voice in merged['voices']], [('SPEAKER_03', 'Hero'), ('SPEAKER_04', None)])
+        self.assertEqual(merged['open_questions'], ['new', 'old'])
+        self.assertFalse(existing['lines'][1]['continues_next'])  # the stored revision is not changed in place
+
 
 class CompileFlowTest(SequenceBase):
     def compile_answer(self, data):

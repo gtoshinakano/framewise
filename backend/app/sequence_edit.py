@@ -5,12 +5,15 @@ so nothing invalid can reach the download. Used by the HTTP API and by Cut Assis
 proposal is previewed or applied; it does not import FastAPI.
 """
 import json
+import logging
 import math
 import uuid
 
 from . import sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, worker
 
 DIRECT_STEPS = ('direct', 'bible', 'plan')
+BUSY_EPISODE = "SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')"
+log = logging.getLogger(__name__)
 
 
 class EditError(Exception):
@@ -38,9 +41,71 @@ def require_reviewed(conn, sequence, cuts):
     raise EditError(409, 'Review the dialogue first: open the Dialogue tab, check it and save it')
 
 
-def queue_compile(conn, sequence):
-    """Start the dialogue compilation of a new sequence in the transaction that created it."""
-    return store.insert_job(conn, sequence, {'step': 'compile', 'config': config_snapshot(conn), 'base_id': None})
+def queue_compile(conn, sequence, extend_from=None, extend_cut=None):
+    """Start the dialogue compilation in the transaction that created the sequence (or added a cut to it).
+
+    With ``extend_from`` (episode seconds, the old end) only the added cut is compiled and appended to the
+    current dialogue; a sequence that has no dialogue yet is compiled whole.
+    """
+    base = store.current(conn, sequence['id'], 'compilation')
+    payload = {'step': 'compile', 'config': config_snapshot(conn), 'base_id': base['id'] if base else None}
+    if extend_from is not None and base:
+        payload.update(extend_from=extend_from, extend_cut=extend_cut)
+    return store.insert_job(conn, sequence, payload)
+
+
+def extend(conn, sequence):
+    """Add the episode's next cut to the end of the sequence and start updating everything built on the range.
+
+    The range and its snapshot move in this transaction, together with the job that compiles only the added
+    cut's dialogue (the user's edits stay). ``extension_json`` remembers what was added until the direction
+    is queued again: once the dialogue is confirmed, ``continue_extension`` directs the sequence again and,
+    when it had shot prompts, writes them again and reviews them.
+    """
+    if conn.execute(BUSY_EPISODE, (sequence['episode_id'],)).fetchone():
+        raise EditError(409, 'Wait for media preparation or detection to finish')
+    if store.pending_jobs(conn, sequence['id']):
+        raise EditError(409, 'This sequence already has jobs queued or running; wait for them or cancel them')
+    cuts = store.current_cuts(conn, sequence)
+    if cuts is None:
+        raise EditError(409, 'The first or last cut of this sequence was archived; create the sequence again')
+    following = store.next_cut(conn, sequence, cuts)
+    if following is None:
+        raise EditError(409, f"Cut {cuts[-1]['cut_index'] + 1} is the last cut of the episode")
+    number = following['cut_index'] + 1
+    length = following['end_time'] - cuts[0]['start_time']
+    if length > sequence_timeline.MAX_SEQUENCE_SECONDS + 0.001:
+        raise EditError(422, f'With cut {number} the sequence would last {length:.1f} s; a sequence may last at most {sequence_timeline.MAX_SEQUENCE_SECONDS:g} s')
+    if evidence.missing_cuts(evidence.load(conn, sequence, [following]), [following]):
+        raise EditError(409, f'Cut {number} needs a first-frame and a video analysis first; run them from the cut, then add it')
+    earlier = store.extension(sequence) or {}
+    marker = {'cut_ids': [*(earlier.get('cut_ids') or []), following['id']], 'cuts': [*(earlier.get('cuts') or []), number],
+              'from_time': earlier.get('from_time', cuts[-1]['end_time']),
+              'rewrite_shots': bool(earlier.get('rewrite_shots')) or bool(store.current_shots(conn, sequence['id']))}
+    title = sequence['title']
+    if title == f"Cuts {cuts[0]['cut_index'] + 1}–{cuts[-1]['cut_index'] + 1}":
+        title = f"Cuts {cuts[0]['cut_index'] + 1}–{number}"  # the default title follows the range
+    conn.execute('UPDATE sequences SET last_cut_id=?,title=?,extension_json=? WHERE id=?', (following['id'], title, json.dumps(marker), sequence['id']))
+    sequence = store.resnapshot(conn, {**sequence, 'last_cut_id': following['id'], 'title': title, 'extension_json': json.dumps(marker)}, [*cuts, following])
+    queue_compile(conn, sequence, extend_from=cuts[-1]['end_time'], extend_cut=number)
+    worker.sync_episode_status(conn, sequence['episode_id'])
+    return marker
+
+
+def continue_extension(conn, sequence):
+    """After a cut was added and the dialogue is confirmed: direct the sequence again, and write its shots again if it had any.
+
+    Does nothing while no cut waits for it or the dialogue still needs review. A refusal (for example while
+    preparation runs) leaves the marker, so the next confirmation tries again. Returns the queued job ids.
+    """
+    marker = store.extension(sequence)
+    if not marker:
+        return []
+    try:
+        return queue(conn, sequence, 'direct', then_shots=bool(marker.get('rewrite_shots')))
+    except EditError as exc:
+        log.info('Sequence %s: direction after the added cut not queued yet: %s', sequence['id'], exc.detail)
+        return []
 
 
 def confirm_compilation(conn, sequence, result_id):
@@ -49,6 +114,7 @@ def confirm_compilation(conn, sequence, result_id):
     if not row or row['id'] != result_id:
         raise EditError(409, 'The dialogue changed; reload it and save again')
     conn.execute('UPDATE sequences SET reviewed_compilation_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (result_id, sequence['id']))
+    continue_extension(conn, {**sequence, 'reviewed_compilation_id': result_id})
     return result_id
 
 
@@ -67,6 +133,7 @@ def use_source_dialogue(conn, sequence):
     result_id = store.save(conn, sequence['id'], 'compilation', content, origin='source', settings={'note': 'The original transcript, without corrections'}, expected_current=base['id'] if base else None)
     store.record_sources(conn, sequence['id'], result_id, source, None, len(fragments), len(subtitles))
     conn.execute('UPDATE sequences SET reviewed_compilation_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (result_id, sequence['id']))
+    continue_extension(conn, {**sequence, 'reviewed_compilation_id': result_id})
     return result_id
 
 
@@ -74,15 +141,16 @@ def needs_writing(view):
     return not view['result'] or bool(view['stale']) or not (view['result']['check'] or {}).get('ok')
 
 
-def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='', trigger=None):
+def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='', trigger=None, then_shots=False):
     """Queue a step of the direction and return the new job ids.
 
     ``direct`` writes the bible and then the plan and stops there; ``shots`` writes every shot that is
     missing, stale or failing its check (or exactly ``shot_keys``) and reviews the sequence after a whole
     batch; ``bible``, ``plan`` and ``review`` run that one step again. ``trigger`` says why shots are
-    rewritten when the user did not write an instruction (``voices``), for the shot's history.
+    rewritten when the user did not write an instruction (``voices``), for the shot's history. With
+    ``then_shots``, ``direct`` goes on after the plan and writes every shot that needs it (a cut was added).
     """
-    if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (sequence['episode_id'],)).fetchone():
+    if conn.execute(BUSY_EPISODE, (sequence['episode_id'],)).fetchone():
         raise EditError(409, 'Wait for media preparation or detection to finish')
     pending = store.pending_jobs(conn, sequence['id'])
     config = config_snapshot(conn)
@@ -107,6 +175,8 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
             raise EditError(409, 'These cuts need a first-frame and a video analysis first: ' + ', '.join(map(str, missing)))
         if store.cuts_changed(sequence, cuts):
             sequence = store.resnapshot(conn, sequence, cuts)
+        # The direction is being redone now: an added cut no longer waits for it.
+        conn.execute('UPDATE sequences SET extension_json=NULL WHERE id=?', (sequence['id'],))
         if step == 'plan':
             if not store.current(conn, sequence['id'], 'bible'):
                 raise EditError(409, 'Write the sequence bible first')
@@ -114,7 +184,8 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
             job_ids.append(store.insert_job(conn, sequence, {'step': 'plan', 'config': config, 'base_id': base['id'] if base else None}))
         else:
             base = store.current(conn, sequence['id'], 'bible')
-            job_ids.append(store.insert_job(conn, sequence, {'step': 'bible', 'config': config, 'base_id': base['id'] if base else None, 'then_plan': step == 'direct'}))
+            job_ids.append(store.insert_job(conn, sequence, {'step': 'bible', 'config': config, 'base_id': base['id'] if base else None, 'then_plan': step == 'direct',
+                                                            **({'then_shots': True} if then_shots and step == 'direct' else {})}))
     elif step == 'shots':
         if any(job['step'] in ('bible', 'plan') for job in pending):
             raise EditError(409, 'Wait for the bible and the shot plan to finish')
@@ -156,9 +227,7 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
 def cancel(conn, sequence):
     """Cancel every queued or running job of the sequence; a running one stops at its next checkpoint."""
     jobs = store.pending_jobs(conn, sequence['id'])
-    for job in jobs:
-        message = 'Cancelled before processing' if job['status'] == 'queued' else 'Cancelled during processing'
-        conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('queued','running')", (message, job['id']))
+    worker.cancel_jobs(conn, jobs)
     worker.sync_episode_status(conn, sequence['episode_id'])
     return len(jobs)
 
@@ -390,8 +459,7 @@ def set_voices(conn, sequence, shot_key, speaker, segments):
     plan_id = revise(conn, sequence, row, {**plan, 'voices': voices}, current=current)
     for job in store.pending_jobs(conn, sequence['id']):
         if job['step'] == 'shot' and job['shot_key'] == shot_key and job['status'] == 'running':
-            conn.execute("UPDATE jobs SET status='failed',stage='Cancelled',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'",
-                         ('Cancelled: the voices of this shot changed', job['id']))
+            worker.cancel_jobs(conn, [job], 'Cancelled: the voices of this shot changed')
     if not any(job['step'] == 'shot' and job['shot_key'] == shot_key for job in store.pending_jobs(conn, sequence['id'])):
         queue(conn, sequence, 'shots', shot_keys=[shot_key], trigger='voices')
     return plan_id

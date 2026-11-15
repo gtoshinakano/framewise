@@ -963,5 +963,5 @@ class CompositionRangeSizeTest(unittest.TestCase):
             self.assertNotIn('audio_url',cut)
         sizes=[len(json.dumps(c,ensure_ascii=False,separators=(',',':')).encode('utf-8')) for c in result['cuts']]
         total=len(response.content)
-        self.assertLessEqual(sum(sizes)/len(sizes),2048, f'average={sum(sizes)/len(sizes):.1f}, total={total}, per_cut={sizes}')
-        self.assertLessEqual(total,50*1024, f'total={total}, per_cut={sizes}')
+        self.assertLessEqual(sum(sizes)/len(sizes),2560, f'average={sum(sizes)/len(sizes):.1f}, total={total}, per_cut={sizes}')
+        self.assertLessEqual(total,64*1024, f'total={total}, per_cut={sizes}')

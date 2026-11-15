@@ -21,7 +21,7 @@ test('a consistency summary appears as queued or running for its cut', () => {
 
 test('older failures, queued cancellations, and summary runs use recorded facts', () => {
   assert.deepEqual(cutRunOutcome(job({ cuts: [cut('a', 0)], stage: 'Failed' }), 'a'), { status: 'Failed', step: 'Failure step was not recorded', error: 'Frame extraction failed' })
-  assert.equal(cutRunOutcome(job({ cuts: [cut('a', 0)], stage: 'Cancelled', started_at: null }), 'a').step, 'Cancelled before processing')
+  assert.equal(cutRunOutcome(job({ cuts: [cut('a', 0)], status: 'cancelled', stage: 'Cancelled', started_at: null }), 'a').step, 'Cancelled before processing')
   assert.equal(cutRunOutcome(job({ pipeline: 'regen', status: 'done', stage: 'Complete', cuts: [cut('a', 0)] }), 'a').step, 'Summary generation completed')
   assert.equal(cutRunOutcome(job({ stage: 'Failed' }), 'b').step, 'The cut that failed was not recorded')
 })

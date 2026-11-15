@@ -27,6 +27,11 @@ def wav_seconds(data):
         return audio.getnframes() / audio.getframerate()
 
 
+def wav_frames(data):
+    with wave.open(io.BytesIO(data)) as audio:
+        return audio.readframes(audio.getnframes())
+
+
 SHOT_FILES = ('.wav', '-initial.jpg', '-last.jpg', '-strip.jpg', '-prompt.txt', '-prompt-template.txt', '-still.txt')
 
 
@@ -92,7 +97,7 @@ class SequenceExportTest(pipeline_tests.SequenceBase):
         files, manifest = self.export(sequence_id)
         expected = {'sequence.json', 'overview.json', 'manifest.json', 'contact-sheet.jpg', 'sequence.srt',
                     *(f'shot-0{n}{suffix}' for n in (1, 2, 3) for suffix in SHOT_FILES), *(f'preview/shot-0{n}.jpg' for n in (1, 2, 3)),
-                    'shot-01-ref.wav', 'shot-02-ref.wav'}  # only shots shorter than 5 s get a padded copy
+                    'shot-01-ref.wav', 'shot-02-ref.wav'}  # only shots shorter than 5 s get a reference audio of the generated length
         self.assertEqual(set(files), expected)
         self.assertNotIn('errors', manifest)
         # The ZIP's documents are the lean view and the digest, snapshotted when the export was queued.
@@ -109,6 +114,10 @@ class SequenceExportTest(pipeline_tests.SequenceBase):
         by_path = {item['path']: item for item in manifest['files']}
         self.assertEqual((wav_seconds(files['shot-01.wav']), wav_seconds(files['shot-01-ref.wav']), wav_seconds(files['shot-03.wav'])), (2.0, 5.0, 6.0))
         self.assertEqual((by_path['shot-01.wav']['seconds'], by_path['shot-01-ref.wav']['audio_seconds'], by_path['shot-01-ref.wav']['padded_seconds']), (2.0, 2.0, 5.0))
+        # The reference goes on with the original audio after the shot instead of silence.
+        self.assertEqual((by_path['shot-01-ref.wav']['continued_seconds'], 'silence_seconds' in by_path['shot-01-ref.wav']), (3.0, False))
+        self.assertEqual(wav_frames(files['shot-01-ref.wav']), b'\x01\x00' * 5 * 16000)
+        self.assertIn('then the audio that follows it', by_path['shot-01-ref.wav']['source'])
         self.assertEqual(by_path['shot-02-initial.jpg']['kind'], 'initial_frame')
         # Initial frames at the original resolution, the last frame of each shot's own picture, strips about once a second.
         self.assertIn(('original.mp4', 0.0, 0.0, 2.0, None, False), self.frames)
@@ -191,6 +200,15 @@ class SequenceExportTest(pipeline_tests.SequenceBase):
         self.assertTrue({('initial_frame', 1), ('last_frame', 1), ('strip', 1), ('character_reference', None), ('scene_reference', None)} <= errors)
         self.assertEqual(self.tiles[-1][1], [False, False, False])  # the contact sheet marks the missing frames
 
+    def test_reference_audio_is_silent_only_where_the_episode_audio_ends(self):
+        sequence_id = self.written()
+        write_audio(self.folder / 'audio.wav', seconds=3)
+        files, manifest = self.export(sequence_id)
+        ref = next(item for item in manifest['files'] if item['path'] == 'shot-01-ref.wav')
+        self.assertEqual((ref['audio_seconds'], ref['continued_seconds'], ref['silence_seconds'], ref['padded_seconds']), (2.0, 1.0, 2.0, 5.0))
+        self.assertEqual(wav_frames(files['shot-01-ref.wav']), b'\x01\x00' * 3 * 16000 + b'\x00\x00' * 2 * 16000)
+        self.assertIn('silence where the episode audio ends', ref['source'])
+
     def test_audio_endpoints_cut_the_original_audio(self):
         sequence_id = self.written()
         whole = self.client.get(f'/api/v1/sequences/{sequence_id}/audio')
@@ -199,7 +217,9 @@ class SequenceExportTest(pipeline_tests.SequenceBase):
         exact = self.client.get(f'/api/v1/sequences/{sequence_id}/shots/2/audio')
         self.assertEqual((exact.headers['X-Audio-Start-Seconds'], exact.headers['X-Audio-End-Seconds'], exact.headers['content-disposition']), ('2.0', '4.0', 'attachment; filename="shot-02.wav"'))
         self.assertEqual(wav_seconds(exact.content), 2.0)
-        self.assertEqual(wav_seconds(self.client.get(f'/api/v1/sequences/{sequence_id}/shots/2/audio?pad=true').content), 5.0)  # silence up to the generated length
+        padded = self.client.get(f'/api/v1/sequences/{sequence_id}/shots/2/audio?pad=true')
+        self.assertEqual((wav_seconds(padded.content), padded.headers['X-Audio-End-Seconds']), (5.0, '7.0'))  # the original audio goes on after the shot
+        self.assertEqual(padded.content[44:], b'\x01\x00' * 5 * 16000)
         self.assertEqual(self.client.get(f'/api/v1/sequences/{sequence_id}/shots/9/audio').status_code, 404)
         self.assertEqual(self.client.get('/api/v1/sequences/missing/audio').status_code, 404)
 
