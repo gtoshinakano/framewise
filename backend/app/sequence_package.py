@@ -198,7 +198,7 @@ def edge_view(edge):
         return None
     split = edge.get('split') or {}
     return pack({'how': edge['how'], 'boundary': edge.get('boundary'), 'shift': edge.get('shift') or None, 'keeps': edge.get('keeps'),
-                 'splits': split.get('lines'), 'reason': edge.get('reason'), 'by': edge.get('by')})
+                 'splits': split.get('lines'), 'reason': edge.get('reason'), 'by': edge.get('by'), 'placed': edge.get('placed') or None})
 
 
 def camera_view(camera):
@@ -674,6 +674,8 @@ def edge_word(edge):
     word = edge['how'] + (f" {edge['boundary']}" if edge.get('boundary') else '')
     if edge.get('shift'):
         word += f" {edge['shift']:+g}s"
+    if edge.get('placed'):
+        word += ' placed'
     if edge.get('splits'):
         word += ' splits ' + ','.join(edge['splits'])
     return word

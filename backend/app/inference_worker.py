@@ -921,6 +921,14 @@ def start_assistant():
     return runner.start()
 
 
+def start_chat_gateway():
+    """Answer the OpenAI-compatible /v1/chat/completions requests that other machines queue (chat_gateway.py)."""
+    if os.environ.get('CHAT_GATEWAY_WORKER', '1') == '0':
+        return None
+    from . import chat_gateway_worker
+    return chat_gateway_worker.start()
+
+
 def text_lane(name):
     """An extra worker thread that runs only local text jobs next to the main loop.
 
@@ -1080,6 +1088,7 @@ def main():
     db.init_db()
     local_text_runtime.runtime = local_text_runtime.LocalTextRuntime()
     start_assistant()
+    start_chat_gateway()
     for number in range(1, local_text_runtime.text_job_concurrency()):
         threading.Thread(target=text_lane, args=(f'text-{number}',), daemon=True, name=f'text-lane-{number}').start()
     start_remote_text()

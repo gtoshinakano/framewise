@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import tests.test_analysis as analysis_tests
-from app import db, sequence_direction as direction, sequence_pipeline, worker
+from app import db, sequence_direction as direction, sequence_edit, sequence_pipeline, worker
 
 FRAME = {'mode': 'full', 'composition': 'Medium shot at eye level of Hero in a street.', 'setting': 'A narrow shopping street at dusk', 'lighting': 'Warm low sun from the left',
          'camera': 'Static medium shot at eye level', 'mood': 'calm', 'props': 'none', 'background_people': 'none', 'notes': '',
@@ -49,7 +49,6 @@ def shot_answer(speakers=(), seconds=2.0):
                                              'shifts across the forehead. The hand lowers halfway and settles at chest height, the shoulders loosen and the mouth closes in a faint smile.'}],
         'voices': [{'speaker': speaker, 'from': 0, 'delivery': 'on_screen' if speaker == 'Hero' else 'off_screen', 'subject': 'hero' if speaker == 'Hero' else None} for speaker in speakers],
         'scenario_anchors': '', 'scenario_keep': '',
-        'soundscape': 'Quiet street ambience with a light breeze and distant footsteps. The soft rustle of a coat sleeve as the arm lifts.',
         'continuity': {'from_previous': 'Hero stands in the same spot as before.', 'to_next': 'Hero ends with the hand at chest height, facing the camera.'},
         'open_questions': []}
 
@@ -420,6 +419,57 @@ class SequenceFlowTest(SequenceBase):
         refused = self.client.put(f"/api/sequence-results/{plan['id']}", json={'content': merged})
         self.assertEqual(refused.status_code, 422)
         self.assertIn('merges, drops or reorders cuts', refused.json()['detail'])
+
+    def test_boundaries_placed_on_the_dialogue_timeline_are_final(self):
+        self.interrupt()  # L3 (3.6-4.6 s) runs across the hard cut between cut 2 and cut 3
+        sequence_id = self.create()
+        url = f'/api/sequences/{sequence_id}/shot-points'
+        # Before direction: shot 3 starts just before L3, so the whole phrase is in its shot.
+        placed = self.client.put(url, json={'points': [{'after_cut_id': 'c2', 'time': 3.55}]})
+        self.assertEqual(placed.status_code, 200, placed.text)
+        boundary = next(item for item in placed.json()['timeline']['boundaries'] if item['id'] == 'K2')
+        self.assertEqual((placed.json()['sequence']['shot_points'], boundary['fixed'], boundary['by']),
+                         ([{'after_cut_id': 'c2', 'time': 3.55}], {'t': 3.55, 'time': 3.55, 'shift': -0.45}, 'user'))
+        # The hard rules: no shot without its own picture, inside the sequence, only hard cuts of the sequence.
+        refused = self.client.put(url, json={'points': [{'after_cut_id': 'c2', 'time': 1.0}]})
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn('would show 0.00 s of its own picture', refused.json()['detail'])
+        self.assertEqual(self.client.put(url, json={'points': [{'after_cut_id': 'c2', 'time': 11.0}]}).status_code, 422)
+        self.assertEqual(self.client.put(url, json={'points': [{'after_cut_id': 'c3', 'time': 5.0}]}).status_code, 422)
+        # The director does not decide a placed boundary; it is told about it.
+        self.run_step(sequence_id, 'direct')
+        self.work()
+        plan_input = next(data for step, data in self.calls if step == 'plan')
+        self.assertEqual(plan_input['decisions'], 'Nothing to decide: the user placed the boundary at every hard cut inside speech.')
+        self.assertEqual(plan_input['fixed_by_user'][0]['id'], 'K2')
+        self.assertIn('0.45 s before the hard cut, at 3.55', plan_input['fixed_by_user'][0]['boundary'])
+        self.assertEqual((plan_input['fixed_by_user'][0]['speech'], plan_input['fixed_by_user'][0]['opening_frame'][:28]), ('keeps L3 whole in the shot of cut 3', 'the first frame of cut 3, he'))
+        detail = self.detail(sequence_id)
+        self.assertEqual([(shot['start_time'], shot['end_time']) for shot in detail['shots']], [(0.0, 2.0), (2.0, 3.55), (3.55, 10.0)])
+        self.assertEqual((detail['plan']['content']['boundaries'], detail['shots'][2]['opens']['placed'], detail['shots'][2]['opens']['by']), ([], True, 'user'))
+        # The Shots tab picker and the assistant cannot move it.
+        moved = self.client.put(f'/api/sequences/{sequence_id}/boundaries', json={'after_cut_id': 'c2', 'choice': 'after_line'})
+        self.assertEqual(moved.status_code, 422)
+        self.assertIn('placed by you on the Dialogue timeline', moved.json()['detail'])
+        self.run_step(sequence_id, 'shots')
+        self.work()
+        third = [data for step, data in self.calls if step == 'shot'][-1]
+        self.assertIn('starts 0.45 s before its own cut, where the user placed the boundary, and carries L3 whole', third['shot']['opens']['how'])
+        self.assertEqual(third['shot']['opens']['decided_by'], 'the user')
+        # Moved after the plan exists: the plan follows in the same request and the two shots beside it must be written again.
+        later = self.client.put(url, json={'points': [{'after_cut_id': 'c2', 'time': 4.7}]})
+        self.assertEqual(later.status_code, 200, later.text)
+        after = later.json()
+        self.assertEqual([(shot['start_time'], shot['end_time'], shot['result'] is None) for shot in after['shots']], [(0.0, 2.0, False), (2.0, 4.7, True), (4.7, 10.0, True)])
+        self.assertEqual((after['plan']['origin'], after['plan_problems'], after['ready']), ('manual_edit', [], False))
+        # Handed back to the director: the app keeps the phrase with its visibly speaking speaker until the shots are planned again.
+        released = self.client.put(url, json={'points': []}).json()
+        self.assertEqual([(shot['start_time'], shot['end_time']) for shot in released['shots']], [(0.0, 2.0), (2.0, 4.75), (4.75, 10.0)])
+        self.assertEqual(released['plan']['content']['boundaries'], [{'after_cut_id': 'c2', 'choice': 'after_line', 'reason': sequence_edit.RELEASED, 'by': 'app'}])
+        self.assertIsNone(next(item for item in released['timeline']['boundaries'] if item['id'] == 'K2')['fixed'])
+        # Nothing can be placed while the plan is being written.
+        self.run_step(sequence_id, 'plan')
+        self.assertEqual(self.client.put(url, json={'points': [{'after_cut_id': 'c2', 'time': 3.55}]}).status_code, 409)
 
     def test_voices_are_decided_per_shot_and_rewrite_the_shot(self):
         sequence_id = self.written()

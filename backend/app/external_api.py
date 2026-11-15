@@ -817,13 +817,15 @@ class SequenceSubtitleState(SequenceModel):
 class SequenceEdge(SequenceModel):
     how: Literal['start', 'continuation', 'keep_cut', 'before_line', 'after_line'] = Field(
         description="start: the sequence starts. continuation: the next part of the same long cut. keep_cut: exactly on the hard cut. before_line/after_line: moved off the hard cut by shift seconds "
-                    "into the silence before or after a phrase, so it stays in one shot (the shot borrows that much of the neighbouring cut's audio, never its picture).")
+                    "into the silence before or after a phrase, so it stays in one shot (the shot borrows that much of the neighbouring cut's audio, never its picture). "
+                    "With placed, the user put the boundary there by hand (earlier or later than the hard cut, even inside speech: see splits).")
     boundary: str | None = Field(default=None, description='Id of the hard cut (K1…).')
     shift: float | None = Field(default=None, description='Seconds the boundary moved off the hard cut (negative: earlier); absent when it sits on the cut.')
     keeps: list[str] | None = Field(default=None, description='Line ids the moved boundary keeps whole.')
     splits: list[str] | None = Field(default=None, description='Line ids the edge divides: the words stop in one shot and go on in the next.')
     reason: str | None = Field(default=None, description="The director's or the user's reason for the choice.")
     by: Literal['director', 'app', 'user'] | None = None
+    placed: bool | None = Field(default=None, description='True when the user placed this boundary by hand on the Dialogue timeline; it is final. Absent otherwise.')
 
 
 class SequenceBeat(SequenceModel):
@@ -925,7 +927,7 @@ class SequenceShot(SequenceModel):
     intent: str | None = None
     camera: dict[str, Any] | None = Field(default=None, description='move, and amplitude, speed and detail when it moves.')
     beats: list[SequenceBeat] | None = None
-    soundscape: str | None = Field(default=None, description='Full view only.')
+    soundscape: str | None = Field(default=None, description='Full view only, and only on shots written before 2026-11-15: newer prompts follow <Audio 1> for all sound.')
     continuity: SequenceContinuity | None = None
     initial_frame: SequenceFrame | None = None
     voices: list[SequenceVoice] | None = Field(default=None, description='How each speaker is heard, as ranges; a line takes its speaker\'s range at its midpoint.')

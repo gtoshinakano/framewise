@@ -12,6 +12,8 @@ services:
       TORCH_HOME: /models/torch
       XDG_CACHE_HOME: /models/cache
       MAX_UPLOAD_GB: ${MAX_UPLOAD_GB:-40}
+      # Bearer token for the OpenAI-compatible /v1 chat endpoint; empty keeps it disabled.
+      CHAT_API_KEY: ${CHAT_API_KEY:-}
     volumes:
       - video_data:/data
       - model_cache:/models

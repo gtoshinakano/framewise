@@ -1,9 +1,12 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, Check, Crosshair, LoaderCircle, Merge, Minus, Play, Plus, RefreshCw, Save, Scissors, Trash2, WandSparkles } from 'lucide-react'
+import { AlertTriangle, Check, Crosshair, LoaderCircle, Merge, Minus, Pause, Play, Plus, RefreshCw, Save, Scissors, Trash2, Undo2, WandSparkles, X } from 'lucide-react'
 import { applyVoice, changed, counts, diff, lineAt, mergeNext, nudge, payload, problemsById, sameContent, setEdge, setSpeaker, setText, speakerOptions, splitAt, visibleLines, type Filter } from './compilationView'
-import { PlayerSlot, usePlayer } from './SourcePlayer'
-import { sequenceApi, type Compilation, type CompiledLine, type SequenceDetail } from './sequenceApi'
+import DialogueTimeline from './DialogueTimeline'
+import { boundaryMarkers, limits, lineColour, openingFrame, placePoint, pointWarnings, samePoints, type Marker } from './dialogueTimeline'
+import { PlayerSlot, usePlayer, usePlayerValue } from './SourcePlayer'
+import { sequenceApi, type Compilation, type CompiledLine, type SequenceCut, type SequenceDetail, type ShotPoint } from './sequenceApi'
 import { clock } from './sequenceView'
+import { TimecodeInput } from './TimecodeInput'
 
 type Act = (label: string, action: () => Promise<SequenceDetail | unknown>) => Promise<boolean>
 type Run = (step: 'compile' | 'direct') => Promise<boolean>
@@ -32,19 +35,21 @@ function TimeEdit({ label, value, onChange, onNudge, onPlayhead }: { label: stri
 }
 
 type RowProps = {
-  line: CompiledLine; selected: boolean; active: boolean; problems: string[]; duration: number; options: { value: string; label: string }[]; characters: { id: string; name: string }[]
+  line: CompiledLine; selected: boolean; active: boolean; playing: boolean; colour: string; shotsInside: string; problems: string[]; duration: number
+  options: { value: string; label: string }[]; characters: { id: string; name: string }[]
   onSelect: (id: string) => void; onPlay: (line: CompiledLine) => void; onEdit: (id: string, edit: (line: CompiledLine) => CompiledLine) => void
   onMerge: (id: string) => void; onSplit: (id: string) => void; onDelete: (id: string) => void; playhead: () => number
 }
 
-const Row = memo(function Row({ line, selected, active, problems, duration, options, characters, onSelect, onPlay, onEdit, onMerge, onSplit, onDelete, playhead }: RowProps) {
+const Row = memo(function Row({ line, selected, active, playing, colour, shotsInside, problems, duration, options, characters, onSelect, onPlay, onEdit, onMerge, onSplit, onDelete, playhead }: RowProps) {
   const edited = changed(line)
   const marks = edited ? diff(line.original_text, line.text) : []
   const border = active ? 'border-[#e0a96d] bg-[#2a2319]' : selected ? 'border-[#7d6542] bg-[#1d222c]' : 'border-[#2f3643] bg-[#161b24]'
   const icon = 'rounded p-1.5 text-[#aeb5c1] hover:bg-[#272e3a] hover:text-white disabled:opacity-40'
-  return <li id={`line-${line.id}`} data-line={line.id} className={`rounded-lg border p-3 ${border}`} onClick={() => onSelect(line.id)}>
+  return <li id={`line-${line.id}`} data-line={line.id} className={`rounded-lg border border-l-4 p-3 ${border}`} style={{ borderLeftColor: colour }} onClick={() => onSelect(line.id)}>
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-      <button type="button" className="btn btn-quiet !px-2 !py-1 !text-[11px]" onClick={() => onPlay(line)} title="Play this line of the source video (Space)"><Play size={12} /> Play</button>
+      <button type="button" className="btn btn-quiet !px-2 !py-1 !text-[11px]" onClick={() => onPlay(line)} aria-pressed={playing}
+        title={playing ? 'Pause (Space)' : 'Play this line of the source video (Space)'}>{playing ? <><Pause size={12} /> Pause</> : <><Play size={12} /> Play</>}</button>
       <TimeEdit label={`${line.id} start`} value={line.t0} onChange={value => onEdit(line.id, item => setEdge(item, 't0', value, duration))} onNudge={delta => onEdit(line.id, item => nudge(item, 't0', delta, duration))} onPlayhead={() => onEdit(line.id, item => setEdge(item, 't0', playhead(), duration))} />
       <span className="muted text-[11px]">to</span>
       <TimeEdit label={`${line.id} end`} value={line.t1} onChange={value => onEdit(line.id, item => setEdge(item, 't1', value, duration))} onNudge={delta => onEdit(line.id, item => nudge(item, 't1', delta, duration))} onPlayhead={() => onEdit(line.id, item => setEdge(item, 't1', playhead(), duration))} />
@@ -52,6 +57,7 @@ const Row = memo(function Row({ line, selected, active, problems, duration, opti
       {edited && <Chip tone="busy" title="The words differ from the recognised text">corrected</Chip>}
       {line.confidence === 'low' && <Chip tone="warn" title={line.note || 'Qwen was not sure'}>unsure</Chip>}
       {line.continues_next && <Chip tone="warn" title="This utterance continues in the next line">continues</Chip>}
+      {shotsInside && <Chip tone="busy" title="A shot boundary falls inside this line: its words are divided between two shots">{shotsInside} starts inside</Chip>}
       <span className="ml-auto flex items-center">
         <button type="button" className={icon} onClick={event => { event.stopPropagation(); onMerge(line.id) }} aria-label={`Merge ${line.id} with the next line`} title="Merge with the next line"><Merge size={13} /></button>
         <button type="button" className={icon} onClick={event => { event.stopPropagation(); onSplit(line.id) }} aria-label={`Split ${line.id} at the playhead`} title="Split at the video's playhead"><Scissors size={13} /></button>
@@ -77,6 +83,53 @@ const Row = memo(function Row({ line, selected, active, problems, duration, opti
   </li>
 })
 
+/** The selected shot boundary: where it sits, the frame its shot opens on, and what to look at before keeping it. */
+function BoundaryCard({ marker, markers, cuts, lines, origin, duration, disabled, onPlace, onRelease, onClose, onSave }: {
+  marker: Marker; markers: Marker[]; cuts: SequenceCut[]; lines: CompiledLine[]; origin: number; duration: number; disabled: boolean
+  onPlace: (marker: Marker, t: number) => void; onRelease: (marker: Marker) => void; onClose: () => void; onSave?: () => void
+}) {
+  const player = usePlayer()
+  const playhead = usePlayerValue(time => Math.round((time - origin) * 25) / 25)
+  const cut = cuts[marker.index + 1]
+  const frame = cut ? openingFrame(marker, cut, origin) : null
+  const range = limits(marker.index, markers, cuts)
+  const warnings = pointWarnings(marker, cuts, lines)
+  const shift = marker.t - marker.hard
+  const where = Math.abs(shift) <= 0.002 ? 'on the hard cut' : `${Math.abs(shift).toFixed(2)} s ${shift < 0 ? 'before' : 'after'} the hard cut (${clock(marker.hard)})`
+  const who = marker.source === 'you' ? 'Placed by you: the director keeps it.' : marker.source === 'plan'
+    ? `Where the plan has it${marker.by === 'director' ? ', chosen by the director' : marker.by === 'app' ? ', chosen by the app' : ''}. Drag it, or place it here, to make it yours.`
+    : marker.speech ? 'Speech crosses this hard cut: the director decides where the boundary sits unless you place it.' : 'No speech crosses this hard cut, so the boundary stays on it unless you place it.'
+  const small = 'btn btn-quiet !px-2.5 !py-1.5 !text-[11px]'
+  return <section aria-label={`Start of shot ${marker.shot}`} className="rounded-xl border border-[#7d6542] bg-[#1b202a] p-4">
+    <header className="mb-3 flex items-start gap-2">
+      <div className="min-w-0 flex-1">
+        <h3 className="text-sm font-semibold">Shot {marker.shot} starts at {clock(marker.t)}</h3>
+        <p className="muted text-[11px] leading-5">{where} · {who}</p>
+      </div>
+      <button type="button" className="rounded p-1 text-[#aeb5c1] hover:bg-[#272e3a] hover:text-white" onClick={onClose} aria-label="Close the boundary"><X size={14} /></button>
+    </header>
+    {frame && <figure className="mb-3">
+      <img src={frame.url} alt={`The frame shot ${marker.shot} opens on`} className="aspect-video w-full rounded-lg bg-black object-contain" />
+      <figcaption className={`mt-1 text-[11px] leading-5 ${frame.derived ? 'text-[#ffd59a]' : 'text-[#aeb5c1]'}`}>Opens on: {frame.caption}</figcaption>
+    </figure>}
+    <TimecodeInput compact label="Starts at (sequence time)" value={marker.t} min={range.min} max={range.max} playhead={Math.min(range.max, Math.max(range.min, playhead))} disabled={disabled}
+      onChange={value => onPlace(marker, value)} />
+    <div className="mt-3 flex flex-wrap gap-1.5">
+      <button type="button" className={small} onClick={() => player.playRange(origin + Math.max(0, marker.t - 2), origin + Math.min(duration, marker.t + 2))} title="Play two seconds on either side of the boundary"><Play size={12} /> Play across</button>
+      {marker.source !== 'you' && <button type="button" className={small} disabled={disabled} onClick={() => onPlace(marker, marker.t)} title="Keep the boundary here as yours; the director will not move it">Place here</button>}
+      {marker.source === 'you' && <button type="button" className={small} disabled={disabled} onClick={() => onRelease(marker)} title="Let the director decide this boundary again"><Undo2 size={12} /> Hand back to the director</button>}
+      {onSave && <button type="button" className="btn btn-primary !px-2.5 !py-1.5 !text-[11px]" disabled={disabled} onClick={onSave}><Save size={12} /> Save boundaries</button>}
+    </div>
+    {warnings.length > 0 && <ul className="mt-3 space-y-1 text-[11px] leading-5 text-[#ffd59a]">{warnings.map(warning => <li key={warning} className="flex gap-1.5"><AlertTriangle size={12} className="mt-1 shrink-0" />{warning}</li>)}</ul>}
+  </section>
+}
+
+/** The playhead in sequence time; it re-renders on its own while the video plays. */
+function PlayheadClock({ origin }: { origin: number }) {
+  const tenths = usePlayerValue(time => Math.round(Math.max(0, time - origin) * 10))
+  return <>{clock(tenths / 10)}</>
+}
+
 /** Review and correct the dialogue Qwen compiled from the transcript, the subtitles and the pictures; Direction starts from the saved result. */
 export default function DialogueTab({ detail, working, act, run, onContinue, proxyReady }: {
   detail: SequenceDetail; working: boolean; act: Act; run: Run; onContinue: () => void; proxyReady: boolean
@@ -90,22 +143,34 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const [baseId, setBaseId] = useState<string | undefined>(result?.id)
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState<Filter>('all')
-  const [now, setNow] = useState(0)
   useEffect(() => { if (result && result.id !== baseId) { setDraft(result.content); setBaseId(result.id) } }, [result, baseId])
   useEffect(() => { player.setRange({ start: info.start_time, end: info.end_time }) }, [player, info.start_time, info.end_time])
-  useEffect(() => {
-    const timer = setInterval(() => setNow(player.time() - info.start_time), 250)
-    return () => clearInterval(timer)
-  }, [player, info.start_time])
+  // The shot boundaries placed on the timeline: a draft until saved, reset when the saved ones change.
+  const savedKey = JSON.stringify(info.shot_points ?? [])
+  const [points, setPoints] = useState<ShotPoint[]>(() => info.shot_points ?? [])
+  const [pointsBase, setPointsBase] = useState(savedKey)
+  useEffect(() => { if (savedKey !== pointsBase) { setPoints(JSON.parse(savedKey) as ShotPoint[]); setPointsBase(savedKey) } }, [savedKey, pointsBase])
+  const [selectedMarker, setSelectedMarker] = useState<string | null>(null)
+  // The line whose Play button was pressed last; its button shows Pause while the video plays.
+  const [playingId, setPlayingId] = useState<string | null>(null)
+  const paused = usePlayerValue((_, isPaused) => isPaused)
 
   const characters = useMemo(() => view.characters || [], [view.characters])
   const options = useMemo(() => speakerOptions(characters), [characters])
   const lines = useMemo(() => draft?.lines ?? [], [draft])
   const problems = useMemo(() => problemsById(lines, duration), [lines, duration])
-  const dirty = !!draft && !!result && !sameContent(draft, result.content)
+  const dialogueDirty = !!draft && !!result && !sameContent(draft, result.content)
+  const pointsDirty = !samePoints(points, JSON.parse(savedKey) as ShotPoint[])
+  const dirty = dialogueDirty || pointsDirty
   const stats = counts(lines)
   const shown = useMemo(() => visibleLines(lines, filter), [lines, filter])
-  const activeId = lineAt(lines, now)?.id
+  const activeId = usePlayerValue(time => lineAt(lines, time - info.start_time)?.id ?? null)
+  const cuts = detail.cuts
+  const markers = useMemo(() => boundaryMarkers(detail.timeline?.boundaries ?? [], detail.shots, points, info.start_time), [detail.timeline, detail.shots, points, info.start_time])
+  const marker = markers.find(item => item.id === selectedMarker) ?? null
+  const colours = useMemo(() => new Map(lines.map((line, index) => [line.id, lineColour(index)])), [lines])
+  // Shot boundaries that fall inside a line divide its words between two shots.
+  const inside = useMemo(() => new Map(lines.map(line => [line.id, markers.filter(item => line.t0 + 0.05 < item.t && item.t < line.t1 - 0.05).map(item => `shot ${item.shot}`).join(', ')])), [lines, markers])
   const state = view.state
   const compileJob = detail.jobs.find(job => job.step === 'compile' && (job.status === 'queued' || job.status === 'running'))
   const failedJob = !compileJob && view.state === 'none' ? detail.jobs.find(job => job.step === 'compile' && job.status === 'failed') : undefined
@@ -116,7 +181,26 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const merge = useCallback((id: string) => setDraft(current => current && { ...current, lines: mergeNext(current.lines, current.lines.findIndex(line => line.id === id)) }), [])
   const split = useCallback((id: string) => { const time = playhead(); setDraft(current => current && { ...current, lines: splitAt(current.lines, current.lines.findIndex(line => line.id === id), time) }) }, [playhead])
   const remove = useCallback((id: string) => setDraft(current => current && { ...current, lines: current.lines.filter(line => line.id !== id) }), [])
-  const play = useCallback((line: CompiledLine) => { setSelected(line.id); player.playRange(info.start_time + line.t0, info.start_time + line.t1) }, [player, info.start_time])
+  // Play a line, or pause it while it plays; pressed again inside the line, it goes on from the playhead.
+  const playingRef = useRef<string | null>(null)
+  const play = useCallback((line: CompiledLine) => {
+    setSelected(line.id)
+    if (!player.paused && playingRef.current === line.id) { player.pause(); return }
+    const at = player.time() - info.start_time
+    const from = playingRef.current === line.id && at > line.t0 + 0.05 && at < line.t1 - 0.05 ? at : line.t0
+    playingRef.current = line.id
+    setPlayingId(line.id)
+    player.playRange(info.start_time + from, info.start_time + line.t1)
+  }, [player, info.start_time])
+  const forget = () => { playingRef.current = null; setPlayingId(null) }
+  const place = useCallback((item: Marker, t: number) => { setSelectedMarker(item.id); setPoints(current => placePoint(current, item.after_cut_id, info.start_time + t)) }, [info.start_time])
+  const release = useCallback((item: Marker) => setPoints(current => placePoint(current, item.after_cut_id, null)), [])
+  const pickLine = useCallback((line: CompiledLine) => {
+    setSelected(line.id)
+    if (!visibleLines([line], filter).length) setFilter('all')
+    player.seek(info.start_time + line.t0)
+    requestAnimationFrame(() => document.getElementById(`line-${line.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
+  }, [player, info.start_time, filter])
 
   // Keyboard: j/k (or the arrows) move between lines, Space plays the selected one; typing in a field is left alone.
   function onKeyDown(event: React.KeyboardEvent) {
@@ -132,16 +216,24 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
     if (event.key === 'j' || event.key === 'ArrowDown') { event.preventDefault(); go(index + 1) }
     else if (event.key === 'k' || event.key === 'ArrowUp') { event.preventDefault(); go(index < 0 ? 0 : index - 1) }
     else if (event.key === ' ' && index >= 0) { event.preventDefault(); play(shown[index]) }
+    else if (event.key === 'Escape' && selectedMarker) { event.stopPropagation(); setSelectedMarker(null) }
   }
 
-  const save = () => result && draft ? act('save-dialogue', () => sequenceApi.revise(result.id, payload(draft))) : Promise.resolve(false)
+  // The dialogue and the placed boundaries are saved together; the boundaries do not need the dialogue to be confirmed again.
+  const save = () => act('save-dialogue', async () => {
+    let latest: SequenceDetail | undefined
+    if (dialogueDirty && result && draft) latest = await sequenceApi.revise(result.id, payload(draft))
+    if (pointsDirty) latest = await sequenceApi.setShotPoints(info.id, points)
+    return latest
+  })
   async function confirm() {
     if (!result || !draft) return
     if (state === 'confirmed' && !dirty) { onContinue(); return }
     const ok = await act('confirm-dialogue', async () => {
       let id = result.id
-      if (dirty) id = (await sequenceApi.revise(id, payload(draft))).compilation.result?.id || id
-      return sequenceApi.confirmDialogue(info.id, id)
+      if (dialogueDirty) id = (await sequenceApi.revise(id, payload(draft))).compilation.result?.id || id
+      const confirmed = await sequenceApi.confirmDialogue(info.id, id)
+      return pointsDirty ? sequenceApi.setShotPoints(info.id, points) : confirmed
     })
     if (!ok) return
     onContinue()
@@ -162,10 +254,12 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
 
   const banner = view.stale ? 'The transcript or the subtitles changed after this dialogue was compiled. Re-run Qwen to pick the changes up (your edits would be replaced).' : detail.sequence.cuts_changed ? 'The cuts of this sequence changed. Direct the sequence again after reviewing the dialogue.' : ''
 
-  return <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)] lg:overflow-hidden" onKeyDown={onKeyDown}>
+  return <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,24rem)_15rem_minmax(0,1fr)] lg:overflow-hidden" onKeyDown={onKeyDown}>
     <aside className="scrollbar min-h-0 space-y-4 lg:overflow-y-auto lg:pr-1">
       <PlayerSlot className="aspect-video">{!proxyReady && <div className="absolute inset-0 grid place-items-center bg-black/80 p-4 text-center text-xs text-[#aeb5c1]">The preview video is not ready yet.</div>}</PlayerSlot>
-      <p className="muted text-[11px] leading-5">Playhead {clock(Math.max(0, now))} in the sequence. <kbd className="rounded bg-[#262b35] px-1">J</kbd>/<kbd className="rounded bg-[#262b35] px-1">K</kbd> move between lines, <kbd className="rounded bg-[#262b35] px-1">Space</kbd> plays the selected line. The crosshair next to a time sets it to the playhead.</p>
+      <p className="muted text-[11px] leading-5">Playhead <PlayheadClock origin={info.start_time} /> in the sequence. <kbd className="rounded bg-[#262b35] px-1">J</kbd>/<kbd className="rounded bg-[#262b35] px-1">K</kbd> move between lines, <kbd className="rounded bg-[#262b35] px-1">Space</kbd> plays or pauses the selected line. The crosshair next to a time sets it to the playhead. On the timeline, drag a shot to place where it starts.</p>
+      {marker && <BoundaryCard marker={marker} markers={markers} cuts={cuts} lines={lines} origin={info.start_time} duration={duration} disabled={busy}
+        onPlace={place} onRelease={release} onClose={() => setSelectedMarker(null)} onSave={!draft && pointsDirty ? () => void save() : undefined} />}
       {draft && <section aria-label="Voices" className="rounded-xl border hairline bg-[#1b202a] p-4">
         <h3 className="text-sm font-semibold">Voices</h3>
         <p className="muted mb-3 text-[11px] leading-5">Decide who owns each voice once; it is applied to every line of that voice, and the bible keeps your decision.</p>
@@ -177,8 +271,12 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
       </section>}
       {view.subtitles.length > 0 && <details className="rounded-xl border hairline bg-[#1b202a] text-xs"><summary className="cursor-pointer px-4 py-3 font-semibold text-[#aeb5c1] hover:text-white">Subtitles read from the picture ({view.subtitles.length})</summary>
         <ul className="scrollbar max-h-64 space-y-1 overflow-y-auto border-t hairline p-3">{view.subtitles.map(sub => <li key={sub.id}>
-          <button type="button" className="w-full text-left hover:text-[#e0a96d]" onClick={() => player.playRange(info.start_time + sub.t0, info.start_time + sub.t1)}><span className="font-mono text-[10px] text-[#8b93a3]">{sub.t0.toFixed(1)}–{sub.t1.toFixed(1)}</span> {sub.text}</button></li>)}</ul></details>}
+          <button type="button" className="w-full text-left hover:text-[#e0a96d]" onClick={() => { forget(); player.playRange(info.start_time + sub.t0, info.start_time + sub.t1) }}><span className="font-mono text-[10px] text-[#8b93a3]">{sub.t0.toFixed(1)}–{sub.t1.toFixed(1)}</span> {sub.text}</button></li>)}</ul></details>}
     </aside>
+
+    {detail.timeline ? <DialogueTimeline duration={duration} origin={info.start_time} cuts={cuts} lines={lines} markers={markers} selectedLine={selected} selectedMarker={selectedMarker} disabled={busy}
+      onSelectLine={pickLine} onSelectMarker={item => setSelectedMarker(item.id)} onPlace={place} onRelease={release} />
+      : <section className="muted rounded-xl border hairline bg-[#161b24] p-4 text-xs">The cuts of this sequence are missing, so there is no timeline.</section>}
 
     <section aria-label="Dialogue" className="flex min-h-0 flex-col rounded-xl border hairline bg-[#1b202a]">
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b hairline px-4 py-3">
@@ -205,13 +303,15 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
         </div>
           : <>
             <ol className="scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto p-3" aria-label="Dialogue lines">
-              {shown.map(line => <Row key={line.id} line={line} selected={selected === line.id} active={activeId === line.id} problems={problems[line.id] || []} duration={duration} options={options} characters={characters}
+              {shown.map(line => <Row key={line.id} line={line} selected={selected === line.id} active={activeId === line.id} playing={!paused && playingId === line.id}
+                colour={colours.get(line.id) ?? lineColour(0)} shotsInside={inside.get(line.id) ?? ''} problems={problems[line.id] || []} duration={duration} options={options} characters={characters}
                 onSelect={setSelected} onPlay={play} onEdit={edit} onMerge={merge} onSplit={split} onDelete={remove} playhead={playhead} />)}
               {!shown.length && <li className="muted p-6 text-center text-sm">{lines.length ? 'No line matches this filter.' : 'Nobody speaks in this range.'}</li>}
             </ol>
             {draft.open_questions.length > 0 && <div className="shrink-0 border-t hairline px-4 py-2"><p className="label !mb-1">Open questions from Qwen</p><ul className="list-disc space-y-0.5 pl-5 text-xs leading-5 text-[#ffd59a]">{draft.open_questions.map((question, index) => <li key={index}>{question}</li>)}</ul></div>}
             <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t hairline p-3">
-              <span className="mr-auto text-[11px] text-[#aeb5c1]">{dirty ? 'Unsaved changes' : state === 'confirmed' ? <span className="inline-flex items-center gap-1 text-[#9ff0c8]"><Check size={12} /> Saved</span> : 'No changes'}{Object.keys(problems).length ? ` · ${Object.keys(problems).length} line${Object.keys(problems).length > 1 ? 's' : ''} need fixing` : ''}</span>
+              <span className="mr-auto text-[11px] text-[#aeb5c1]">{dirty ? 'Unsaved changes' : state === 'confirmed' ? <span className="inline-flex items-center gap-1 text-[#9ff0c8]"><Check size={12} /> Saved</span> : 'No changes'}{Object.keys(problems).length ? ` · ${Object.keys(problems).length} line${Object.keys(problems).length > 1 ? 's' : ''} need fixing` : ''}
+                {points.length > 0 && ` · ${points.length} shot boundar${points.length > 1 ? 'ies' : 'y'} placed by you`}{pointsDirty && detail.plan ? ' · saving moves the planned shots, which must then be written again' : ''}</span>
               <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy} onClick={useOriginal} title="Replace everything with the original transcript, uncorrected">Use original transcript</button>
               <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy} onClick={rerun} title="Qwen compiles the dialogue again"><RefreshCw size={13} /> Re-run Qwen</button>
               <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy || !dirty || Object.keys(problems).length > 0} onClick={() => void save()}><Save size={13} /> Save</button>

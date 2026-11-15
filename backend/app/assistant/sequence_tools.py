@@ -117,7 +117,7 @@ def get_sequence(ctx, args):
                            'part': view['part'], 'audio_from_cuts': view['source_cuts'] if len(view['source_cuts']) > 1 else None, 'frame': view['frame']['strategy'],
                            'opens': evidence.edge_brief(view['opens']), 'closes': evidence.edge_brief(view['closes']),
                            'scene': view['scene'], 'intent': view['intent'], 'lines': [line['line'] for line in view['lines']] or None} for view in shots] or 'no shot plan yet',
-                'boundaries_in_speech': [boundary_row(boundary) for boundary in sequence_view.boundary_views(current) if boundary['speech']] or None}
+                'boundaries_in_speech': [boundary_row(boundary) for boundary in sequence_view.boundary_views(current) if boundary['speech'] or boundary.get('fixed')] or None}
     info = sequence_view.sequence_view(sequence, current['cuts'], current['changed'])
     return {'sequence': {'title': info['title'], 'cuts': [info['first_cut'], info['last_cut']], 'seconds': info['duration'], 'instruction': sequence['instruction'] or None,
                          'cuts_changed': info['cuts_changed'] or None, 'cuts_without_analysis': current['missing'] or None},
@@ -128,11 +128,17 @@ def get_sequence(ctx, args):
 
 
 def boundary_row(boundary):
-    """A hard cut inside speech: where the boundary sits now, why, and where else it could sit (t in sequence seconds)."""
-    speech = boundary['speech']
-    return {'after_cut': boundary['after_cut'], 'hard_cut_t': boundary['t'], 'lines': speech['lines'], 'before_cut': speech['words_before'], 'after_cut_words': speech['words_after'],
-            'choice': boundary['choice'], 'reason': boundary['reason'], 'decided_by': boundary['by'],
-            'options': {choice: {'t': option['t'], 'shift': option['shift']} for choice, option in boundary['options'].items()},
+    """A hard cut inside speech (or one the user placed): where the boundary sits now, why, and where else it could sit (t in sequence seconds).
+
+    A boundary the user placed on the Dialogue timeline is final: no plan edit may move it.
+    """
+    speech = boundary['speech'] or {}
+    fixed = boundary.get('fixed')
+    row = {'after_cut': boundary['after_cut'], 'hard_cut_t': boundary['t'], 'lines': speech.get('lines'), 'before_cut': speech.get('words_before'), 'after_cut_words': speech.get('words_after'),
+           'choice': boundary['choice'], 'reason': boundary['reason'], 'decided_by': boundary['by']}
+    if fixed:
+        return {**row, 'placed_by_user': {'t': fixed['t'], 'shift': fixed['shift']}}
+    return {**row, 'options': {choice: {'t': option['t'], 'shift': option['shift']} for choice, option in boundary['options'].items()},
             'not_possible': boundary['unavailable'] or None}
 
 
@@ -292,6 +298,7 @@ def plan_text(shots):
 @tool('propose_plan_edit', "Propose a change to the shot plan. Every cut is exactly one shot (a cut longer than 15 s is divided by the app); shots are never merged or split. "
       "action boundary chooses where the shot boundary sits at the hard cut after cut `cut` when speech crosses it: keep_cut (on the hard cut; the speech is divided there), "
       "before_line or after_line (in the silence just before or after the phrase, so it stays in one shot); get_sequence part=plan lists these hard cuts with their options. "
+      "A boundary with placed_by_user was placed by the user on the Dialogue timeline and is final: never propose to move it. "
       "action update changes the intent of the shot(s) of cut `cut`. The user must apply it. Shots whose interval or plan entry changes become stale and must be written again.",
       {'action': {'type': 'string', 'enum': ['boundary', 'update']}, 'cut': {'type': 'integer', 'description': 'Cut number: for boundary, the cut before the hard cut'},
        'choice': {'type': 'string', 'enum': list(sequence_timeline.CHOICES)}, 'reason': {'type': 'string', 'description': 'Why the boundary sits there (boundary)'},

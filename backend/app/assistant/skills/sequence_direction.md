@@ -11,7 +11,7 @@ A sequence is a range of cuts played as one short video on the **original audio*
 
 - **Dialogue** (the reviewed compilation of the transcript and subtitles, which feeds everything below; its words, speakers and timings are final once the user saved it). It does not say how a line is played: that is decided per shot.
 - **Bible**: story, spoken language, scenes, characters (anchors, outfit), `voices` (who owns each voice label) and continuity rules.
-- **Plan**: one shot per source cut, in order; shots are never merged, and only a cut longer than 15 s is divided by the app into parts of one take. Each shot takes its initial frame from its own cut. At a hard cut that falls inside speech the boundary either stays on the cut (the phrase is divided there, for a reason such as an interruption) or moves into the silence just before or after the phrase so it stays in one shot; the shot then borrows a moment of its neighbour's audio, never its picture. Each shot's `opens`/`closes` say which.
+- **Plan**: one shot per source cut, in order; shots are never merged, and only a cut longer than 15 s is divided by the app into parts of one take. Each shot takes its initial frame from its own cut. At a hard cut that falls inside speech the boundary either stays on the cut (the phrase is divided there, for a reason such as an interruption) or moves into the silence just before or after the phrase so it stays in one shot; the shot then borrows a moment of its neighbour's audio, never its picture. Each shot's `opens`/`closes` say which. A boundary the user placed by hand on the Dialogue timeline (`placed_by_user`, edges "placed by user") is final, even where it divides a phrase: never propose to move it; the user moves it in the Dialogue tab.
 - **Shot direction**: one JSON object per shot. The app renders the six-section H3 prompt from it.
 
 ## What the app writes, and you never do
@@ -30,7 +30,9 @@ Section headers, `<Picture N>` / `<Subject N>` / `<Audio N>` labels, timecodes, 
 - `beats[]`: `end` and `action` (start state, one action, end state). The last beat ends at the shot's length. Do not mention the camera in a beat.
 - `voices[]`: how each speaker heard in the shot is heard, as time ranges: `speaker` (the name `get_shot` dialogue shows), `from` (second of the shot), `delivery` and `subject` (the subject who carries the voice). Every speaker has an entry from 0; a later entry of the same speaker changes the delivery from that second (for example when a camera move brings them into view).
 - `scenario_anchors`, `scenario_keep`: only when the scene has a scenario picture.
-- `soundscape`, `continuity.from_previous`, `continuity.to_next`, `open_questions[]`.
+- `continuity.from_previous`, `continuity.to_next`, `open_questions[]`.
+
+There is no sound field: the app writes the prompt's sound section, which tells the generator to follow the original audio exactly. Never describe or assume a background sound, room tone, ambience or music anywhere in a direction; nobody has heard the audio. A direction is about the action. Small accessories and details (hairpins, jewellery, badges) belong in `still.subjects`; name one in a beat only when the action uses it.
 
 ## Evidence and precedence
 Read only what the task needs: `get_shot(shot)` for the direction, the dialogue and the check; `get_cut_evidence(cut, type)` for what the cuts really show (`initial_frame` decides how a shot starts, `video_analysis` decides motion, camera and who visibly speaks, `review_answers` are the user's decisions and override everything, `production_brief` is the written summary); `get_sequence_transcript(shot)` for who says what; `get_sequence(part="bible")` for anchors, outfits and voices.

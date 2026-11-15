@@ -259,13 +259,19 @@ def speech_sentence(line, language, slot=None):
     return f"At {at}, an off-screen voice is heard: {words}"
 
 
+# The sound section never describes the audio: nobody who writes the prompt has heard it, and a guess ("a quiet room")
+# fights whatever music, steps or ambience the original really carries.
+SOUND_SENTENCE = ('Follow <Audio 1> exactly for all sound: its background sound, music and effects stay as recorded, nothing is added to them, '
+                  'and every movement keeps to its timing.')
+
+
 def audio_lines(lines, slots=None):
     """What ``<Audio 1>`` drives, per speaker and voice range: whose lips follow it, and which words nobody on screen mouths.
 
     With ``slots`` (line id to ``1.M``) a run's span names the start of its first line and the end of its last one as placeholders.
     """
     if not lines:
-        return ['<Audio 1> carries no speech; match its ambience and timing.']
+        return ['<Audio 1> carries no speech.']
     runs = {}
     for line in lines:
         key = (line['speaker'], tuple(line['range'] or ()), line['delivery'], line['subject'])
@@ -330,7 +336,7 @@ def render(shot, content, bible, subjects, dialogue, slots=None):
             definitions.append(f"{subject['label']} is {subject['name']}, whose face, hair and clothing come from <Picture {subject['picture']}>: {sentence(subject['anchors'])}")
         else:
             definitions.append(f"{subject['label']} is {subject['name']}, seen in <Picture 1>: {sentence(subject['anchors'])}")
-    carries = 'the voices and ambience to keep in sync' if lines else 'the ambience and timing to match'
+    carries = 'its voices, sound and timing to follow' if lines else 'its sound and timing to follow'
     definitions.append(f"<Audio 1> is the original sound of this shot, “{audio_file(shot)}”: {carries}.")
 
     retention = [f"<Picture 1> ([Shot 1] first frame): fully_preserved - {sentence(content.get('keep_picture') or 'composition, palette and lighting of the opening frame')}"]
@@ -354,7 +360,7 @@ def render(shot, content, bible, subjects, dialogue, slots=None):
                      if beat['start'] <= line['t0'] < beat['end'] or (last and line['t0'] >= beat['end']))
         description.append(f"{h3_prompt.fmt(beat['start'])}-{h3_prompt.fmt(beat['end'])}: {' '.join(parts)}")
 
-    soundscape = ' '.join([sentence(label_names(content.get('soundscape'), subjects)), *audio_lines(lines, slots)]).strip()
+    soundscape = ' '.join([SOUND_SENTENCE, *audio_lines(lines, slots)])
     return '\n'.join([
         'subject_definitions:', *definitions, '',
         'summary:', f"{h3_prompt.OMNI_PREFIX} {sentence(label_names(content.get('summary'), subjects))}", '',

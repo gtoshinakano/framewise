@@ -37,7 +37,8 @@ def sequence_view(sequence, cuts, changed):
     start, end = (cuts[0]['start_time'], cuts[-1]['end_time']) if cuts else (sequence['start_time'], sequence['end_time'])
     return {'id': sequence['id'], 'episode_id': sequence['episode_id'], 'title': sequence['title'], 'instruction': sequence['instruction'],
             'start_time': start, 'end_time': end, 'duration': round(end - start, 3), 'first_cut': numbers[0] if numbers else None, 'last_cut': numbers[-1] if numbers else None,
-            'cuts_changed': bool(changed and cuts is not None), 'cuts_missing': cuts is None, 'created_at': sequence['created_at'], 'updated_at': sequence['updated_at']}
+            'cuts_changed': bool(changed and cuts is not None), 'cuts_missing': cuts is None, 'shot_points': store.shot_points(sequence),
+            'created_at': sequence['created_at'], 'updated_at': sequence['updated_at']}
 
 
 def dialogue_state(conn, sequence, row=None, pending=None):
@@ -171,7 +172,10 @@ def shot_views(current, pending=()):
 
 
 def boundary_views(current):
-    """Every hard cut of the sequence with its options and, once there is a usable plan, the choice made there and by whom."""
+    """Every hard cut of the sequence with its options and, once there is a usable plan, the choice made there and by whom.
+
+    ``fixed`` is the user's placed boundary (``{t, time, shift}``) or None; a placed boundary is decided ``by`` the user.
+    """
     timeline = current['timeline']
     if timeline is None:
         return []
@@ -180,6 +184,9 @@ def boundary_views(current):
     views = []
     for boundary in timeline['boundaries']:
         choice = choices.get(boundary['id'])
+        if boundary.get('fixed'):
+            views.append({**boundary, 'choice': choice, 'reason': None, 'by': 'user'})
+            continue
         made = decided.get(boundary['after_cut_id']) or {}
         views.append({**boundary, 'choice': choice, 'reason': made.get('reason') if made.get('choice') == choice else None,
                       'by': made.get('by') if made.get('choice') == choice else None})

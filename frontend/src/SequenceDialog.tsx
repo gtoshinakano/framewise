@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, Check, ChevronDown, Clapperboard, Download, History as HistoryIcon, LoaderCircle, MessageSquare, Pencil, Play, RefreshCw, Save, Sparkles, Square, WandSparkles, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, Clapperboard, Copy, Download, History as HistoryIcon, LoaderCircle, MessageSquare, Pencil, Play, RefreshCw, Save, Sparkles, Square, WandSparkles, X } from 'lucide-react'
 import { mediaUrl } from './api'
 import CutAssistant from './CutAssistant'
 import DialogueTab from './DialogueTab'
@@ -7,7 +7,7 @@ import { PlayerProvider, PlayerSlot, SourcePlayer, usePlayer, usePlayerValue } f
 import SequenceTimeline from './SequenceTimeline'
 import type { DiffSegment } from './assistantApi'
 import { DiffText } from './DiffText'
-import { CopyButton } from './Markdown'
+import { CopyButton, copyText } from './Markdown'
 import { sequenceApi, shotFrameUrl, type Bible, type BoundaryChoice, type Delivery, type RunStep, type SequenceBoundary, type SequenceDetail, type SequenceShot, type ShotDialogue, type ShotHistory } from './sequenceApi'
 import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, DELIVERIES, deliveryLabel, edgeTags, hasOwnVoices, issueInstruction, issuesFor, progress, promptSections, revisionLabel, shotStatus, speakerRanges, stage, staleText, timecode, timecodeSegments, versionNote, type Tone } from './sequenceView'
 
@@ -15,6 +15,18 @@ type Tab = 'dialogue' | 'direction' | 'shots' | 'assistant'
 const TONES: Record<Tone, string> = { good: 'bg-[#173a2b] text-[#9ff0c8]', busy: 'bg-[#2b2442] text-[#d6c8ff]', warn: 'bg-[#4a3a17] text-[#ffd59a]', bad: 'bg-[#3d2025] text-[#ffaaa7]', idle: 'bg-[#262b35] text-[#aeb5c1]' }
 const DELIVERY_COLOURS: Record<Delivery, string> = { on_screen: 'bg-[#2f7a57]', off_screen: 'bg-[#4b5263]', inner_voice: 'bg-[#6a55a8]', narrative: 'bg-[#a8793a]' }
 const ORIGIN: Record<string, string> = { model: 'written by the director', manual_edit: 'edited by you', assistant_edit: 'edited with the assistant' }
+
+/** The sequence id as a chip that copies it in one click (`/api/v1/sequences/{id}` and the AI Director address a sequence by it). */
+function CopyId({ id }: { id: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  return <button type="button" onClick={async () => { setState(await copyText(id) ? 'copied' : 'failed'); setTimeout(() => setState('idle'), 1600) }}
+    title={state === 'failed' ? 'Copy failed' : 'Copy the sequence id'} aria-label={`Copy sequence id ${id}`}
+    className="inline-flex min-w-0 items-center gap-1 rounded px-1 py-0.5 font-mono text-[11px] text-[#8b93a1] hover:bg-[#272e3a] hover:text-white">
+    <span className="truncate">{id}</span>
+    {state === 'copied' ? <Check size={11} className="shrink-0 text-[#7bdcb2]" aria-hidden /> : state === 'failed' ? <X size={11} className="shrink-0 text-[#ffaaa7]" aria-hidden /> : <Copy size={11} className="shrink-0" aria-hidden />}
+    <span role="status" className="sr-only">{state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : ''}</span>
+  </button>
+}
 
 /** The sequence workspace: direct the range (bible and shot plan), review, write the shot prompts, and download. */
 export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onClose, onChanged }: {
@@ -105,7 +117,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
   return <PlayerProvider player={player}><div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Sequence ${info?.title || ''}`} className="flex h-[94vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden rounded-2xl border hairline bg-[#131720] shadow-2xl outline-none">
       <header className="grid grid-cols-[1fr_auto] items-center gap-3 border-b hairline px-5 py-3 lg:grid-cols-[1fr_auto_1fr]">
-        <div className="min-w-0"><p className="text-[11px] font-semibold uppercase tracking-[.14em] text-[#e0a96d]">{label}</p><h2 className="truncate text-base font-semibold">{info?.title || 'Loading…'}</h2></div>
+        <div className="min-w-0"><div className="flex min-w-0 items-center gap-2"><p className="shrink-0 text-[11px] font-semibold uppercase tracking-[.14em] text-[#e0a96d]">{label}</p><CopyId id={sequenceId} /></div><h2 className="truncate text-base font-semibold">{info?.title || 'Loading…'}</h2></div>
         <div className="order-3 col-span-2 flex justify-center lg:order-none lg:col-span-1"><div className="flex gap-1 rounded-lg border hairline p-1" role="tablist">
           {([['dialogue', `Dialogue${detail?.compilation ? { none: '', running: ' · compiling…', review: ' · review', confirmed: ' ✓' }[detail.compilation.state] : ''}`], ['direction', 'Direction'], ['shots', `Shots${counts?.shots ? ` · ${counts.ready}/${counts.shots}` : ''}`], ['assistant', 'Assistant']] as const).map(([value, text]) =>
             <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={`rounded-md px-5 py-1.5 text-xs font-semibold ${tab === value ? 'bg-[#3a2f1f] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{text}</button>)}
@@ -136,7 +148,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
       {!detail ? <div className="muted p-12 text-sm">Loading sequence…</div> : <>
         {assistantMounted && <CutAssistant sequence={{ id: sequenceId, label }} active={tab === 'assistant'} onResultsChanged={() => { void load(); onChanged() }} />}
         {tab === 'dialogue' && <DialogueTab detail={detail} proxyReady={proxyReady} working={!!working} act={act} run={run} onContinue={() => setTab('direction')} />}
-        {tab === 'direction' && <DirectionTab detail={detail} working={!!working || active} act={act} run={run} onOpenShot={key => { setSelectedKey(key); setTab('shots') }} />}
+        {tab === 'direction' && <DirectionTab detail={detail} working={!!working || active} act={act} run={run} onOpenShot={key => { setSelectedKey(key); setTab('shots') }} onOpenDialogue={() => setTab('dialogue')} />}
         {tab === 'shots' && <ShotsTab detail={detail} selected={selected} onSelect={setSelectedKey} proxyReady={proxyReady} working={!!working} act={act} run={run} onOpenAssistant={() => setTab('assistant')} />}
       </>}
     </div>
@@ -184,7 +196,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   return <div><p className="label !mb-1">{label}</p><div className="text-[13px] leading-6 text-[#e8ebf1]">{children}</div></div>
 }
 
-function DirectionTab({ detail, working, act, run, onOpenShot }: { detail: SequenceDetail; working: boolean; act: Act; run: Run; onOpenShot: (key: string) => void }) {
+function DirectionTab({ detail, working, act, run, onOpenShot, onOpenDialogue }: { detail: SequenceDetail; working: boolean; act: Act; run: Run; onOpenShot: (key: string) => void; onOpenDialogue: () => void }) {
   const { sequence, bible, plan, shots } = detail
   const [title, setTitle] = useState(sequence.title)
   const [instruction, setInstruction] = useState(sequence.instruction)
@@ -192,8 +204,8 @@ function DirectionTab({ detail, working, act, run, onOpenShot }: { detail: Seque
   useEffect(() => { setTitle(sequence.title); setInstruction(sequence.instruction) }, [sequence.id, sequence.title, sequence.instruction])
   const dirty = title.trim() !== sequence.title || instruction.trim() !== sequence.instruction
   const boundaries = detail.timeline?.boundaries || []
-  // The hard cut after a shot, when speech crosses it: only after the last part of a cut.
-  const boundaryAfter = (shot: SequenceShot, next?: SequenceShot) => next && next.cut_id !== shot.cut_id ? boundaries.find(item => item.after_cut_id === shot.cut_id && item.speech) : undefined
+  // The hard cut after a shot, when speech crosses it or you placed its boundary: only after the last part of a cut.
+  const boundaryAfter = (shot: SequenceShot, next?: SequenceShot) => next && next.cut_id !== shot.cut_id ? boundaries.find(item => item.after_cut_id === shot.cut_id && (item.speech || item.fixed)) : undefined
   return <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:overflow-hidden">
     <div className="flex min-h-0 flex-col gap-4 lg:overflow-hidden">
       <Panel title="Brief" subtitle="Your intent for this short video; the director follows it" className="shrink-0"
@@ -232,7 +244,7 @@ function DirectionTab({ detail, working, act, run, onOpenShot }: { detail: Seque
               <p className="mt-2 text-[13px] leading-5">{shot.intent || <span className="muted">No intent written.</span>}</p>
               <p className="muted mt-1 text-[11px]">Initial frame: {frameText(shot)}{shot.lines.length ? ` · ${shot.lines.length} spoken line${shot.lines.length > 1 ? 's' : ''}` : ' · no speech'}</p>
             </li>
-            {boundary && <BoundaryRow boundary={boundary} working={working} onChoose={choice => void act('boundary', () => sequenceApi.setBoundary(sequence.id, boundary.after_cut_id, choice))} />}
+            {boundary && <BoundaryRow boundary={boundary} working={working} onOpenDialogue={onOpenDialogue} onChoose={choice => void act('boundary', () => sequenceApi.setBoundary(sequence.id, boundary.after_cut_id, choice))} />}
           </Fragment>
         })}</ol>
         <p className="muted mt-3 text-[11px] leading-5">Moving a boundary changes the two shots beside it: their prompts must be written again. Every other shot keeps its prompt. For a different intent, ask the assistant or edit and rewrite the shot.</p>
@@ -242,7 +254,17 @@ function DirectionTab({ detail, working, act, run, onOpenShot }: { detail: Seque
 }
 
 /** A hard cut that falls inside speech, between two shots of the plan: where its boundary sits, who chose it and why, and the other positions. */
-function BoundaryRow({ boundary, working, onChoose }: { boundary: SequenceBoundary; working: boolean; onChoose: (choice: BoundaryChoice) => void }) {
+function BoundaryRow({ boundary, working, onChoose, onOpenDialogue }: { boundary: SequenceBoundary; working: boolean; onChoose: (choice: BoundaryChoice) => void; onOpenDialogue: () => void }) {
+  if (boundary.fixed) {
+    const shift = boundary.fixed.shift
+    return <li className="ml-6 rounded-lg border border-[#7d6542] bg-[#1d1a14] px-3 py-2" aria-label={`Hard cut between cut ${boundary.after_cut} and cut ${boundary.before_cut}, placed by you`}>
+      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <span className="font-mono text-[#aeb5c1]">Hard cut {clock(boundary.t)}</span>
+        <span className="min-w-0 flex-1 text-[#e8d2b0]">Placed by you at {clock(boundary.fixed.t)}{Math.abs(shift) > 0.002 ? ` (${shift < 0 ? '−' : '+'}${Math.abs(shift).toFixed(2)} s)` : ''}{boundary.speech ? ` · ${boundary.speech.lines.join(' / ')}` : ''}</span>
+        <button type="button" className="btn btn-quiet !px-2 !py-1 !text-[11px]" onClick={onOpenDialogue} title="Boundaries you placed are moved on the Dialogue tab's timeline">Change in Dialogue</button>
+      </div>
+    </li>
+  }
   const speech = boundary.speech!
   const by = deciderLabel(boundary.by)
   const refused = Object.entries(boundary.unavailable).map(([choice, why]) => `${choice.replace('_', ' ')}: ${why}`).join('\n')
@@ -349,8 +371,13 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
   const sections = useMemo(() => result?.prompt ? promptSections(result.prompt) : [], [result?.prompt])
   const status = shotStatus(shot)
   const busy = working || !!shot.job
+  const canQueue = !busy && !!detail.bible
+  const instructionField = useRef<HTMLTextAreaElement>(null)
+  const queue = () => void run('shots', { shot_keys: [shot.key], instruction: instruction.trim() }).then(queued => { if (queued) { setInstruction(''); if (result) setHistoryOpen(true) } })
   const note = result ? versionNote(result) : null
-  return <div className="scrollbar flex min-h-0 flex-col gap-4 lg:overflow-y-auto lg:pr-1">
+  // The rewrite instruction stays pinned under the scrolling shot details.
+  return <div className="flex min-h-0 flex-col gap-3 lg:overflow-hidden">
+  <div className="scrollbar flex min-h-0 flex-1 flex-col gap-4 lg:overflow-y-auto lg:pr-1">
     <div className="grid shrink-0 gap-4 xl:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
       <div>
         <PlayerSlot className="aspect-video">
@@ -385,7 +412,7 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
     {issues.length > 0 && <div className="shrink-0 rounded-lg border border-[#5b4a2a] bg-[#241d12] p-3">
       <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-[#ffd59a]"><MessageSquare size={13} /> Review</p>
       <ul className="space-y-1.5">{issues.map((issue, index) => <li key={index} className="text-xs leading-5"><Tag tone={issue.severity === 'fix' ? 'bad' : 'warn'}>{issue.severity}</Tag> {issue.problem}{issue.suggestion && <span className="muted"> → {issue.suggestion}</span>}</li>)}</ul>
-      <button type="button" className="mt-2 !text-[11px] text-[#e0a96d] underline" onClick={() => setInstruction(issueInstruction(issues))}>Use as the instruction below</button>
+      <button type="button" className="mt-2 !text-[11px] text-[#e0a96d] underline" onClick={() => { setInstruction(issueInstruction(issues)); instructionField.current?.focus() }}>Use as the instruction below</button>
     </div>}
 
     <section className="shrink-0 rounded-xl border hairline bg-[#1b202a]" aria-label="H3 prompt">
@@ -413,11 +440,18 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
           <PromptHistory sequenceId={detail.sequence.id} shot={shot} open={historyOpen} onToggle={setHistoryOpen} onOpenAssistant={onOpenAssistant} />
         </>}
       </div>
-      <footer className="flex flex-wrap items-end gap-2 border-t hairline p-3">
-        <label className="min-w-0 flex-1"><span className="label !mb-1">Instruction for a rewrite (optional)</span><input className="field !py-2 !text-xs" maxLength={4000} value={instruction} onChange={event => setInstruction(event.target.value)} placeholder="For example: she is off screen for the first line; keep the camera static" /></label>
-        <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy || !detail.bible} onClick={() => void run('shots', { shot_keys: [shot.key], instruction: instruction.trim() }).then(queued => { if (queued) { setInstruction(''); if (result) setHistoryOpen(true) } })} title="The director writes this shot again from the current bible, plan and analysis"><Sparkles size={13} /> {result ? 'Rewrite this shot' : 'Write this shot'}</button>
-      </footer>
     </section>
+  </div>
+  <footer className="sticky bottom-0 z-30 flex shrink-0 flex-wrap items-end gap-2 rounded-xl border hairline bg-[#1b202a] p-3 shadow-[0_-6px_18px_rgba(0,0,0,0.35)]" aria-label={result ? 'Rewrite this shot' : 'Write this shot'}>
+    <label className="min-w-0 flex-1"><span className="label !mb-1 flex items-center justify-between gap-2">Instruction for a rewrite (optional)<span className="font-normal normal-case tracking-normal text-[#8b93a3]">Ctrl+Enter queues it</span></span>
+      <textarea ref={instructionField} className="field max-h-48 min-h-[3.25rem] resize-y !py-2 !text-xs leading-5" rows={2} maxLength={4000} value={instruction} onChange={event => setInstruction(event.target.value)} placeholder="For example: she is off screen for the first line; keep the camera static"
+        onKeyDown={event => {
+          if (event.key !== 'Enter' || !event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return
+          event.preventDefault()
+          if (!event.repeat && canQueue) queue()
+        }} /></label>
+    <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={!canQueue} onClick={queue} title="The director writes this shot again from the current bible, plan and analysis (Ctrl+Enter in the instruction)"><Sparkles size={13} /> {result ? 'Rewrite this shot' : 'Write this shot'}</button>
+  </footer>
   </div>
 }
 

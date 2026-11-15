@@ -4,6 +4,8 @@ A hand edit is checked exactly like a model answer (the same validators, the sam
 so nothing invalid can reach the download. Used by the HTTP API and by Cut Assistance when a
 proposal is previewed or applied; it does not import FastAPI.
 """
+import json
+import math
 import uuid
 
 from . import sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, worker
@@ -172,8 +174,8 @@ def normal_spans(shots, timeline):
 
 
 def normal_decisions(items, timeline):
-    """The plan's boundary decisions: one per hard cut inside speech, ``{after_cut_id, choice, reason, by}``."""
-    speaking = {boundary['after_cut_id'] for boundary in timeline['boundaries'] if boundary['speech']}
+    """The plan's boundary decisions: one per hard cut inside speech that the user did not place, ``{after_cut_id, choice, reason, by}``."""
+    speaking = {boundary['after_cut_id'] for boundary in timeline['boundaries'] if boundary['speech'] and not boundary.get('fixed')}
     order = {boundary['after_cut_id']: index for index, boundary in enumerate(timeline['boundaries'])}
     found = {}
     for item in items if isinstance(items, list) else []:
@@ -215,6 +217,119 @@ def set_boundary(conn, sequence, after_cut_id, choice, origin='manual_edit', pro
     if content['shots'] == plan['shots'] and content['boundaries'] == (plan.get('boundaries') or []):
         return row['id']
     return revise(conn, sequence, row, content, origin, provenance, current)
+
+
+RELEASED = 'Chosen by the app when you handed this boundary back; plan the shots again to let the director decide.'
+BESIDE = 'Put back on its hard cut by the app to fit beside a boundary you placed; plan the shots again to let the director decide.'
+
+
+def normal_points(points, timeline):
+    """Check the user's placed boundaries: at most one ``{after_cut_id, time}`` per hard cut, inside the sequence; returns them in order."""
+    order = {boundary['after_cut_id']: index for index, boundary in enumerate(timeline['boundaries'])}
+    start, end = timeline['origin'], timeline['origin'] + timeline['duration']
+    normal, errors, seen = [], [], set()
+    for number, item in enumerate(points if isinstance(points, list) else [], 1):
+        cut_id = item.get('after_cut_id') if isinstance(item, dict) else None
+        time = item.get('time') if isinstance(item, dict) else None
+        if cut_id not in order:
+            errors.append(f'point {number}: no hard cut follows that cut in this sequence')
+        elif cut_id in seen:
+            errors.append(f'point {number}: that hard cut already has a boundary')
+        elif isinstance(time, bool) or not isinstance(time, (int, float)) or not math.isfinite(time) or not start < time < end:
+            errors.append(f'point {number} must lie inside the sequence ({start:g} to {end:g} s, episode time)')
+        else:
+            seen.add(cut_id)
+            normal.append({'after_cut_id': cut_id, 'time': round(float(time), 6)})
+    if errors:
+        raise EditError(422, '; '.join(errors))
+    return sorted(normal, key=lambda item: order[item['after_cut_id']])
+
+
+def points_plan(plan, before, timeline, ctx, bible):
+    """The plan with its shots on the user's placed boundaries, or None when it cannot be made to fit (plan the shots again).
+
+    ``before`` are the ids of the boundaries that were placed until now; one that is no longer placed goes
+    back to the app's choice (``direction.default_choice``, else its hard cut). A director's move next to a
+    placed boundary that no longer fits goes back to its hard cut. Intents, scenes, voices and the parts
+    of cuts that touch no moved boundary stay as they are.
+    """
+    boundaries = timeline['boundaries']
+    fixed = sequence_timeline.placed(timeline)
+    decisions = {item['after_cut_id']: item for item in plan.get('boundaries') or [] if isinstance(item, dict) and item.get('after_cut_id')}
+    positions = {}
+
+    def spans_for(trial):
+        try:
+            spans = sequence_timeline.apply_points(plan['shots'], timeline, trial)
+        except sequence_timeline.PlanError:
+            return None
+        return None if sequence_timeline.check_spans(spans, timeline) else spans
+
+    def to_cut(boundary, reason):
+        positions[boundary['id']] = (boundary['t'], boundary['time'])
+        decisions.pop(boundary['after_cut_id'], None)
+        if boundary['speech']:
+            decisions[boundary['after_cut_id']] = {'after_cut_id': boundary['after_cut_id'], 'choice': 'keep_cut', 'reason': reason, 'by': 'app'}
+
+    released = [boundary for boundary in boundaries if boundary['id'] in before and boundary['id'] not in fixed]
+    for boundary in released:
+        to_cut(boundary, RELEASED)
+    spans = spans_for(positions)
+    if spans is None:
+        index = {boundary['id']: position for position, boundary in enumerate(boundaries)}
+        near = sorted({index[key] + step for key in fixed for step in (-1, 1)})
+        for position in near:
+            if 0 <= position < len(boundaries) and boundaries[position]['id'] not in fixed and boundaries[position]['id'] not in positions:
+                to_cut(boundaries[position], BESIDE)
+        spans = spans_for(positions)
+        if spans is None:
+            return None
+    # A boundary handed back keeps its phrase whole when that still fits.
+    for boundary in released:
+        if not boundary['speech']:
+            continue
+        choice = direction.default_choice(boundary, ctx, timeline, bible or {})
+        if choice == 'keep_cut':
+            continue
+        option = boundary['options'][choice]
+        trial = {**positions, boundary['id']: (option['t'], option['time'])}
+        better = spans_for(trial)
+        if better is not None:
+            positions, spans = trial, better
+            decisions[boundary['after_cut_id']] = {'after_cut_id': boundary['after_cut_id'], 'choice': choice, 'reason': RELEASED, 'by': 'app'}
+    return {**plan, 'shots': spans, 'boundaries': normal_decisions(list(decisions.values()), timeline)}
+
+
+def set_points(conn, sequence, points, origin='manual_edit', provenance=None):
+    """Save the shot boundaries the user placed on the Dialogue timeline and put the plan's shots on them; returns the saved points.
+
+    ``points`` are ``[{after_cut_id, time}]`` in episode seconds; an empty list hands every boundary back
+    to the director. A placed boundary is final for the director and only the hard rules apply
+    (``sequence_timeline.check_points``): it may sit anywhere, even inside speech. With a usable plan, a plan
+    revision that puts its shots on the points is saved in the same transaction; the moved shots become
+    stale and are written again with Write shots.
+    """
+    current = sequence_view.state(conn, sequence)
+    if current['cuts'] is None:
+        raise EditError(409, 'The first or last cut of this sequence was archived; create the sequence again')
+    if any(job['step'] in ('bible', 'plan') for job in store.pending_jobs(conn, sequence['id'])):
+        raise EditError(409, 'Wait for the bible and the shot plan to finish')
+    normal = normal_points(points, current['timeline'])
+    timeline = store.timeline_for(conn, sequence, current['cuts'], normal)
+    problems = sequence_timeline.check_points(timeline)
+    if problems:
+        raise EditError(422, ' '.join(problem[0].upper() + problem[1:] + ('' if problem.endswith('.') else '.') for problem in problems))
+    body = json.dumps(normal)
+    if body != (sequence.get('shot_points_json') or '[]'):
+        conn.execute('UPDATE sequences SET shot_points_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (body, sequence['id']))
+    row, plan = current['plan_row'], current['plan']
+    if not row or not plan or not plan.get('shots') or current['changed']:
+        return normal
+    content = points_plan(plan, set(sequence_timeline.placed(current['timeline'])), timeline, current['ctx'], current['bible'])
+    if content is None or (content['shots'] == plan['shots'] and content['boundaries'] == (plan.get('boundaries') or [])):
+        return normal
+    revise(conn, {**sequence, 'shot_points_json': body}, row, content, origin, provenance, {**current, 'timeline': timeline})
+    return normal
 
 
 def normal_plan_voices(voices, timeline):

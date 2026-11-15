@@ -135,9 +135,12 @@ export function edgeTags(shot: Pick<SequenceShot, 'opens' | 'closes' | 'part'>) 
     if (edge.how === 'before_line' || edge.how === 'after_line') {
       const shift = edge.shift ?? 0
       const borrows = (side === 'opens') === (edge.how === 'before_line')
-      tags.push({ label: `${side === 'opens' ? 'starts' : 'ends'} ${signed(shift)}`, title: borrows
-        ? `${side === 'opens' ? 'Starts before' : 'Runs past the end of'} its cut to keep ${phrase(edge.keeps)} whole: it plays ${Math.abs(shift).toFixed(2)} s of the neighbouring cut's audio over its own picture`
-        : `${side === 'opens' ? 'Starts after the start of' : 'Ends before the end of'} its cut: the neighbouring shot carries ${phrase(edge.keeps)} whole` })
+      const placed = edge.placed ? ' (you)' : ''
+      tags.push({ label: `${side === 'opens' ? 'starts' : 'ends'} ${signed(shift)}${placed}`, title: edge.placed
+        ? `You placed this boundary on the Dialogue timeline: ${side === 'opens' ? 'it starts' : 'it ends'} ${Math.abs(shift).toFixed(2)} s ${edge.how === 'before_line' ? 'before' : 'after'} the hard cut${borrows ? `, playing that much of the neighbouring cut's audio over its own picture` : ''}`
+        : borrows
+          ? `${side === 'opens' ? 'Starts before' : 'Runs past the end of'} its cut to keep ${phrase(edge.keeps)} whole: it plays ${Math.abs(shift).toFixed(2)} s of the neighbouring cut's audio over its own picture`
+          : `${side === 'opens' ? 'Starts after the start of' : 'Ends before the end of'} its cut: the neighbouring shot carries ${phrase(edge.keeps)} whole` })
     }
     if (edge.split) tags.push({ label: `${side === 'opens' ? 'opens inside' : 'divides'} ${edge.split.lines.join('+')}`, title: `The speech is divided here: “${edge.split.before}” | “${edge.split.after}”${edge.reason ? ` — ${edge.reason}` : ''}` })
   }

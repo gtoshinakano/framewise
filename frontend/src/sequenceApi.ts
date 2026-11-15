@@ -1,10 +1,14 @@
 import { api, jsonBody } from './api'
 import type { DiffSegment } from './assistantApi'
 
+/** A shot boundary the user placed on the Dialogue timeline: the hard cut after `after_cut_id`, at `time` (episode seconds). */
+export type ShotPoint = { after_cut_id: string; time: number }
 /** A range of cuts directed as one short video on the original audio. */
 export type SequenceInfo = {
   id: string; episode_id: string; title: string; instruction: string; start_time: number; end_time: number; duration: number
   first_cut: number | null; last_cut: number | null; cuts_changed: boolean; cuts_missing: boolean; created_at: string; updated_at: string
+  /** Boundaries the user placed; they are final for the director. */
+  shot_points?: ShotPoint[]
 }
 export type DialogueState = 'none' | 'running' | 'review' | 'confirmed'
 export type SequenceSummary = SequenceInfo & { dialogue?: DialogueState; has_bible: boolean; has_plan: boolean; has_review: boolean; shots_planned: number; shots_written: number; pending_jobs: number }
@@ -18,16 +22,19 @@ export type BoundarySpeech = {
   kind: 'inside_line' | 'between_sentence_halves'; lines: string[]; words_before: string; words_after: string; keeps: string[]; phrase: [number, number]
   speaker_label: string; character_name: string | null; character_context_id: string | null
 }
-/** A hard cut of the sequence: its options and, with a usable plan, the choice made there. */
+/** A hard cut of the sequence: its options and, with a usable plan, the choice made there. `fixed` is where the user placed it, if they did. */
 export type SequenceBoundary = {
   id: string; after_cut: number; before_cut: number; after_cut_id: string; before_cut_id: string; t: number; time: number
   speech: BoundarySpeech | null; options: Partial<Record<BoundaryChoice, BoundaryOption>>; unavailable: Partial<Record<BoundaryChoice, string>>
+  fixed?: BoundaryOption | null
   choice: BoundaryChoice | null; reason: string | null; by: Decider | null
 }
 /** How a shot meets its neighbour on one side. */
 export type ShotEdge = {
   how: 'start' | 'end' | 'continuation' | BoundaryChoice; boundary?: string; shift?: number; hard_cut?: number; keeps?: string[]
   split?: { lines: string[]; before: string; after: string }; reason?: string; by?: Decider
+  /** True when the user placed this boundary by hand on the Dialogue timeline. */
+  placed?: boolean
 }
 export type SequenceLine = { id: string; t0: number; t1: number; text: string; speaker_label: string; character_name: string | null; character_context_id: string | null }
 export type ShotLine = { line: string; t0: number; t1: number; text: string; speaker_label: string; character_context_id: string | null; character_name: string | null; crosses_start: boolean; crosses_end: boolean }
@@ -46,7 +53,7 @@ export type ShotDirection = {
   summary: string; shot_line: string; framing_lock: string; light: string
   camera: { move: string; amplitude: string; speed: string; detail: string }
   beats: { end: number; action: string }[]; voices?: ShotVoice[]
-  scenario_anchors: string; scenario_keep: string; soundscape: string; continuity: { from_previous: string; to_next: string }; open_questions: string[]
+  scenario_anchors: string; scenario_keep: string; soundscape?: string; continuity: { from_previous: string; to_next: string }; open_questions: string[]
 }
 export type ShotReference = { label: string; role: 'initial_frame' | 'character_sheet' | 'scenario' | 'original_audio'; character_context_id?: string | null; context_id?: string | null; name?: string | null }
 export type ShotResult = {
@@ -142,6 +149,8 @@ export const sequenceApi = {
   /** Choose where the shot boundary sits at the hard cut after a cut; the two shots beside it must be written again. */
   setBoundary: (id: string, afterCutId: string, choice: BoundaryChoice) =>
     api<SequenceDetail>(`/sequences/${id}/boundaries`, { method: 'PUT', body: JSON.stringify({ after_cut_id: afterCutId, choice }) }),
+  /** Save the shot boundaries placed on the Dialogue timeline (all of them; an empty list hands every boundary back to the director). */
+  setShotPoints: (id: string, points: ShotPoint[]) => api<SequenceDetail>(`/sequences/${id}/shot-points`, { method: 'PUT', body: JSON.stringify({ points }) }),
   /** Decide how one speaker is heard in one shot (null: the director decides); the shot is rewritten around it. */
   setVoices: (id: string, shotKey: string, speaker: string, segments: { from: number; delivery: Delivery }[] | null) =>
     api<SequenceDetail>(`/sequences/${id}/voices`, { method: 'PUT', body: JSON.stringify({ shot_key: shotKey, speaker, segments }) }),

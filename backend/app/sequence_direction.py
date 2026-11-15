@@ -85,11 +85,11 @@ One JSON object:
 ## YOUR DECISIONS
 1. Story (logline, synopsis, arc): what this sequence is about and how tension and emotion develop from the first cut to the last.
 2. Scenes: group consecutive cuts that share one place and time. Every cut belongs to exactly one scene and scenes follow each other without gaps. Name the place concretely, with its time of day and light. If a scenario note describes that place, put its exact title in "scenario"; otherwise null.
-3. Characters: every named character who is on screen in these cuts (seen_in_cuts), with the exact name of the character record. anchors are 3 to 6 visible features that stay constant in this sequence (build, hair, face, main garment and its colours). outfit is what the character wears here. Take both from appearance_in_first_frames, which is what the frames show; the record notes describe the series and may show another outfit. When the frames disagree about a garment or a colour, keep what most of them say and name the disagreement in open_questions. arc is what the character wants or feels across the sequence, in one sentence.
+3. Characters: every named character who is on screen in these cuts (seen_in_cuts), with the exact name of the character record. anchors are 3 to 6 visible features that stay constant in this sequence and identify the character at any angle and distance (build, hair, face, main garment and its colours); small accessories such as hairpins, clips, jewellery or badges are not anchors, because they show in some frames and not in others. outfit is what the character wears here. Take both from appearance_in_first_frames, which is what the frames show; the record notes describe the series and may show another outfit. When the frames disagree about a garment or a colour, keep what most of them say and name the disagreement in open_questions. arc is what the character wants or feels across the sequence, in one sentence.
 4. Voices: when the input says voices_are_final, copy them exactly and decide nothing. Otherwise decide who owns each voice label. A label the user linked to one character belongs to that character. For an unlinked label weigh who visibly speaks while it is heard, who is alone on screen, what the words mean and who would say them to whom, and whether another label already belongs to that character. kind is character, narrator (narration, a title voice) or unknown. confidence is high only when two independent hints agree, otherwise medium or low. When nothing supports a choice, use kind unknown and character null: a wrong owner is worse than none.
 5. spoken_language: the language of the spoken lines, as one English word (for example Japanese).
 6. Pacing: how the shots should breathe with the audio: where the sequence is quick, where it rests, where a held look matters.
-7. Continuity: concrete rules every shot must respect (outfits, props carried from one cut to the next, who stands where, time of day, weather).
+7. Continuity: concrete rules every shot must respect, limited to what changes the animation (outfits, props carried or used from one cut to the next, who stands where, time of day, weather). Make no rule about a small detail that appears or disappears with the angle, the distance or the crop.
 8. open_questions: only what a person must decide because the evidence cannot.
 
 """ + RULES + """
@@ -122,7 +122,8 @@ The bible is written. Now you plan the SHOTS. Every source cut becomes exactly o
 
 ## WHAT YOU RECEIVE
 One JSON object: director_instruction, the bible, sequence_seconds, the cuts (t in sequence seconds, shot, camera, setting, on_screen, speaking = the named characters whose mouth visibly moves, action, and parts when the app divides a cut longer than one shot), the transcript (`L<n> start-end speaker: words`, times in sequence seconds) and decisions.
-decisions lists every hard cut that falls inside speech: its id (K<n>), the time of the hard cut, the cut before and after it, the speech it falls into with the words heard before and after the cut, and options, which describes what each possible choice does. A choice missing from options is not possible there; not_possible says why. Every other hard cut has no speech across it and stays where it is.
+decisions lists every hard cut that falls inside speech and is still yours to decide: its id (K<n>), the time of the hard cut, the cut before and after it, the speech it falls into with the words heard before and after the cut, and options, which describes what each possible choice does. A choice missing from options is not possible there; not_possible says why. Every other hard cut has no speech across it and stays where it is.
+fixed_by_user lists the hard cuts whose shot boundary the user placed by hand: where it sits, what each shot hears on either side of it, the picture it hides and the frame the later shot opens on. These boundaries are final, even where they divide a phrase: never answer them in decisions, and write the intents of the shots beside them around those edges.
 
 """ + RULES + """
 
@@ -131,12 +132,12 @@ Return exactly one JSON object:
 {"decisions": [{"id": "K<n>", "choice": "keep_cut | before_line | after_line", "reason": "one sentence"}],
  "cuts": [{"cut": 12, "intent": "what this shot must achieve, one sentence"}],
  "notes": "one or two sentences on the rhythm"}
-Answer every decision exactly once and give every cut one entry, in order. With no decisions, return an empty "decisions" list.
+Answer every decision exactly once and give every cut one entry, in order. With no decisions, return an empty "decisions" list. Never answer a hard cut listed in fixed_by_user.
 Return JSON only."""
 
 SHOT_SYSTEM = FRAMING + """
 
-The bible and the shot plan are written. Now you direct ONE shot. Your answer is structured direction, and the app turns it into the final MiniMax H3 prompt: it writes the section headers, the reference labels, the timecodes, the camera sentence, the spoken words and the audio lines itself. Therefore write names and never reference labels, put no timecodes inside your sentences, and never quote dialogue.
+The bible and the shot plan are written. Now you direct ONE shot. Your answer is structured direction, and the app turns it into the final MiniMax H3 prompt: it writes the section headers, the reference labels, the timecodes, the camera sentence, the spoken words and the whole sound section itself. The H3 prompt animates a still that already exists, so it is about what happens: who moves, how and when. Appearance in detail belongs to the still and the character references. Therefore write names and never reference labels, put no timecodes inside your sentences, and never quote dialogue.
 
 ## WHAT YOU RECEIVE
 One JSON object:
@@ -153,13 +154,13 @@ One JSON object:
 fixed_by_user, user_decisions and instruction_for_this_shot, then cut_summary, then motion, then first_frame; the neighbouring shots only for continuity. The first frame decides how the shot starts, the motion decides what changes over time, and what the take shows decides whether lips can be seen moving.
 
 ## WHAT YOU WRITE
-- subjects: every character or person who is visible at any point of the shot, the most important first, at most 5. name is the exact name from "characters"; for someone without a record use a short visual label such as "the shop clerk", never a guessed name. anchors: 3 to 6 visible features (build, hair, main garment and colour) that agree with the bible and the first frame. keep: what must stay identical to that character's reference, as one clause.
+- subjects: every character or person who is visible at any point of the shot, the most important first, at most 5. name is the exact name from "characters"; for someone without a record use a short visual label such as "the shop clerk", never a guessed name. anchors: 3 to 6 large visible features that identify the character at any angle and distance (build, hair, main garment and colour) and agree with the bible and the first frame; small accessories (hairpins, clips, jewellery, badges, buttons) go in still.subjects, not here. keep: what must stay identical to that character's reference, as one clause.
 - picture_line: who is where in the opening still, in one sentence, with only what is visible in it. keep_picture: what the video must preserve from the opening still (composition, palette, lighting), as one clause.
-- still: the opening frame as ONE frozen moment for an image generator. shot: size, angle, camera height and where the frame crops the subject. subjects: for each visible character the place in frame, orientation, pose, expression, gaze and visible outfit. layout: foreground, midground and background and how they relate. setting. lighting: source, softness, time of day, palette. Poses, not actions; no lettering.
+- still: the opening frame as ONE frozen moment for an image generator. shot: size, angle, camera height and where the frame crops the subject. subjects: for each visible character the place in frame, orientation, pose, expression, gaze and visible outfit, with the small accessories and details the first frame shows (hairpins, jewellery, badges). layout: foreground, midground and background and how they relate. setting. lighting: source, softness, time of day, palette. Poses, not actions; no lettering.
 - summary: one sentence with what happens in the shot and how the camera behaves.
 - shot_line: shot size, angle and who is where at the start, in one or two sentences. framing_lock: one short sentence that locks the crop you gave in still.shot, naming the same upper and lower edge of the frame and ending with "never wider" (or "never closer" for a wide shot); it must agree with still.shot. light: one sentence on the light.
 - camera: move is ONE of static, push_in, pull_out, pan_left, pan_right, truck_left, truck_right, tilt_up, tilt_down, pedestal_up, pedestal_down, arc, tracking, shake. If the motion evidence says static, use static. amplitude is small, medium or large; speed is slow, medium or fast. detail is one optional sentence on where the move ends or what it reveals; leave it empty for a static shot.
-- beats: the action in order, about 2 to 3 beats per 10 seconds, at least one. end is the second on this shot's clock at which the beat ends; the last beat ends at the shot's length. action is a visible start state, then one action, then a visible end state, in 2 to 4 concrete sentences (body, hands, face, gaze, cloth, hair, light). Keep every event at its real time from the motion evidence, because the picture must stay in sync with the original audio. Do not mention the camera in a beat. Do not write spoken words and do not write that someone "says" something: describe the mouth and the acting only (lips moving in speech, a breath, a glance).
+- beats: the action in order, about 2 to 3 beats per 10 seconds, at least one. end is the second on this shot's clock at which the beat ends; the last beat ends at the shot's length. action is a visible start state, then one action, then a visible end state, in 2 to 4 concrete sentences (body, hands, face, gaze, cloth, hair, light). Keep every event at its real time from the motion evidence, because the picture must stay in sync with the original audio. Do not mention the camera in a beat. Do not write spoken words and do not write that someone "says" something: describe the mouth and the acting only (lips moving in speech, a breath, a glance). Name a small accessory or detail only when the action uses it (a hand pulls out a hairpin), and describe no sounds.
 - voices: how each speaker of "speakers" is heard in THIS shot. Give every speaker an entry from second 0; add a later entry for the same speaker only when that changes during the take (a camera move or an action brings them into view, turns them away or takes them out of frame), with from = the second it changes. delivery is one of:
   - on_screen: the speaker is one of your subjects, in the picture with the mouth visible, and visibly speaks; the mouth moves in sync with their words.
   - off_screen: the speaker is not in the picture at that time. Also use it for a voice nobody confirmed.
@@ -167,14 +168,14 @@ fixed_by_user, user_decisions and instruction_for_this_shot, then cut_summary, t
   - narrative: the speaker may or may not be in the picture but is too far from the camera, or too small, for lip sync; the words simply play over the picture. Use it also for a narrator.
   subject is the exact subject name who carries the voice for on_screen and inner_voice (for a named speaker, that speaker), may name the distant subject for narrative, and is null for off_screen. Decide from this shot's own picture: a speaker who is visible only in a neighbouring cut whose audio this shot borrows is off screen here, and a speaker who is seen speaking in this shot's picture and finishes a phrase over borrowed seconds stays on_screen until the last word. Being the only person on screen is not proof of speaking; for an unconfirmed voice choose off_screen and add an open question. Ranges in fixed_by_user were decided by the user: repeat them exactly and write the picture and the acting around them.
 - scenario_anchors and scenario_keep: only when scenario_reference is present: 3 to 5 visible features of the place, and what must stay as in its reference.
-- soundscape: 1 to 3 sentences of ambience and action sounds that fit the picture (room tone, steps, cloth, wind). No speech and no music.
 - continuity: from_previous is what must match the end of the previous shot; to_next is the state this shot hands over (positions, poses, props, gaze). One sentence each. When the evidence of this shot contradicts a neighbour (someone sits here and stands in the next opening frame, an outfit differs), follow this shot's own evidence and name the contradiction in open_questions instead of hiding it.
 - open_questions: only decisions the evidence cannot make.
 
 ## CONTINUITY, ANIMATION AND AUDIO
 - Continuity: open on the state previous_shot.hands_over (or ends_with) and close on the state the next shot opens with. Carry positions, held props, eyelines, clothing state and time of day across the boundary; when a line of dialogue continues from the previous shot, the speaker's body and gaze continue too.
 - Animation direction: every beat names who moves, which body part leads, in what order, how fast and where the motion ends. Give acting its own beat (a breath, a look away, a hand tightening) at the second the evidence places it; give the camera a start framing and an end framing when it moves. Hold still where the source holds still; do not add motion the evidence does not show.
-- Audio treatment: the original audio is the spine. A mouth moves only while its speaker is on_screen and their words are heard. An off_screen voice needs a picture without that speaker; an inner_voice speaker keeps the lips still (or the mouth hidden) while the words play; a narrative speaker stays far enough away that no lip movement is expected. Beats must agree with the voices: never describe lips moving in speech for someone who is not on_screen at that second. The soundscape lists only what the picture implies; it never describes music or voices.
+- Audio treatment: the original audio is the spine. A mouth moves only while its speaker is on_screen and their words are heard. An off_screen voice needs a picture without that speaker; an inner_voice speaker keeps the lips still (or the mouth hidden) while the words play; a narrative speaker stays far enough away that no lip movement is expected. Beats must agree with the voices: never describe lips moving in speech for someone who is not on_screen at that second.
+- Sound: the app writes the sound section itself. It tells the generator to follow the original audio exactly, with whatever background sound, music or effects it holds. You cannot hear that audio, so never describe or assume a background sound, a room tone, the ambience of a place or music anywhere in your answer. Time the action to the dialogue and the motion evidence.
 
 ## TIMING AT THE EDGES
 The edges of the shot are exact and lie on the original audio, so the acting must land on them. opens and closes give their seconds on this shot's clock.
@@ -182,6 +183,7 @@ The edges of the shot are exact and lie on the original audio, so the acting mus
 - When the shot carries a phrase past the end of its cut, it keeps its own framing until the phrase ends and the speaker's acting continues to the last word; a speaker who is on_screen there stays on_screen until the end. When it starts before its cut, the picture holds the opening state of the still until the cut's own motion begins at the second given.
 - When the shot starts a moment into its cut, the action before that moment has already happened: open on the state it left.
 - A part of a long cut continues the take of the part before it: same framing, same light, the motion goes on.
+- An edge the user placed (decided_by the user) is exact and final, even when it divides a phrase: the acting meets it like any other edge, and the shot never asks to move it.
 
 ## RULES FOR H3
 - Never write the word "cut", not even "no cut": H3 reads it as an edit. Say "shot" or "take".
@@ -202,36 +204,49 @@ Return exactly one JSON object:
  "beats": [{"end": 2.4, "action": "..."}],
  "voices": [{"speaker": "exact speaker from speakers", "from": 0, "delivery": "on_screen", "subject": "exact subject name or null"}],
  "scenario_anchors": "", "scenario_keep": "",
- "soundscape": "...",
  "continuity": {"from_previous": "...", "to_next": "..."},
  "open_questions": ["..."]}
 Return JSON only."""
 
 REVIEW_SYSTEM = FRAMING + """
 
-Every shot of the sequence is written. Now you REVIEW the whole sequence before anything is generated, as the director who has to answer for continuity.
+Every shot of the sequence is written. Now you REVIEW the whole sequence before anything is generated, as the director who has to answer for it. Every issue you report sends a shot back to be rewritten, so report only what would visibly go wrong in the generated video, and say exactly what to change.
 
 ## WHAT YOU RECEIVE
-One JSON object: the bible (story, scenes, characters with anchors and outfits, continuity rules), the voices it decided, and shots in order. Each shot has t (start and end in sequence seconds), its cut, scene, intent, opens and closes (how it meets its neighbours: on the hard cut, or moved before or after a phrase so that the phrase stays whole, with the speech divided there and the director's reason), opening_still, subjects, summary, camera, beats ("end second: action"), voices (per speaker how they are heard and from which second: on_screen = lip-synced, off_screen = not in the picture, inner_voice = visible with the mouth still, narrative = too far for lip sync; "(user)" marks a range the user decided), lines (line id, speaker, first words) and continuity (from_previous, to_next). A shot without "written" has no direction yet.
+One JSON object: the bible (story, scenes, characters with anchors and outfits, continuity rules), the voices it decided, and shots in order. Each shot has t (start and end in sequence seconds), its cut, scene, intent, opens and closes (how it meets its neighbours: on the hard cut, or moved before or after a phrase so that the phrase stays whole, or placed by the user, with the speech divided there and the director's reason), opening_still, subjects, summary, camera, beats ("end second: action", seconds on the shot's own clock), voices (per speaker how they are heard and from which second: on_screen = lip-synced, off_screen = not in the picture, inner_voice = visible with the mouth still, narrative = too far for lip sync; "(user)" marks a range the user decided), lines and continuity (from_previous, to_next). A shot without "written" has no direction yet.
+lines lists every line spoken in the shot's original audio as "line id, start-end seconds on the shot's clock, speaker: first words". "none" means nobody speaks anywhere in that shot. The lines are the only evidence of speech you have: the original audio plays unchanged under every shot and you cannot hear it, so never assume a voice, a sound or music it does not list.
 
 ## WHAT TO CHECK
-1. Continuity between consecutive shots of one scene: positions, poses, props, outfits, light and time of day; each shot's to_next against the opening still of the next shot.
-2. Voices: on_screen or inner_voice given to someone who is not a subject of that shot; one voice made on_screen for two different subjects; a speaker on_screen while the beats keep the face hidden, turned away or far away. How a speaker is heard is decided per shot from its own framing, so the same speaker may be on screen in one shot and off screen, narrative or an inner voice in the next, or change inside a shot when the camera moves: that is NOT a problem. Never report a voice range the user decided.
+1. Continuity between consecutive shots of one scene, limited to what drives the animation: who is in the picture and where, pose and facing, what each character is doing, a prop a character holds or uses, a change of the whole outfit (another garment or colour), light and time of day. Compare each shot's to_next with the opening still of the next shot.
+2. Voices, only at the seconds a line of that shot covers: on_screen or inner_voice given to someone who is not a subject of that shot; one voice on_screen for two different subjects; a speaker on_screen while the beats keep the face hidden, turned away or far away.
 3. Timing at the boundaries: where speech or an action continues across a boundary, the end of one shot and the start of the next agree on who speaks, where the words stop and resume, and the action that interrupts and when it lands; a part of a long cut continues the part before it; a camera move that fights the intent.
-4. Rhythm: a shot that is too busy or too empty for its length, against the bible's pacing.
-5. Bible: anchors, outfits and continuity rules respected by every shot.
+4. Rhythm: a shot that is clearly too busy or too empty for its length, against the bible's pacing.
+5. Bible: the characters' identity (build, hair, main garment and colours), the scene and those continuity rules that concern the points above.
 6. Shots that are not written.
 
-Report only problems that would change a generated picture, its motion or its lip sync. Differences of wording are not problems. If the sequence is consistent, return no issues.
+## WHAT IS NOT AN ISSUE
+- A voice, speech, lip sync or sound where the shot's lines show none: a shot whose lines are "none", and every second outside its lines, has no voice to add, move or sync. Never suggest adding a voice, a speaker, dialogue or lip sync there.
+- A speaker heard differently in different shots, or differently inside one shot when the camera moves (on screen in one, off screen, narrative or an inner voice in another): each shot decides it from its own framing.
+- A voice range marked "(user)": the user decided it.
+- Where an edge "placed by user" sits, even when it divides a phrase: the user placed it. Report only what the shots on either side get wrong around it.
+- A small detail that appears or disappears with the angle, the distance or the crop: hairpins, hair clips, ribbons, earrings, jewellery, buttons, badges, pockets, stitching, small patterns. Such details belong to the opening still and the character references, not to the animation. Report one only when the action of the shot depends on it (a character pulls out the hairpin, shows the badge).
+- A shot that leaves out a feature another shot or the bible mentions, and any difference of wording or of detail between shots.
+- Anything you are not sure would change the generated picture, its motion or its lip sync. When in doubt, leave it out. An empty issues list is the right answer for a sequence that holds together.
+
+## HOW TO WRITE AN ISSUE
+- shot: the shot that must be rewritten to repair it. When two shots disagree, choose the one that departs from its own evidence or from the bible, and name the other one in problem.
+- severity: "fix" when the shot as written would generate a visibly wrong video (a person appears or vanishes between consecutive shots of one scene, a pose or a position jumps, the wrong person moves the lips for a line, the light or the time of day changes inside a scene). "check" only when the evidence cannot decide and a person must choose; never use "check" for a minor point, leave it out instead.
+- problem: one sentence naming the shots, the seconds and what disagrees.
+- suggestion: one instruction that the writer of that shot can follow on its own, without seeing this review: the part to change (a beat and its second, a speaker's voice, the subjects, the camera, the opening or the closing state) and what to write instead, with names. Never "check", "verify" or "consider", and never ask to add a detail, a sound or a voice.
 
 """ + RULES + """
 
 ## OUTPUT
 Return exactly one JSON object:
 {"verdict": "two or three sentences on whether the sequence holds together",
- "issues": [{"shot": 4, "severity": "fix | check", "problem": "what is inconsistent, naming the shots involved",
-             "suggestion": "an instruction the writer of that shot can follow to repair it"}]}
-severity "fix" means wrong as written; "check" means a person must decide. Return JSON only."""
+ "issues": [{"shot": 4, "severity": "fix | check", "problem": "what disagrees, naming the shots and seconds",
+             "suggestion": "the change the writer of that shot makes"}]}
+Return JSON only."""
 
 # max_tokens includes the model's reasoning; temperature is lower where the answer is a decision and higher where it is prose.
 STEPS = {
@@ -417,9 +432,14 @@ def validate_bible(output, ctx, timeline):
 
 # ----------------------------------------------------------------------- plan
 
+def open_boundaries(timeline):
+    """The hard cuts inside speech that the director decides: every one the user did not place."""
+    return [boundary for boundary in timeline['boundaries'] if boundary['speech'] and not boundary.get('fixed')]
+
+
 def plan_format(timeline, bible):
-    """json_schema of the plan answer: decision ids are the hard cuts inside speech, and every cut gets one intent."""
-    ids = [boundary['id'] for boundary in timeline['boundaries'] if boundary['speech']]
+    """json_schema of the plan answer: decision ids are the open hard cuts inside speech, and every cut gets one intent."""
+    ids = [boundary['id'] for boundary in open_boundaries(timeline)]
     numbers = [cut['number'] for cut in timeline['cuts']]
     decision = _object({'id': {'type': 'string', 'enum': ids} if ids else STRING, 'choice': {'type': 'string', 'enum': list(sequence_timeline.CHOICES)}, 'reason': STRING})
     return _format('shot_plan', _object({
@@ -429,7 +449,7 @@ def plan_format(timeline, bible):
 
 
 def validate_plan(output, timeline, bible):
-    """Check a plan answer: one valid choice per hard cut inside speech (a reason when it divides the phrase), one intent per cut, and a plan that fits.
+    """Check a plan answer: one valid choice per open hard cut inside speech (a reason when it divides the phrase), one intent per cut, and a plan that fits.
 
     Returns ``{'decisions': [{id, choice, reason, by}], 'cuts': [{cut, intent}], 'notes'}``.
     """
@@ -437,12 +457,14 @@ def validate_plan(output, timeline, bible):
         _fail(['The answer must be one JSON object'])
     errors = []
     by_id = {boundary['id']: boundary for boundary in timeline['boundaries']}
-    open_ids = [boundary['id'] for boundary in timeline['boundaries'] if boundary['speech']]
+    open_ids = [boundary['id'] for boundary in open_boundaries(timeline)]
     decisions = {}
     for item in output.get('decisions') if isinstance(output.get('decisions'), list) else []:
         if not isinstance(item, dict):
             continue
         key = _str(item.get('id'))
+        if key in by_id and by_id[key].get('fixed'):
+            continue  # placed by the user: final, and not the director's to answer
         if key not in open_ids:
             errors.append(f'decision "{key}" is not one of the listed decisions ({", ".join(open_ids) or "there are none"})')
             continue
@@ -502,7 +524,7 @@ def complete_plan(answer, timeline, bible, ctx):
         if isinstance(item, dict) and _str(item.get('id')) not in given:
             given[_str(item.get('id'))] = (_str(item.get('choice')), _str(item.get('reason')))
     choices, decisions = {}, []
-    for boundary in (item for item in timeline['boundaries'] if item['speech']):
+    for boundary in open_boundaries(timeline):
         tries = []
         choice, reason = given.get(boundary['id'], (None, ''))
         if choice in boundary['options'] and (choice != 'keep_cut' or reason):
@@ -553,13 +575,13 @@ def shot_format(shot, roster, dialogue):
                            'speed': {'type': 'string', 'enum': list(sequence_prompt.SPEEDS)}, 'detail': STRING}),
         'beats': {'type': 'array', 'minItems': 1, 'items': _object({'end': {'type': 'number'}, 'action': STRING})},
         'voices': {'type': 'array', 'items': voice},
-        'scenario_anchors': STRING, 'scenario_keep': STRING, 'soundscape': STRING,
+        'scenario_anchors': STRING, 'scenario_keep': STRING,
         'continuity': _object({'from_previous': STRING, 'to_next': STRING}), 'open_questions': {'type': 'array', 'items': STRING}}))
 
 
 def _prose(content):
     """Every field the model writes as prose, with the name an error message gives it."""
-    yield from ((key, content.get(key)) for key in ('picture_line', 'keep_picture', 'summary', 'shot_line', 'framing_lock', 'light', 'soundscape', 'scenario_anchors', 'scenario_keep'))
+    yield from ((key, content.get(key)) for key in ('picture_line', 'keep_picture', 'summary', 'shot_line', 'framing_lock', 'light', 'scenario_anchors', 'scenario_keep'))
     yield 'camera.detail', content['camera'].get('detail')
     yield from ((f'still.{key}', value) for key, value in content['still'].items())
     yield from ((f'beat {number}', beat['action']) for number, beat in enumerate(content['beats'], 1))
@@ -653,8 +675,9 @@ def validate_shot(output, shot, bible, roster, scenario, dialogue):
         subjects.append({'name': name, 'anchors': _str(item.get('anchors')), 'keep': _str(item.get('keep'))})
     if len(subjects) > 5:
         errors.append('list at most 5 subjects, the most important first')
-    content = {'subjects': subjects[:5], **{key: _str(output.get(key)) for key in ('picture_line', 'keep_picture', 'summary', 'shot_line', 'framing_lock', 'light', 'soundscape', 'scenario_anchors', 'scenario_keep')}}
-    for key in ('picture_line', 'summary', 'shot_line', 'soundscape'):
+    # No soundscape: the app writes the sound section, which follows the original audio instead of a guess about it.
+    content = {'subjects': subjects[:5], **{key: _str(output.get(key)) for key in ('picture_line', 'keep_picture', 'summary', 'shot_line', 'framing_lock', 'light', 'scenario_anchors', 'scenario_keep')}}
+    for key in ('picture_line', 'summary', 'shot_line'):
         if not content[key]:
             errors.append(f'"{key}" is empty')
     still = output.get('still') if isinstance(output.get('still'), dict) else {}

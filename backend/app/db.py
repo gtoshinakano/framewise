@@ -289,10 +289,15 @@ def init_db():
         """)
         from .assistant import store as assistant_store
         assistant_store.init_schema(db)
+        from . import chat_gateway_schema
+        chat_gateway_schema.init_schema(db)
         sequence_columns = {row["name"] for row in db.execute("PRAGMA table_info(sequences)")}
         if "reviewed_compilation_id" not in sequence_columns:
             # Workflow gate: the compilation revision the user confirmed. Not an approval status on results.
             db.execute("ALTER TABLE sequences ADD COLUMN reviewed_compilation_id TEXT")
+        if "shot_points_json" not in sequence_columns:
+            # Shot boundaries the user placed on the Dialogue timeline: [{after_cut_id, time}] in episode seconds.
+            db.execute("ALTER TABLE sequences ADD COLUMN shot_points_json TEXT")
         voice_columns = {row["name"] for row in db.execute("PRAGMA table_info(character_voice_samples)")}
         if "ranges_json" not in voice_columns:
             db.execute("ALTER TABLE character_voice_samples ADD COLUMN ranges_json TEXT")

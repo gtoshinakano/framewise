@@ -26,6 +26,7 @@ MIN_SHOT_SECONDS = 0.04       # one frame: every cut is a shot, however short
 EDGE_SECONDS = 2.5            # a long cut is divided no closer than this to its hard cuts
 SHIFT_SECONDS = 3.0           # how far a boundary may move off a hard cut so that a phrase stays in one shot
 OWN_SHARE = 0.5               # every cut keeps at least this share of its own picture in its shot
+MIN_OWN_SECONDS = 0.2         # a shot beside a boundary the user placed still shows at least this much of its own cut
 EDGE_PAD = 0.06               # a moved boundary sits this far into the silence before or after the voice
 SPEECH_TAIL = 0.6             # how far past a transcript edge the voice may still be heard
 HOLD_SECONDS = 0.1            # the level must stay low this long to count as the end (or the start) of a voice
@@ -271,12 +272,14 @@ def split_at(lines, t):
 
 # ------------------------------------------------------------ boundaries
 
-def build(cuts, merged_lines, envelope=None, events=None):
+def build(cuts, merged_lines, envelope=None, events=None, points=None):
     """The sequence timeline.
 
     ``cuts`` are the active cuts of the range in order (``id``, ``cut_index``, ``start_time``,
     ``end_time``, ``first_frame_time``). ``events`` maps a cut id to event start times in seconds from
-    that cut's start (from the video analysis), used to divide cuts longer than one shot.
+    that cut's start (from the video analysis), used to divide cuts longer than one shot. ``points`` are
+    the shot boundaries the user placed on the Dialogue timeline (``[{after_cut_id, time}]``, episode
+    seconds); each boundary carries its point as ``fixed`` (``{t, time, shift}``) or None.
     """
     if not cuts:
         raise ValueError('A sequence needs at least one cut')
@@ -290,6 +293,7 @@ def build(cuts, merged_lines, envelope=None, events=None):
         spans.append({'id': cut['id'], 'number': cut['cut_index'] + 1, 't0': round(cut['start_time'] - origin, 3), 't1': round(cut['end_time'] - origin, 3),
                       'start_time': cut['start_time'], 'end_time': cut['end_time'], 'first_frame_time': cut.get('first_frame_time')})
     boundaries = [_boundary(number, left, right, lines, envelope, origin) for number, (left, right) in enumerate(zip(spans, spans[1:]), 1)]
+    _place(boundaries, points, origin)
     splits = {}
     for span in spans:
         if span['t1'] - span['t0'] > MAX_SHOT_SECONDS + EPSILON:
@@ -316,7 +320,8 @@ def _boundary(number, left, right, lines, envelope, origin):
     """
     hard = left['t1']
     boundary = {'id': f'K{number}', 'after_cut': left['number'], 'before_cut': right['number'], 'after_cut_id': left['id'], 'before_cut_id': right['id'],
-                't': hard, 'time': right['start_time'], 'speech': None, 'options': {'keep_cut': {'t': hard, 'time': right['start_time'], 'shift': 0.0}}, 'unavailable': {}}
+                't': hard, 'time': right['start_time'], 'speech': None, 'options': {'keep_cut': {'t': hard, 'time': right['start_time'], 'shift': 0.0}}, 'unavailable': {},
+                'fixed': None}
     split = split_at(lines, hard)
     if not split:
         return boundary
@@ -361,6 +366,27 @@ def _boundary(number, left, right, lines, envelope, origin):
     else:
         offer('after_line', speech_edge(envelope, end, 'after', end, following), right, left)
     return boundary
+
+
+def _place(boundaries, points, origin):
+    """Mark the boundaries the user placed: ``fixed`` is ``{t, time, shift}`` (sequence seconds, episode seconds, seconds off the hard cut).
+
+    A placed boundary is final: the director does not decide it, and only the hard rules of
+    ``check_spans`` apply to it (order, at most one take, some picture of every cut).
+    """
+    given = {}
+    for point in points or []:
+        time = point.get('time') if isinstance(point, dict) else None
+        if isinstance(time, (int, float)) and not isinstance(time, bool) and math.isfinite(time):
+            given[point.get('after_cut_id')] = float(time)
+    for boundary in boundaries:
+        time = given.get(boundary['after_cut_id'])
+        boundary['fixed'] = None if time is None else {'t': round(time - origin, 3), 'time': round(time, 6), 'shift': round(time - origin - boundary['t'], 3)}
+
+
+def placed(timeline):
+    """The boundaries the user placed, by id."""
+    return {boundary['id']: boundary for boundary in timeline['boundaries'] if boundary.get('fixed')}
 
 
 def _inside(span, lines, pauses, envelope, events, origin):
@@ -419,6 +445,8 @@ def partition(timeline, cut, start, end):
     """
     if end[0] - start[0] <= MAX_SHOT_SECONDS + EPSILON:
         return [start, end]
+    if cut['t1'] - cut['t0'] <= MAX_SHOT_SECONDS + EPSILON:
+        raise PlanError([f"the shot of cut {cut['number']} would last {end[0] - start[0]:.1f} s; a shot lasts at most {MAX_SHOT_SECONDS:g} s, so its boundaries cannot move that far off its own cut"])
     points = [item for item in timeline['splits'].get(cut['id']) or [] if start[0] + MIN_SHOT_SECONDS < item['t'] < end[0] - MIN_SHOT_SECONDS]
     for count in range(1, min(len(points), 8) + 1):
         best = None
@@ -455,6 +483,10 @@ def decide(timeline, choices=None, intents=None, scenes=None):
     choices = choices or {}
     edges = [(0.0, timeline['cuts'][0]['start_time'])]
     for boundary in timeline['boundaries']:
+        if boundary.get('fixed'):
+            # The user placed this boundary: it is final, whatever the choices say.
+            edges.append((boundary['fixed']['t'], boundary['fixed']['time']))
+            continue
         option = boundary['options'].get(choices.get(boundary['id']) or 'keep_cut')
         if option is None:
             raise PlanError([unavailable(boundary, choices.get(boundary['id']))])
@@ -513,6 +545,8 @@ def move_boundary(spans, timeline, boundary_id, choice):
     if position is None:
         raise PlanError([f'{boundary_id} is not a hard cut of this sequence'])
     boundary = timeline['boundaries'][position]
+    if boundary.get('fixed'):
+        raise PlanError([f"{boundary_id} was placed by you on the Dialogue timeline; move it there or hand it back to the director"])
     option = boundary['options'].get(choice)
     if option is None:
         raise PlanError([unavailable(boundary, choice)])
@@ -528,6 +562,44 @@ def move_boundary(spans, timeline, boundary_id, choice):
     if problems:
         raise PlanError(problems)
     return moved
+
+
+def apply_points(spans, timeline, release=None):
+    """The plan's spans with every placed boundary on the user's point and each released one at ``release[id]`` (``(t, time)``).
+
+    The other boundaries keep their place, and the parts, intents and scenes of cuts that touch no moved
+    boundary stay as they are. The result is not checked; save it through ``check_spans``.
+    """
+    found = groups(spans, timeline)
+    if [cut['id'] if cut else None for cut, _ in found] != [cut['id'] for cut in timeline['cuts']]:
+        raise PlanError(['This plan merges, drops or reorders cuts: every cut is its own shot, in order. Plan the shots again'])
+    origin = timeline['origin']
+    edges = [(parts[0]['start_time'] - origin, parts[0]['start_time']) for _, parts in found] + [(found[-1][1][-1]['end_time'] - origin, found[-1][1][-1]['end_time'])]
+    moved = set()
+    for position, boundary in enumerate(timeline['boundaries'], 1):
+        target = (boundary['fixed']['t'], boundary['fixed']['time']) if boundary.get('fixed') else (release or {}).get(boundary['id'])
+        if target and abs(edges[position][1] - target[1]) > 0.0005:
+            edges[position] = target
+            moved.update((position - 1, position))
+    keep = {cut['id']: parts for index, (cut, parts) in enumerate(found) if index not in moved}
+    intents = {cut['number']: parts[0].get('intent') or '' for cut, parts in found}
+    scenes = {cut['number']: parts[0].get('scene') for cut, parts in found}
+    return _spans(timeline, edges, intents, scenes, keep)
+
+
+def check_points(timeline):
+    """Problems of the user's placed boundaries on their own (every other boundary on its hard cut), as sentences; empty when they fit.
+
+    A placed boundary may sit anywhere, even inside speech, as long as the shots stay in order, a shot of
+    a cut that fits one take stays within it, and every shot keeps some of its own cut's picture. Checking
+    against the hard cuts guarantees that the director's fallback (keeping a hard cut) always fits beside them.
+    """
+    if not placed(timeline):
+        return []
+    try:
+        return check_spans(decide(timeline), timeline)
+    except PlanError as exc:
+        return exc.errors
 
 
 # -------------------------------------------------------------------- plans
@@ -567,13 +639,21 @@ def check_spans(spans, timeline):
     found = groups(spans, timeline)
     if [cut['id'] if cut else None for cut, _ in found] != [cut['id'] for cut in timeline['cuts']]:
         return [f'This plan merges, drops or reorders cuts: every cut is its own shot, in order (only a cut longer than {MAX_SHOT_SECONDS:g} s is divided). Plan the shots again']
-    shifts = {}
+    shifts, fixed = {}, placed(timeline)
     for (left, _), (right, parts), boundary in zip(found, found[1:], timeline['boundaries']):
         at = parts[0]['start_time'] - origin
         shift = at - boundary['t']
+        name = f"{boundary['id']} (the hard cut between cut {left['number']} and cut {right['number']})"
+        if boundary['id'] in fixed:
+            # The user placed it: it must be exactly there, and only the hard rules below apply.
+            point = boundary['fixed']['t']
+            if abs(at - point) > 0.002:
+                errors.append(f'{name}: you placed this boundary at {point:.2f} s on the Dialogue timeline, but the plan has it at {at:.2f} s; plan the shots again')
+            if abs(shift) > 0.002:
+                shifts[boundary['id']] = shift
+            continue
         if abs(shift) <= 0.002:
             continue
-        name = f"{boundary['id']} (the hard cut between cut {left['number']} and cut {right['number']})"
         shifts[boundary['id']] = shift
         if not boundary['speech']:
             errors.append(f'{name} moved {shift:+.2f} s, but no speech crosses that cut: its boundary stays on the hard cut')
@@ -581,6 +661,10 @@ def check_spans(spans, timeline):
             errors.append(f'{name} moved {shift:+.2f} s; a boundary moves at most {SHIFT_SECONDS:g} s off its hard cut')
         elif line_at(timeline['lines'], at) or sentence_at(timeline['lines'], at):
             errors.append(f'{name} moved into speech at {at:.2f} s; a boundary leaves its hard cut only to keep a phrase whole')
+
+    def label(item, choice):
+        return f"{item['id']} placed by you at {item['fixed']['t']:.2f} s" if item['id'] in fixed else f"{item['id']} {choice}"
+
     for index, (cut, parts) in enumerate(found):
         length = cut['t1'] - cut['t0']
         start, end = parts[0]['start_time'] - origin, parts[-1]['end_time'] - origin
@@ -588,9 +672,16 @@ def check_spans(spans, timeline):
         opening = timeline['boundaries'][index - 1] if index else None
         closing = timeline['boundaries'][index] if index < len(timeline['boundaries']) else None
         # Moves into this cut take picture from it; moves away from it lengthen its shot.
-        into = [f"{item['id']} {choice}" for item, choice, sign in ((opening, 'after_line', 1), (closing, 'before_line', -1)) if item and shifts.get(item['id'], 0) * sign > 0]
-        out = [f"{item['id']} {choice}" for item, choice, sign in ((opening, 'before_line', -1), (closing, 'after_line', 1)) if item and shifts.get(item['id'], 0) * sign > 0]
-        if kept < OWN_SHARE * length - 0.002:
+        into = [label(item, choice) for item, choice, sign in ((opening, 'after_line', 1), (closing, 'before_line', -1)) if item and shifts.get(item['id'], 0) * sign > 0]
+        out = [label(item, choice) for item, choice, sign in ((opening, 'before_line', -1), (closing, 'after_line', 1)) if item and shifts.get(item['id'], 0) * sign > 0]
+        beside = [item for item in (opening, closing) if item and item['id'] in fixed]
+        if beside:
+            need = min(MIN_OWN_SECONDS, length)
+            if kept < need - 0.002:
+                errors.append(f"the shot of cut {cut['number']} would show {max(0.0, kept):.2f} s of its own picture ({', '.join(label(item, '') for item in beside)}); "
+                              f"every shot keeps at least {need:.2f} s of its cut, in order")
+                continue
+        elif kept < OWN_SHARE * length - 0.002:
             errors.append(f"cut {cut['number']} keeps only {max(0.0, kept):.2f} s of its {length:.2f} s picture ({', '.join(into)}); keep {'one of these hard cuts' if len(into) > 1 else 'its hard cut'}")
             continue
         if len(parts) > 1 and length <= MAX_SHOT_SECONDS + EPSILON:
@@ -671,11 +762,18 @@ def _edge(timeline, owners, index, side, at, decisions):
             shift = round(at - boundary['t'], 3)
             how = 'keep_cut' if abs(shift) <= 0.002 else ('before_line' if shift < 0 else 'after_line')
             edge = {'how': how, 'boundary': boundary['id'], 'shift': 0.0 if how == 'keep_cut' else shift, 'hard_cut': boundary['t']}
-            if how != 'keep_cut' and boundary['speech']:
-                edge['keeps'] = boundary['speech']['keeps']
-            decided = decisions.get(before['id'])
-            if decided and decided.get('choice') == how:
-                edge.update({key: decided.get(key) for key in ('reason', 'by') if decided.get(key)})
+            if boundary.get('fixed'):
+                # Placed by the user; it keeps the phrase across the hard cut whole only when it lies outside that phrase.
+                speech = boundary['speech']
+                if how != 'keep_cut' and speech and (at <= speech['phrase'][0] + 0.05 or at >= speech['phrase'][1] - 0.05):
+                    edge['keeps'] = speech['keeps']
+                edge.update({'placed': True, 'by': 'user'})
+            else:
+                if how != 'keep_cut' and boundary['speech']:
+                    edge['keeps'] = boundary['speech']['keeps']
+                decided = decisions.get(before['id'])
+                if decided and decided.get('choice') == how:
+                    edge.update({key: decided.get(key) for key in ('reason', 'by') if decided.get(key)})
     split = split_at(timeline['lines'], at) if edge['how'] not in ('start', 'end') else None
     if split:
         edge['split'] = split

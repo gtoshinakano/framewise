@@ -60,6 +60,8 @@ async def composition_error_handler(_request, exc):
 app.include_router(storage.router)
 from .assistant.api import router as assistant_router
 app.include_router(assistant_router)
+from .chat_gateway import router as chat_gateway_router
+app.include_router(chat_gateway_router)
 from .sequences import router as sequences_router
 app.include_router(sequences_router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")

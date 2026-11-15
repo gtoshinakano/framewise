@@ -305,6 +305,43 @@ def decision_view(ctx, timeline, boundary, bible, level=0):
     return {'id': boundary['id'], 'hard_cut': boundary['t'], 'cuts': [left, right], 'speech': heard, 'options': options, 'not_possible': boundary['unavailable'] or None}
 
 
+def fixed_view(ctx, timeline, boundary, bible, level=0):
+    """A hard cut whose shot boundary the user placed, as the plan step reads it: where it sits, what each shot hears, the hidden picture and the later shot's opening frame."""
+    fixed = boundary['fixed']
+    t, shift = fixed['t'], fixed['shift']
+    left, right = boundary['after_cut'], boundary['before_cut']
+    cuts = {cut['number']: cut for cut in timeline['cuts']}
+    drops = None
+    if abs(shift) <= 0.002:
+        where = f"on the hard cut at {t:.2f}"
+        opening = f"the first frame of cut {right}"
+    elif shift < 0:
+        drops = {'cut': left, 'from': round(t - cuts[left]['t0'], 3), 'to': round(cuts[left]['t1'] - cuts[left]['t0'], 3)}
+        where = (f"{abs(shift):.2f} s before the hard cut, at {t:.2f}: the shot of cut {right} starts early and plays that much of cut {left}'s audio over its own picture; "
+                 f"cut {left} is hidden from {drops['from']:.1f} to {drops['to']:.1f} s of its own clock")
+        opening = f"the first frame of cut {right}, held until the cut's own motion starts {abs(shift):.2f} s into the shot"
+    else:
+        drops = {'cut': right, 'from': 0.0, 'to': shift}
+        where = f"{shift:.2f} s after the hard cut, at {t:.2f}: the shot of cut {left} runs on over that much of cut {right}'s audio; the first {shift:.2f} s of cut {right} are hidden"
+        opening = f"a moment {shift:.2f} s into cut {right}, after what the shot of cut {left} carried"
+    lines = {line['id']: line for line in timeline['lines']}
+    split = sequence_timeline.split_at(timeline['lines'], t)
+    if split:
+        who = speaker_of(lines[split['lines'][0]], bible)['name']
+        heard = f"divides {' and '.join(split['lines'])} ({who}): \"{split['before']}\" ends the shot of cut {left}, \"{split['after']}\" opens the shot of cut {right}"
+    elif boundary['speech']:
+        speech = boundary['speech']
+        phrase = speech['keeps'][0] if len(speech['keeps']) == 1 else f"{speech['keeps'][0]}–{speech['keeps'][-1]}"
+        heard = f"keeps {phrase} whole in the shot of cut {right if t <= speech['phrase'][0] + 0.05 else left}"
+    else:
+        heard = 'divides no speech'
+    entry = {'id': boundary['id'], 'hard_cut': boundary['t'], 'cuts': [left, right], 'boundary': where, 'speech': heard, 'opening_frame': opening}
+    if drops and level < 3:
+        hidden = _hidden_events(ctx, timeline, drops, level)
+        entry['hidden_picture'] = '; '.join(hidden) if hidden else 'no motion event is recorded in the hidden picture'
+    return entry
+
+
 def parts_of(timeline, cut):
     """How many shots the app makes of a cut (more than one only for a cut longer than one take)."""
     try:
@@ -322,14 +359,22 @@ def plan_input(ctx, sequence, timeline, bible, level=0):
             entry['parts'] = parts
         cuts.append(entry)
     decisions = [{key: value for key, value in decision_view(ctx, timeline, boundary, bible, level).items() if value is not None}
-                 for boundary in timeline['boundaries'] if boundary['speech']]
+                 for boundary in timeline['boundaries'] if boundary['speech'] and not boundary.get('fixed')]
+    fixed = [fixed_view(ctx, timeline, boundary, bible, level) for boundary in timeline['boundaries'] if boundary.get('fixed')]
+    if decisions:
+        open_text = decisions
+    elif any(boundary['speech'] for boundary in timeline['boundaries']):
+        open_text = 'Nothing to decide: the user placed the boundary at every hard cut inside speech.'
+    else:
+        open_text = 'No hard cut falls inside speech: every boundary stays on its hard cut.'
     return {'director_instruction': sequence['instruction'].strip() or None,
             'dialogue_reviewed': reviewed(timeline),
             'bible': bible_brief(bible, max(level, 1)),
             'sequence_seconds': timeline['duration'],
             'cuts': cuts,
             'transcript': transcript_text(timeline['lines'], bible, clip=(None, 120, 60, 40)[level]),
-            'decisions': decisions or 'No hard cut falls inside speech: every boundary stays on its hard cut.'}
+            'decisions': open_text,
+            **({'fixed_by_user': fixed} if fixed else {})}
 
 
 def _shift_events(view, offset, duration):
@@ -421,6 +466,22 @@ def _phrase(edge):
     return 'the phrase' if not keeps else keeps[0] if len(keeps) == 1 else f'{keeps[0]}–{keeps[-1]}'
 
 
+def _placed_words(edge, shot, opens, shift):
+    """How a shot meets a boundary the user placed by hand: where it sits against the shot's own cut, without assuming it keeps a phrase whole."""
+    how, keeps = edge['how'], bool(edge.get('keeps'))
+    if how == 'keep_cut':
+        return f"{'opens' if opens else 'ends'} exactly on the hard cut, where the user placed the boundary"
+    if opens and how == 'before_line':
+        return (f"starts {shift:.2f} s before its own cut, where the user placed the boundary{', and carries ' + _phrase(edge) + ' whole' if keeps else ''}; "
+                f"until {shift:.2f} s the picture holds the opening state of the still, and the cut's own motion starts at {shift:.2f} s")
+    if opens:
+        return f'starts {shift:.2f} s into its own cut, where the user placed the boundary; what the cut showed before that moment has already happened'
+    if how == 'before_line':
+        return f'ends {shift:.2f} s before its own cut ends, where the user placed the boundary; the last {shift:.2f} s of the cut are not shown'
+    return (f"runs {shift:.2f} s past the end of its own cut, where the user placed the boundary{', to finish ' + _phrase(edge) if keeps else ''}: "
+            f"from {shot['duration'] - shift:.2f} s to the end it keeps this framing and the acting of whoever speaks continues to the last word")
+
+
 def edge_words(shot, side):
     """How a shot meets its neighbour on one side, in plain words with seconds on the shot's clock; None at the ends of the sequence."""
     edge = shot[side]
@@ -430,6 +491,8 @@ def edge_words(shot, side):
     shift = abs(edge.get('shift') or 0.0)
     if how == 'continuation':
         text = 'continues the take of the previous shot, which showed the earlier part of the same cut' if opens else 'the same cut goes on in the next shot, which continues this take'
+    elif edge.get('placed'):
+        text = _placed_words(edge, shot, opens, shift)
     elif how == 'keep_cut':
         text = 'opens exactly on the hard cut' if opens else 'ends exactly on the hard cut'
     elif opens and how == 'before_line':
@@ -537,7 +600,10 @@ def edge_brief(edge):
     how = edge['how']
     if how in ('start', 'end'):
         return None
-    text = how if how in ('continuation', 'keep_cut') else f"{how} {edge.get('shift', 0):+.2f} s keeping {_phrase(edge)}"
+    if edge.get('placed'):
+        text = 'placed by user on the hard cut' if how == 'keep_cut' else f"placed by user {edge.get('shift', 0):+.2f} s" + (f" keeping {_phrase(edge)}" if edge.get('keeps') else '')
+    else:
+        text = how if how in ('continuation', 'keep_cut') else f"{how} {edge.get('shift', 0):+.2f} s keeping {_phrase(edge)}"
     if edge.get('split'):
         text += f" dividing {' and '.join(edge['split']['lines'])}"
     if edge.get('reason'):
@@ -567,7 +633,9 @@ def review_input(bible, shots, results, level=0):
                      'opening_still': content.get('picture_line'), 'subjects': [subject.get('name') for subject in content.get('subjects') or [] if isinstance(subject, dict)],
                      'summary': content.get('summary'), 'camera': (content.get('camera') or {}).get('move'), 'beats': beats,
                      'voices': voices_text(content, shot, bible) if content else None,
-                     'lines': [f"{line['line']} {line['character_name'] or line['speaker_label'] or 'Unknown speaker'}: {line['text'][:40]}" for line in shot_dialogue(shot, bible)] or None,
+                     # The seconds let the review tell where speech really is; "none" says outright that nobody speaks in the shot.
+                     'lines': [f"{line['line']} {line['t0']:.1f}-{line['t1']:.1f} {line['character_name'] or line['speaker_label'] or 'Unknown speaker'}: {line['text'][:40]}"
+                               for line in shot_dialogue(shot, bible)] or 'none',
                      'continuity': content.get('continuity') if level < 2 else None})
     return {'bible': bible_brief(bible, level), 'voices': bible.get('voices'), 'shots': [{key: value for key, value in row.items() if value not in (None, [], '')} for row in rows]}
 

@@ -3,7 +3,7 @@ import copy
 import unittest
 
 import tests.test_sequence_pipeline as pipeline_tests
-from app import sequence_direction as direction, sequence_prompt, sequence_timeline
+from app import sequence_direction as direction, sequence_evidence, sequence_prompt, sequence_timeline
 from app.assistant import h3_prompt
 
 BIBLE = {'spoken_language': 'Japanese'}
@@ -57,7 +57,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(definitions[1], '<Subject 1> is Mai Sakurajima, whose face, hair and clothing come from <Picture 2>: long black hair, school blazer.')
         self.assertEqual(definitions[3], '<Subject 3> is the station attendant, seen in <Picture 1>: navy cap and uniform.')  # nobody without a record gets a sheet
         self.assertEqual(definitions[4], '<Subject 4> is Fujisawa Station, the setting from <Picture 4>: grey platform, yellow tactile strip, overhead signs left unmarked.')
-        self.assertEqual(definitions[5], '<Audio 1> is the original sound of this shot, “shot-03.wav”: the voices and ambience to keep in sync.')
+        self.assertEqual(definitions[5], '<Audio 1> is the original sound of this shot, “shot-03.wav”: its voices, sound and timing to follow.')
         self.assertEqual(h3_prompt.subject_names(prompt), {1: 'Mai Sakurajima', 2: 'Sakuta Azusagawa', 3: 'station attendant', 4: 'Fujisawa Station'})  # the checker reads names without a leading "the"
         description = h3_prompt.parse(prompt)['sections']['detailed_description']
         self.assertTrue(description.startswith('The shot keeps the look of <Picture 1> unchanged'))
@@ -80,6 +80,9 @@ class RenderTest(unittest.TestCase):
         self.assertIn('An off-screen voice speaks the words of <Audio 1> from 00:04.500 to 00:06.000; no lips on screen move for them.', soundscape)
         self.assertIn('The words of <Audio 1> from 00:06.500 to 00:07.500 are the voice of <Subject 2>; its lips stay closed.', soundscape)
         self.assertNotIn('<d>', soundscape)
+        # Nobody heard the audio: the sound section only says to follow it, never what it sounds like.
+        self.assertTrue(soundscape.startswith(sequence_prompt.SOUND_SENTENCE + ' '))
+        self.assertNotIn('soundscape', normal)
         self.assertEqual(h3_prompt.parse(prompt)['sections']['non_diegetic_music'], 'N/A')
         self.assertEqual([(item['label'], item['role']) for item in derived['references']],
                          [('<Picture 1>', 'initial_frame'), ('<Picture 2>', 'character_sheet'), ('<Picture 3>', 'character_sheet'), ('<Picture 4>', 'scenario'), ('<Audio 1>', 'original_audio')])
@@ -116,6 +119,17 @@ class RenderTest(unittest.TestCase):
         narrator = [line('L8', 1.0, 2.0, '昔々', 'Narrator')]
         self.assertIn('a narrator is off_screen or narrative', self.errors(lambda c: c.update(voices=[{'speaker': 'Narrator', 'from': 0, 'delivery': 'on_screen', 'subject': 'Mai Sakurajima'}]), dialogue=narrator))
 
+    def test_a_guessed_ambience_never_reaches_the_prompt(self):
+        content = answer()
+        content['soundscape'] = 'Quiet classroom room tone with the hum of a study area.'
+        normal, prompt, verdict, derived = self.build(content)
+        self.assertTrue(verdict['ok'], verdict['errors'])
+        self.assertNotIn('soundscape', normal)
+        self.assertNotIn('classroom', prompt)
+        legacy = {**normal, 'soundscape': 'Quiet classroom room tone with the hum of a study area.'}  # a direction stored before the change
+        self.assertNotIn('classroom', sequence_prompt.build(shot(), legacy, BIBLE, ROSTER, SCENARIO, DIALOGUE)[0])
+        self.assertNotIn('soundscape', direction.shot_format(shot(), ROSTER, DIALOGUE)['json_schema']['schema']['properties'])
+
     def test_shots_written_with_per_line_speech_still_render(self):
         content = answer()
         del content['voices']
@@ -134,8 +148,8 @@ class RenderTest(unittest.TestCase):
         self.assertTrue(verdict['ok'], verdict['errors'])
         self.assertEqual((normal['camera']['detail'], normal['scenario_anchors']), ('', ''))
         self.assertIn('The camera holds a static shot.', prompt)
-        self.assertIn('<Audio 1> carries no speech; match its ambience and timing.', prompt)
-        self.assertIn('the ambience and timing to match', prompt)
+        self.assertEqual(h3_prompt.parse(prompt)['sections']['overall_soundscape'], sequence_prompt.SOUND_SENTENCE + ' <Audio 1> carries no speech.')
+        self.assertIn('its sound and timing to follow', prompt)
         self.assertEqual([item['label'] for item in derived['references']], ['<Picture 1>', '<Audio 1>'])
 
     def template(self, content=None, dialogue=DIALOGUE, scenario=SCENARIO, bible=BIBLE):
@@ -241,6 +255,17 @@ class RenderTest(unittest.TestCase):
         review = direction.validate_review({'verdict': 'Fine.', 'issues': [{'shot': 2, 'severity': 'urgent', 'problem': 'Coat changes.'}, {'shot': 5, 'problem': 'x'}, 'junk']}, 3)
         self.assertEqual(review, {'verdict': 'Fine.', 'issues': [{'shot': 2, 'severity': 'check', 'problem': 'Coat changes.', 'suggestion': ''}]})
 
+    def test_the_review_sees_where_speech_is_and_where_there_is_none(self):
+        from app import sequence_evidence
+        edge = {'how': 'keep_cut'}
+        base = {'t0': 0.0, 't1': 4.0, 'cut': 7, 'scene': 'S1', 'intent': 'x', 'opens': {'how': 'start'}, 'closes': edge, 'duration': 4.0}
+        shots = [{**base, 'index': 1, 'key': 'a', 'lines': [line('L1', 0.5, 2.0, 'おはよう', 'Mai Sakurajima')]}, {**base, 'index': 2, 'key': 'b', 'lines': []}]
+        rows = sequence_evidence.review_input({'voices': []}, shots, {})['shots']
+        self.assertEqual(rows[0]['lines'], ['L1 0.5-2.0 SPEAKER_01: おはよう'])
+        self.assertEqual(rows[1]['lines'], 'none')
+        for rule in ('has no voice to add', 'hairpins', 'Never "check", "verify" or "consider"'):
+            self.assertIn(rule, direction.REVIEW_SYSTEM)
+
     def test_answer_formats_constrain_ids_to_what_the_app_offers(self):
         timeline = {'boundaries': [{'id': 'K1', 'speech': None}, {'id': 'K2', 'speech': {'lines': ['L3']}}], 'cuts': [{'number': 7}, {'number': 8}, {'number': 9}]}
         plan = direction.plan_format(timeline, {'scenes': [{'id': 'S1'}]})['json_schema']['schema']['properties']
@@ -255,12 +280,12 @@ class RenderTest(unittest.TestCase):
             self.assertIn('Return JSON only.', step['system'])
 
 
-def plan_timeline():
+def plan_timeline(points=None):
     """Cuts 1-3 (0-5, 5-6.6, 6.6-12 s): A's line crosses the first hard cut, B's the second."""
     cut = lambda cut_id, index, start, end: {'id': cut_id, 'cut_index': index, 'start_time': start, 'end_time': end, 'first_frame_time': start}
     line = lambda start, end, text, speaker: {'start_time': start, 'end_time': end, 'text': text, 'speaker_label': speaker, 'character_context_id': None, 'character_name': None,
                                                'parts': [{'start_time': start, 'end_time': end, 'text': text}]}
-    return sequence_timeline.build([cut('a', 0, 0.0, 5.0), cut('b', 1, 5.0, 6.6), cut('c', 2, 6.6, 12.0)], [line(3.6, 5.3, 'あのね', 'A'), line(6.2, 7.0, 'うん', 'B')], [])
+    return sequence_timeline.build([cut('a', 0, 0.0, 5.0), cut('b', 1, 5.0, 6.6), cut('c', 2, 6.6, 12.0)], [line(3.6, 5.3, 'あのね', 'A'), line(6.2, 7.0, 'うん', 'B')], [], points=points)
 
 
 class PlanTest(unittest.TestCase):
@@ -304,6 +329,29 @@ class PlanTest(unittest.TestCase):
         speaking = {'results': {'b': {'video_analysis': {'content': {'direction': {'characters': [{'character': 'B', 'character_context_id': 'b-id', 'speaking': 'yes'}]}}}}}}
         bible = {'voices': [{'speaker_label': 'B', 'character': 'B', 'character_context_id': 'b-id'}]}
         self.assertEqual(direction.default_choice(self.timeline['boundaries'][1], speaking, self.timeline, bible), 'after_line')
+
+
+    def test_the_director_leaves_a_placed_boundary_alone(self):
+        # The user put K1 1.5 s before its hard cut, just before A's phrase.
+        timeline = plan_timeline([{'after_cut_id': 'a', 'time': 3.5}])
+        self.assertEqual([item['id'] for item in direction.open_boundaries(timeline)], ['K2'])
+        self.assertEqual(direction.plan_format(timeline, {})['json_schema']['schema']['properties']['decisions']['items']['properties']['id']['enum'], ['K2'])
+        # An answer for K1 is ignored rather than refused; K2 is still the director's.
+        good = direction.validate_plan({'decisions': [{'id': 'K1', 'choice': 'keep_cut', 'reason': 'x'}, {'id': 'K2', 'choice': 'after_line', 'reason': ''}], 'cuts': self.cuts, 'notes': ''}, timeline, {})
+        self.assertEqual([item['id'] for item in good['decisions']], ['K2'])
+        content = direction.plan_content(good, timeline, {})
+        self.assertEqual([(span['start_time'], span['end_time']) for span in content['shots']], [(0.0, 3.5), (3.5, 7.15), (7.15, 12.0)])
+        self.assertEqual([item['after_cut_id'] for item in content['boundaries']], ['b'])
+        completed = direction.complete_plan('nonsense', timeline, {}, {'results': {}})
+        self.assertEqual([item['id'] for item in completed['decisions']], ['K2'])
+        edges = sequence_timeline.expand(content['shots'], timeline)[1]['opens']
+        self.assertEqual((edges['placed'], edges['by'], edges['keeps']), (True, 'user', ['L1']))
+        self.assertEqual(sequence_evidence.edge_brief(edges), 'placed by user -1.50 s keeping L1')
+        self.assertEqual(sequence_evidence.edge_brief({**edges, 'how': 'keep_cut', 'shift': 0.0, 'keeps': None}), 'placed by user on the hard cut')
+        for rule in ('fixed_by_user', 'Never answer a hard cut listed in fixed_by_user'):
+            self.assertIn(rule, direction.PLAN_SYSTEM)
+        self.assertIn('An edge the user placed (decided_by the user) is exact and final', direction.SHOT_SYSTEM)
+        self.assertIn('placed by user', direction.REVIEW_SYSTEM)
 
 
 if __name__ == '__main__':

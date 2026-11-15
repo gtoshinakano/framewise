@@ -118,10 +118,16 @@ def reviewed_compilation(conn, sequence):
     return {**loads(row['content'], {}), 'origin': row['origin']}
 
 
-def timeline_for(conn, sequence, cuts):
+def shot_points(sequence):
+    """The shot boundaries the user placed on the Dialogue timeline: ``[{after_cut_id, time}]`` in episode seconds."""
+    return [item for item in loads(sequence.get('shot_points_json'), []) if isinstance(item, dict)]
+
+
+def timeline_for(conn, sequence, cuts, points=None):
     """The sequence clock, speech lines, pauses and candidate boundaries for the given current cuts.
 
     Once the user has confirmed a dialogue compilation its lines replace the raw transcript everywhere.
+    The boundaries the user placed (``points``, else the sequence's saved ones) are marked ``fixed``.
     """
     episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (sequence['episode_id'],)).fetchone()
     start, end = cuts[0]['start_time'], cuts[-1]['end_time']
@@ -129,7 +135,7 @@ def timeline_for(conn, sequence, cuts):
     envelope = sequence_timeline.audio_envelope(audio, start, end) if audio.is_file() else []
     compiled = reviewed_compilation(conn, sequence)
     lines = sequence_compile.merged_lines(compiled, start) if compiled is not None else transcript_lines(conn, sequence['episode_id'], start, end)
-    return sequence_timeline.build(cuts, lines, envelope, event_starts(conn, cuts))
+    return sequence_timeline.build(cuts, lines, envelope, event_starts(conn, cuts), shot_points(sequence) if points is None else points)
 
 
 def raw_timeline_for(conn, sequence, cuts):

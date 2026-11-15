@@ -169,3 +169,7 @@ class PackageHelpersTest(unittest.TestCase):
         self.assertEqual(packages.edge_view({'how': 'keep_cut', 'boundary': 'K1', 'shift': 0.0, 'hard_cut': 2.0, 'split': {'lines': ['L2'], 'before': 'a', 'after': 'b'}}),
                          {'how': 'keep_cut', 'boundary': 'K1', 'splits': ['L2']})
         self.assertEqual(packages.edge_word({'how': 'after_line', 'boundary': 'K2', 'shift': 0.75, 'splits': ['L3']}), 'after_line K2 +0.75s splits L3')
+        # A boundary the user placed by hand says so; the flag is left out everywhere else.
+        placed = packages.edge_view({'how': 'before_line', 'boundary': 'K2', 'shift': -1.2, 'hard_cut': 4.0, 'placed': True, 'by': 'user', 'split': {'lines': ['L3'], 'before': 'a', 'after': 'b'}})
+        self.assertEqual(placed, {'how': 'before_line', 'boundary': 'K2', 'shift': -1.2, 'splits': ['L3'], 'by': 'user', 'placed': True})
+        self.assertEqual(packages.edge_word(placed), 'before_line K2 -1.2s placed splits L3')

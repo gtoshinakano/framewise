@@ -28,6 +28,7 @@ export default function SequenceTimeline({ detail, selectedKey, onPick }: {
   const duration = detail.timeline?.duration || detail.sequence.duration || 1
   const step = rulerStep(duration)
   const ticks = Array.from({ length: Math.floor(duration / step) + 1 }, (_, index) => index * step)
+  const placed = (detail.timeline?.boundaries || []).flatMap(boundary => boundary.fixed ? [{ id: boundary.id, t: boundary.fixed.t }] : [])
   function seek(shot: SequenceShot, event: MouseEvent<HTMLButtonElement>) {
     // A keyboard press has no pointer position: start at the beginning of the shot.
     const box = event.currentTarget.getBoundingClientRect()
@@ -41,6 +42,7 @@ export default function SequenceTimeline({ detail, selectedKey, onPick }: {
       <span className="muted flex items-center gap-1.5"><i className="inline-block h-2.5 w-0.5 bg-[#5ad1e6]" /> spoken line in the prompt</span>
       <span className="muted flex items-center gap-1.5"><i className="inline-block h-2.5 border-l border-dashed border-[#5ad1e6]" /> planned, not written yet</span>
       <span className="muted flex items-center gap-1.5"><i className="inline-block h-2.5 border-l border-dashed border-[#c9cfda]" /> hard cut</span>
+      {placed.length > 0 && <span className="muted flex items-center gap-1.5"><i className="inline-block h-2 w-2 rotate-45 bg-[#e0a96d]" /> boundary you placed</span>}
       <Readout detail={detail} />
     </div>
     <div className="relative mx-2 mt-1.5 select-none">
@@ -60,6 +62,7 @@ export default function SequenceTimeline({ detail, selectedKey, onPick }: {
           </button>
         })}
         {detail.cuts.filter(cut => cut.t0 > 0.001).map(cut => <span key={cut.id} aria-hidden="true" className="pointer-events-none absolute -bottom-1 -top-1 z-20 border-l border-dashed border-[#c9cfda]/70" style={{ left: pct(cut.t0, duration) }} />)}
+        {placed.map(item => <span key={item.id} aria-hidden="true" className="pointer-events-none absolute -top-1 z-20 h-2 w-2 -translate-x-1/2 rotate-45 bg-[#e0a96d]" style={{ left: pct(item.t, duration) }} />)}
       </div>
       <div className="relative mt-1 h-4">
         {detail.shots.flatMap(shot => spokenMarks(shot).map(({ t, planned, line }, index) =>

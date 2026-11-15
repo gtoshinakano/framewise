@@ -45,6 +45,15 @@ class ShotBoundaryInput(BaseModel):
         description='keep_cut: the boundary stays on the hard cut (speech crossing it is divided there). before_line / after_line: it moves into the silence just before or after the phrase the hard cut falls into, so the phrase stays in one shot.')
 
 
+class ShotPointInput(BaseModel):
+    after_cut_id: str = Field(description='The cut before the hard cut whose shot boundary the user placed.')
+    time: float = Field(description='Where the shot boundary sits, in episode seconds; anywhere inside the two cuts beside the hard cut, even inside speech.')
+
+
+class ShotPointsInput(BaseModel):
+    points: list[ShotPointInput] = Field(default_factory=list, max_length=500, description='Every boundary the user placed; a hard cut left out is decided by the director. An empty list hands every boundary back.')
+
+
 class VoiceSegment(BaseModel):
     start: float = Field(alias='from', ge=0, description='Seconds from the start of the shot; the first segment always starts at 0.')
     delivery: Literal['on_screen', 'off_screen', 'inner_voice', 'narrative'] = Field(
@@ -199,6 +208,15 @@ def use_source_dialogue(sequence_id: str):
 def set_shot_boundary(sequence_id: str, body: ShotBoundaryInput):
     """Choose where the shot boundary sits at one hard cut. Every cut stays one shot; the two shots beside the boundary must be written again."""
     edit(lambda conn: sequence_edit.set_boundary(conn, require(conn, sequence_id), body.after_cut_id, body.choice))
+    return detail_or_404(sequence_id)
+
+
+@router.put('/sequences/{sequence_id}/shot-points', responses={409: {'description': 'The bible or the shot plan is being written, or the sequence lost its cuts.'},
+                                                          422: {'description': 'A point is outside the sequence, or the shots would be out of order, longer than one take or without their own picture.'}})
+def set_shot_points(sequence_id: str, body: ShotPointsInput):
+    """Save the shot boundaries the user placed on the Dialogue timeline. They are final for the director; with a plan, its shots move onto them
+    (the moved shots must be written again) and a boundary handed back gets the app's choice until the shots are planned again."""
+    edit(lambda conn: sequence_edit.set_points(conn, require(conn, sequence_id), [item.model_dump() for item in body.points]))
     return detail_or_404(sequence_id)
 
 

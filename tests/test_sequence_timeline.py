@@ -208,5 +208,54 @@ class TimelineTest(unittest.TestCase):
         self.assertIn('K2: after_line is not possible here', refused.exception.errors[0])
 
 
+    def test_a_placed_boundary_is_final_and_only_the_hard_rules_apply(self):
+        cuts = [cut('a', 0, 0.0, 6.0), cut('b', 1, 6.0, 12.0), cut('c', 2, 12.0, 16.0)]
+        lines = [line(4.0, 6.8, 'もう一度言って', speaker='A', parts=[(4.0, 5.0, 'もう'), (5.0, 6.0, '一度'), (6.0, 6.8, '言って')]),
+                 line(9.0, 11.0, '嫌です', speaker='B', parts=[(9.0, 10.0, '嫌'), (10.0, 11.0, 'です')])]
+        envelope = levels([(4.0, 7.0), (9.0, 11.0)], 16.0)
+        build = lambda points=None: timeline_math.build(cuts, lines, envelope, points=points)
+        # K1 four seconds before its hard cut (farther than a director may move it, and more than half of cut 1);
+        # K2 inside L2, where no speech crosses its hard cut. A point for a cut without a hard cut after it is ignored.
+        timeline = build([{'after_cut_id': 'a', 'time': 2.0}, {'after_cut_id': 'b', 'time': 10.0}, {'after_cut_id': 'c', 'time': 15.0}])
+        first, second = timeline['boundaries']
+        self.assertEqual((first['fixed'], second['fixed']), ({'t': 2.0, 'time': 2.0, 'shift': -4.0}, {'t': 10.0, 'time': 10.0, 'shift': -2.0}))
+        self.assertEqual(list(timeline_math.placed(timeline)), ['K1', 'K2'])
+        self.assertEqual(timeline_math.check_points(timeline), [])
+        spans = timeline_math.decide(timeline, {'K1': 'after_line'}, {1: 'Ask.'})  # a choice for a placed boundary does not apply
+        self.assertEqual([(span['start_time'], span['end_time']) for span in spans], [(0.0, 2.0), (2.0, 10.0), (10.0, 16.0)])
+        self.assertEqual(timeline_math.check_spans(spans, timeline), [])
+        _, middle, last = timeline_math.expand(spans, timeline)
+        self.assertEqual(middle['opens'], {'how': 'before_line', 'boundary': 'K1', 'shift': -4.0, 'hard_cut': 6.0, 'keeps': ['L1'], 'placed': True, 'by': 'user'})
+        self.assertEqual(last['opens'], {'how': 'before_line', 'boundary': 'K2', 'shift': -2.0, 'hard_cut': 12.0, 'placed': True, 'by': 'user',
+                                         'split': {'lines': ['L2'], 'before': '嫌', 'after': 'です'}})
+        self.assertEqual((middle['frame']['strategy'], last['frame']['strategy'], last['frame']['time']), ('cut_first_frame', 'cut_first_frame', 12.04))
+        with self.assertRaises(timeline_math.PlanError) as refused:
+            timeline_math.move_boundary(spans, timeline, 'K1', 'keep_cut')
+        self.assertIn('placed by you on the Dialogue timeline', refused.exception.errors[0])
+        # A plan that does not follow the user's points is refused.
+        plain = timeline_math.decide(build())
+        self.assertIn('you placed this boundary at 2.00 s on the Dialogue timeline, but the plan has it at 6.00 s', ' '.join(timeline_math.check_spans(plain, timeline)))
+        # The hard rules: every shot keeps some of its own picture, in order, and a shot of a short cut stays within one take.
+        refuse = lambda points: ' '.join(timeline_math.check_points(build(points)))
+        self.assertIn('the shot of cut 2 would show 0.00 s of its own picture (K1 placed by you at 13.00 s)', refuse([{'after_cut_id': 'a', 'time': 13.0}]))
+        self.assertIn('the shot of cut 2 would last 15.2 s; a shot lasts at most 15 s', refuse([{'after_cut_id': 'a', 'time': 0.5}, {'after_cut_id': 'b', 'time': 15.7}]))
+        self.assertEqual(refuse([{'after_cut_id': 'a', 'time': 0.5}, {'after_cut_id': 'b', 'time': 15.4}]), '')
+
+    def test_placed_points_move_only_the_shots_beside_them(self):
+        cuts = [cut('a', 0, 0.0, 6.0), cut('b', 1, 6.0, 12.0), cut('c', 2, 12.0, 16.0)]
+        lines = [line(9.0, 11.0, '嫌です', speaker='B')]
+        plain = timeline_math.build(cuts, lines, [])
+        spans = timeline_math.decide(plain, intents={1: 'Ask.', 2: 'Wait.', 3: 'Refuse.'})
+        placed = timeline_math.build(cuts, lines, [], points=[{'after_cut_id': 'b', 'time': 10.5}])
+        moved = timeline_math.apply_points(spans, placed)
+        self.assertIs(moved[0], spans[0])  # the shot of cut 1 touches no moved boundary
+        self.assertEqual([(span['start_time'], span['end_time'], span['intent']) for span in moved], [(0.0, 6.0, 'Ask.'), (6.0, 10.5, 'Wait.'), (10.5, 16.0, 'Refuse.')])
+        self.assertEqual(timeline_math.check_spans(moved, placed), [])
+        # Handed back, the boundary goes where the caller puts it.
+        released = timeline_math.apply_points(moved, plain, {'K2': (12.0, 12.0)})
+        self.assertEqual([(span['start_time'], span['end_time']) for span in released], [(0.0, 6.0), (6.0, 12.0), (12.0, 16.0)])
+        self.assertEqual(timeline_math.check_spans(released, plain), [])
+
+
 if __name__ == '__main__':
     unittest.main()

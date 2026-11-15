@@ -31,7 +31,7 @@ Read only what you need: `get_result(type="production_brief")`, `get_result(type
   - If the speaker is unconfirmed or off-screen, write "An off-screen voice speaks the words of <Audio 1>; <Subject 1>'s lips stay closed." Being the only visible person, or a mouth hidden by the framing, is not evidence. A transcript segment with no `character` is unconfirmed: put the attribution under **Open questions**.
   - With no speech, write "<Subject 1> does not speak; her lips stay closed." Never keep "nobody speaks" while an `<Audio N>` carries a voice.
 - retention_analysis: one line per picture and subject, kept consistent with your fixes.
-- overall_soundscape: 1–4 sentences of ambience and action sounds plus a line saying what each `<Audio N>` drives (a voice, the ambience to match). Never empty, no `<d>` dialogue.
+- overall_soundscape: one sentence telling the generator to follow each `<Audio N>` exactly for all sound and timing (its background sound, music and effects stay as recorded), plus a line saying what each `<Audio N>` drives (whose voice, lips in sync or not). You have not heard the audio: never describe or assume a background sound, a room tone, the ambience of a place or music. Never empty, no `<d>` dialogue.
 - non_diegetic_music: `N/A`.
 
 ## Format rules (checked by `check_h3_prompt`)
