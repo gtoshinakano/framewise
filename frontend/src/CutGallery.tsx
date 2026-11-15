@@ -1,20 +1,31 @@
 import { useEffect, useState } from 'react'
+import { ChevronsLeft } from 'lucide-react'
 import { FrameImage } from './FrameImage'
 import type { Cut } from './api'
+import type { AnalysisQueueState } from './analysisQueueStates'
+import { CutStatusIcons } from './CutStatus'
+import { IconButton } from './EditorUi'
+import { formatDuration, formatTimecode } from './timecode'
 
-function stamp(seconds: number) {
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const secs = (seconds % 60).toFixed(2).padStart(5, '0')
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${secs}`
-}
+const PAGE = 30
 
-export function CutGallery({ cuts, selectedId, onSelect, onOpenAnalysis, frameVersion }: { cuts: Cut[]; selectedId: string | null; onSelect: (cut: Cut) => void; onOpenAnalysis: (cut: Cut) => void; frameVersion: string }) {
+export function CutGallery({ cuts, selectedId, onSelect, onOpenAnalysis, frameVersion, queueStates, onCollapse }: { cuts: Cut[]; selectedId: string | null; onSelect: (cut: Cut) => void; onOpenAnalysis: (cut: Cut) => void; frameVersion: string; queueStates: Map<string, AnalysisQueueState>; onCollapse: () => void }) {
   const [page, setPage] = useState(0)
-  const pages = Math.max(1, Math.ceil(cuts.length / 24))
+  const pages = Math.max(1, Math.ceil(cuts.length / PAGE))
   const visiblePage = Math.min(page, pages - 1)
-  useEffect(() => { const index = cuts.findIndex(cut => cut.id === selectedId); if (index >= 0) setPage(Math.floor(index / 24)) }, [selectedId])
-  return <section className="p-4"><div className="mb-4 flex items-center justify-between"><h2 className="text-sm font-semibold">Detected cuts</h2><span className="muted text-xs">{cuts.length}</span></div>
-    {cuts.length ? <><div className="space-y-2">{cuts.slice(visiblePage * 24, visiblePage * 24 + 24).map(cut => <button key={cut.id} onClick={() => onSelect(cut)} onDoubleClick={() => onOpenAnalysis(cut)} className={`flex w-full gap-3 rounded-lg border p-2 text-left ${selectedId === cut.id ? 'border-[#ab8df2] bg-[#282238]' : 'border-[#303641] bg-[#171c24] hover:border-[#6e6388]'}`}><FrameImage fallbackClassName="flex aspect-video w-24 shrink-0 items-center justify-center rounded bg-[#222938] p-1 text-center text-[9px] text-[#98a1af]" src={`/api/cuts/${cut.id}/frame/first?v=${encodeURIComponent(frameVersion)}`} className="aspect-video w-24 shrink-0 rounded bg-[#222938] object-cover" alt={`First frame of cut ${cut.cut_index + 1}`} loading="lazy" /><div className="min-w-0 text-[10px] leading-4"><strong className="block truncate text-xs">{cut.title || `Cut ${cut.cut_index + 1}`}</strong>{!cut.analysis_enabled && <span className="block text-[#e9b971]">Analysis disabled</span>}<span className="muted block">Duration {stamp(cut.end_time - cut.start_time)}</span><span className="muted block">{stamp(cut.start_time)} → {stamp(cut.end_time)}</span><span className="muted block">Frames {cut.first_frame_time.toFixed(2)}s → {cut.last_frame_time.toFixed(2)}s</span></div></button>)}</div>{pages > 1 && <div className="mt-3 flex items-center justify-between gap-2 text-xs"><button className="btn btn-quiet" disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>Previous</button><span className="muted">{visiblePage + 1} / {pages}</span><button className="btn btn-quiet" disabled={visiblePage >= pages - 1} onClick={() => setPage(visiblePage + 1)}>Next</button></div>}</> : <p className="muted text-xs leading-5">Run hard-cut detection to list cuts here.</p>}
+  useEffect(() => { const index = cuts.findIndex(cut => cut.id === selectedId); if (index >= 0) setPage(Math.floor(index / PAGE)) }, [selectedId])
+  useEffect(() => { document.getElementById(`cut-card-${selectedId}`)?.scrollIntoView({ block: 'nearest' }) }, [selectedId, visiblePage])
+  return <section className="p-2.5">
+    <div className="mb-2 flex items-center justify-between px-1"><h2 className="text-xs font-semibold uppercase tracking-[.12em] text-[#c3c8d2]">Cuts <span className="muted ml-1 font-normal normal-case tracking-normal">{cuts.length}</span></h2>
+      <IconButton icon={ChevronsLeft} label="Hide the cut list" size="sm" className="ghost" onClick={onCollapse} /></div>
+    {cuts.length ? <><div className="space-y-1">{cuts.slice(visiblePage * PAGE, visiblePage * PAGE + PAGE).map(cut => <button id={`cut-card-${cut.id}`} key={cut.id} onClick={() => onSelect(cut)} onDoubleClick={() => onOpenAnalysis(cut)} title="Click to select, double-click to open the analysis"
+      className={`flex w-full items-center gap-2 rounded-lg border p-1.5 text-left ${selectedId === cut.id ? 'border-[#ab8df2] bg-[#282238]' : 'border-transparent bg-[#171c24] hover:border-[#4a4361]'}`}>
+      <FrameImage fallbackClassName="flex aspect-video w-20 shrink-0 items-center justify-center rounded bg-[#222938] p-1 text-center text-[9px] text-[#98a1af]" src={`/api/cuts/${cut.id}/frame/first?v=${encodeURIComponent(frameVersion)}`} className="aspect-video w-20 shrink-0 rounded bg-[#222938] object-cover" alt={`First frame of cut ${cut.cut_index + 1}`} loading="lazy" />
+      <span className="min-w-0 flex-1 text-[10px] leading-4">
+        <span className="flex items-center gap-1.5"><b className="text-[11px] text-[#c3aeff]">{cut.cut_index + 1}</b><strong className="truncate text-xs font-semibold">{cut.title || `Cut ${cut.cut_index + 1}`}</strong></span>
+        <span className="muted block truncate font-mono tabular-nums">{formatTimecode(cut.start_time, { precision: 1 })} · {formatDuration(cut.end_time - cut.start_time)}</span>
+        <span className="mt-0.5 flex items-center gap-1.5"><CutStatusIcons cut={cut} queueState={queueStates.get(cut.id)} size={11} />{!cut.analysis_enabled && <span className="text-[#e9b971]">Off</span>}</span>
+      </span>
+    </button>)}</div>{pages > 1 && <div className="mt-2 flex items-center justify-between gap-2 text-xs"><button className="btn btn-quiet !px-2.5 !py-1" disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>Previous</button><span className="muted">{visiblePage + 1} / {pages}</span><button className="btn btn-quiet !px-2.5 !py-1" disabled={visiblePage >= pages - 1} onClick={() => setPage(visiblePage + 1)}>Next</button></div>}</> : <p className="muted px-1 text-xs leading-5">Run hard-cut detection to list cuts here.</p>}
   </section>
 }

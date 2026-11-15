@@ -31,7 +31,31 @@ Framewise is a local-first video analysis app. Preserve the hierarchy `Project â
 - `backend/app/audio_worker.py` handles separate transcription and voice-sample jobs. The inference and audio workers use the shared SQLite lease discipline. A `transcribe` job whose payload has `range` (`POST /api/episodes/{id}/transcribe-range`, UI: `TranscribeRangePanel.tsx` in the audio tab, Shift-drag on the timeline waveform) redoes only that interval via `transcribe_range`: it diarizes the interval plus `CONTEXT_SECONDS` around it, `audio_matching.reconcile_speakers` renames the excerpt's local speakers after the labels the neighbouring speech already uses (then the label of their voice-matched character, else a fresh `SPEAKER_NN`), and one transaction tombstones the untouched model segments whose midpoint is inside (hand-edited ones are kept unless `replace_manual`) and appends the new ones. Everything outside the interval and all earlier revisions stay. The range is a payload field, not a new pipeline name, so restart the audio worker after changing it or an old worker would claim a range job and redo the whole episode.
 - `backend/app/external_api.py` defines read-only `/api/v1` integration endpoints and response schemas. `/docs` serves locally bundled Swagger UI, `/openapi.json` is generated from the FastAPI models, and `backend/app/integration-guide.md` supplies both the Swagger description and `/api/integration-guide`. Keep the guide and schemas aligned with endpoint behavior; the reusable retrieval-skill prompt is in `docs/agent-skill-prompt.md`.
 - `backend/app/media.py`: FFprobe/FFmpeg preparation, waveform, scene detection, and per-cut first/last frames. Frame URLs use cut IDs so redetection can retain existing cut records.
-- `frontend/src/App.tsx`: React project manager and episode editor. `Timeline.tsx` windows long recordings and clips its lanes to the visible range; `CutGallery.tsx` pages cut cards.
+- `backend/app/cut_history.py` is undo/redo for cut boundary edits. Split, merge, delete, timing (`main.edit_cut_timeline`), a one-frame boundary move and hard cuts found inside one cut (both in `worker.process`) write a `cut_edits` row **in the same transaction as the edit**. The row holds the active cuts before and after the edit, a label such as "Split cut 12 at 1:23.456", and the ids the edit created. `POST /api/episodes/{id}/cut-edits/undo` and `/redo` restore one side only while the cuts still equal the other side exactly; otherwise they return 409. While a `prepare`/`hardcuts` job is queued or running, or a `cutframes` job is running, they return 423, and so do cut edits; the editor waits and retries on 423. A restore queues `cutframes` for the cuts that moved. A new edit ends the redo branch, the latest 50 rows are kept, and a full redetection clears the episode's log. `episode_response` returns `cut_history: {undo, redo}`.
+- `frontend/src/App.tsx`: React project manager and episode editor. The `Editor` keeps state and loading, and the layout is split into components:
+  - Layout: cut list | stage | inspector | icon rail, over a resizable timeline. `--cuts-w` and `--timeline-h` are kept in `layoutPrefs.ts`.
+  - `EditorHeader.tsx`: breadcrumb, Characters and Cuts menus, the queue button, text engine, and the episode menu.
+  - `QueueDrawer.tsx`: a slide-over around the unchanged `AnalysisHistory`.
+  - `EpisodeSettingsDialog.tsx`: the former Setup tab.
+  - `InspectorRail.tsx`: Cut, Chunk, Audio, Sequence. Each panel has an accent in `PANEL_ACCENT`.
+  - `CutInspector.tsx`: notes, frames, and timing & detection.
+  - `ChunkInspector.tsx`.
+  - `TranscriptEditor.tsx`: Audio views Lines, Tools and Voices.
+  - `Timeline.tsx`:
+    - Holds the one-row toolbar. Undo/redo/split/merge/delete come from the editor as `editTools`. Split acts on the cut under the playhead.
+    - Contains `CutFilterPopover.tsx`, the `?` help, and icon lane labels.
+    - Windows long recordings and clips its lanes to the visible range.
+  - `CutGallery.tsx`: pages compact cut cards; collapsible.
+  - Filters are data-driven in `cutFilters.ts` (`group`, `parseStoredFilters`, the Dim/Hide `display`, `nextNeedingAction`). A new filter needs an entry in `CUT_FILTERS` and, optionally, an icon in `CutFilterPopover.FILTER_ICONS`.
+  - Shared pieces:
+    - `timecode.ts`: `formatTimecode` and `parseTimecode`, which accepts `1:23.4`, `83.4` and `+0.25`.
+    - `TimecodeInput.tsx`: use it for every seconds field instead of `type="number"`.
+    - `Popover.tsx`: popovers and menus, portalled with fixed positions so scroll containers never clip them.
+    - `Toasts.tsx`: transient messages instead of banners.
+    - `EditorUi.tsx`: `IconButton`, `Section`, `SegmentedControl`, `Switch`.
+    - `CutStatus.tsx`: the cut status icons and their legend.
+    - `useCutEdits.ts`: edits with Undo toasts.
+    - `useEditorShortcuts.ts`: Space, S, Ctrl+Z, Ctrl+Shift+Z, [ ], N, F. Shortcuts are ignored in fields and under `aria-modal` dialogs.
 - The episode editor polls `/api/episodes/{id}/status` for job changes and only loads the full episode every 30 seconds while idle. Keep the waveform cache keyed to the latest completed Prepare job when changing this flow.
 - `compose.yml`: persistent data and model cache; optional GPU overrides are separate.
 - `deploy/framewise.service`: optional systemd unit for Cockpit Services start/stop. Update its `WorkingDirectory` if the checkout path changes.
@@ -42,7 +66,7 @@ Framewise is a local-first video analysis app. Preserve the hierarchy `Project â
 - Database IDs are UUIDs; construct media paths only from database rows and fixed filenames.
 - Long-running media work belongs in the queue, not an HTTP request.
 - Keep `uvicorn --workers 1` for the current deployment. The media worker runs in the API process; separate inference and audio workers claim only their own pipeline kinds through SQLite and use the same lease discipline.
-- A failed job records its error; reruns are allowed. Existing cut edits and result IDs are retained when redetection finds the same boundary within 0.25 seconds. Unmatched cuts become inactive archives rather than being deleted; later matching boundaries reactivate their IDs. Do not delete and reinsert cut rows: foreign keys would cascade-delete result history. The `cuts` table keeps negative `cut_index` values for archives and nonnegative indices for active timeline cuts.
+- A failed job records its error; reruns are allowed. Existing cut edits and result IDs are retained when redetection finds the same boundary within 0.25 seconds. Unmatched cuts become inactive archives rather than being deleted; later matching boundaries reactivate their IDs. Do not delete and reinsert cut rows: foreign keys would cascade-delete result history. The one exception is `cut_history`: undoing a split removes the cut the split created, but only if it has no notes and no row refers to it (every table with a foreign key to `cuts` except the `composition_changes` watermark, plus `sequences`). Otherwise the cut is archived. The `cuts` table keeps negative `cut_index` values for archives and nonnegative indices for active timeline cuts.
 - Media and model cache volumes must survive image rebuilds.
 - Keep ROCm/CUDA inference in separate optional worker images with pinned compatible PyTorch/runtime packages. Store model provenance and prompt/settings with each result. Do not put generated text into files that replace originals.
 - Read `docs/model-integration.md` before changing the WeVisOne-VL adapter. Its documented tasks are frame-level perception, and container ROCm compatibility still needs validation. Do not download weights before a task explicitly calls for model inference.

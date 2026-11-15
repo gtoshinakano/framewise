@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import db, media, worker, storage, frame_source, frame_cache, subtitle_store, audio_worker, prompt_context
+from . import db, media, worker, cut_history, storage, frame_source, frame_cache, subtitle_store, audio_worker, prompt_context
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
 
@@ -293,6 +293,7 @@ def episode_response(episode_id: str):
     episode["archived_cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=0 ORDER BY start_time,cut_index", (episode_id,))]
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
     with db.connect() as conn:
+        episode["cut_history"] = cut_history.state(conn, episode_id)
         run = subtitle_store.current_run(episode_id, conn)
         episode["subtitles"] = {"language": episode.get("subtitle_language"),
                                 "run": {**run, "line_count": conn.execute("SELECT COUNT(*) FROM subtitle_lines WHERE run_id=?", (run["id"],)).fetchone()[0]} if run else None}
@@ -614,9 +615,12 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
             raise HTTPException(404, "Active cut not found")
         episode = conn.execute("SELECT * FROM episodes WHERE id=?", (cut["episode_id"],)).fetchone()
         if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','cutframes') AND status IN ('queued','running')", (cut["episode_id"],)).fetchone():
-            raise HTTPException(409, "Wait for the current media job to finish")
+            raise HTTPException(423, "Wait for the current media job to finish")
         cuts = conn.execute("SELECT * FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index", (cut["episode_id"],)).fetchall()
         index = next(i for i, item in enumerate(cuts) if item["id"] == cut_id)
+        before = cut_history.snapshot(conn, cut["episode_id"])
+        created_ids = set()
+        number = cut["cut_index"] + 1
         affected_ids = set()
         if action == "timing":
             assert timing is not None
@@ -654,6 +658,7 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
             conn.execute("INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time,analysis_enabled,created_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",
                          (new_id, cut["episode_id"], cut["cut_index"] + 1, split_time, cut["end_time"], cut["analysis_enabled"]))
             affected_ids.update((cut_id, new_id))
+            created_ids.add(new_id)
         else:
             if len(cuts) < 2:
                 raise HTTPException(400, "The last cut must cover the video")
@@ -676,13 +681,64 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
                 if item["cut_index"] > removed["cut_index"]:
                     conn.execute("UPDATE cuts SET cut_index=? WHERE id=?", (item["cut_index"] - 1, item["id"]))
         if affected_ids:
-            for affected_id in affected_ids:
-                conn.execute("UPDATE cuts SET first_frame_time=NULL,last_frame_time=NULL WHERE id=?", (affected_id,))
-            job_id = str(uuid.uuid4())
-            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut["episode_id"], "cutframes", json.dumps({"settings": json.loads(episode["settings_json"]), "cut_ids": sorted(affected_ids)})))
-            worker.sync_episode_status(conn, cut["episode_id"])
+            label = {"timing": f"Changed the timing of cut {number}",
+                     "split": f"Split cut {number} at {cut_history.timecode(split_time or 0)}",
+                     "merge": f"Merged cut {number} with cut {number + 1}",
+                     "delete": f"Deleted cut {number}"}[action]
+            cut_history.record(conn, cut["episode_id"], action, label, cut_id, before, created_ids)
+            queue_cut_frames(conn, episode, affected_ids)
     worker.wake_event.set()
     return {"selected_id": cut_id if action != "delete" else kept["id"]}
+
+
+def queue_cut_frames(conn, episode, cut_ids):
+    """Forget the frames of cuts whose range changed and queue one job to extract them again."""
+    for cut_id in cut_ids:
+        conn.execute("UPDATE cuts SET first_frame_time=NULL,last_frame_time=NULL WHERE id=?", (cut_id,))
+    conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (str(uuid.uuid4()), episode["id"], "cutframes", json.dumps({"settings": json.loads(episode["settings_json"]), "cut_ids": sorted(cut_ids)})))
+    worker.sync_episode_status(conn, episode["id"])
+
+
+def reverse_cut_edit(episode_id: str, direction: Literal['undo', 'redo']):
+    episode = require_episode(episode_id)
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            outcome = (cut_history.undo if direction == 'undo' else cut_history.redo)(conn, episode_id)
+        except cut_history.Busy as exc:
+            raise HTTPException(423, str(exc)) from exc
+        except cut_history.Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if outcome["changed"]:
+            queue_cut_frames(conn, conn.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone(), outcome["changed"])
+        active = {row["id"] for row in conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1", (episode_id,))}
+        first = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index LIMIT 1", (episode_id,)).fetchone()
+    thumbnails = media.episode_dir(episode["project_id"], episode_id) / "thumbnails"
+    for cut_id in outcome["removed"]:
+        for position in ("first", "last"):
+            (thumbnails / f"{cut_id}_{position}.jpg").unlink(missing_ok=True)
+    worker.wake_event.set()
+    selected = outcome["cut_id"] if outcome["cut_id"] in active else (first["id"] if first else None)
+    return {"label": outcome["label"], "selected_id": selected, "cut_history": cut_history_state(episode_id)}
+
+
+def cut_history_state(episode_id: str):
+    with db.connect() as conn:
+        return cut_history.state(conn, episode_id)
+
+
+@app.post("/api/episodes/{episode_id}/cut-edits/undo")
+def undo_cut_edit(episode_id: str):
+    """Reverse the latest split, merge, delete, timing change or boundary move of this episode's cuts.
+
+    409 when the cuts changed since (or there is nothing to undo); 423 while cut previews are being rebuilt."""
+    return reverse_cut_edit(episode_id, 'undo')
+
+
+@app.post("/api/episodes/{episode_id}/cut-edits/redo")
+def redo_cut_edit(episode_id: str):
+    """Apply the cut edit that was undone last again."""
+    return reverse_cut_edit(episode_id, 'redo')
 
 
 MIN_SPLIT_SECONDS = 0.1

@@ -1,14 +1,25 @@
-import { CUT_FILTERS, matchesAnyFilter, type CutFilterKey } from './cutFilters'
-import { useEffect, useRef, useState, type PointerEvent } from 'react'
-import { AudioLines, BoxSelect, Clapperboard, FileText, FileX, Circle, UserCheck, UserX, UserRound, CircleCheck, Clock3, Layers3, LoaderCircle, Scissors } from 'lucide-react'
+import { CUT_FILTERS, cutsNeedingAction, matchesAnyFilter, nextNeedingAction, type CutFilterKey, type FilterDisplay } from './cutFilters'
+import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
+import { AudioLines, ChevronLeft, ChevronRight, Clapperboard, CircleHelp, Crosshair, Layers3, MessageSquareText, Minus, Plus, Scissors, SkipForward } from 'lucide-react'
 import type { AudioSelection, Chunk, Cut, TranscriptSegment, Waveform } from './api'
 import type { AnalysisQueueState } from './analysisQueueStates'
 import type { SequenceSummary } from './sequenceApi'
+import { ActiveFilterChips, CutFilterPopover } from './CutFilterPopover'
+import { CUT_STATUS_LEGEND, CutStatusIcons } from './CutStatus'
+import { IconButton } from './EditorUi'
+import { Popover } from './Popover'
+import { formatTimecode } from './timecode'
 
 type Props = {
   activeFilters: ReadonlySet<CutFilterKey>
+  filterDisplay: FilterDisplay
   onToggleFilter: (key: CutFilterKey) => void
   onClearFilters: () => void
+  onFilterDisplay: (display: FilterDisplay) => void
+  filtersOpen: boolean
+  onFiltersOpenChange: (open: boolean) => void
+  /** Undo, redo, split, merge and delete, built by the editor and shown first in the toolbar. */
+  editTools: ReactNode
   duration: number
   waveform: Waveform | null
   hasAudio: boolean
@@ -115,7 +126,7 @@ function blockStyle(item: { start_time: number; end_time: number }, start: numbe
 }
 
 export function Timeline(props: Props) {
-  const { activeFilters, onToggleFilter, onClearFilters, duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, currentTime, seekRevision, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript, audioSelection, onSelectAudio, sequences, onOpenSequence } = props
+  const { activeFilters, filterDisplay, onToggleFilter, onClearFilters, onFilterDisplay, filtersOpen, onFiltersOpenChange, editTools, duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, currentTime, seekRevision, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript, audioSelection, onSelectAudio, sequences, onOpenSequence } = props
   const [windowSeconds, setWindowSeconds] = useState<number | null>(() => duration > 1800 ? 600 : null)
   const [requestedStart, setRequestedStart] = useState(0)
   const followPlayhead = useRef(true)
@@ -239,56 +250,80 @@ export function Timeline(props: Props) {
     event.stopPropagation()
   }
   const playhead = (currentTime - start) / span * 100
-  // With no filter on, "next" means any cut that needs something; otherwise only the cuts the filters show.
-  const needsAction = (cut: typeof cuts[number]) => activeFilters.size ? matchesAnyFilter(cut, activeFilters) : CUT_FILTERS.some(filter => filter.matches(cut))
-  const actionCuts = cuts.filter(needsAction)
+  const actionCuts = cutsNeedingAction(cuts, activeFilters)
   function selectNextNeedingAction() {
-    const selectedIndex = cuts.findIndex(cut => cut.id === selectedCutId)
-    const next = actionCuts.find(cut => cuts.indexOf(cut) > selectedIndex) || actionCuts[0]
+    const next = nextNeedingAction(cuts, selectedCutId, activeFilters)
     if (next) onSelectCut(next)
   }
-  return <section className="border-t hairline bg-[#11151d] px-4 py-3">
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-semibold">Timeline</h2><p className="muted mt-1 text-xs">Scroll to zoom, middle-drag to move the timeline, drag the waveform to seek, or Shift-drag it to select audio to transcribe again</p></div><div className="flex flex-wrap items-center gap-4"><span className="text-xs text-[#e8dfff]">Playhead <output aria-label="Playhead time" className="font-mono tabular-nums">{preciseStamp(currentTime)}</output></span><span className="muted text-xs">{cuts.length} {cuts.length === 1 ? 'cut' : 'cuts'}</span><span className="muted flex flex-wrap items-center gap-1 text-[11px]"><CircleCheck size={13} className="text-[#7bdcb2]" /> Results <Circle size={13} className="ml-2" /> No results <LoaderCircle size={13} className="ml-2 text-[#f5c678]" /> Analyzing <Clock3 size={13} className="ml-2 text-[#86d1e1]" /> Queued</span></div></div>
-    <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-      <label htmlFor="timeline-zoom" className="muted">Zoom</label>
-      <span className="muted" aria-hidden="true">−</span><input id="timeline-zoom" type="range" min="0" max="100" step="1" value={zoomValue} disabled={duration <= 1} onChange={event => setZoom(Number(event.target.value))} aria-valuetext={`${span.toFixed(1)} seconds visible`} className="w-32 accent-[#a58ae8]" /><span className="muted" aria-hidden="true">+</span>
-      <span className="muted">{span >= duration ? 'Full video' : `${span.toFixed(1)}s visible`}</span>
-      <button type="button" disabled={start <= 0} onClick={() => { followPlayhead.current = false; setRequestedStart(Math.max(0, start - span * 0.75)) }} className="btn btn-quiet px-2 py-1.5 text-xs">← Earlier</button>
-      <button type="button" disabled={start >= maxStart} onClick={() => { followPlayhead.current = false; setRequestedStart(Math.min(maxStart, start + span * 0.75)) }} className="btn btn-quiet px-2 py-1.5 text-xs">Later →</button>
-      <button type="button" onClick={() => { followPlayhead.current = true; center(currentTime) }} className="btn btn-quiet px-2 py-1.5 text-xs">Center playhead</button>
-      <span className="muted ml-auto font-mono text-[11px]">{stamp(start)} – {stamp(Math.min(duration, end))}</span>
-    </div>
-    <div role="group" aria-label="Show only cuts that need action" className="mb-3 flex flex-wrap items-center justify-end gap-2 text-xs">
-      <span className="muted">Needs action</span>
-      {CUT_FILTERS.map(filter => {
-        const on = activeFilters.has(filter.key)
-        const count = cuts.filter(filter.matches).length
-        return <button key={filter.key} type="button" aria-pressed={on} title={filter.hint} onClick={() => onToggleFilter(filter.key)} className="btn btn-quiet px-2 py-1.5 text-xs" style={on ? { borderColor: filter.color, boxShadow: `inset 0 0 0 1px ${filter.color}` } : undefined}>
-          <span aria-hidden="true" className="mr-1.5 inline-block h-2 w-2 rounded-full" style={{ background: filter.color }} />{filter.label} ({count})
-        </button>
-      })}
-      {activeFilters.size > 0 && <button type="button" className="btn btn-quiet px-2 py-1.5 text-xs" onClick={onClearFilters}>Show all cuts</button>}
-      <button type="button" className="btn btn-quiet px-2 py-1.5 text-xs" disabled={!actionCuts.length} onClick={selectNextNeedingAction}>Next needing action ({actionCuts.length})</button>
+  const step = (direction: 1 | -1) => { followPlayhead.current = false; setRequestedStart(Math.max(0, Math.min(maxStart, start + direction * span * 0.75))) }
+  const visibleSpan = span >= duration ? 'Full video' : `${span < 60 ? span.toFixed(1) + 's' : formatTimecode(span, { precision: 0 })} visible`
+  return <section aria-label="Timeline" className="bg-[#11151d] px-3 pb-3 pt-2.5">
+    <div role="toolbar" aria-label="Timeline tools" className="mb-2.5 flex flex-wrap items-center gap-x-1.5 gap-y-2 text-xs">
+      {editTools}
+      <span className="mx-1 h-5 w-px bg-[#2c323d]" aria-hidden />
+      <IconButton icon={Minus} label="Zoom out" size="sm" className="ghost" disabled={duration <= 1 || zoomValue <= 0} onClick={() => setZoom(Math.max(0, zoomValue - 10))} />
+      <input id="timeline-zoom" type="range" min="0" max="100" step="1" value={zoomValue} disabled={duration <= 1} onChange={event => setZoom(Number(event.target.value))} aria-label="Zoom" aria-valuetext={`${span.toFixed(1)} seconds visible`} className="w-24 accent-[#a58ae8]" title="Zoom (or scroll over the timeline)" />
+      <IconButton icon={Plus} label="Zoom in" size="sm" className="ghost" disabled={duration <= 1 || zoomValue >= 100} onClick={() => setZoom(Math.min(100, zoomValue + 10))} />
+      <IconButton icon={ChevronLeft} label="Earlier" size="sm" className="ghost" disabled={start <= 0} onClick={() => step(-1)} />
+      <IconButton icon={ChevronRight} label="Later" size="sm" className="ghost" disabled={start >= maxStart} onClick={() => step(1)} />
+      <IconButton icon={Crosshair} label="Center the playhead" size="sm" className="ghost" onClick={() => { followPlayhead.current = true; center(currentTime) }} />
+      <span className="muted hidden whitespace-nowrap xl:inline">{visibleSpan}</span>
+      <span className="mx-1 h-5 w-px bg-[#2c323d]" aria-hidden />
+      <output aria-label="Playhead time" className="whitespace-nowrap font-mono tabular-nums text-[#e8dfff]" title="Playhead">{preciseStamp(currentTime)}</output>
+      <span className="muted whitespace-nowrap">{cuts.length} {cuts.length === 1 ? 'cut' : 'cuts'}</span>
+      <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+        <ActiveFilterChips active={activeFilters} onToggle={onToggleFilter} />
+        <CutFilterPopover cuts={cuts} active={activeFilters} display={filterDisplay} onToggle={onToggleFilter} onClear={onClearFilters} onDisplay={onFilterDisplay} open={filtersOpen} onOpenChange={onFiltersOpenChange} />
+        <IconButton icon={SkipForward} label={activeFilters.size ? 'Next cut matching the filters' : 'Next cut needing action'} shortcut="N" size="sm" text={<span className="font-mono tabular-nums">{actionCuts.length}</span>} disabled={!actionCuts.length} onClick={selectNextNeedingAction} />
+        <TimelineHelp />
+      </span>
     </div>
     <div ref={zoomSurface} className={panning ? 'timeline-panning' : undefined} onPointerDownCapture={startMiddlePan} onPointerMoveCapture={moveMiddlePan} onPointerUpCapture={endMiddlePan} onPointerCancelCapture={endMiddlePan} onLostPointerCapture={endMiddlePan} onMouseDownCapture={event => { if (event.button === 1) event.preventDefault() }} onAuxClickCapture={event => { if (event.button === 1) event.preventDefault() }}>
-    <div className="mb-5 grid grid-cols-[86px_minmax(0,1fr)] items-center gap-3"><span className="muted text-[11px]">Overview</span><div ref={overview} role="slider" aria-label="Video overview" aria-valuemin={0} aria-valuemax={Math.max(duration, 1)} aria-valuenow={Math.min(currentTime, duration)} aria-valuetext={preciseStamp(currentTime)} tabIndex={0} onKeyDown={event => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); seekOverview(Math.max(0, Math.min(duration, currentTime + (event.key === 'ArrowRight' ? 1 : -1) * Math.max(1, span / 10)))) } }} onPointerDown={startOverviewDrag} onPointerMove={moveOverviewDrag} onPointerUp={finishOverviewDrag} onPointerCancel={() => { overviewDrag.current = null }} onLostPointerCapture={() => { overviewDrag.current = null }} className="relative h-5 cursor-crosshair touch-none overflow-hidden rounded bg-[#262c39]"><div className={`absolute inset-y-0 rounded border border-[#ab8df2] bg-[#8d70c266] ${maxStart > 0 ? 'cursor-grab active:cursor-grabbing' : ''}`} style={{ left: `${duration ? start / duration * 100 : 0}%`, width: `${duration ? Math.min(100, span / duration * 100) : 100}%` }} /><div className="pointer-events-none absolute inset-y-0 w-px bg-white" style={{ left: `${duration ? currentTime / duration * 100 : 0}%` }} /></div></div>
-    <div className="timeline-grid relative mb-2 flex justify-between border-b hairline pb-2 font-mono text-[10px] text-[#7e8797]">{Array.from({ length: 6 }, (_, index) => <span key={index}>{stamp(start + span * index / 5)}</span>)}</div>
-    <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
-      <div className="flex h-15 items-center gap-2 text-xs text-[#98a1af]"><Scissors size={16} /> Cuts</div>
-      <div className="relative h-15 overflow-hidden rounded-md bg-[#1b202b]">{cuts.filter(cut => visible(cut) && (!activeFilters.size || matchesAnyFilter(cut, activeFilters))).map(cut => {
+    <div className="mb-2 grid grid-cols-[28px_minmax(0,1fr)] items-center gap-2"><span className="muted text-center text-[10px]" title="Whole video: drag the window to move, click to seek">All</span><div ref={overview} role="slider" aria-label="Video overview" aria-valuemin={0} aria-valuemax={Math.max(duration, 1)} aria-valuenow={Math.min(currentTime, duration)} aria-valuetext={preciseStamp(currentTime)} tabIndex={0} onKeyDown={event => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); seekOverview(Math.max(0, Math.min(duration, currentTime + (event.key === 'ArrowRight' ? 1 : -1) * Math.max(1, span / 10)))) } }} onPointerDown={startOverviewDrag} onPointerMove={moveOverviewDrag} onPointerUp={finishOverviewDrag} onPointerCancel={() => { overviewDrag.current = null }} onLostPointerCapture={() => { overviewDrag.current = null }} className="relative h-5 cursor-crosshair touch-none overflow-hidden rounded bg-[#262c39]"><div className={`absolute inset-y-0 rounded border border-[#ab8df2] bg-[#8d70c266] ${maxStart > 0 ? 'cursor-grab active:cursor-grabbing' : ''}`} style={{ left: `${duration ? start / duration * 100 : 0}%`, width: `${duration ? Math.min(100, span / duration * 100) : 100}%` }} /><div className="pointer-events-none absolute inset-y-0 w-px bg-white" style={{ left: `${duration ? currentTime / duration * 100 : 0}%` }} /></div></div>
+    <div className="timeline-grid relative mb-1.5 ml-[36px] flex justify-between border-b hairline pb-1 font-mono text-[10px] text-[#7e8797]">{Array.from({ length: 6 }, (_, index) => <span key={index}>{stamp(start + span * index / 5)}</span>)}</div>
+    <div className="grid grid-cols-[28px_minmax(0,1fr)] gap-x-2 gap-y-1.5">
+      <LaneLabel icon={<Scissors size={15} />} label="Cuts" />
+      <div className="relative h-15 overflow-hidden rounded-md bg-[#1b202b]">{cuts.filter(cut => visible(cut) && (!activeFilters.size || filterDisplay === 'dim' || matchesAnyFilter(cut, activeFilters))).map(cut => {
         const queueState = cutQueueStates.get(cut.id)
         const queueLabel = queueState === 'running' ? 'Analysis running' : queueState === 'queued' ? 'Analysis queued' : ''
-        return <button key={cut.id} title={`Cut ${cut.cut_index + 1} · ${stamp(cut.start_time)}–${stamp(cut.end_time)}${cut.analysis_enabled ? '' : ' · Analysis disabled'} · ${cut.has_analysis_results ? 'Has analysis results' : 'No analysis results'} · ${cut.has_boxes ? 'Boxes detected' : 'No boxes'} · ${cut.no_characters ? 'No characters' : cut.has_characters ? 'Character detected' : 'No character labels'} · ${cut.has_summary ? 'Has cut summary' : 'No cut summary'}${queueLabel ? ` · ${queueLabel}` : ''}`} aria-label={`Cut ${cut.cut_index + 1}, ${cut.has_analysis_results ? 'has analysis results' : 'no analysis results'}${cut.analysis_enabled ? '' : ', analysis disabled'}${queueLabel ? `, ${queueLabel}` : ''}`} onClick={() => onSelectCut(cut)} onDoubleClick={() => onOpenCutAnalysis(cut)} className={`cut-block ${cut.analysis_enabled ? '' : 'cut-block-disabled'} absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${!cut.analysis_enabled ? selectedCutId === cut.id ? 'bg-[#a05b36] text-white' : 'bg-[#75462f] text-[#ffe1c4]' : selectedCutId === cut.id ? 'bg-[#9476d555] text-white' : 'bg-[#5c497d66] text-[#d4c4ed]'}`} style={blockStyle(cut, start, span)}><span className="flex items-center gap-1">{cut.has_analysis_results ? <CircleCheck size={12} className="shrink-0 text-[#7bdcb2]" aria-hidden="true" /> : <Circle size={12} className="shrink-0 text-[#c5cad3]" aria-hidden="true" />}{cut.has_boxes ? <BoxSelect size={12} className="shrink-0 text-[#4cc9f0]" aria-hidden="true"><title>Boxes detected</title></BoxSelect> : null}{cut.no_characters ? <UserX size={12} className="shrink-0 text-[#c5cad3]" aria-hidden="true"><title>No characters</title></UserX> : cut.has_characters ? <UserCheck size={12} className="shrink-0 text-[#7bdcb2]" aria-hidden="true"><title>Character detected</title></UserCheck> : cut.has_boxes ? <UserRound size={12} className="shrink-0 text-[#e6c58b]" aria-hidden="true"><title>Unlabeled characters</title></UserRound> : null}{cut.has_summary ? <FileText size={12} className="shrink-0 text-[#c3aeff]" aria-hidden="true"><title>Has cut summary</title></FileText> : <FileX size={12} className="shrink-0 text-[#6f7787]" aria-hidden="true"><title>No cut summary</title></FileX>}{queueState === 'running' ? <LoaderCircle size={12} className="shrink-0 animate-spin text-[#f5c678] motion-reduce:animate-none" aria-hidden="true" /> : queueState === 'queued' ? <Clock3 size={12} className="shrink-0 text-[#86d1e1]" aria-hidden="true" /> : null}<span className="truncate">{cut.title}{!cut.analysis_enabled && ' · Disabled'}</span></span><span className="block truncate text-[9px] opacity-70"><b className="text-[10px] font-extrabold opacity-100">{cut.cut_index + 1}</b> · {stamp(cut.start_time)}</span>{queueState && <span aria-hidden="true" className={`absolute inset-x-0 bottom-0 h-1 ${queueState === 'running' ? 'bg-[#f5c678]' : 'bg-[#86d1e1]'}`} />}</button>
+        const matched = activeFilters.size ? CUT_FILTERS.filter(filter => activeFilters.has(filter.key) && filter.matches(cut)) : []
+        const dimmed = activeFilters.size > 0 && !matched.length
+        return <button key={cut.id} title={`Cut ${cut.cut_index + 1} · ${stamp(cut.start_time)}–${stamp(cut.end_time)}${cut.analysis_enabled ? '' : ' · Analysis disabled'} · ${cut.has_analysis_results ? 'Has analysis results' : 'No analysis results'} · ${cut.has_boxes ? 'Boxes detected' : 'No boxes'} · ${cut.no_characters ? 'No characters' : cut.has_characters ? 'Character detected' : 'No character labels'} · ${cut.has_summary ? 'Has cut summary' : 'No cut summary'}${queueLabel ? ` · ${queueLabel}` : ''}${matched.length ? ` · Needs: ${matched.map(filter => filter.label).join(', ')}` : ''}`} aria-label={`Cut ${cut.cut_index + 1}, ${cut.has_analysis_results ? 'has analysis results' : 'no analysis results'}${cut.analysis_enabled ? '' : ', analysis disabled'}${queueLabel ? `, ${queueLabel}` : ''}${dimmed ? ', matches no filter' : ''}`} onClick={() => onSelectCut(cut)} onDoubleClick={() => onOpenCutAnalysis(cut)} className={`cut-block ${cut.analysis_enabled ? '' : 'cut-block-disabled'} absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 pt-[3px] text-left text-[10px] transition-opacity ${dimmed && selectedCutId !== cut.id ? 'opacity-25 hover:opacity-60' : ''} ${!cut.analysis_enabled ? selectedCutId === cut.id ? 'bg-[#a05b36] text-white' : 'bg-[#75462f] text-[#ffe1c4]' : selectedCutId === cut.id ? 'bg-[#9476d555] text-white ring-1 ring-inset ring-[#c3aeff]' : 'bg-[#5c497d66] text-[#d4c4ed]'}`} style={blockStyle(cut, start, span)}>
+          {matched.length > 0 && <span aria-hidden className="absolute inset-x-0 top-0 flex h-[3px]">{matched.map(filter => <span key={filter.key} className="flex-1" style={{ background: filter.color }} />)}</span>}
+          <span className="flex items-center gap-1"><CutStatusIcons cut={cut} queueState={queueState} /><span className="truncate">{cut.title}{!cut.analysis_enabled && ' · Disabled'}</span></span><span className="block truncate text-[9px] opacity-70"><b className="text-[10px] font-extrabold opacity-100">{cut.cut_index + 1}</b> · {stamp(cut.start_time)}</span>{queueState && <span aria-hidden className={`absolute inset-x-0 bottom-0 h-1 ${queueState === 'running' ? 'bg-[#f5c678]' : 'bg-[#86d1e1]'}`} />}</button>
       })}{!cuts.length && <div className="muted flex h-full items-center justify-center text-xs">Run hard-cut detection to create timeline segments</div>}{playhead >= 0 && playhead <= 100 && <div className="pointer-events-none absolute inset-y-0 w-px bg-[#eee7ff]" style={{ left: `${playhead}%` }} />}</div>
-      <div className="flex h-16 items-center gap-2 text-xs text-[#98a1af]"><AudioLines size={16} /> Audio</div>
+      <LaneLabel icon={<AudioLines size={15} />} label="Audio waveform: drag to seek, Shift-drag to select audio to transcribe again" />
       <WaveformCanvas waveform={waveform} duration={duration} start={start} span={span} currentTime={currentTime} onSeek={onSeek} hasAudio={hasAudio} preparing={preparing} selection={audioSelection} onSelect={onSelectAudio} />
-      <div className="flex h-12 items-center gap-2 text-xs text-[#98a1af]"><AudioLines size={16} /> Speech</div>
-      <div className="relative h-12 overflow-hidden rounded-md bg-[#1b202b]">{transcript.some(visible) ? transcript.filter(visible).map(segment => <button key={segment.id} title={`${segment.speaker_label || 'Speaker'}: ${segment.text}`} onClick={() => onSelectTranscript(segment)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedTranscriptId === segment.id ? 'bg-[#c2828e88] text-white' : 'bg-[#8d506566] text-[#f0c8d0]'}`} style={blockStyle(segment, start, span)}><span className="block truncate">{segment.speaker_label || 'Speaker'}</span><span className="block truncate text-[9px] opacity-70">{segment.text}</span></button>) : <div className="muted flex h-full items-center justify-center text-xs">No speech annotations in this window</div>}<SelectionBand selection={audioSelection} start={start} span={span} /></div>
-      <div className="flex h-12 items-center gap-2 text-xs text-[#98a1af]"><Layers3 size={16} /> Chunks</div>
-      <div className="relative h-12 overflow-hidden rounded-md bg-[#1b202b]">{chunks.filter(visible).map(chunk => <button key={chunk.id} title={`Chunk ${chunk.chunk_index + 1} · ${stamp(chunk.start_time)}–${stamp(chunk.end_time)}`} onClick={() => onSelectChunk(chunk)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedChunkId === chunk.id ? 'bg-[#5d9ca777] text-white' : 'bg-[#3e717e66] text-[#bce7e8]'}`} style={blockStyle(chunk, start, span)}><span className="block truncate">{chunk.title || `Chunk ${chunk.chunk_index + 1}`}</span><span className="block truncate text-[9px] opacity-70">{stamp(chunk.start_time)}</span></button>)}</div>
-      <div className="flex h-10 items-center gap-2 text-xs text-[#98a1af]"><Clapperboard size={16} /> Sequences</div>
-      <div className="relative h-10 overflow-hidden rounded-md bg-[#1b202b]">{sequences.some(visible) ? sequences.filter(visible).map(sequence => <button key={sequence.id} title={`${sequence.title} · cuts ${sequence.first_cut ?? '?'}–${sequence.last_cut ?? '?'} · ${sequence.shots_written}/${sequence.shots_planned} shot prompts${sequence.cuts_changed ? ' · cuts changed' : ''}`} onClick={() => onOpenSequence(sequence.id)} className="cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] bg-[#7d5a3066] px-1 text-left text-[10px] text-[#f1d9b8]" style={blockStyle(sequence, start, span)}><span className="block truncate">{sequence.title}</span><span className="block truncate text-[9px] opacity-70">{sequence.shots_planned ? `${sequence.shots_written}/${sequence.shots_planned} prompts` : 'not directed'}</span></button>) : <div className="muted flex h-full items-center justify-center text-[11px]">{sequences.length ? 'No sequence in this window' : 'Create a sequence in the Sequences tab to direct a range of cuts as one short video'}</div>}</div>
+      <LaneLabel icon={<MessageSquareText size={15} />} label="Speech: click a line to edit it" />
+      <div className="relative h-10 overflow-hidden rounded-md bg-[#1b202b]">{transcript.some(visible) ? transcript.filter(visible).map(segment => <button key={segment.id} title={`${segment.speaker_label || 'Speaker'}: ${segment.text}`} onClick={() => onSelectTranscript(segment)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedTranscriptId === segment.id ? 'bg-[#c2828e88] text-white' : 'bg-[#8d506566] text-[#f0c8d0]'}`} style={blockStyle(segment, start, span)}><span className="block truncate">{segment.speaker_label || 'Speaker'}</span><span className="block truncate text-[9px] opacity-70">{segment.text}</span></button>) : <div className="muted flex h-full items-center justify-center text-xs">No speech annotations in this window</div>}<SelectionBand selection={audioSelection} start={start} span={span} /></div>
+      <LaneLabel icon={<Layers3 size={15} />} label="Chunks" />
+      <div className="relative h-8 overflow-hidden rounded-md bg-[#1b202b]">{chunks.filter(visible).map(chunk => <button key={chunk.id} title={`Chunk ${chunk.chunk_index + 1} · ${stamp(chunk.start_time)}–${stamp(chunk.end_time)}`} onClick={() => onSelectChunk(chunk)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedChunkId === chunk.id ? 'bg-[#5d9ca777] text-white' : 'bg-[#3e717e66] text-[#bce7e8]'}`} style={blockStyle(chunk, start, span)}><span className="block truncate">{chunk.title || `Chunk ${chunk.chunk_index + 1}`}</span><span className="block truncate text-[9px] opacity-70">{stamp(chunk.start_time)}</span></button>)}</div>
+      <LaneLabel icon={<Clapperboard size={15} />} label="Sequences" />
+      <div className="relative h-8 overflow-hidden rounded-md bg-[#1b202b]">{sequences.some(visible) ? sequences.filter(visible).map(sequence => <button key={sequence.id} title={`${sequence.title} · cuts ${sequence.first_cut ?? '?'}–${sequence.last_cut ?? '?'} · ${sequence.shots_written}/${sequence.shots_planned} shot prompts${sequence.cuts_changed ? ' · cuts changed' : ''}`} onClick={() => onOpenSequence(sequence.id)} className="cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] bg-[#7d5a3066] px-1 text-left text-[10px] text-[#f1d9b8]" style={blockStyle(sequence, start, span)}><span className="block truncate">{sequence.title}</span><span className="block truncate text-[9px] opacity-70">{sequence.shots_planned ? `${sequence.shots_written}/${sequence.shots_planned} prompts` : 'not directed'}</span></button>) : <div className="muted flex h-full items-center justify-center text-[11px]">{sequences.length ? 'No sequence in this window' : 'Create a sequence in the Sequences tab to direct a range of cuts as one short video'}</div>}</div>
 
     </div></div>
   </section>
+}
+
+/** A lane's icon with its name as tooltip and accessible label, so the lanes get the width. */
+function LaneLabel({ icon, label }: { icon: ReactNode; label: string }) {
+  return <div className="flex items-center justify-center text-[#98a1af]" title={label} aria-label={label} role="img">{icon}</div>
+}
+
+const SHORTCUTS: [string, string][] = [
+  ['Space', 'Play or pause'], ['S', 'Split the cut under the playhead'], ['Ctrl+Z', 'Undo the last cut edit'], ['Ctrl+Shift+Z', 'Redo'],
+  ['[ / ]', 'Previous / next cut'], ['N', 'Next cut needing action'], ['F', 'Filters'], ['Ctrl+S', 'Save the cut notes'],
+]
+
+/** Icon legend, mouse gestures and keyboard shortcuts, out of the way until asked for. */
+function TimelineHelp() {
+  return <Popover label="Timeline help" side="top" align="end" panelClassName="w-[320px] p-3 text-xs"
+    trigger={props => <button type="button" {...props} className="icon-btn icon-btn-sm ghost" aria-label="Timeline help" title="Legend and shortcuts"><CircleHelp size={15} aria-hidden /></button>}>
+    <h3 className="mb-2 text-[10px] font-bold uppercase tracking-[.12em] text-[#7e8797]">Cut icons</h3>
+    <ul className="grid grid-cols-2 gap-x-3 gap-y-1.5">{CUT_STATUS_LEGEND.map(item => <li key={item.label} className="flex items-center gap-1.5"><item.icon size={13} style={{ color: item.color }} aria-hidden />{item.label}</li>)}</ul>
+    <h3 className="mb-2 mt-4 text-[10px] font-bold uppercase tracking-[.12em] text-[#7e8797]">Mouse</h3>
+    <ul className="muted space-y-1"><li>Scroll over the timeline to zoom; middle-drag to move it.</li><li>Drag the waveform to seek; Shift-drag it to choose audio to transcribe again.</li><li>Double-click a cut to open its analysis.</li><li>Drag the top edge of the timeline to resize it.</li></ul>
+    <h3 className="mb-2 mt-4 text-[10px] font-bold uppercase tracking-[.12em] text-[#7e8797]">Keyboard</h3>
+    <dl className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-1.5">{SHORTCUTS.map(([key, text]) => <div key={key} className="contents"><dt><kbd className="kbd">{key}</kbd></dt><dd className="muted">{text}</dd></div>)}</dl>
+  </Popover>
 }

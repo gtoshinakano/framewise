@@ -13,7 +13,8 @@ const variantNames: Record<string, string> = { standard: 'Standard Q4_K_M', mtp:
 const fixed = (value: number | null, suffix = '') => value === null ? '–' : `${value}${suffix}`
 const labels: Record<string, string> = { unloaded: 'Unloaded', downloading: 'Downloading', loading: 'Loading', loaded: 'Loaded', generating: 'Generating', unloading: 'Unloading', worker_offline: 'Worker offline', error: 'Error' }
 
-export function LocalModelControl() {
+/** The text engine button and its settings dialog. `compact` matches the episode editor's smaller top bar. */
+export function LocalModelControl({ compact = false }: { compact?: boolean } = {}) {
   const [status, setStatus] = useState<ModelStatus | null>(null)
   const [settings, setSettings] = useState<TextSettings | null>(null)
   const [draft, setDraft] = useState<TextSettings | null>(null)
@@ -50,7 +51,7 @@ export function LocalModelControl() {
     catch (err) { setError((err as Error).message) } finally { setWorking(false) }
   }
   return <>
-    <button type="button" className="btn btn-quiet whitespace-nowrap" onClick={() => { setDraft(settings); setError(''); setOpen(true); void api<TextSettings>('/text-generation-settings').then(value => { setSettings(value); setDraft(value) }).catch(err => setError((err as Error).message)) }} title="Text engine settings"><Cpu size={15} /><span className="hidden sm:inline">{settings?.text_provider === 'local' ? 'Local' : 'OpenRouter'} · </span><span>Local {status ? labels[status.state] || status.state : 'checking…'}{status?.variant === 'mtp' ? ' · MTP' : ''}</span><span className="hidden md:inline">{remoteBadge(remote)}</span></button>
+    <button type="button" className={compact ? 'icon-btn icon-btn-md icon-btn-text whitespace-nowrap' : 'btn btn-quiet whitespace-nowrap'} onClick={() => { setDraft(settings); setError(''); setOpen(true); void api<TextSettings>('/text-generation-settings').then(value => { setSettings(value); setDraft(value) }).catch(err => setError((err as Error).message)) }} title="Text engine settings"><Cpu size={15} /><span className="hidden sm:inline">{settings?.text_provider === 'local' ? 'Local' : 'OpenRouter'} · </span><span>Local {status ? labels[status.state] || status.state : 'checking…'}{status?.variant === 'mtp' ? ' · MTP' : ''}</span><span className="hidden md:inline">{remoteBadge(remote)}</span></button>
     {open && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4" onMouseDown={event => { if (event.target === event.currentTarget) setOpen(false) }}>
       <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="text-engine-title" className="max-h-[92vh] w-full max-w-2xl space-y-4 overflow-y-auto rounded-xl border hairline bg-[#1b202a] p-5 shadow-2xl outline-none">
         <div className="flex items-center justify-between"><h2 id="text-engine-title" className="text-base font-semibold">Text inference engine</h2><button type="button" onClick={() => setOpen(false)} aria-label="Close text engine settings" className="rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#303746]"><X size={18} /></button></div>

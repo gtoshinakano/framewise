@@ -277,6 +277,15 @@ def init_db():
             result_id TEXT, source_hash TEXT NOT NULL, subtitle_run_id TEXT, transcript_count INTEGER NOT NULL DEFAULT 0,
             subtitle_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        -- Undo/redo log of cut boundary edits (cut_history.py): the active cuts before and after each edit.
+        -- Cut ids live only inside the JSON snapshots, so this table never keeps a cut from being deleted.
+        CREATE TABLE IF NOT EXISTS cut_edits (
+            id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            action TEXT NOT NULL, label TEXT NOT NULL, cut_id TEXT,
+            before_json TEXT NOT NULL, after_json TEXT NOT NULL, created_ids_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, undone_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS cut_edits_episode_idx ON cut_edits(episode_id);
         """)
         from .assistant import store as assistant_store
         assistant_store.init_schema(db)

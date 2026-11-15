@@ -10,9 +10,9 @@ function duration(job: Job, now: number) {
   return `${Math.floor(seconds / 3600)}h ${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}m ${String(seconds % 60).padStart(2, '0')}s`
 }
 
-export function AnalysisHistory({ jobs, cuts, onSelectCut, onChanged }: { jobs: Job[]; cuts: Cut[]; onSelectCut: (cut: Cut) => void; onChanged: () => Promise<void> }) {
+export function AnalysisHistory({ jobs, cuts, onSelectCut, onChanged, defaultOpen, className = 'mx-6 mb-5' }: { jobs: Job[]; cuts: Cut[]; onSelectCut: (cut: Cut) => void; onChanged: () => Promise<void>; defaultOpen?: boolean; className?: string }) {
   const [now, setNow] = useState(Date.now())
-  const [open, setOpen] = useState(jobs.some(job => ['queued', 'running', 'failed'].includes(job.status)))
+  const [open, setOpen] = useState(defaultOpen ?? jobs.some(job => ['queued', 'running', 'failed'].includes(job.status)))
   const [error, setError] = useState('')
   const [working, setWorking] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -39,7 +39,7 @@ export function AnalysisHistory({ jobs, cuts, onSelectCut, onChanged }: { jobs: 
     try { await api(`/jobs/${job.id}/evidence/${cutId}`, { method: 'DELETE' }); const value = await api<Outputs>(`/jobs/${job.id}/outputs`); if (request === outputRequest.current) setOutputs(value); await onChanged() } catch (err) { setError((err as Error).message) } finally { setWorking(null) }
   }
   const label = (job: Job) => job.pipeline === 'analyze' && job.stages?.length === 1 ? ({ subtitle_ocr: 'Subtitle detection and OCR', initial_frame: 'Initial frame', video_analysis: 'Video analysis', last_frame: 'Last frame' } as Record<string, string>)[job.stages[0]] : ({ analyze: 'Visual analysis', character_detect: 'Character detection', regen: 'Summary', consistency_summary: 'Consistency summary', prepare: 'Prepare', hardcuts: 'Hard-cut detection', cutframes: 'Cut previews', transcribe: 'Transcription', voice_sample: 'Voice sample', subtitles: 'Subtitle extraction' } as Record<string, string>)[job.pipeline] || job.pipeline.replaceAll('_', ' ')
-  return <section className="mx-6 mb-5 rounded-lg border hairline p-3 text-xs">
+  return <section className={`${className} rounded-lg border hairline p-3 text-xs`}>
     <div>
       <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} className="cursor-pointer font-semibold">Runs, queue &amp; history ({jobs.length}) {jobs.some(job => job.status === 'failed') && <span className="ml-2 text-[#ff9fa7]">· {jobs.filter(job => job.status === 'failed').length} failed</span>}</button>
       {open && <><p className="muted mt-2">Runs retain their settings, errors and links to generated data. Later edits create revisions.</p>

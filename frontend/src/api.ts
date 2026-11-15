@@ -17,7 +17,10 @@ export type JobStage = VisualStage | 'subtitle_ocr' | 'last_frame'
 export type Job = { cuts: JobCut[]; id: string; pipeline: string; workflow?: string | null; stages?: JobStage[] | null; sequence?: { id: string; step: string; shot_key: string | null } | null; status: string; stage: string; error: string | null; created_at: string; updated_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null }
 export type EpisodeStatus = { status: string; stage: string; error: string | null; job_id: string | null; job_status: string | null }
 export type EpisodeSummary = { id: string; title: string; status: string; stage: string; error: string | null; duration: number | null; created_at: string }
-export type Episode = EpisodeSummary & { project_id: string; original_filename: string; width: number | null; height: number | null; has_audio: boolean; proxy_ready: boolean; settings: Settings; subtitle_language: string | null; subtitles: { language: string | null; run: SubtitleRun | null }; cuts: Cut[]; archived_cuts: Cut[]; chunks: Chunk[]; jobs: Job[] }
+export type Episode = EpisodeSummary & { project_id: string; original_filename: string; width: number | null; height: number | null; has_audio: boolean; proxy_ready: boolean; settings: Settings; subtitle_language: string | null; subtitles: { language: string | null; run: SubtitleRun | null }; cuts: Cut[]; archived_cuts: Cut[]; chunks: Chunk[]; jobs: Job[]; cut_history?: CutHistory }
+// The latest cut edit Undo would reverse and the one Redo would apply again (backend cut_history.py).
+export type CutEditEntry = { id: string; label: string; action: string; created_at: string }
+export type CutHistory = { undo: CutEditEntry | null; redo: CutEditEntry | null }
 export type Project = { id: string; title: string; synopsis: string; created_at: string; episodes: EpisodeSummary[] }
 export type ContextItem = { id: string; project_id: string; episode_id: string | null; kind: 'chapter_synopsis' | 'chapter_happenings' | 'character' | 'world' | 'scenario' | 'object' | 'general'; title: string; content: string; created_at: string; updated_at: string }
 export type Waveform = { peaks: number[]; duration: number }

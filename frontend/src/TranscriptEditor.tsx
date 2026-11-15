@@ -1,12 +1,21 @@
-import { useEffect, useRef, useState } from 'react'
-import { AudioLines, History, Plus, Save, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { AudioLines, Captions, History, ListMusic, Mic, Play, Plus, RefreshCw, Save, Trash2, Wrench, X } from 'lucide-react'
 import { api, type AudioSelection, type ContextItem, type Job, type SubtitleRun, type TranscriptSegment } from './api'
+import { IconButton, Section, SegmentedControl } from './EditorUi'
+import { PANEL_ACCENT } from './InspectorRail'
 import SubtitlePanel from './SubtitlePanel'
+import { TimeRangeInput } from './TimecodeInput'
 import TranscribeRangePanel from './TranscribeRangePanel'
+import { formatDuration, formatTimecode } from './timecode'
+
+export type AudioView = 'lines' | 'tools' | 'voices'
 
 type Draft = Pick<TranscriptSegment, 'start_time' | 'end_time' | 'text' | 'speaker_label' | 'character_context_id'> & { id?: string; deleted?: boolean; superseded_by?: string | null }
 type VoiceRange = { start_time: number; end_time: number }
 type VoiceSample = { id: string; character_context_id: string; episode_title: string | null; ranges: VoiceRange[]; source_filename: string | null; preview_available: boolean }
+
+const PAGE_SIZE = 50
+const accent = PANEL_ACCENT.audio
 
 function ExcerptPreview({ episodeId, ranges }: { episodeId: string; ranges: VoiceRange[] }) {
   const [url, setUrl] = useState('')
@@ -33,7 +42,7 @@ function ExcerptPreview({ episodeId, ranges }: { episodeId: string; ranges: Voic
     } catch (err) { if (!request.signal.aborted) setError((err as Error).message) }
     finally { if (!request.signal.aborted) setLoading(false) }
   }
-  return <div className="space-y-2"><button type="button" className="btn btn-quiet w-full" disabled={loading} onClick={prepare}>{loading ? 'Preparing preview…' : 'Preview all excerpts'}</button>
+  return <div className="space-y-2"><button type="button" className="btn btn-quiet w-full !py-1.5 !text-xs" disabled={loading} onClick={prepare}><ListMusic size={14} /> {loading ? 'Preparing preview…' : 'Preview all excerpts together'}</button>
     {url && <audio className="w-full" controls autoPlay src={url} aria-label="Combined excerpt preview" />}
     {error && <p className="text-xs text-[#ff9fa7]">{error}</p>}
   </div>
@@ -45,7 +54,36 @@ function UploadedPreview({ file }: { file: File }) {
   return url ? <audio className="w-full" controls src={url} aria-label="Uploaded voice preview" /> : null
 }
 
-export default function TranscriptEditor({ episodeId, projectId, duration, currentTime, segments, selectedId, onSelect, onSaved, playRange, processing, hasAudio, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection }: {
+/** One transcript line opened for editing, right where it sits in the list. */
+function SegmentEditor({ draft, setDraft, characters, duration, currentTime, busy, onSave, onDelete, onCancel, playRange }: {
+  draft: Draft; setDraft: (draft: Draft) => void; characters: ContextItem[]; duration: number; currentTime: number; busy: boolean
+  onSave: () => void; onDelete: () => void; onCancel: () => void; playRange: (start: number, end: number) => void
+}) {
+  const historical = !!draft.superseded_by || !!draft.deleted
+  const valid = !!draft.text.trim() && draft.end_time > draft.start_time
+  const onKey = (event: KeyboardEvent<HTMLDivElement>) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (valid && !historical) onSave() } }
+  return <div onKeyDown={onKey} className="space-y-3 rounded-b-lg border border-t-0 border-[#7a4a57] bg-[#1d171c] p-3">
+    {historical && <p className="text-[11px] text-[#f2c879]">An earlier revision; it cannot be edited.</p>}
+    <TimeRangeInput compact start={draft.start_time} end={draft.end_time} min={0} max={duration} playhead={currentTime} lockStart={historical} lockEnd={historical}
+      onChange={range => setDraft({ ...draft, start_time: range.start ?? draft.start_time, end_time: range.end ?? draft.end_time })} />
+    <label className="block"><span className="label !mb-1 !text-[10px]">Speech or audio note</span><textarea className="field min-h-20 resize-y !py-2 text-sm" maxLength={20000} disabled={historical} value={draft.text} onChange={event => setDraft({ ...draft, text: event.target.value })} placeholder="What is heard?" autoFocus={!draft.id} /></label>
+    <div className="grid grid-cols-2 gap-2">
+      <label className="block"><span className="label !mb-1 !text-[10px]">Speaker label</span><input className="field !py-1.5 text-sm" maxLength={200} disabled={historical} value={draft.speaker_label} onChange={event => setDraft({ ...draft, speaker_label: event.target.value })} placeholder="e.g. Narrator" /></label>
+      <label className="block"><span className="label !mb-1 !text-[10px]">Character</span><select className="field !py-1.5 text-sm" disabled={historical} value={draft.character_context_id || ''} onChange={event => setDraft({ ...draft, character_context_id: event.target.value || null })}>
+        <option value="">Unassigned</option>{characters.map(character => <option key={character.id} value={character.id}>{character.title}</option>)}
+      </select></label>
+    </div>
+    <div className="flex items-center gap-1.5">
+      <IconButton icon={Play} label="Play this line" size="sm" disabled={draft.end_time <= draft.start_time} onClick={() => playRange(draft.start_time, draft.end_time)} />
+      {draft.id && !historical && <IconButton icon={Trash2} label="Delete this line" tone="danger" size="sm" disabled={busy} onClick={onDelete} />}
+      <span className="flex-1" />
+      <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" onClick={onCancel}>Close</button>
+      {!historical && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={busy || !valid} onClick={onSave} title="Save (Ctrl+S)"><Save size={13} /> Save</button>}
+    </div>
+  </div>
+}
+
+export default function TranscriptEditor({ episodeId, projectId, duration, currentTime, segments, selectedId, onSelect, onSaved, playRange, processing, hasAudio, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection, view, onViewChange }: {
   episodeId: string
   projectId: string
   duration: number
@@ -62,6 +100,8 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
   jobs: Job[]
   audioSelection: AudioSelection | null
   onAudioSelection: (selection: AudioSelection | null) => void
+  view: AudioView
+  onViewChange: (view: AudioView) => void
 }) {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [characters, setCharacters] = useState<ContextItem[]>([])
@@ -72,12 +112,10 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
   const [error, setError] = useState('')
   const [voiceSamples, setVoiceSamples] = useState<VoiceSample[]>([])
   const [voiceCharacter, setVoiceCharacter] = useState('')
-  const [voiceStart, setVoiceStart] = useState(0)
-  const [voiceEnd, setVoiceEnd] = useState(5)
+  const [voiceRange, setVoiceRange] = useState<{ start: number | null; end: number | null }>({ start: null, end: null })
   const [voiceRanges, setVoiceRanges] = useState<VoiceRange[]>([])
   const [voiceFile, setVoiceFile] = useState<File | null>(null)
   const [voiceFileKey, setVoiceFileKey] = useState(0)
-  const playheadSeconds = Math.round(currentTime * 1000) / 1000
   useEffect(() => { setVoiceRanges([]); setVoiceFile(null) }, [episodeId])
   async function loadVoices() { setVoiceSamples(await api<VoiceSample[]>('/projects/' + projectId + '/voice-samples')) }
   useEffect(() => {
@@ -101,8 +139,9 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
   function addAtPlayhead() {
     const start = Math.max(0, Math.min(duration - 0.1, Math.round(currentTime * 10) / 10))
     setDraft({ start_time: start, end_time: Math.min(duration, start + 5), text: '', speaker_label: '', character_context_id: null })
-    onSelect(null)
+    onSelect(null); setHistory(false); onViewChange('lines')
   }
+  function close() { setDraft(null); onSelect(null) }
   async function save() {
     if (!draft || !draft.text.trim() || draft.end_time <= draft.start_time) return
     setBusy(true); setError('')
@@ -117,7 +156,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
     finally { setBusy(false) }
   }
   async function remove() {
-    if (!draft?.id || !window.confirm('Delete this transcript segment?')) return
+    if (!draft?.id || !window.confirm('Delete this transcript line? It stays in the history.')) return
     setBusy(true); setError('')
     try {
       await api('/transcript-segments/' + draft.id, { method: 'DELETE' })
@@ -156,66 +195,92 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
     finally { setBusy(false) }
   }
   const visibleSegments = history ? historySegments : segments
-  const pageSize = 50
-  const pageCount = Math.max(1, Math.ceil(visibleSegments.length / pageSize))
+  const pageCount = Math.max(1, Math.ceil(visibleSegments.length / PAGE_SIZE))
   const currentPage = Math.min(page, pageCount - 1)
   useEffect(() => {
     const index = visibleSegments.findIndex(segment => segment.id === selectedId)
-    if (index >= 0) setPage(Math.floor(index / pageSize))
+    if (index >= 0) setPage(Math.floor(index / PAGE_SIZE))
   }, [selectedId, history])
-  const rangeValid = Number.isFinite(voiceStart) && Number.isFinite(voiceEnd) && voiceStart >= 0 && voiceEnd <= duration && voiceEnd > voiceStart && !voiceRanges.some(range => voiceStart < range.end_time && voiceEnd > range.start_time)
+  useEffect(() => { if (view === 'lines' && selectedId) document.getElementById(`transcript-row-${selectedId}`)?.scrollIntoView({ block: 'nearest' }) }, [selectedId, view, currentPage])
+  const voiceStart = voiceRange.start, voiceEnd = voiceRange.end
+  const voiceRangeValid = voiceStart !== null && voiceEnd !== null && voiceEnd > voiceStart && voiceStart >= 0 && voiceEnd <= duration && !voiceRanges.some(range => voiceStart < range.end_time && voiceEnd > range.start_time)
   const totalVoiceDuration = voiceRanges.reduce((sum, range) => sum + range.end_time - range.start_time, 0)
-  const historicalDraft = !!draft && (!!('superseded_by' in draft && draft.superseded_by) || draft.deleted)
-  return <div className="scrollbar max-h-[calc(100vh-115px)] overflow-y-auto p-5">
-    <div className="flex items-center justify-between gap-3">
-      <div><p className="text-xs font-semibold uppercase tracking-[.14em] text-[#7bc5cb]">Audio workspace</p><h2 className="mt-1 text-lg font-semibold">Transcript</h2></div>
-      <button onClick={addAtPlayhead} disabled={!duration || busy} className="btn btn-quiet px-2.5 py-2"><Plus size={14} /> Add</button>
+  const transcribing = jobs.find(job => job.pipeline === 'transcribe' && ['queued', 'running'].includes(job.status))
+  const subtitling = jobs.some(job => job.pipeline === 'subtitles' && ['queued', 'running'].includes(job.status))
+  const characterName = (id: string | null) => characters.find(character => character.id === id)?.title
+  return <div className="flex h-full min-h-0 flex-col">
+    <div className="border-b hairline px-4 pb-3 pt-3">
+      <p className="text-xs font-semibold uppercase tracking-[.14em]" style={{ color: accent }}>Audio</p>
+      <SegmentedControl className="mt-2 w-full" label="Audio views" value={view} onChange={onViewChange} options={[
+        { value: 'lines', label: 'Lines', icon: AudioLines, badge: <span className="muted font-mono text-[10px]">{segments.length}</span> },
+        { value: 'tools', label: 'Tools', icon: Wrench, badge: transcribing || subtitling ? <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#f5c678]" aria-label="Working" /> : undefined },
+        { value: 'voices', label: 'Voices', icon: Mic },
+      ]} />
     </div>
-    <p className="muted mt-2 text-xs leading-5">Review speech against playback and adjust its timing independently of cuts. Current segments are included in cut analysis.</p>
-    <button disabled={busy || processing || !hasAudio} onClick={() => queueAudio('/transcribe')} className="btn btn-primary mt-4 w-full"><AudioLines size={14} /> Extract audio &amp; transcribe</button>
-    <TranscribeRangePanel episodeId={episodeId} duration={duration} currentTime={currentTime} segments={segments} selection={audioSelection} onSelectionChange={onAudioSelection} playRange={playRange} hasAudio={hasAudio} busy={processing} jobs={jobs} onQueued={onSaved} />
-    <SubtitlePanel episodeId={episodeId} ready={duration > 0} busy={processing} savedLanguage={subtitleLanguage} run={subtitleRun} jobs={jobs} onChanged={onSaved} />
-    <div className="mt-5 space-y-3 rounded-lg border hairline p-3">
-      <h3 className="text-xs font-semibold">Character voice reference</h3>
-      <p className="muted text-[11px]">Add one or more excerpts of the same speaker, totaling 2–60 seconds, or upload a voice recording. References can be used across this project.</p>
-      <select className="field" value={voiceCharacter} onChange={event => setVoiceCharacter(event.target.value)}><option value="">Choose character</option>{characters.map(character => <option key={character.id} value={character.id}>{character.title}</option>)}</select>
-      <p className="text-xs text-[#e8dfff]">Playhead: <output aria-label="Playhead in seconds" className="font-mono tabular-nums">{playheadSeconds.toFixed(3)} seconds</output></p>
-      <p className="muted text-[11px]">Focus a time field to use the playhead, then edit it if needed.</p>
-      <div className="grid grid-cols-2 gap-2"><label><span className="label">Start · seconds</span><input type="number" className="field" step="0.001" min="0" max={duration} value={voiceStart} onFocus={event => { event.currentTarget.value = String(playheadSeconds); setVoiceStart(playheadSeconds); event.currentTarget.select() }} onChange={event => setVoiceStart(Number(event.target.value))} /><button type="button" className="muted mt-1 text-[11px]" onClick={() => setVoiceStart(playheadSeconds)}>Set to playhead</button></label><label><span className="label">End · seconds</span><input type="number" className="field" step="0.001" min="0" max={duration} value={voiceEnd} onFocus={event => { event.currentTarget.value = String(playheadSeconds); setVoiceEnd(playheadSeconds); event.currentTarget.select() }} onChange={event => setVoiceEnd(Number(event.target.value))} /><button type="button" className="muted mt-1 text-[11px]" onClick={() => setVoiceEnd(playheadSeconds)}>Set to playhead</button></label></div>
-      <div className="flex gap-2"><button className="btn btn-quiet flex-1" disabled={!hasAudio || voiceEnd <= voiceStart} onClick={() => playRange(voiceStart, voiceEnd)}>Play excerpt</button><button className="btn btn-quiet flex-1" disabled={!hasAudio || !rangeValid || voiceRanges.length >= 50 || totalVoiceDuration + voiceEnd - voiceStart > 60} onClick={() => setVoiceRanges([...voiceRanges, { start_time: voiceStart, end_time: voiceEnd }])}>Add excerpt</button></div>
-      {voiceRanges.map((range, index) => <div key={index} className="flex items-center justify-between gap-2 text-[11px]"><span>Excerpt {index + 1} · {range.start_time.toFixed(3)}–{range.end_time.toFixed(3)}s</span><div className="flex gap-3"><button onClick={() => playRange(range.start_time, range.end_time)}>Play</button><button onClick={() => setVoiceRanges(voiceRanges.filter((_, i) => i !== index))} aria-label={'Remove excerpt ' + (index + 1)}><Trash2 size={13} /></button></div></div>)}
-      {voiceRanges.length > 0 && <ExcerptPreview key={episodeId + JSON.stringify(voiceRanges)} episodeId={episodeId} ranges={voiceRanges} />}
-      <button className="btn btn-quiet w-full" disabled={busy || processing || !hasAudio || !voiceCharacter || totalVoiceDuration < 2 || totalVoiceDuration > 60} onClick={saveVoiceRanges}>Save {voiceRanges.length} excerpt{voiceRanges.length === 1 ? '' : 's'} ({totalVoiceDuration.toFixed(1)}s)</button>
-      <label className="block"><span className="label">Or upload voice audio · 2–60 seconds, up to 25 MB</span><input key={voiceFileKey} type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" className="field text-xs" onChange={event => setVoiceFile(event.target.files?.[0] || null)} /></label>
-      {voiceFile && <UploadedPreview file={voiceFile} />}
-      <button className="btn btn-quiet w-full" disabled={busy || processing || !voiceCharacter || !voiceFile} onClick={uploadVoice}>Upload voice</button>
-      {voiceSamples.map(sample => <div key={sample.id} className="space-y-2 rounded border hairline p-2 text-[11px]"><div className="flex items-center justify-between gap-2"><span>{characters.find(c => c.id === sample.character_context_id)?.title || 'Character'} · {sample.source_filename ? 'Upload: ' + sample.source_filename : (sample.episode_title || 'Deleted episode') + ' · ' + sample.ranges.map(range => range.start_time.toFixed(1) + '–' + range.end_time.toFixed(1) + 's').join(', ')}</span><button disabled={busy} onClick={() => removeVoice(sample.id)} aria-label="Delete voice reference"><Trash2 size={13} /></button></div>{sample.preview_available ? <audio className="w-full" controls preload="none" src={'/api/voice-samples/' + sample.id + '/audio'} aria-label={'Voice reference for ' + (characters.find(c => c.id === sample.character_context_id)?.title || 'character')} /> : <p className="muted">Audio preview unavailable for this older reference.</p>}</div>)}
+    {error && <p role="alert" className="mx-4 mt-3 flex items-start justify-between gap-2 text-xs text-[#ff9fa7]">{error}<button onClick={() => setError('')} aria-label="Dismiss"><X size={13} /></button></p>}
+    <div className="scrollbar min-h-0 flex-1 overflow-y-auto">
+      {view === 'lines' && <div className="p-4">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <p className="muted text-[11px]">{history ? 'All revisions, newest state last' : `${segments.length} current lines · used by cut analysis`}</p>
+          <div className="flex gap-1">
+            <IconButton icon={History} label={history ? 'Hide earlier revisions' : 'Show earlier revisions'} size="sm" aria-pressed={history} onClick={() => void toggleHistory()} />
+            <IconButton icon={Plus} label="Add a line at the playhead" text="Add" size="sm" disabled={!duration || busy} onClick={addAtPlayhead} />
+          </div>
+        </div>
+        {draft && !draft.id && <div className="mb-2"><div className="rounded-t-lg border border-[#7a4a57] bg-[#2a1d23] px-3 py-2 text-xs font-semibold">New line</div>
+          <SegmentEditor draft={draft} setDraft={setDraft} characters={characters} duration={duration} currentTime={currentTime} busy={busy} onSave={() => void save()} onDelete={() => void remove()} onCancel={close} playRange={playRange} /></div>}
+        <div className="space-y-1.5">
+          {visibleSegments.length ? visibleSegments.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE).map(segment => {
+            const open = draft?.id === segment.id && selectedId === segment.id
+            return <div key={segment.id} id={`transcript-row-${segment.id}`}>
+              <button aria-expanded={open} onClick={() => { if (open) close(); else { onSelect(segment.id); setDraft(segment) } }}
+                className={`w-full border p-2.5 text-left ${open ? 'rounded-t-lg border-[#7a4a57] bg-[#2a1d23]' : selectedId === segment.id ? 'rounded-lg border-[#7a4a57] bg-[#241a1f]' : 'rounded-lg border-[#2c323d] bg-[#181d26] hover:border-[#56464d]'}`}>
+                <span className="flex justify-between gap-2 font-mono text-[10px] tabular-nums text-[#c7aab2]"><span>{formatTimecode(segment.start_time, { precision: 1 })} – {formatTimecode(segment.end_time, { precision: 1 })}</span><span className="font-sans">{segment.deleted ? 'Deleted' : segment.superseded_by ? 'Earlier revision' : formatDuration(segment.end_time - segment.start_time)}</span></span>
+                <span className="mt-0.5 line-clamp-2 text-xs"><strong className="font-semibold" style={{ color: accent }}>{characterName(segment.character_context_id) || segment.speaker_label || 'Speaker'}</strong> {segment.text}</span>
+              </button>
+              {open && draft && <SegmentEditor draft={draft} setDraft={setDraft} characters={characters} duration={duration} currentTime={currentTime} busy={busy} onSave={() => void save()} onDelete={() => void remove()} onCancel={close} playRange={playRange} />}
+            </div>
+          }) : <div className="muted rounded-lg border border-dashed hairline p-5 text-center text-xs">No transcript lines yet. Transcribe the episode under Tools.</div>}
+        </div>
+        {pageCount > 1 && <div className="mt-3 flex items-center justify-between text-xs"><button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} className="btn btn-quiet !px-2.5 !py-1">Previous</button><span className="muted">Page {currentPage + 1} of {pageCount}</span><button disabled={currentPage >= pageCount - 1} onClick={() => setPage(currentPage + 1)} className="btn btn-quiet !px-2.5 !py-1">Next</button></div>}
+      </div>}
+      {view === 'tools' && <>
+        <Section id="audio.transcribe" title="Transcribe whole episode" icon={AudioLines} accent={accent} badge={transcribing ? <span className="ml-1 text-[10px] normal-case tracking-normal text-[#f5c678]">{transcribing.status === 'queued' ? 'queued' : 'running'}</span> : null}>
+          <p className="muted text-[11px] leading-4">Extracts the audio and transcribes all speech with speaker labels. Lines you edited by hand stay in the history.</p>
+          <button disabled={busy || processing || !hasAudio} onClick={() => queueAudio('/transcribe')} className="btn btn-primary mt-3 w-full !py-2"><AudioLines size={14} /> Transcribe whole episode</button>
+          {!hasAudio && <p className="muted mt-2 text-[11px]">This video has no audio track.</p>}
+        </Section>
+        <Section id="audio.redo" title="Redo part of the transcript" icon={RefreshCw} accent={accent} defaultOpen={false} openSignal={audioSelection ? `${audioSelection.start}-${audioSelection.end}` : null}>
+          <TranscribeRangePanel episodeId={episodeId} duration={duration} currentTime={currentTime} segments={segments} selection={audioSelection} onSelectionChange={onAudioSelection} playRange={playRange} hasAudio={hasAudio} busy={processing} jobs={jobs} onQueued={onSaved} />
+        </Section>
+        <Section id="audio.subtitles" title="Burned-in subtitles" icon={Captions} accent={accent} defaultOpen={false} badge={subtitling ? <span className="ml-1 text-[10px] normal-case tracking-normal text-[#f5c678]">running</span> : null}>
+          <SubtitlePanel episodeId={episodeId} ready={duration > 0} busy={processing} savedLanguage={subtitleLanguage} run={subtitleRun} jobs={jobs} onChanged={onSaved} />
+        </Section>
+      </>}
+      {view === 'voices' && <div className="space-y-4 p-4">
+        <p className="muted text-[11px] leading-4">A voice reference helps match speakers to characters across this project. Add excerpts of one speaker totalling 2–60 seconds, or upload a recording.</p>
+        <label className="block"><span className="label">Character</span><select className="field !py-2" value={voiceCharacter} onChange={event => setVoiceCharacter(event.target.value)}><option value="">Choose character</option>{characters.map(character => <option key={character.id} value={character.id}>{character.title}</option>)}</select></label>
+        <div className="rounded-lg border hairline p-3">
+          <p className="mb-2 text-xs font-semibold">From this episode</p>
+          <TimeRangeInput compact start={voiceStart} end={voiceEnd} min={0} max={duration} playhead={currentTime} onChange={setVoiceRange} onPlay={hasAudio ? playRange : undefined} />
+          <button className="btn btn-quiet mt-2 w-full !py-1.5 !text-xs" disabled={!hasAudio || !voiceRangeValid || voiceRanges.length >= 50 || totalVoiceDuration + (voiceEnd ?? 0) - (voiceStart ?? 0) > 60} onClick={() => { if (voiceStart !== null && voiceEnd !== null) { setVoiceRanges([...voiceRanges, { start_time: voiceStart, end_time: voiceEnd }]); setVoiceRange({ start: null, end: null }) } }}><Plus size={13} /> Add excerpt</button>
+          {voiceRanges.length > 0 && <div className="mt-3 flex flex-wrap gap-1.5">{voiceRanges.map((range, index) => <span key={index} className="chip font-mono tabular-nums">
+            <button onClick={() => playRange(range.start_time, range.end_time)} aria-label={`Play excerpt ${index + 1}`} className="!text-[#e89aab]"><Play size={11} /></button>{formatTimecode(range.start_time, { precision: 1 })}–{formatTimecode(range.end_time, { precision: 1 })}
+            <button onClick={() => setVoiceRanges(voiceRanges.filter((_, i) => i !== index))} aria-label={`Remove excerpt ${index + 1}`}><X size={11} /></button></span>)}</div>}
+          {voiceRanges.length > 0 && <div className="mt-3 space-y-2"><ExcerptPreview key={episodeId + JSON.stringify(voiceRanges)} episodeId={episodeId} ranges={voiceRanges} />
+            <button className="btn btn-primary w-full !py-1.5 !text-xs" disabled={busy || processing || !hasAudio || !voiceCharacter || totalVoiceDuration < 2 || totalVoiceDuration > 60} onClick={saveVoiceRanges} title={!voiceCharacter ? 'Choose a character first' : undefined}><Save size={13} /> Save {voiceRanges.length} excerpt{voiceRanges.length === 1 ? '' : 's'} ({totalVoiceDuration.toFixed(1)}s)</button></div>}
+        </div>
+        <div className="rounded-lg border hairline p-3">
+          <label className="block"><span className="mb-2 block text-xs font-semibold">Or upload a recording <span className="muted font-normal">· 2–60 s, up to 25 MB</span></span><input key={voiceFileKey} type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" className="field !py-1.5 text-xs" onChange={event => setVoiceFile(event.target.files?.[0] || null)} /></label>
+          {voiceFile && <div className="mt-2"><UploadedPreview file={voiceFile} /></div>}
+          <button className="btn btn-quiet mt-2 w-full !py-1.5 !text-xs" disabled={busy || processing || !voiceCharacter || !voiceFile} onClick={uploadVoice}>Upload voice</button>
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-semibold">Saved references <span className="muted font-normal">{voiceSamples.length}</span></p>
+          <div className="space-y-2">{voiceSamples.map(sample => <div key={sample.id} className="space-y-2 rounded-lg border hairline p-2 text-[11px]"><div className="flex items-center justify-between gap-2"><span className="min-w-0"><strong>{characterName(sample.character_context_id) || 'Character'}</strong> <span className="muted">· {sample.source_filename ? 'Upload: ' + sample.source_filename : (sample.episode_title || 'Deleted episode') + ' · ' + sample.ranges.map(range => formatTimecode(range.start_time, { precision: 1 }) + '–' + formatTimecode(range.end_time, { precision: 1 })).join(', ')}</span></span><IconButton icon={Trash2} label="Delete voice reference" tone="danger" size="sm" className="ghost" disabled={busy} onClick={() => removeVoice(sample.id)} /></div>{sample.preview_available ? <audio className="h-8 w-full" controls preload="none" src={'/api/voice-samples/' + sample.id + '/audio'} aria-label={'Voice reference for ' + (characterName(sample.character_context_id) || 'character')} /> : <p className="muted">Audio preview unavailable for this older reference.</p>}</div>)}
+            {!voiceSamples.length && <p className="muted text-[11px]">No voice references yet.</p>}</div>
+        </div>
+      </div>}
     </div>
-    {error && <p className="mt-4 text-xs text-[#ff9fa7]">{error}</p>}
-    <div className="mt-5 space-y-2">
-      {visibleSegments.length ? visibleSegments.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map(segment => <button key={segment.id} onClick={() => { onSelect(segment.id); setDraft(segment) }}
-        className={'w-full rounded-lg border p-3 text-left ' + (selectedId === segment.id ? 'border-[#7bc5cb] bg-[#20363c]' : 'border-[#343b47] bg-[#1b222c] hover:border-[#56777e]')}>
-        <span className="flex justify-between gap-2 text-[10px] text-[#a9bbc0]"><span>{segment.start_time.toFixed(1)}s – {segment.end_time.toFixed(1)}s</span>{segment.deleted && <span>Deleted</span>}</span>
-        <strong className="mt-1 block truncate text-xs">{segment.speaker_label || 'Speaker'}: {segment.text}</strong>{segment.superseded_by && <span className="muted block text-[10px]">Earlier revision</span>}
-      </button>) : <div className="muted rounded-lg border border-dashed hairline p-5 text-center text-xs">No transcript segments yet.</div>}
-    </div>
-    {pageCount > 1 && <div className="mt-3 flex items-center justify-between text-xs"><button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} className="btn btn-quiet">Previous</button><span className="muted">Page {currentPage + 1} of {pageCount}</span><button disabled={currentPage >= pageCount - 1} onClick={() => setPage(currentPage + 1)} className="btn btn-quiet">Next</button></div>}
-    <button onClick={toggleHistory} className="muted mt-3 flex items-center gap-1 text-[11px] hover:text-white"><History size={12} /> {history ? 'Hide history' : 'Show history'}</button>
-    {draft && <div className="mt-6 space-y-4 border-t hairline pt-5">
-      <h3 className="text-sm font-semibold">{historicalDraft ? 'Earlier speech revision' : draft.id ? 'Edit speech segment' : 'New speech segment'}</h3>
-      <div className="grid grid-cols-2 gap-3">
-        <label><span className="label">Start · seconds</span><input className="field" type="number" min="0" max={duration} step="0.01" disabled={historicalDraft} value={draft.start_time} onChange={event => setDraft({ ...draft, start_time: Number(event.target.value) })} /><button type="button" disabled={historicalDraft} onClick={() => setDraft({ ...draft, start_time: Math.round(currentTime * 100) / 100 })} className="muted mt-1 text-[11px] hover:text-white">Set to playhead</button></label>
-        <label><span className="label">End · seconds</span><input className="field" type="number" min="0" max={duration} step="0.01" disabled={historicalDraft} value={draft.end_time} onChange={event => setDraft({ ...draft, end_time: Number(event.target.value) })} /><button type="button" disabled={historicalDraft} onClick={() => setDraft({ ...draft, end_time: Math.round(currentTime * 100) / 100 })} className="muted mt-1 text-[11px] hover:text-white">Set to playhead</button></label>
-      </div>
-      <label className="block"><span className="label">Speech or audio note</span><textarea className="field min-h-24 resize-y" maxLength={20000} disabled={historicalDraft} value={draft.text} onChange={event => setDraft({ ...draft, text: event.target.value })} placeholder="What is heard?" /></label>
-      <label className="block"><span className="label">Speaker label</span><input className="field" maxLength={200} disabled={historicalDraft} value={draft.speaker_label} onChange={event => setDraft({ ...draft, speaker_label: event.target.value })} placeholder="e.g. Narrator, Voice A" /></label>
-      <label className="block"><span className="label">Linked character</span><select className="field" disabled={historicalDraft} value={draft.character_context_id || ''} onChange={event => setDraft({ ...draft, character_context_id: event.target.value || null })}>
-        <option value="">Unassigned</option>{characters.map(character => <option key={character.id} value={character.id}>{character.title}</option>)}
-      </select></label>
-      {draft.end_time <= draft.start_time && <p className="text-xs text-[#ff9fa7]">End must be after start.</p>}
-      <div className="flex gap-2"><button onClick={() => playRange(draft.start_time, draft.end_time)} disabled={draft.end_time <= draft.start_time} className="btn btn-quiet flex-1"><AudioLines size={14} /> Play</button>
-        <button onClick={save} disabled={busy || historicalDraft || !draft.text.trim() || draft.end_time <= draft.start_time} className="btn btn-primary flex-1"><Save size={14} /> Save</button></div>
-      {draft.id && !historicalDraft && <button onClick={remove} disabled={busy} className="text-xs text-[#e9919a]"><Trash2 size={13} className="mr-1 inline" /> Delete segment</button>}
-    </div>}
   </div>
 }

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 from pathlib import Path
 
-from . import db, media
+from . import cut_history, db, media
 
 log = logging.getLogger(__name__)
 worker_thread: threading.Thread | None = None
@@ -349,6 +349,8 @@ def process(job_id: str, owner: str):
                     if not cut or cut['start_time'] != payload['cut_start'] or cut['end_time'] != payload['cut_end']:
                         raise RuntimeError('The selected cut changed before detection completed; run it again')
                     affected = []
+                    before = cut_history.snapshot(conn, episode_id)
+                    created = set()
                     if len(segments) > 1:
                         affected.append(cut['id'])
                         conn.execute('UPDATE cuts SET end_time=?,first_frame_time=NULL,last_frame_time=NULL WHERE id=?', (segments[0][1], cut['id']))
@@ -365,7 +367,9 @@ def process(job_id: str, owner: str):
                                 conn.execute('UPDATE cuts SET active=1,cut_index=?,start_time=?,end_time=?,first_frame_time=NULL,last_frame_time=NULL WHERE id=?', (cut['cut_index'] + offset, start, end, cut_id))
                             else:
                                 conn.execute('INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time,created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)', (cut_id, episode_id, cut['cut_index'] + offset, start, end))
+                                created.add(cut_id)
                             affected.append(cut_id)
+                        cut_history.record(conn, episode_id, 'detect', f"Detected {len(segments)} cuts inside cut {cut['cut_index'] + 1}", cut['id'], before, created)
                     payload['detected_cut_ids'] = affected
                     conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload), job_id))
             stage(job_id, owner, episode_id, 'Updating selected cut previews')
@@ -397,6 +401,8 @@ def process(job_id: str, owner: str):
                 replacement.append((match["id"] if match else None, index, start, end))
             with db.connect() as conn:
                 require_lease(conn, job_id, owner)
+                # Every cut is replaced, so earlier cut edits can no longer be reversed.
+                cut_history.clear(conn, episode_id)
                 next_archive_index = min((cut["cut_index"] for cut in old), default=0) - 1
                 for cut in old:
                     if cut["active"]:
@@ -449,8 +455,10 @@ def process(job_id: str, owner: str):
                         raise RuntimeError('The cuts changed while the boundary was queued; try again')
                     if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND id!=? AND status IN ('queued','running') AND pipeline NOT IN ('brief_export','composition_compact')", (episode_id, job_id)).fetchone():
                         raise RuntimeError('Wait for the current episode job to finish')
+                    before = cut_history.snapshot(conn, episode_id)
                     conn.execute('UPDATE cuts SET end_time=?,last_frame_time=? WHERE id=?', (boundary, last, cut['id']))
                     conn.execute('UPDATE cuts SET start_time=?,first_frame_time=? WHERE id=?', (boundary, first, following['id']))
+                    cut_history.record(conn, episode_id, 'boundary', f"Moved the end of cut {cut['cut_index'] + 1} one frame {'earlier' if payload['frame_step'] < 0 else 'later'}", cut['id'], before)
                     payload['frame_step_done'] = True
                     conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload), job_id))
                 (path / 'thumbnails' / f"{cut['id']}_last.jpg").unlink(missing_ok=True)

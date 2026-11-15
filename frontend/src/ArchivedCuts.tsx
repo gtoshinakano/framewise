@@ -13,12 +13,12 @@ export function ArchivedCuts({ cuts, selectedId, onSelect, onOpenAnalysis }: { c
   const [expanded, setExpanded] = useState(false)
   const [limit, setLimit] = useState(24)
   if (!cuts.length) return null
-  return <section className="border-t hairline px-6 py-6">
+  return <section className="border-t hairline px-3.5 py-4">
     <button type="button" onClick={() => setExpanded(value => !value)} className="flex w-full items-center justify-between gap-3 text-left">
       <span><strong className="text-sm">Archived cuts</strong><span className="muted ml-2 text-xs">{cuts.length} preserved after redetection</span></span>
       <span className="text-xs text-[#bca7ff]">{expanded ? 'Hide' : 'Show'}</span>
     </button>
-    {expanded && <><p className="muted mt-2 text-xs">Earlier boundaries and their notes stay here. Redetection can restore a matching boundary.</p><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+    {expanded && <><p className="muted mt-2 text-xs">Earlier boundaries and their notes stay here. Redetection can restore a matching boundary.</p><div className="mt-3 grid grid-cols-2 gap-2">
       {cuts.slice(0, limit).map(cut => <button key={cut.id} type="button" onClick={() => onSelect(cut)} onDoubleClick={() => onOpenAnalysis(cut)} className={`overflow-hidden rounded-xl border text-left transition ${selectedId === cut.id ? 'border-[#ab8df2] bg-[#211e2d]' : 'border-[#303641] bg-[#171c24] hover:border-[#6e6388]'}`}>
         <FrameImage src={`/api/cuts/${cut.id}/frame/first`} className="aspect-video w-full bg-[#222938] object-cover" alt={`${cut.title || 'Archived cut'} preview`} loading="lazy" />
         <span className="block p-3"><strong className="block truncate text-xs">{cut.title || 'Archived cut'}</strong><span className="muted mt-1 block truncate text-[11px]">{stamp(cut.start_time)} → {stamp(cut.end_time)}</span></span>

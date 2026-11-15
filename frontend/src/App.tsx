@@ -1,21 +1,31 @@
 import { LocalModelControl } from './LocalModelControl'
 import Storage from './Storage'
 import AnalysisDialog from './AnalysisDialog'
-import { adjacentCut, useCutFilters } from './cutFilters'
-import { AnalysisHistory } from './AnalysisHistory'
+import { adjacentCut, nextNeedingAction, useCutFilters } from './cutFilters'
 import { analysisQueueProgress } from './queueProgress'
 import { analysisQueueStates } from './analysisQueueStates'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, AudioLines, ChevronRight, Clapperboard, Film, FolderOpen, Layers3, Pause, Play, Plus, RefreshCw, Save, Scissors, Settings2, Trash2, UploadCloud, Video, WandSparkles, X } from 'lucide-react'
-import { api, jsonBody, mediaUrl, upload, type AudioSelection, type Chunk, type ContextItem, type Cut, type Episode, type EpisodeStatus, type EpisodeSummary, type Project, type TranscriptSegment, type Waveform } from './api'
-import { CutFramePair } from './CutFramePair'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { ArrowLeft, ArrowRight, ChevronRight, Clapperboard, Film, FolderOpen, Layers3, Merge, PanelLeftOpen, Pause, Play, Plus, Redo2, Save, Scissors, Trash2, Undo2, UploadCloud, Video, X } from 'lucide-react'
+import { api, jsonBody, mediaUrl, upload, type AudioSelection, type Chunk, type ContextItem, type Cut, type Episode, type EpisodeStatus, type EpisodeSummary, type Job, type Project, type TranscriptSegment, type Waveform } from './api'
 import { ArchivedCuts } from './ArchivedCuts'
 import { Timeline } from './Timeline'
 import { CutGallery } from './CutGallery'
-import TranscriptEditor from './TranscriptEditor'
+import TranscriptEditor, { type AudioView } from './TranscriptEditor'
 import { SequencePanel } from './SequencePanel'
 import SequenceDialog from './SequenceDialog'
 import { sequenceApi, type SequenceSummary } from './sequenceApi'
+import { ToastProvider, useToast } from './Toasts'
+import { usePref } from './layoutPrefs'
+import { EditorHeader, type CharacterStep } from './EditorHeader'
+import { InspectorRail, type InspectorTab } from './InspectorRail'
+import { CutInspector } from './CutInspector'
+import { ChunkInspector } from './ChunkInspector'
+import { QueueDrawer } from './QueueDrawer'
+import { EpisodeSettingsDialog } from './EpisodeSettingsDialog'
+import { IconButton } from './EditorUi'
+import { useCutEdits } from './useCutEdits'
+import { useEditorShortcuts } from './useEditorShortcuts'
+import { formatTimecode } from './timecode'
 
 function formatTime(seconds?: number | null) {
   if (seconds == null || !Number.isFinite(seconds)) return '—'
@@ -159,33 +169,45 @@ function ContextLibrary({ projectId, episodes }: { projectId: string; episodes: 
       <div className="panel p-5">{draft ? <div className="space-y-4"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">{draft.id ? 'Edit context' : 'New context'}</h3><button onClick={() => setDraft(null)} className="muted" aria-label="Close context editor"><X size={17} /></button></div><div className="grid gap-3 sm:grid-cols-2"><label><span className="label">Type</span><select className="field" value={draft.kind} onChange={event => setDraft({ ...draft, kind: event.target.value as ContextItem['kind'] })}>{contextKinds.map(kind => <option key={kind.value} value={kind.value}>{kind.label}</option>)}</select></label><label><span className="label">Scope</span><select className="field" value={draft.episode_id || ''} onChange={event => setDraft({ ...draft, episode_id: event.target.value || null })}><option value="">Entire project</option>{episodes.map(episode => <option key={episode.id} value={episode.id}>{episode.title}</option>)}</select></label></div><label className="block"><span className="label">Title</span><input className="field" maxLength={200} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} placeholder="e.g. Main character, Chapter 2" /></label><label className="block"><span className="label">Details</span><textarea className="field min-h-36 resize-y" value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} placeholder="Write details that future analysis should use…" /></label><div className="flex items-center justify-between gap-3"><button onClick={remove} disabled={!draft.id} className="text-xs text-[#e9919a] disabled:opacity-30"><Trash2 size={14} className="mr-1 inline" /> Delete</button><button onClick={save} disabled={saving || !draft.title.trim()} className="btn btn-primary"><Save size={15} /> Save context</button></div></div> : <div className="muted flex min-h-52 items-center justify-center text-center text-sm">Select an item to edit, or add new context.</div>}</div></div></section>
 }
 
+const DEFAULT_CUTS_WIDTH = 260
+const MIN_TIMELINE = 160
+// Failures this recent keep a red badge on the queue button.
+const RECENT_FAILURE_MS = 12 * 3600 * 1000
+
+function recentFailures(jobs: Job[], now: number) {
+  return jobs.filter(job => job.status === 'failed' && job.stage !== 'Cancelled' && now - Date.parse(`${(job.finished_at || job.updated_at).replace(' ', 'T')}Z`) < RECENT_FAILURE_MS).length
+}
+
 function Editor({ id }: { id: string }) {
+  const toast = useToast()
   const [episode, setEpisode] = useState<Episode | null>(null)
   const [project, setProject] = useState<Project | null>(null)
   const [waveform, setWaveform] = useState<Waveform | null>(null)
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [draft, setDraft] = useState<Cut | null>(null)
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null)
   const [selectedTranscriptId, setSelectedTranscriptId] = useState<string | null>(null)
   const [audioSelection, setAudioSelection] = useState<AudioSelection | null>(null)
-  const [chunkDraft, setChunkDraft] = useState<Chunk | null>(null)
   const [time, setTime] = useState(0)
   const [seekRevision, setSeekRevision] = useState(0)
   const [playing, setPlaying] = useState(false)
-  const [cutStart, setCutStart] = useState('')
-  const [cutEnd, setCutEnd] = useState('')
-  const [cutThreshold, setCutThreshold] = useState('')
   const [cutDetection, setCutDetection] = useState<{ cutId: string; jobId: string } | null>(null)
-  const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
   const [analysisOpen, setAnalysisOpen] = useState(false)
   const closeAnalysis = useCallback(() => setAnalysisOpen(false), [])
-  const [activeTab, setActiveTab] = useState<'cut' | 'chunk' | 'audio' | 'sequences' | 'settings'>('cut')
+  const [activeTab, setActiveTab] = useState<InspectorTab>('cut')
+  const [audioView, setAudioView] = useState<AudioView>('lines')
   const [sequences, setSequences] = useState<SequenceSummary[]>([])
   const [sequenceOpen, setSequenceOpen] = useState<string | null>(null)
   const closeSequence = useCallback(() => setSequenceOpen(null), [])
   const refreshSequences = useCallback(() => { void sequenceApi.list(id).then(setSequences).catch(() => {}) }, [id])
-  const [settings, setSettings] = useState<Episode['settings'] | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const closeSettings = useCallback(() => setSettingsOpen(false), [])
+  const [queueOpen, setQueueOpen] = useState(false)
+  const closeQueue = useCallback(() => setQueueOpen(false), [])
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [cutsCollapsed, setCutsCollapsed] = usePref('editor.cutsCollapsed', false)
+  const [timelineHeight, setTimelineHeight] = usePref<number | null>('editor.timelineHeight', null)
   const video = useRef<HTMLVideoElement>(null)
   const playbackEnd = useRef<number | null>(null)
   const latestEpisode = useRef<Episode | null>(null)
@@ -193,13 +215,16 @@ function Editor({ id }: { id: string }) {
   const waveformVersion = useRef<string | null>(null)
   const queueSession = useRef<{ episodeId: string; jobs: Set<string> }>({ episodeId: id, jobs: new Set() })
   const [queueProgress, setQueueProgress] = useState({ completed: 0, total: 0 })
+  const showEpisode = useCallback((value: Episode) => {
+    latestEpisode.current = value
+    if (queueSession.current.episodeId !== id) queueSession.current = { episodeId: id, jobs: new Set() }
+    setQueueProgress(analysisQueueProgress(value.jobs, queueSession.current.jobs))
+    setEpisode(value)
+  }, [id])
   const refresh = useCallback(async () => {
     try {
       const value = await api<Episode>(`/episodes/${id}`)
-      latestEpisode.current = value
-      if (queueSession.current.episodeId !== id) queueSession.current = { episodeId: id, jobs: new Set() }
-      setQueueProgress(analysisQueueProgress(value.jobs, queueSession.current.jobs))
-      setEpisode(value); setSettings(current => current || value.settings)
+      showEpisode(value)
       const preparedBy = value.jobs.find(job => job.pipeline === 'prepare' && job.status === 'done')?.id || 'initial'
       const preparing = value.jobs.some(job => job.pipeline === 'prepare' && (job.status === 'queued' || job.status === 'running'))
       const waveformKey = `${id}:${preparedBy}`
@@ -216,9 +241,9 @@ function Editor({ id }: { id: string }) {
       setTranscript(await api<TranscriptSegment[]>(`/episodes/${id}/transcript`))
       setSequences(await sequenceApi.list(id))
       lastFullRefresh.current = Date.now()
-      setError('')
-    } catch (err) { setError((err as Error).message) }
-  }, [id])
+      setLoadError('')
+    } catch (err) { setLoadError((err as Error).message) }
+  }, [id, showEpisode])
   useEffect(() => {
     let active = true
     void refresh()
@@ -229,107 +254,165 @@ function Editor({ id }: { id: string }) {
         const current = latestEpisode.current
         const changed = !current || status.status !== current.status || status.stage !== current.stage || status.job_id !== (current.jobs[0]?.id || null)
         if (changed || status.status === 'queued' || status.status === 'processing' || Date.now() - lastFullRefresh.current > 30000) await refresh()
-      } catch (err) { if (active) setError((err as Error).message) }
+      } catch (err) { if (active) setLoadError((err as Error).message) }
     }, 2500)
     return () => { active = false; clearInterval(timer) }
   }, [id, refresh])
   // Cut Assistance edits the transcript outside this editor; reload it as soon as a proposal is applied.
   useEffect(() => { const reload = () => { void refresh() }; window.addEventListener('framewise:transcript-changed', reload); return () => window.removeEventListener('framewise:transcript-changed', reload) }, [refresh])
   useEffect(() => { if (episode) api<Project>(`/projects/${episode.project_id}`).then(setProject).catch(() => {}) }, [episode?.project_id])
-  useEffect(() => { setSelectedId(null); setDraft(null); setSelectedChunkId(null); setSelectedTranscriptId(null); setAudioSelection(null); setChunkDraft(null); setWaveform(null); setTranscript([]); setSequences([]); setSequenceOpen(null); setSettings(null); setTime(0); playbackEnd.current = null }, [id])
-  useEffect(() => { const cut = [...(episode?.cuts || []), ...(episode?.archived_cuts || [])].find(item => item.id === selectedId); if (cut && (!draft || draft.id !== cut.id)) setDraft(cut) }, [episode?.cuts, episode?.archived_cuts, selectedId])
-  useEffect(() => { const chunk = episode?.chunks.find(item => item.id === selectedChunkId); if (chunk && (!chunkDraft || chunkDraft.id !== chunk.id)) setChunkDraft(chunk) }, [episode?.chunks, selectedChunkId])
+  useEffect(() => { setSelectedId(null); setSelectedChunkId(null); setSelectedTranscriptId(null); setAudioSelection(null); setWaveform(null); setTranscript([]); setSequences([]); setSequenceOpen(null); setTime(0); playbackEnd.current = null }, [id])
   const selected = [...(episode?.cuts || []), ...(episode?.archived_cuts || [])].find(cut => cut.id === selectedId)
   const selectedChunk = episode?.chunks.find(chunk => chunk.id === selectedChunkId)
   const cutDetectionJob = cutDetection?.cutId === selectedId ? episode?.jobs.find(job => job.id === cutDetection.jobId) : undefined
-  useEffect(() => { if (selected) { setCutStart(String(selected.start_time)); setCutEnd(String(selected.end_time)) } }, [selected?.id, selected?.start_time, selected?.end_time])
   const duration = episode?.duration || 0
+  const cutFilters = useCutFilters()
   function seek(value: number) { const target = Math.max(0, Math.min(duration, value)); playbackEnd.current = null; if (video.current) video.current.currentTime = target; setTime(target); setSeekRevision(revision => revision + 1) }
   function openCutAnalysis(cut: Cut) { selectCut(cut, true); setActiveTab('cut'); setAnalysisOpen(true) }
-  function selectCut(cut: Cut, keepAnalysisOpen = false) { if (!keepAnalysisOpen) setAnalysisOpen(false); video.current?.pause(); setSelectedId(cut.id); setDraft(cut); setCutStart(String(cut.start_time)); setCutEnd(String(cut.end_time)); setCutThreshold(String(episode?.settings.scene_threshold ?? 0.32)); setActiveTab(current => current === 'sequences' ? current : 'cut'); seek(cut.first_frame_time) }
-  function selectChunk(chunk: Chunk) { setSelectedChunkId(chunk.id); setChunkDraft(chunk); setActiveTab('chunk'); seek(chunk.start_time) }
-  function selectTranscript(segment: TranscriptSegment) { setSelectedTranscriptId(segment.id); setActiveTab('audio'); seek(segment.start_time) }
-  function selectAudio(range: AudioSelection | null) { setAudioSelection(range); if (range) setActiveTab('audio') }
-  function playRange(start: number, end: number) { const player = video.current; if (!player) return; player.currentTime = start; playbackEnd.current = end; void player.play().catch(err => setError((err as Error).message)) }
+  function selectCut(cut: Cut, keepAnalysisOpen = false) { if (!keepAnalysisOpen) setAnalysisOpen(false); video.current?.pause(); setSelectedId(cut.id); setActiveTab(current => current === 'sequences' ? current : 'cut'); seek(cut.first_frame_time) }
+  function selectChunk(chunk: Chunk) { setSelectedChunkId(chunk.id); setActiveTab('chunk'); seek(chunk.start_time) }
+  function selectTranscript(segment: TranscriptSegment) { setSelectedTranscriptId(segment.id); setActiveTab('audio'); setAudioView('lines'); seek(segment.start_time) }
+  function selectAudio(range: AudioSelection | null) { setAudioSelection(range); if (range) { setActiveTab('audio'); setAudioView('tools') } }
+  function playRange(start: number, end: number) { const player = video.current; if (!player) return; player.currentTime = start; playbackEnd.current = end; void player.play().catch(err => toast({ message: (err as Error).message, tone: 'error' })) }
+  function togglePlay() { const player = video.current; if (!player) return; if (player.paused) void player.play().catch(() => {}); else player.pause() }
   function onVideoTimeUpdate(player: HTMLVideoElement) { const end = playbackEnd.current; if (!player.seeking && end !== null && player.currentTime >= end) { player.pause(); player.currentTime = end; playbackEnd.current = null }; setTime(player.currentTime) }
-  async function run(pipeline: 'prepare' | 'hardcuts') { try { await api(`/episodes/${id}/run`, jsonBody({ pipeline })); await refresh() } catch (err) { setError((err as Error).message) } }
-  const cutFilters = useCutFilters()
+  const fail = (err: unknown) => toast({ message: (err as Error).message, tone: 'error' })
+  async function run(pipeline: 'prepare' | 'hardcuts') {
+    if (pipeline === 'hardcuts' && episode?.cuts.length && !window.confirm('Detect the hard cuts of the whole video again? Notes and results stay on cuts whose boundary is found again; the others are archived. Earlier cut edits can no longer be undone.')) return
+    try { await api(`/episodes/${id}/run`, jsonBody({ pipeline })); await refresh(); toast({ message: pipeline === 'prepare' ? 'Rebuilding the preview and waveform.' : 'Detecting hard cuts.' }) } catch (err) { fail(err) }
+  }
   const [bulkDetectionWorking, setBulkDetectionWorking] = useState(false)
-  const [bulkDetectionMessage, setBulkDetectionMessage] = useState('')
-  async function queueCharacterStep(path: 'character-boxes' | 'character-detection' | 'character-detection-all' | 'character-detection-rerun') {
+  async function queueCharacterStep(path: CharacterStep) {
     if (bulkDetectionWorking) return
-    setBulkDetectionWorking(true); setBulkDetectionMessage(''); setError('')
+    const rerun = path === 'character-detection-rerun'
+    if (rerun && !window.confirm('Redo the automatic character labels in every cut? Your manual labels and the boxes you drew stay exactly as they are.')) return
+    setBulkDetectionWorking(true)
     try {
       const result = await api<{ queued: number }>(`/episodes/${id}/${path}`, { method: 'POST' })
       await refresh()
-      const rerun = path === 'character-detection-rerun'
       const boxes = path === 'character-boxes'
       const label = boxes ? 'box detection' : path === 'character-detection-all' ? 'character detection' : 'character recognition'
       const cuts = `${result.queued} ${result.queued === 1 ? 'cut' : 'cuts'}`
-      setBulkDetectionMessage(result.queued ? (rerun ? `Queued recognition again for ${cuts}; your manual labels are kept.` : `Queued ${label} for ${cuts}.`)
-        : boxes ? 'No cuts need box detection.' : rerun ? 'Every box already has your label.' : 'No cuts with boxes need recognition. Run Detect Character Boxes first.')
-    } catch (err) { setError((err as Error).message) } finally { setBulkDetectionWorking(false) }
+      toast(result.queued ? { tone: 'success', message: rerun ? `Queued recognition again for ${cuts}; your manual labels are kept.` : `Queued ${label} for ${cuts}.` }
+        : { message: boxes ? 'No cuts need box detection.' : rerun ? 'Every box already has your label.' : 'No cuts with boxes need recognition. Run “Find character boxes” first.' })
+    } catch (err) { fail(err) } finally { setBulkDetectionWorking(false) }
   }
-  const detectionBlocked = bulkDetectionWorking || !episode?.cuts.length || !!episode?.jobs.some(job => job.pipeline !== 'character_detect' && (job.status === 'running' || job.status === 'queued'))
-  const detectCharacterBoxes = () => queueCharacterStep('character-boxes')
-  const detectMissingCharacters = () => queueCharacterStep('character-detection')
-  const detectAllCharacters = () => queueCharacterStep('character-detection-all')
-  const rerunRecognition = () => queueCharacterStep('character-detection-rerun')
-  async function detectSelectedCut() { if (!selected) return; try { const result = await api<{ job_id: string }>(`/cuts/${selected.id}/detect-hardcuts`, jsonBody({ scene_threshold: Number(cutThreshold) })); setCutDetection({ cutId: selected.id, jobId: result.job_id }); await refresh() } catch (err) { setError((err as Error).message) } }
+  async function detectWithin(threshold: number) { if (!selected) return; try { const result = await api<{ job_id: string }>(`/cuts/${selected.id}/detect-hardcuts`, jsonBody({ scene_threshold: threshold })); setCutDetection({ cutId: selected.id, jobId: result.job_id }); await refresh() } catch (err) { fail(err) } }
   const [cancelQueueWorking, setCancelQueueWorking] = useState(false)
-  const [cancelQueueMessage, setCancelQueueMessage] = useState('')
   async function cancelQueuedJobs() {
-    if (cancelQueueWorking) return
-    setCancelQueueWorking(true); setError(''); setCancelQueueMessage('')
+    if (cancelQueueWorking || !window.confirm('Cancel every queued job in all episodes? Running jobs continue.')) return
+    setCancelQueueWorking(true)
     try {
       const result = await api<{ cancelled: number }>('/jobs/cancel-queued', { method: 'POST' })
       await refresh()
-      setCancelQueueMessage(result.cancelled ? `Cancelled ${result.cancelled} queued ${result.cancelled === 1 ? 'job' : 'jobs'} across all episodes. Running jobs continue.` : 'There are no queued jobs to cancel.')
-    } catch (err) { setError((err as Error).message) } finally { setCancelQueueWorking(false) }
+      toast({ tone: 'success', message: result.cancelled ? `Cancelled ${result.cancelled} queued ${result.cancelled === 1 ? 'job' : 'jobs'} across all episodes. Running jobs continue.` : 'There are no queued jobs to cancel.' })
+    } catch (err) { fail(err) } finally { setCancelQueueWorking(false) }
   }
-  async function cancelJob(jobId: string) { try { await api(`/jobs/${jobId}/cancel`, { method: 'POST' }); await refresh() } catch (err) { setError((err as Error).message) } }
-  async function toggleAnalysis() { if (!selected) return; try { const value = await api<Cut>(`/cuts/${selected.id}/analysis-enabled`, { method: 'PUT', body: JSON.stringify({ analysis_enabled: !selected.analysis_enabled }) }); setDraft(current => current?.id === value.id ? { ...current, analysis_enabled: value.analysis_enabled } : current); await refresh() } catch (err) { setError((err as Error).message) } }
-  async function saveCut() { if (!draft) return; try { const value = await api<Cut>(`/cuts/${draft.id}`, { method: 'PUT', body: JSON.stringify({ title: draft.title, description: draft.description, notes: draft.notes, results: draft.results }) }); setDraft(value); await refresh() } catch (err) { setError((err as Error).message) } }
-  async function editTimeline(action: 'timing' | 'merge-next' | 'delete' | 'split') {
-    if (!selected || !selected.active) return
-    if (action !== 'timing' && action !== 'split' && !window.confirm(action === 'delete' ? 'Remove this cut? Its interval will be added to a neighboring cut and its notes will be archived.' : 'Merge this cut with the next cut? The next cut and its notes will be archived.')) return
-    try {
-      const path = action === 'delete' ? `/cuts/${selected.id}` : `/cuts/${selected.id}/${action}`
-      const options: RequestInit = action === 'timing' ? { method: 'PUT', body: JSON.stringify({ start_time: Number(cutStart), end_time: Number(cutEnd) }) } : action === 'split' ? { method: 'POST', body: JSON.stringify({ time: Math.round(time * 1000) / 1000 }) } : { method: action === 'delete' ? 'DELETE' : 'POST' }
-      const result = await api<{ selected_id: string }>(path, options)
-      const value = await api<Episode>(`/episodes/${id}`)
-      latestEpisode.current = value; setEpisode(value)
-      const next = value.cuts.find(cut => cut.id === result.selected_id)
-      if (next) selectCut(next)
-    } catch (err) { setError((err as Error).message) }
-  }
-  async function saveChunk() { if (!chunkDraft) return; try { const value = await api<Chunk>(`/chunks/${chunkDraft.id}`, { method: 'PUT', body: JSON.stringify({ title: chunkDraft.title, notes: chunkDraft.notes }) }); setChunkDraft(value); await refresh() } catch (err) { setError((err as Error).message) } }
-  async function saveSettings() { if (!settings) return; try { await api(`/episodes/${id}/settings`, { method: 'PUT', body: JSON.stringify(settings) }); await refresh() } catch (err) { setError((err as Error).message) } }
-  async function remove() { if (!episode || !window.confirm(`Delete “${episode.title}” and all its media? This cannot be undone.`)) return; try { await api(`/episodes/${id}`, { method: 'DELETE' }); go(`/project/${episode.project_id}`) } catch (err) { setError((err as Error).message) } }
-  const busy = episode?.jobs.some(job => job.status === 'running' || job.status === 'queued') || false
-  const mediaBusy = episode?.jobs.some(job => ['prepare', 'hardcuts', 'cutframes'].includes(job.pipeline) && (job.status === 'running' || job.status === 'queued')) || false
-  const cutQueueStates = analysisQueueStates(episode?.jobs || [])
-  const analysisBusy = episode?.jobs.some(job => (['prepare', 'hardcuts', 'character_detect'].includes(job.pipeline) || job.workflow === 'boundary_frame') && (job.status === 'running' || job.status === 'queued')) || false
-  return <div className="editor-shell bg-[#0d1016]"><header className="flex h-16 items-center justify-between gap-4 border-b hairline bg-[#10131a] px-5"><div className="flex min-w-0 items-center gap-4"><Brand /><span className="hidden h-5 w-px bg-[#333945] sm:block" /><button onClick={() => go(`/project/${episode?.project_id || ''}`)} className="muted hidden truncate text-sm hover:text-white sm:block">{project?.title || 'Project'}</button><ChevronRight size={15} className="muted hidden sm:block" /><span className="truncate text-sm font-semibold">{episode?.title || 'Loading…'}</span></div><div className="flex items-center gap-3"><LocalModelControl /><Status status={episode?.status || 'queued'} stage={episode?.stage} /><span className="whitespace-nowrap text-xs text-[#b8bfcb]" title="Finished items, including failures, out of this active analysis queue. Progress starts when the queue is first seen and resets when it is empty." aria-label={`Analysis queue: ${queueProgress.completed} of ${queueProgress.total} items finished`}>Queue <span className="font-mono tabular-nums">{queueProgress.completed}/{queueProgress.total}</span></span><button type="button" className="btn btn-quiet" disabled={cancelQueueWorking} onClick={() => void cancelQueuedJobs()} title="Cancel all queued jobs across all episodes; running jobs continue">Cancel all queued</button><button onClick={() => go('/')} className="btn btn-quiet hidden sm:flex"><FolderOpen size={15} /> Projects</button></div></header>
-    {cancelQueueMessage && <p role="status" className="px-5 pt-4 text-xs text-[#7bdcb2]">{cancelQueueMessage}</p>}
-    {bulkDetectionMessage && <p role="status" className="px-5 pt-4 text-xs text-[#7bdcb2]">{bulkDetectionMessage}</p>}
-    {error && <div className="px-5 pt-4"><ErrorBanner message={error} clear={() => setError('')} /></div>}
-    {!episode ? <div className="muted p-12">Loading episode…</div> : <div className="editor-workspace"><aside className="editor-cuts scrollbar"><CutGallery cuts={episode.cuts} selectedId={selectedId} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} frameVersion={`${episode.jobs[0]?.id || ""}-${episode.jobs[0]?.status || ""}`} /><ArchivedCuts cuts={episode.archived_cuts} selectedId={selectedId} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} /></aside><main className="editor-stage min-w-0 border-r hairline"><div className="flex flex-wrap items-center justify-between gap-4 border-b hairline px-6 py-4"><div><p className="text-xs font-semibold uppercase tracking-[.16em] text-[#a58ae8]">Episode editor</p><h1 className="mt-1 text-xl font-semibold">{episode.title}</h1></div><div className="flex flex-wrap items-center gap-2"><button disabled={detectionBlocked} onClick={() => void detectAllCharacters()} className="btn btn-quiet" title="Steps 1 and 2 in one pass: boxes for all cuts first, then recognition with the recognition models loaded once">Detect All Characters</button><button disabled={detectionBlocked} onClick={() => void detectCharacterBoxes()} className="btn btn-quiet" title="Step 1: find character boxes in the first frame of cuts without detections (skips cuts marked as having no characters)">Detect Character Boxes</button><button disabled={detectionBlocked} onClick={() => void detectMissingCharacters()} className="btn btn-quiet" title="Step 2: recognize first-frame boxes by comparing them with every box you have labelled">Detect Missing Characters</button><button disabled={detectionBlocked} onClick={() => void rerunRecognition()} className="btn btn-quiet" title="Redo automatic labels in every cut using all your confirmed labels as examples. Your manual labels and the boxes you drew stay exactly as they are.">Re-run Recognition</button><button disabled={busy} onClick={() => run('prepare')} className="btn btn-quiet" title="Rebuild preview, frames, audio, and waveform"><RefreshCw size={15} /> Prepare</button><button disabled={busy} onClick={() => run('hardcuts')} className="btn btn-primary"><Scissors size={15} /> {episode.cuts.length ? 'Redetect cuts' : 'Detect hard cuts'}</button></div></div>
-      {episode.jobs.filter(job => ['transcribe', 'voice_sample'].includes(job.pipeline) && job.status === 'queued').map(job => <div key={job.id} className="mx-6 mt-3 flex items-center justify-between gap-3 rounded-lg border hairline p-3 text-xs"><span>Waiting for the audio worker.</span><button className="btn btn-quiet" onClick={() => cancelJob(job.id)}>Cancel queued job</button></div>)}
-      {episode.jobs.filter(job => job.pipeline === 'analyze' && (job.status === 'queued' || job.status === 'running')).map(job => <div key={job.id} className="mx-6 mt-3 flex items-center justify-between gap-3 rounded-lg border hairline p-3 text-xs"><span>Visual analysis {job.status}{job.stage ? `: ${job.stage}` : ''}</span><button className="btn btn-quiet" onClick={() => cancelJob(job.id)}>Cancel run</button></div>)}
-      {episode.error && <div className="mx-6 mt-5 rounded-lg border border-[#63363e] bg-[#2b191f] p-3 text-xs text-[#ffb6bc]">{episode.error}</div>}
-      <div className="px-6 py-6"><div className="preview-stage relative mx-auto aspect-video max-w-5xl overflow-hidden rounded-xl border border-[#303540] bg-black shadow-2xl">{episode.proxy_ready ? <video ref={video} src={mediaUrl(id, 'proxy')} className="h-full w-full" controls onSeeking={() => setSeekRevision(revision => revision + 1)} onTimeUpdate={event => onVideoTimeUpdate(event.currentTarget)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} /> : <div className="flex h-full flex-col items-center justify-center text-center"><Film size={36} className="mb-4 text-[#a58ae8]" /><strong className="text-sm">{busy ? episode.stage : 'Preview unavailable'}</strong><p className="muted mt-2 text-xs">{busy ? 'Video preparation runs in the background.' : 'Run Prepare to create the preview.'}</p></div>}</div>
-      <div className="mx-auto mt-4 flex max-w-5xl items-center justify-between text-xs text-[#9ca5b3]"><div className="flex items-center gap-3"><button onClick={() => { if (!video.current) return; video.current.paused ? video.current.play() : video.current.pause() }} className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#272d39] text-white">{playing ? <Pause size={14} /> : <Play size={14} />}</button><span className="font-mono">{formatTime(time)} <span className="text-[#5d6675]">/</span> {formatTime(duration)}</span></div><span>{episode.width && episode.height ? `${episode.width} × ${episode.height}` : '—'} · {episode.original_filename}</span></div></div>
-      <AnalysisHistory jobs={episode.jobs} cuts={[...episode.cuts, ...episode.archived_cuts]} onSelectCut={openCutAnalysis} onChanged={refresh} />
-    </main><aside className="editor-inspector scrollbar bg-[#131720]"><div className="flex border-b hairline"><button onClick={() => setActiveTab('cut')} className={`flex min-w-0 flex-auto items-center justify-center gap-1 whitespace-nowrap py-4 text-[11px] font-semibold ${activeTab === 'cut' ? 'border-b-2 border-[#bca7ff] text-white' : 'muted'}`}><Scissors size={15} /> Cut</button><button onClick={() => setActiveTab('chunk')} className={`flex min-w-0 flex-auto items-center justify-center gap-1 whitespace-nowrap py-4 text-[11px] font-semibold ${activeTab === 'chunk' ? 'border-b-2 border-[#bca7ff] text-white' : 'muted'}`}><Layers3 size={15} /> Chunk</button><button onClick={() => setActiveTab('audio')} className={`flex min-w-0 flex-auto items-center justify-center gap-1 whitespace-nowrap py-4 text-[11px] font-semibold ${activeTab === 'audio' ? 'border-b-2 border-[#bca7ff] text-white' : 'muted'}`}><AudioLines size={15} /> Audio</button><button onClick={() => setActiveTab('sequences')} className={`flex min-w-0 flex-auto items-center justify-center gap-1 whitespace-nowrap py-4 text-[11px] font-semibold ${activeTab === 'sequences' ? 'border-b-2 border-[#e0a96d] text-white' : 'muted'}`}><Clapperboard size={15} /> Sequences</button><button onClick={() => setActiveTab('settings')} className={`flex min-w-0 flex-auto items-center justify-center gap-1 whitespace-nowrap py-4 text-[11px] font-semibold ${activeTab === 'settings' ? 'border-b-2 border-[#bca7ff] text-white' : 'muted'}`}><Settings2 size={15} /> Setup</button></div>
-      {activeTab === 'cut' ? draft && selected ? <div className="scrollbar max-h-[calc(100vh-115px)] overflow-y-auto p-5"><div className="mb-6 flex items-start justify-between"><div><p className="text-xs font-semibold uppercase tracking-[.14em] text-[#a58ae8]">{selected.active ? `Cut ${selected.cut_index + 1}` : 'Archived cut'}</p><h2 className="mt-1 text-lg font-semibold">{formatTime(selected.start_time)} → {formatTime(selected.end_time)}</h2></div><span className="rounded-md bg-[#282438] px-2 py-1 text-[10px] text-[#c3aeff]">{(selected.end_time - selected.start_time).toFixed(1)}s</span></div><div className="space-y-5">{selected.active && <div className="rounded-lg border border-[#343b49] p-3"><p className="mb-3 text-xs font-semibold">Cut timing</p><div className="grid grid-cols-2 gap-2"><label><span className="label">Start · seconds</span><input className="field" type="number" step="0.001" value={cutStart} disabled={mediaBusy || selected.cut_index === 0} onChange={event => setCutStart(event.target.value)} /></label><label><span className="label">End · seconds</span><input className="field" type="number" step="0.001" value={cutEnd} disabled={mediaBusy || selected.cut_index === episode.cuts.length - 1} onChange={event => setCutEnd(event.target.value)} /></label></div><p className="muted mt-2 text-[11px]">Adjacent cuts adjust to keep the entire video covered.</p><div className="mt-3 flex items-center gap-2"><span className="label !mb-0 flex-1">Playhead · <span className="font-mono">{time.toFixed(3)}s</span></span><button onClick={() => editTimeline('split')} disabled={mediaBusy || time < selected.start_time + 0.1 || time > selected.end_time - 0.1} title="Split this cut in two at the playhead" className="btn btn-quiet"><Scissors size={14} /> Split at playhead</button></div><button onClick={() => editTimeline('timing')} disabled={mediaBusy || cutStart.trim() === '' || cutEnd.trim() === ''} className="btn btn-quiet mt-3 w-full">Apply timing</button><div className="mt-2 flex gap-2"><button onClick={() => editTimeline('merge-next')} disabled={mediaBusy || selected.cut_index === episode.cuts.length - 1} className="btn btn-quiet flex-1">Merge next</button><button onClick={() => editTimeline('delete')} disabled={mediaBusy || episode.cuts.length < 2} className="btn btn-danger flex-1">Delete cut</button></div><div className="mt-4 border-t hairline pt-4"><label><span className="label">Detection threshold</span><input className="field" type="number" min="0.05" max="0.9" step="0.01" value={cutThreshold} onChange={event => setCutThreshold(event.target.value)} /></label><p className="muted mt-1 text-[11px]">Lower values detect more changes. The first part keeps this cut’s notes.</p><button onClick={detectSelectedCut} disabled={busy || cutThreshold.trim() === '' || !Number.isFinite(Number(cutThreshold)) || Number(cutThreshold) < 0.05 || Number(cutThreshold) > 0.9} className="btn btn-quiet mt-3 w-full"><Scissors size={14} /> Detect cuts within this cut</button>{cutDetectionJob && <p role="status" className="muted mt-2 text-[11px]">{cutDetectionJob.error || cutDetectionJob.stage}</p>}</div></div>}{selected.active && <button onClick={toggleAnalysis} className="btn btn-quiet w-full">{selected.analysis_enabled ? 'Disable analysis for this cut' : 'Enable analysis for this cut'}</button>}<div className="flex gap-2"><button onClick={() => { const previous = episode.cuts[selected.cut_index - 1]; if (previous) selectCut(previous) }} disabled={!selected.active || selected.cut_index === 0} className="btn btn-quiet flex-1"><ArrowLeft size={14} /> Previous</button><button onClick={() => { const next = episode.cuts[selected.cut_index + 1]; if (next) selectCut(next) }} disabled={!selected.active || selected.cut_index === episode.cuts.length - 1} className="btn btn-quiet flex-1">Next <ArrowRight size={14} /></button></div><CutFramePair key={`${selected.id}-${episode.jobs[0]?.id || ""}-${episode.jobs[0]?.status || ""}`} cut={selected} onSeek={seek} frameVersion={`${episode.jobs[0]?.id || ""}-${episode.jobs[0]?.status || ""}`} /><label className="block"><span className="label">Title</span><input className="field" value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} placeholder="Name this cut" /></label><label className="block"><span className="label">Cut description</span><textarea className="field min-h-28 resize-y" value={draft.description} onChange={event => setDraft({ ...draft, description: event.target.value })} placeholder="What happens in this shot?" /></label><label className="block"><span className="label">Working notes</span><textarea className="field min-h-28 resize-y" value={draft.notes} onChange={event => setDraft({ ...draft, notes: event.target.value })} placeholder="Visual details, scene context, follow-up ideas…" /></label><button onClick={() => setAnalysisOpen(true)} className="btn btn-primary w-full"><WandSparkles size={15} /> Analysis &amp; results</button>{analysisOpen && <AnalysisDialog cut={selected} cuts={episode.cuts} previousCut={selected.active ? adjacentCut(episode.cuts, selected, -1, cutFilters.active) : undefined} nextCut={selected.active ? adjacentCut(episode.cuts, selected, 1, cutFilters.active) : undefined} onNavigate={cut => selectCut(cut, true)} episodeId={id} proxyReady={episode.proxy_ready} waveform={waveform} transcript={transcript} hasAudio={episode.has_audio} preparingAudio={episode.jobs.some(job => job.pipeline === 'prepare' && (job.status === 'queued' || job.status === 'running'))} busy={analysisBusy} jobs={episode.jobs} jobsKey={episode.jobs.map(job => `${job.id}-${job.status}-${job.stage}`).join('|')} frameVersion={`${episode.jobs[0]?.id || ""}-${episode.jobs[0]?.status || ""}`} onStarted={refresh} onClose={closeAnalysis} />}<div className="flex gap-2"><button onClick={() => playRange(selected.start_time, selected.end_time)} className="btn btn-quiet flex-1"><Play size={15} /> Play cut</button><button onClick={saveCut} className="btn btn-primary flex-1"><Save size={15} /> Save cut</button></div></div><div className="mt-6 flex gap-2"><button onClick={() => { const previous = episode.cuts[selected.cut_index - 1]; if (previous) selectCut(previous) }} disabled={!selected.active || selected.cut_index === 0} className="btn btn-quiet flex-1"><ArrowLeft size={14} /> Previous</button><button onClick={() => { const next = episode.cuts[selected.cut_index + 1]; if (next) selectCut(next) }} disabled={!selected.active || selected.cut_index === episode.cuts.length - 1} className="btn btn-quiet flex-1">Next <ArrowRight size={14} /></button></div></div> : <div className="p-8 text-center"><div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[#282438] text-[#bca7ff]"><Scissors size={21} /></div><h2 className="text-sm font-semibold">Select a cut</h2><p className="muted mt-2 text-xs leading-5">Choose a segment in the timeline or cut list to inspect and edit its notes.</p></div> : activeTab === 'chunk' ? selectedChunk && chunkDraft ? <div className="p-5"><p className="text-xs font-semibold uppercase tracking-[.14em] text-[#7bc5cb]">Chunk {selectedChunk.chunk_index + 1}</p><h2 className="mt-2 text-lg font-semibold">{formatTime(selectedChunk.start_time)} → {formatTime(selectedChunk.end_time)}</h2><p className="muted mt-2 text-xs">A working segment for long-video analysis.</p><label className="mt-6 block"><span className="label">Title</span><input className="field" value={chunkDraft.title} onChange={event => setChunkDraft({ ...chunkDraft, title: event.target.value })} placeholder="Name this chunk" /></label><label className="mt-5 block"><span className="label">Working notes</span><textarea className="field min-h-36 resize-y" value={chunkDraft.notes} onChange={event => setChunkDraft({ ...chunkDraft, notes: event.target.value })} placeholder="Chapter happenings, context, or observations…" /></label><div className="mt-5 flex gap-2"><button onClick={() => playRange(selectedChunk.start_time, selectedChunk.end_time)} className="btn btn-quiet flex-1"><Play size={15} /> Play chunk</button><button onClick={saveChunk} className="btn btn-primary flex-1"><Save size={15} /> Save</button></div></div> : <div className="muted p-8 text-center text-sm">Select a chunk in the timeline to inspect it.</div> : activeTab === 'audio' ? <TranscriptEditor processing={!!busy} hasAudio={episode.has_audio} subtitleLanguage={episode.subtitle_language} subtitleRun={episode.subtitles.run} jobs={episode.jobs} episodeId={id} projectId={episode.project_id} duration={duration} currentTime={time} segments={transcript} selectedId={selectedTranscriptId} onSelect={setSelectedTranscriptId} onSaved={refresh} playRange={playRange} audioSelection={audioSelection} onAudioSelection={selectAudio} /> : activeTab === 'sequences' ? <SequencePanel episodeId={id} cuts={episode.cuts} selectedCut={selected} sequences={sequences} onChanged={refresh} onOpen={setSequenceOpen} /> : <div className="p-5"><div className="mb-6"><h2 className="text-base font-semibold">Processing settings</h2><p className="muted mt-2 text-xs leading-5">Choose a balance of speed and detail. Run Prepare or Detect hard cuts again to apply changes.</p></div>{settings && <div className="space-y-5"><label className="block"><span className="label">Preview max width · pixels</span><input className="field" type="number" min="320" max="1920" value={settings.proxy_width} onChange={event => setSettings({ ...settings, proxy_width: Number(event.target.value) })} /><p className="muted mt-1 text-[11px]">Lower values make preparation and playback lighter.</p></label><label className="block"><span className="label">Preview quality · CRF</span><input className="field" type="number" min="18" max="35" value={settings.proxy_crf} onChange={event => setSettings({ ...settings, proxy_crf: Number(event.target.value) })} /><p className="muted mt-1 text-[11px]">Lower values keep more detail and use more disk. Range 18–35.</p></label><label className="block"><span className="label">Encoding speed</span><select className="field" value={settings.proxy_preset} onChange={event => setSettings({ ...settings, proxy_preset: event.target.value as typeof settings.proxy_preset })}>{['ultrafast','superfast','veryfast','faster','fast','medium'].map(value => <option key={value} value={value}>{value}</option>)}</select><p className="muted mt-1 text-[11px]">Faster presets prepare quickly; slower presets make smaller files.</p></label><label className="block"><span className="label">Frame extraction interval · seconds</span><input className="field" type="number" min="0.5" max="60" step="0.5" value={settings.frame_interval} onChange={event => setSettings({ ...settings, frame_interval: Number(event.target.value) })} /></label><label className="block"><span className="label">Scene change threshold</span><input className="field" type="number" min="0.05" max="0.9" step="0.01" value={settings.scene_threshold} onChange={event => setSettings({ ...settings, scene_threshold: Number(event.target.value) })} /><p className="muted mt-1 text-[11px]">Lower detects more candidate hard cuts. Range 0.05–0.9.</p></label><label className="block"><span className="label">Chunk duration · seconds</span><input className="field" type="number" min="10" max="3600" step="10" value={settings.chunk_duration} onChange={event => setSettings({ ...settings, chunk_duration: Number(event.target.value) })} /><p className="muted mt-1 text-[11px]">Timeline working segments. Range 10–3600 seconds.</p></label><button onClick={saveSettings} className="btn btn-primary w-full"><Save size={15} /> Save settings</button></div>}<div className="mt-8 border-t hairline pt-5"><h3 className="mb-3 text-xs font-semibold">Episode details</h3><div className="space-y-2 text-xs"><div className="flex justify-between"><span className="muted">Duration</span><span>{formatTime(duration)}</span></div><div className="flex justify-between"><span className="muted">Audio track</span><span>{episode.has_audio ? 'Available' : 'None'}</span></div><div className="flex justify-between"><span className="muted">Frames</span><span>Every {episode.settings.frame_interval}s</span></div></div><button onClick={remove} className="mt-7 text-xs text-[#e9919a] hover:underline"><Trash2 size={14} className="mr-1 inline" /> Delete episode</button></div></div>}
-    </aside><div className="editor-timeline scrollbar"><Timeline key={id} activeFilters={cutFilters.active} onToggleFilter={cutFilters.toggle} onClearFilters={cutFilters.clear} duration={duration} waveform={waveform} hasAudio={episode.has_audio} preparing={episode.jobs.some(job => job.pipeline === 'prepare' && (job.status === 'queued' || job.status === 'running'))} seekRevision={seekRevision} chunks={episode.chunks} cuts={episode.cuts} cutQueueStates={cutQueueStates} transcript={transcript} currentTime={time} selectedCutId={selectedId} selectedChunkId={selectedChunkId} selectedTranscriptId={selectedTranscriptId} onSeek={seek} onSelectCut={selectCut} onOpenCutAnalysis={openCutAnalysis} onSelectChunk={selectChunk} onSelectTranscript={selectTranscript} audioSelection={audioSelection} onSelectAudio={selectAudio} sequences={sequences} onOpenSequence={setSequenceOpen} /></div>{sequenceOpen && <SequenceDialog key={sequenceOpen} sequenceId={sequenceOpen} episodeId={id} proxyReady={episode.proxy_ready} onClose={closeSequence} onChanged={refreshSequences} />}</div>}</div>
+  async function cancelJob(jobId: string) { try { await api(`/jobs/${jobId}/cancel`, { method: 'POST' }); await refresh() } catch (err) { fail(err) } }
+  async function toggleAnalysis() { if (!selected) return; try { await api<Cut>(`/cuts/${selected.id}/analysis-enabled`, { method: 'PUT', body: JSON.stringify({ analysis_enabled: !selected.analysis_enabled }) }); await refresh() } catch (err) { fail(err) } }
+  async function saveNotes(notes: Pick<Cut, 'title' | 'description' | 'notes'>) { if (!selected) return; try { await api<Cut>(`/cuts/${selected.id}`, { method: 'PUT', body: JSON.stringify({ ...notes, results: selected.results }) }); await refresh(); toast({ tone: 'success', message: `Saved the notes of cut ${selected.cut_index + 1}.` }) } catch (err) { fail(err) } }
+  async function saveChunk(chunk: Chunk) { try { await api<Chunk>(`/chunks/${chunk.id}`, { method: 'PUT', body: JSON.stringify({ title: chunk.title, notes: chunk.notes }) }); await refresh(); toast({ tone: 'success', message: `Saved chunk ${chunk.chunk_index + 1}.` }) } catch (err) { fail(err) } }
+  async function saveSettings(settings: Episode['settings']) { try { await api(`/episodes/${id}/settings`, { method: 'PUT', body: JSON.stringify(settings) }); await refresh(); toast({ tone: 'success', message: 'Settings saved. Run Prepare or redetect cuts to apply them.' }); return true } catch (err) { fail(err); return false } }
+  async function remove() { if (!episode || !window.confirm(`Delete “${episode.title}” and all its media? This cannot be undone.`)) return; try { await api(`/episodes/${id}`, { method: 'DELETE' }); go(`/project/${episode.project_id}`) } catch (err) { fail(err) } }
+  // After a cut edit the playhead stays where it is, so several splits in a row need no scrubbing back.
+  const cutEdits = useCutEdits({ episodeId: id, toast, onEpisode: showEpisode, onSelect: cutId => { setSelectedId(cutId); setActiveTab(current => current === 'sequences' ? current : 'cut') } })
+  const jobs = episode?.jobs || []
+  const active = (job: Job) => job.status === 'running' || job.status === 'queued'
+  const busy = jobs.some(active)
+  const mediaBusy = jobs.some(job => ['prepare', 'hardcuts', 'cutframes'].includes(job.pipeline) && active(job))
+  // Cut edits wait for preview jobs by themselves; only these two replace or rebuild cuts underneath them.
+  const cutsBusy = jobs.some(job => ['prepare', 'hardcuts'].includes(job.pipeline) && active(job))
+  const cutQueueStates = analysisQueueStates(jobs)
+  const analysisBusy = jobs.some(job => (['prepare', 'hardcuts', 'character_detect'].includes(job.pipeline) || job.workflow === 'boundary_frame') && active(job))
+  const characterBlock = bulkDetectionWorking ? 'Queuing…' : !episode?.cuts.length ? 'Detect hard cuts first.' : jobs.some(job => job.pipeline !== 'character_detect' && active(job)) ? 'Wait for the running jobs to finish.' : ''
+  const frameVersion = `${jobs[0]?.id || ''}-${jobs[0]?.status || ''}`
+  const history = episode?.cut_history
+  const activeSelected = selected?.active ? selected : undefined
+  const historyReason = cutsBusy ? 'Wait for the cut detection or Prepare to finish' : cutEdits.working ? 'Working…' : ''
+  const editReason = !activeSelected ? 'Select a cut first' : historyReason
+  // Split works on the cut under the playhead, like a video editor, so several splits in a row need no reselecting.
+  const splitTarget = episode?.cuts.find(cut => time >= cut.start_time + 0.1 && time <= cut.end_time - 0.1)
+  const splitReason = historyReason || (!episode?.cuts.length ? 'Detect hard cuts first' : !splitTarget ? 'Move the playhead inside a cut, at least 0.1 s from its edges' : '')
+  const mergeReason = editReason || (activeSelected && activeSelected.cut_index === (episode?.cuts.length || 0) - 1 ? 'This is the last cut' : '')
+  const deleteReason = editReason || ((episode?.cuts.length || 0) < 2 ? 'The only cut cannot be deleted' : '')
+  const split = () => { if (splitTarget && !splitReason) void cutEdits.edit('split', splitTarget.id, { time }) }
+  const undo = () => { if (history?.undo && !historyReason) void cutEdits.undo() }
+  const redo = () => { if (history?.redo && !historyReason) void cutEdits.redo() }
+  const step = (direction: 1 | -1) => { if (!activeSelected || !episode) return; const target = episode.cuts[activeSelected.cut_index + direction]; if (target) selectCut(target) }
+  useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !queueOpen, {
+    playPause: togglePlay, split, undo, redo, previous: () => step(-1), next: () => step(1),
+    nextNeeding: () => { if (!episode) return; const next = nextNeedingAction(episode.cuts, selectedId, cutFilters.active); if (next) selectCut(next) },
+    filters: () => setFiltersOpen(true),
+  })
+  const editTools = <>
+    <IconButton icon={Undo2} size="sm" label={history?.undo ? `Undo: ${history.undo.label}` : 'Nothing to undo'} shortcut="Ctrl+Z" title={historyReason || (history?.undo ? `Undo: ${history.undo.label} (Ctrl+Z)` : 'Nothing to undo')} disabled={!history?.undo || !!historyReason} onClick={undo} />
+    <IconButton icon={Redo2} size="sm" label={history?.redo ? `Redo: ${history.redo.label}` : 'Nothing to redo'} shortcut="Ctrl+Shift+Z" title={historyReason || (history?.redo ? `Redo: ${history.redo.label} (Ctrl+Shift+Z)` : 'Nothing to redo')} disabled={!history?.redo || !!historyReason} onClick={redo} />
+    <span className="mx-1 h-5 w-px bg-[#2c323d]" aria-hidden />
+    <IconButton icon={Scissors} size="sm" text="Split" label="Split the cut under the playhead" title={splitReason || `Split cut ${(splitTarget?.cut_index ?? 0) + 1} at the playhead (S). Undo with Ctrl+Z.`} disabled={!!splitReason} onClick={split} />
+    <IconButton icon={Merge} size="sm" text="Merge" label="Merge the selected cut with the next one" title={mergeReason || 'Merge the selected cut with the next one. Undo with Ctrl+Z.'} disabled={!!mergeReason} onClick={() => activeSelected && void cutEdits.edit('merge-next', activeSelected.id)} />
+    <IconButton icon={Trash2} size="sm" tone="danger" label="Delete the selected cut" title={deleteReason || 'Delete the selected cut; its time joins a neighbour and its notes are archived. Undo with Ctrl+Z.'} disabled={!!deleteReason} onClick={() => activeSelected && void cutEdits.edit('delete', activeSelected.id)} />
+  </>
+  const resize = useRef<{ pointerId: number; y: number; height: number } | null>(null)
+  const timelineBox = useRef<HTMLDivElement>(null)
+  const clampHeight = (value: number) => Math.round(Math.max(MIN_TIMELINE, Math.min(window.innerHeight * 0.6, value)))
+  const workspaceStyle = { '--cuts-w': cutsCollapsed ? '0px' : `${DEFAULT_CUTS_WIDTH}px`, ...(timelineHeight ? { '--timeline-h': `${timelineHeight}px` } : {}) } as CSSProperties
+  const audioBusy = jobs.some(job => ['transcribe', 'voice_sample', 'subtitles'].includes(job.pipeline) && active(job))
+  return <div className="editor-shell bg-[#0d1016]">
+    <EditorHeader projectId={episode?.project_id} projectTitle={project?.title} episodeTitle={episode?.title} status={episode?.status || 'queued'} stage={episode?.stage}
+      hasCuts={!!episode?.cuts.length} mediaBlocked={busy ? 'Wait for the running jobs to finish.' : ''} characterBlock={characterBlock} onCharacterStep={step => void queueCharacterStep(step)}
+      onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}
+      queue={{ ...queueProgress, running: jobs.some(job => job.status === 'running'), failed: recentFailures(jobs, Date.now()) }} onOpenQueue={() => setQueueOpen(true)}
+      onOpenSettings={() => setSettingsOpen(true)} onDeleteEpisode={() => void remove()} />
+    {!episode ? <div className="muted p-12">{loadError || 'Loading episode…'}</div> : <div className="editor-workspace" style={workspaceStyle}>
+      <aside className="editor-cuts scrollbar" hidden={cutsCollapsed} aria-label="Cut list">
+        <CutGallery cuts={episode.cuts} selectedId={selectedId} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} frameVersion={frameVersion} queueStates={cutQueueStates} onCollapse={() => setCutsCollapsed(true)} />
+        <ArchivedCuts cuts={episode.archived_cuts} selectedId={selectedId} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} />
+      </aside>
+      <main className="editor-stage min-w-0">
+        {cutsCollapsed && <button type="button" onClick={() => setCutsCollapsed(false)} className="absolute left-0 top-3 z-10 flex items-center gap-1 rounded-r-lg border border-l-0 border-[#353c48] bg-[#1b202a] py-2 pl-1.5 pr-2 text-[11px] font-semibold text-[#c3c8d2] hover:bg-[#272e3a]" title="Show the cut list"><PanelLeftOpen size={14} aria-hidden /> Cuts</button>}
+        {loadError && <p role="alert" className="mx-4 mt-3 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]">Could not refresh the episode: {loadError}</p>}
+        {episode.error && <p className="mx-4 mt-3 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]">{episode.error}</p>}
+        <div className={`flex min-h-0 flex-1 flex-col pb-2 pr-4 pt-3 ${cutsCollapsed ? 'pl-16' : 'pl-4'}`}>
+          <div className="preview-stage relative overflow-hidden rounded-xl border border-[#303540] bg-black shadow-2xl">{episode.proxy_ready ? <video ref={video} src={mediaUrl(id, 'proxy')} className="h-full w-full" controls onSeeking={() => setSeekRevision(revision => revision + 1)} onTimeUpdate={event => onVideoTimeUpdate(event.currentTarget)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} /> : <div className="flex h-full flex-col items-center justify-center text-center"><Film size={36} className="mb-4 text-[#a58ae8]" /><strong className="text-sm">{busy ? episode.stage : 'Preview unavailable'}</strong><p className="muted mt-2 text-xs">{busy ? 'Video preparation runs in the background.' : 'Use Cuts › Rebuild preview & waveform to create the preview.'}</p></div>}</div>
+          <div className="mt-2 flex items-center justify-between gap-3 text-xs text-[#9ca5b3]">
+            <div className="flex items-center gap-3"><IconButton icon={playing ? Pause : Play} label={playing ? 'Pause' : 'Play'} shortcut="Space" size="sm" onClick={togglePlay} /><span className="font-mono tabular-nums text-[#e8dfff]">{formatTimecode(time)} <span className="text-[#5d6675]">/</span> <span className="text-[#9ca5b3]">{formatTimecode(duration)}</span></span></div>
+            <span className="min-w-0 truncate" title={episode.original_filename}>{episode.width && episode.height ? `${episode.width} × ${episode.height}` : '—'} · {episode.original_filename}</span>
+          </div>
+        </div>
+      </main>
+      <aside id="inspector-panel" className="editor-inspector bg-[#131720]" role="tabpanel" aria-labelledby={`inspector-tab-${activeTab}`}>
+        {activeTab === 'cut' ? selected ? <CutInspector cut={selected} cuts={episode.cuts} queueState={cutQueueStates.get(selected.id)} time={time} duration={duration} mediaBusy={mediaBusy} busy={busy} frameVersion={frameVersion}
+          sceneThreshold={episode.settings.scene_threshold ?? 0.32} detectionJob={cutDetectionJob} onSelect={selectCut} onPlay={playRange} onSeek={seek} onOpenAnalysis={() => setAnalysisOpen(true)}
+          onToggleAnalysis={() => void toggleAnalysis()} onSaveNotes={saveNotes} onApplyTiming={(start, end) => void cutEdits.edit('timing', selected.id, { start, end })} onDetectWithin={threshold => void detectWithin(threshold)}
+          onCopy={text => { void navigator.clipboard?.writeText(text).then(() => toast({ message: `Copied ${text}`, duration: 2000 })).catch(() => {}) }} />
+          : <div className="p-8 text-center"><div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[#282438] text-[#bca7ff]"><Scissors size={21} /></div><h2 className="text-sm font-semibold">Select a cut</h2><p className="muted mt-2 text-xs leading-5">Choose a segment in the timeline or the cut list to see its notes, frames and timing.</p></div>
+        : activeTab === 'chunk' ? <ChunkInspector chunk={selectedChunk} onPlay={playRange} onSave={saveChunk} />
+        : activeTab === 'audio' ? <TranscriptEditor processing={busy} hasAudio={episode.has_audio} subtitleLanguage={episode.subtitle_language} subtitleRun={episode.subtitles.run} jobs={jobs} episodeId={id} projectId={episode.project_id} duration={duration} currentTime={time} segments={transcript} selectedId={selectedTranscriptId} onSelect={setSelectedTranscriptId} onSaved={refresh} playRange={playRange} audioSelection={audioSelection} onAudioSelection={selectAudio} view={audioView} onViewChange={setAudioView} />
+        : <SequencePanel episodeId={id} cuts={episode.cuts} selectedCut={selected} sequences={sequences} onChanged={refresh} onOpen={setSequenceOpen} />}
+      </aside>
+      <nav className="editor-rail" aria-label="Inspector">
+        <InspectorRail value={activeTab} onChange={setActiveTab} busy={{ audio: audioBusy, sequences: sequences.some(sequence => sequence.pending_jobs > 0) }} counts={{ sequences: sequences.length }} />
+      </nav>
+      <div ref={timelineBox} className="editor-timeline border-t hairline">
+        <div role="separator" aria-orientation="horizontal" aria-label="Resize the timeline" aria-valuenow={timelineHeight || undefined} tabIndex={0} className="resize-handle" title="Drag to resize the timeline; double-click to reset"
+          onPointerDown={event => { if (event.button !== 0) return; event.currentTarget.setPointerCapture(event.pointerId); resize.current = { pointerId: event.pointerId, y: event.clientY, height: timelineBox.current?.getBoundingClientRect().height || 300 } }}
+          onPointerMove={event => { const drag = resize.current; if (drag?.pointerId === event.pointerId) setTimelineHeight(clampHeight(drag.height - (event.clientY - drag.y))) }}
+          onPointerUp={() => { resize.current = null }} onPointerCancel={() => { resize.current = null }} onDoubleClick={() => setTimelineHeight(null)}
+          onKeyDown={event => { if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return; event.preventDefault(); const current = timelineHeight || timelineBox.current?.getBoundingClientRect().height || 300; setTimelineHeight(clampHeight(current + (event.key === 'ArrowUp' ? 24 : -24))) }} />
+        <div className="scrollbar min-h-0 flex-1 overflow-auto">
+          <Timeline key={id} activeFilters={cutFilters.active} filterDisplay={cutFilters.display} onToggleFilter={cutFilters.toggle} onClearFilters={cutFilters.clear} onFilterDisplay={cutFilters.setDisplay} filtersOpen={filtersOpen} onFiltersOpenChange={setFiltersOpen} editTools={editTools}
+            duration={duration} waveform={waveform} hasAudio={episode.has_audio} preparing={jobs.some(job => job.pipeline === 'prepare' && active(job))} seekRevision={seekRevision} chunks={episode.chunks} cuts={episode.cuts} cutQueueStates={cutQueueStates} transcript={transcript} currentTime={time} selectedCutId={selectedId} selectedChunkId={selectedChunkId} selectedTranscriptId={selectedTranscriptId} onSeek={seek} onSelectCut={selectCut} onOpenCutAnalysis={openCutAnalysis} onSelectChunk={selectChunk} onSelectTranscript={selectTranscript} audioSelection={audioSelection} onSelectAudio={selectAudio} sequences={sequences} onOpenSequence={setSequenceOpen} />
+        </div>
+      </div>
+    </div>}
+    {episode && analysisOpen && selected && <AnalysisDialog cut={selected} cuts={episode.cuts} previousCut={selected.active ? adjacentCut(episode.cuts, selected, -1, cutFilters.active) : undefined} nextCut={selected.active ? adjacentCut(episode.cuts, selected, 1, cutFilters.active) : undefined} onNavigate={cut => selectCut(cut, true)} episodeId={id} proxyReady={episode.proxy_ready} waveform={waveform} transcript={transcript} hasAudio={episode.has_audio} preparingAudio={jobs.some(job => job.pipeline === 'prepare' && active(job))} busy={analysisBusy} jobs={jobs} jobsKey={jobs.map(job => `${job.id}-${job.status}-${job.stage}`).join('|')} frameVersion={frameVersion} onStarted={refresh} onClose={closeAnalysis} />}
+    {episode && sequenceOpen && <SequenceDialog key={sequenceOpen} sequenceId={sequenceOpen} episodeId={id} proxyReady={episode.proxy_ready} onClose={closeSequence} onChanged={refreshSequences} />}
+    {episode && queueOpen && <QueueDrawer jobs={jobs} cuts={[...episode.cuts, ...episode.archived_cuts]} onClose={closeQueue} onSelectCut={openCutAnalysis} onChanged={refresh} onCancelJob={jobId => void cancelJob(jobId)} onCancelAllQueued={() => void cancelQueuedJobs()} cancelling={cancelQueueWorking} />}
+    {episode && settingsOpen && <EpisodeSettingsDialog episode={episode} initial={episode.settings} onSave={saveSettings} onDelete={() => void remove()} onClose={closeSettings} />}
+  </div>
 }
 
 export default function App() {
   const route = useRoute()
-  if (route === '/storage') return <Storage />
-  if (route.startsWith('/project/')) return <ProjectView key={route} id={route.slice(9)} />
-  if (route.startsWith('/episode/')) return <Editor key={route} id={route.slice(9)} />
-  return <Home />
+  return <ToastProvider>{route === '/storage' ? <Storage /> : route.startsWith('/project/') ? <ProjectView key={route} id={route.slice(9)} /> : route.startsWith('/episode/') ? <Editor key={route} id={route.slice(9)} /> : <Home />}</ToastProvider>
 }

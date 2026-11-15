@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { CUT_FILTERS, adjacentCut, matchesAnyFilter } from '../src/cutFilters.ts'
+import { CUT_FILTERS, adjacentCut, groupFilters, matchesAnyFilter, nextNeedingAction, parseStoredFilters } from '../src/cutFilters.ts'
 
 const base = { active: true, analysis_enabled: true, no_characters: false, has_boxes: true, has_unlabeled_boxes: false,
   has_visual_results: true, has_consistency_summary: true, has_summary: true }
@@ -47,4 +47,29 @@ test('with filters on, next and previous jump to the nearest cut that matches', 
 
 test('a cut that is not in the list has no neighbours', () => {
   assert.equal(adjacentCut(cuts, cut('elsewhere'), 1, new Set(['no_boxes'])), undefined)
+})
+
+test('saved filters are read from the old list and the new object, and default to dimming', () => {
+  assert.deepEqual([...parseStoredFilters('["no_boxes","gone"]').keys], ['no_boxes'])
+  assert.equal(parseStoredFilters('["no_boxes"]').display, 'dim')
+  const saved = parseStoredFilters(JSON.stringify({ keys: ['long_cut', 'needs_summary'], display: 'hide' }))
+  assert.deepEqual([...saved.keys].sort(), ['long_cut', 'needs_summary'])
+  assert.equal(saved.display, 'hide')
+  assert.equal(parseStoredFilters('not json').keys.size, 0)
+  assert.equal(parseStoredFilters(null).display, 'dim')
+})
+
+test('every filter belongs to a group, listed in group order', () => {
+  const groups = groupFilters()
+  assert.deepEqual(groups.map(entry => entry.group), ['Analysis', 'Characters', 'Text steps', 'Health', 'Length'])
+  assert.equal(groups.flatMap(entry => entry.filters).length, CUT_FILTERS.length)
+  assert.deepEqual(groups[1].filters.map(filter => filter.key), ['no_boxes', 'unknown_characters'])
+})
+
+test('next needing action follows the filters and wraps around', () => {
+  assert.equal(nextNeedingAction(cuts, 'done', new Set()).id, 'no-boxes')
+  assert.equal(nextNeedingAction(cuts, 'needs-summary', new Set()).id, 'no-analysis')
+  assert.equal(nextNeedingAction(cuts, 'no-analysis', new Set()).id, 'no-boxes')
+  assert.equal(nextNeedingAction(cuts, 'needs-consistency', new Set(['no_boxes'])).id, 'no-boxes')
+  assert.equal(nextNeedingAction([cut('done')], null, new Set()), undefined)
 })
