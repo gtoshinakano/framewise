@@ -17,3 +17,15 @@ data/
 .idea/
 .DS_Store
 *.log
+
+# pose experiment (analysis_experiments/): the results (results.json, samples.json, raw/) are tracked;
+# images, scratch frames, logs and the fake-model dry run are not
+frontend/public/analysis-experiments/runs/*/thumbs/
+frontend/public/analysis-experiments/runs/*/scratch/
+frontend/public/analysis-experiments/runs/*/log.txt
+frontend/public/analysis-experiments/runs/dry-run/
+frontend/public/analysis-experiments/**/*.jpg
+frontend/public/analysis-experiments/**/*.jpeg
+frontend/public/analysis-experiments/**/*.png
+frontend/public/analysis-experiments/**/*.webp
+analysis_experiments/watcher.log
