@@ -8,6 +8,7 @@ step by step until it fits one server slot, so a long sequence degrades in detai
 import hashlib
 import json
 import os
+import re
 
 from . import pose_detail, prompt_context, sequence_compile, sequence_prompt, sequence_timeline, subtitle_store
 from .assistant import compact
@@ -15,6 +16,7 @@ from .composition_brief import shot_props, short
 
 STRUCTURED = ('initial_frame', 'video_analysis', 'consistency_summary')
 SUMMARY_TITLE = 'Cut summary'
+DIALOGUE_SECTION = re.compile(r'^###[ \t]+Dialogue[ \t]*$.*?(?=^###[ \t]|\Z)', re.M | re.S)
 LEVELS = 4  # detail levels 0 (everything) to 3 (bare minimum)
 
 
@@ -215,6 +217,14 @@ def bible_input(ctx, sequence, timeline, level=0, final_voices=None):
 def reviewed(timeline):
     """True when the lines come from a dialogue compilation the user reviewed (None otherwise, so the key is left out)."""
     return True if timeline['lines'] and all(line.get('compiled') for line in timeline['lines']) else None
+
+
+def without_dialogue(summary):
+    """A cut summary without the Dialogue section that summaries written before dialogue moved to the sequence step still have.
+
+    The words and times of speech are the user's dialogue, never a summary's, so a shot is not shown a second version of them.
+    """
+    return DIALOGUE_SECTION.sub('', summary).strip() if isinstance(summary, str) else ''
 
 
 def bible_brief(bible, level=0):
@@ -529,8 +539,12 @@ def edge_words(shot, side):
     return result
 
 
-def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='', previous=None, level=0):
-    """Everything for one shot. ``shots`` are the expanded plan entries; ``previous`` is the shot written before it, if any."""
+def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='', previous=None, level=0, earlier=(), from_review=False):
+    """Everything for one shot. ``shots`` are the expanded plan entries; ``previous`` is the shot written before it, if any.
+
+    ``instruction`` is what this rewrite was asked to do and ``earlier`` the user's instructions of earlier rewrites of the shot (oldest first):
+    all of them stay in force. An instruction that came from the automatic review (``from_review``) is a suggestion, below the user's own.
+    """
     shot = shots[index]
     duration = shot['duration']
     cuts = []
@@ -542,13 +556,13 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
             cuts.append({'cut': span['number'], 'plays_at': plays_at, 'picture': 'not shown: only its audio plays in this shot'})
             continue
         results = ctx['results'].get(span['id'], {})
-        summary = (results.get('summary') or {}).get('content')
+        summary = without_dialogue((results.get('summary') or {}).get('content') or '')
         consistency = (results.get('consistency_summary') or {}).get('content') or {}
         entry = {'cut': span['number'], 'plays_at': plays_at,
                  'first_frame': _without_ids(prompt_context.frame_view((results.get('initial_frame') or {}).get('content')), level),
                  'motion': _shift_events(prompt_context.video_view((results.get('video_analysis') or {}).get('content')), offset, duration),
                  'user_decisions': results.get('answers'),
-                 'cut_summary': summary[:(4200, 2400, 1200, 0)[level]] if isinstance(summary, str) and level < 3 else None,
+                 'cut_summary': summary[:(4200, 2400, 1200, 0)[level]] if summary and level < 3 else None,
                  'review': {key: consistency.get(key) for key in ('clear', 'confusing')} if level < 1 and not summary and consistency else None}
         cuts.append({key: value for key, value in entry.items() if value not in (None, '', {}, [])})
     scene = scene_for(bible, shot['cut'])
@@ -558,7 +572,8 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
                  'text': line['text'], 'continues_from_previous_shot': line['crosses_start'] or None, 'continues_in_next_shot': line['crosses_end'] or None}
                 for line in shot_dialogue(shot, bible)]
     subtitles = []
-    if level < 2:
+    # The user's reviewed dialogue was reconciled with the subtitles already: a second version of the words and times would only compete with it.
+    if level < 2 and not reviewed(timeline):
         subtitles = [{'t': round(max(0.0, line['start_time'] - shot['start_time']), 1), 'text': line['text']}
                      for line in subtitle_store.lines(sequence['episode_id'], shot['start_time'], shot['end_time'], conn=conn)]
 
@@ -582,7 +597,9 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
     payload = {
         'sequence': {key: bible.get(key) for key in ('synopsis', 'spoken_language', 'arc', 'continuity')},
         'director_instruction': sequence['instruction'].strip() or None,
-        'instruction_for_this_shot': instruction.strip() or None,
+        'instruction_for_this_shot': None if from_review else instruction.strip() or None,
+        'earlier_instructions_for_this_shot': list(earlier) or None,
+        'review_suggestion': instruction.strip() or None if from_review else None,
         'scene': {key: scene.get(key) for key in ('id', 'location', 'time_of_day', 'lighting', 'mood')} if scene else None,
         'scenario_reference': {'title': scenario['title'], 'notes': scenario['content'][:300]} if scenario else None,
         'shot': {'number': shot['index'], 'of': len(shots), 'seconds': duration, 'cut': shot['cut'], 'part': f"{shot['part'][0]} of {shot['part'][1]}" if shot.get('part') else None,
@@ -660,8 +677,11 @@ def shot_states(ctx, shots):
     return states
 
 
-def review_input(bible, shots, results, level=0, states=None):
-    """The whole sequence as written, shot by shot, compact enough to read in one call."""
+def review_input(bible, shots, results, level=0, states=None, instructions=None):
+    """The whole sequence as written, shot by shot, compact enough to read in one call.
+
+    ``instructions`` are the user's instructions per shot key: what the user asked for is not for the review to undo.
+    """
     rows = []
     for shot in shots:
         content = results.get(shot['key']) or {}
@@ -669,6 +689,7 @@ def review_input(bible, shots, results, level=0, states=None):
         rows.append({'shot': shot['index'], 't': [shot['t0'], shot['t1']], 'cut': shot['cut'], 'part': f"{shot['part'][0]}/{shot['part'][1]}" if shot.get('part') else None,
                      'scene': shot['scene'], 'intent': shot['intent'], 'opens': edge_brief(shot['opens']), 'closes': edge_brief(shot['closes']),
                      'written': bool(content) or None,
+                     'user_instructions': [short(text, (80, 60, 40, 24)[level]) for text in (instructions or {}).get(shot['key']) or []] or None,
                      'opening_still': content.get('picture_line'), 'subjects': [subject.get('name') for subject in content.get('subjects') or [] if isinstance(subject, dict)],
                      'summary': content.get('summary'), 'camera': (content.get('camera') or {}).get('move'), 'beats': beats,
                      'voices': voices_text(content, shot, bible) if content else None,

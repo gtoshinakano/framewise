@@ -52,6 +52,16 @@ class SequenceAssistantTest(pipeline_tests.SequenceBase):
         self.assertIn('ONE cut', runner.system_prompt({'cut_id': 'c1', 'sequence_id': None}))
         sequence_tools.sequence_card('missing')
 
+    def test_get_shot_lists_what_the_user_asked_for_in_earlier_rewrites(self):
+        self.assertNotIn('user_instructions', self.run_tool('get_shot', {'shot': 2})[0])
+        key = self.detail(self.sequence_id)['shots'][1]['key']
+        self.run_step(self.sequence_id, 'shots', shot_keys=[key], instruction='Keep the camera still.')
+        self.work()
+        shot = self.run_tool('get_shot', {'shot': 2})[0]
+        self.assertEqual(shot['user_instructions'], ['Keep the camera still.'])
+        self.assertNotIn('user_instructions', self.run_tool('get_shot', {'shot': 2, 'fields': ['direction']})[0])
+        self.assertNotIn('user_instructions', self.run_tool('get_shot', {'shot': 1})[0])
+
     def test_reading_tools_return_compact_views(self):
         overview, label, ok = self.run_tool('get_sequence', {})
         self.assertTrue(ok, overview)

@@ -317,14 +317,20 @@ def run_shot(job, owner, payload, sequence):
             raise RuntimeError('This shot is no longer part of the plan')
         previous = content_of(store.current(conn, sequence['id'], 'shot', shots[index - 1]['key'])) if index else None
         ctx, timeline, shot = state['ctx'], state['timeline'], shots[index]
+        instruction = (payload.get('instruction') or '').strip()
+        from_review = instruction and payload.get('instruction_source') == 'review'
+        # What the user asked for in earlier rewrites of this shot stays in force; the one being asked now is not part of it yet.
+        earlier = [text for text in store.shot_instructions(conn, sequence['id'], shot['key']) if text.casefold() != instruction.casefold() or from_review]
         # The subtitle lines are read here because the input is built several times while fitting the context.
-        inputs = {level: evidence.shot_input(conn, ctx, sequence, timeline, bible, shots, index, payload.get('instruction') or '', previous, level) for level in range(evidence.LEVELS)}
+        inputs = {level: evidence.shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction, previous, level, earlier=earlier, from_review=bool(from_review))
+                  for level in range(evidence.LEVELS)}
     roster, scenario, dialogue = evidence.shot_parts(ctx, bible, shot)
     worker.stage(job['id'], owner, job['episode_id'], f"Writing shot {shot['index']} of {len(shots)}")
     output, model, settings, user_input = ask(job, owner, payload, 'shot', inputs.__getitem__, direction.shot_format(shot, roster, dialogue),
                                               lambda answer: direction.validate_shot(answer, shot, bible, roster, scenario, dialogue, generated=True), f"Shot {shot['index']}")
     prompt, verdict, derived = sequence_prompt.build(shot, output, bible, roster, scenario, dialogue)
-    settings.update(check=verdict, derived=derived, hashes=evidence.shot_hashes(ctx, bible, shot), instruction=payload.get('instruction') or None,
+    settings.update(check=verdict, derived=derived, hashes=evidence.shot_hashes(ctx, bible, shot), instruction=instruction or None,
+                    instruction_source=('review' if from_review else 'user') if instruction else None, earlier_instructions=len(earlier) or None,
                     trigger=payload.get('trigger'))
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -357,10 +363,11 @@ def run_review(job, owner, payload, sequence):
             raise RuntimeError('Write the sequence bible first')
         shots = planned_shots(conn, sequence, state['timeline'])
         written = {key: store.loads(row['content'], {}) for key, row in store.current_shots(conn, sequence['id']).items()}
+        asked = {shot['key']: store.shot_instructions(conn, sequence['id'], shot['key']) for shot in shots if shot['key'] in written}
     if not any(shot['key'] in written for shot in shots):
         raise RuntimeError('Write the shot prompts before reviewing them')
     worker.stage(job['id'], owner, job['episode_id'], 'Reviewing continuity')
-    output, model, settings, user_input = ask(job, owner, payload, 'review', lambda level: evidence.review_input(bible, shots, written, level, evidence.shot_states(state['ctx'], shots)),
+    output, model, settings, user_input = ask(job, owner, payload, 'review', lambda level: evidence.review_input(bible, shots, written, level, evidence.shot_states(state['ctx'], shots), asked),
                                               direction.review_format(len(shots)), lambda answer: direction.validate_review(answer, len(shots)), 'Sequence review')
     for issue in output['issues']:
         issue['shot_key'] = shots[issue['shot'] - 1]['key']  # shot numbers move when the plan is edited; the key does not

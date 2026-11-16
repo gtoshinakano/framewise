@@ -109,7 +109,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
     return act('revise', async () => {
       for (const shot of shots) {
         const issues = issuesFor(flagged, shot)
-        if (issues.length && !shot.job) await sequenceApi.run(sequenceId, { step: 'shots', shot_keys: [shot.key], instruction: issueInstruction(issues) })
+        if (issues.length && !shot.job) await sequenceApi.run(sequenceId, { step: 'shots', shot_keys: [shot.key], instruction: issueInstruction(issues), instruction_source: 'review' })
       }
     })
   }
@@ -443,14 +443,14 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
     </section>
   </div>
   <footer className="sticky bottom-0 z-30 flex shrink-0 flex-wrap items-end gap-2 rounded-xl border hairline bg-[#1b202a] p-3 shadow-[0_-6px_18px_rgba(0,0,0,0.35)]" aria-label={result ? 'Rewrite this shot' : 'Write this shot'}>
-    <label className="min-w-0 flex-1"><span className="label !mb-1 flex items-center justify-between gap-2">Instruction for a rewrite (optional)<span className="font-normal normal-case tracking-normal text-[#8b93a3]">Ctrl+Enter queues it</span></span>
+    <label className="min-w-0 flex-1"><span className="label !mb-1 flex items-center justify-between gap-2">Instruction for a rewrite (optional, remembered for every later rewrite of this shot)<span className="font-normal normal-case tracking-normal text-[#8b93a3]">Ctrl+Enter queues it</span></span>
       <textarea ref={instructionField} className="field max-h-48 min-h-[3.25rem] resize-y !py-2 !text-xs leading-5" rows={2} maxLength={4000} value={instruction} onChange={event => setInstruction(event.target.value)} placeholder="For example: she is off screen for the first line; keep the camera static"
         onKeyDown={event => {
           if (event.key !== 'Enter' || !event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return
           event.preventDefault()
           if (!event.repeat && canQueue) queue()
         }} /></label>
-    <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={!canQueue} onClick={queue} title="The director writes this shot again from the current bible, plan and analysis (Ctrl+Enter in the instruction)"><Sparkles size={13} /> {result ? 'Rewrite this shot' : 'Write this shot'}</button>
+    <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={!canQueue} onClick={queue} title="The director writes this shot again from the current bible, plan and analysis, following your instruction and the ones you gave before (Ctrl+Enter in the instruction)"><Sparkles size={13} /> {result ? 'Rewrite this shot' : 'Write this shot'}</button>
   </footer>
   </div>
 }
@@ -503,7 +503,12 @@ function PromptHistory({ sequenceId, shot, open, onToggle, onOpenAssistant }: {
       {!history && !error && <p className="muted flex items-center gap-1.5 text-[11px]"><LoaderCircle size={12} className="animate-spin" /> Loading the versions…</p>}
       {history?.pending && <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#5a4a8c] bg-[#1a1730] px-3 py-2 text-[#d6c8ff]">
         <LoaderCircle size={13} className="animate-spin" /><span className="font-semibold">{history.pending.status === 'running' ? 'Rewriting now' : 'Rewrite queued'}</span>
-        <span className="min-w-0 flex-1 text-[#e8ebf1]">{history.pending.instruction ? `with your instruction: “${history.pending.instruction}”` : history.pending.trigger === 'voices' ? 'after you changed the voices' : 'without an instruction'}</span>
+        <span className="min-w-0 flex-1 text-[#e8ebf1]">{history.pending.instruction ? `with your instruction: “${history.pending.instruction}”` : history.pending.trigger === 'voices' ? 'after you changed the voices' : history.remembered.length ? 'following your earlier instructions' : 'without an instruction'}</span>
+      </div>}
+      {!!history?.remembered.length && <div className="rounded-lg border border-[#3d5a45] bg-[#142019] px-3 py-2 text-[#cfe8d6]">
+        <p className="font-semibold">Remembered for every rewrite of this shot</p>
+        <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-[#e8ebf1]">{history.remembered.map((text, index) => <li key={index}>{text}</li>)}</ol>
+        <p className="muted mt-1 text-[11px]">Every rewrite follows all of these. Where two differ, the later one wins, so write a new instruction to change one.</p>
       </div>}
       {history?.proposals.map(proposal => <ChangeRow key={proposal.id} open={false} diff={proposal.diff} prompt={proposal.prompt}
         heading={<><Tag tone={proposal.stale ? 'warn' : 'busy'}>{proposal.stale ? 'Outdated' : 'Not applied'}</Tag><span className="font-semibold text-[#e8ebf1]">Proposed in the Assistant tab</span><Size diff={proposal.diff} /><span className="muted ml-auto font-mono text-[10px]">{proposal.created_at.slice(0, 16)}</span></>}
@@ -514,9 +519,9 @@ function PromptHistory({ sequenceId, shot, open, onToggle, onOpenAssistant }: {
           <span className="font-semibold text-[#e8ebf1]">{revisionLabel(revision)}</span><Size diff={revision.diff} />{revision.check_ok === false && <Tag tone="bad">format errors</Tag>}
           <span className="muted ml-auto font-mono text-[10px]">{revision.created_at.slice(0, 16)}{revision.generation_seconds ? ` · ${took(revision.generation_seconds)}` : ''}</span></>}
         why={revision.assistant ? <Why asked={revision.assistant.request} said={revision.assistant.summary} />
-          : revision.instruction ? <Why instruction={revision.instruction} />
+          : revision.instruction ? <Why instruction={revision.instruction} review={revision.instruction_source === 'review'} earlier={revision.earlier_instructions} />
           : revision.trigger === 'voices' ? <p className="muted text-[11px]">You changed how a speaker is heard in this shot; the director wrote it again around your voices.</p>
-          : revision.number > 1 && revision.origin === 'model' ? <p className="muted text-[11px]">No instruction: the director wrote it again from the current bible, plan and analysis.</p> : null} />)}
+          : revision.number > 1 && revision.origin === 'model' ? <p className="muted text-[11px]">{revision.earlier_instructions ? `No new instruction: the director wrote it again from the current bible, plan and analysis, following your ${revision.earlier_instructions === 1 ? 'earlier instruction' : `${revision.earlier_instructions} earlier instructions`}.` : 'No instruction: the director wrote it again from the current bible, plan and analysis.'}</p> : null} />)}
       {history && count <= 1 && !history.pending && !waiting && <p className="muted text-[11px]">This is the first version. Rewrites, your edits and changes from the Assistant tab will appear here with what changed.</p>}
     </div>
   </details>
@@ -543,9 +548,10 @@ function ChangeRow({ heading, why, diff, prompt, open, actions }: { heading: Rea
 }
 
 /** What the user asked for: a rewrite instruction, or a chat request and the assistant's summary of its change. */
-function Why({ instruction, asked, said }: { instruction?: string; asked?: string | null; said?: string }) {
+function Why({ instruction, review, earlier, asked, said }: { instruction?: string; review?: boolean; earlier?: number | null; asked?: string | null; said?: string }) {
   return <div className="space-y-1 text-[11px] leading-5">
-    {instruction && <p className="border-l-2 border-[#e0a96d] pl-2.5 text-[#e8ebf1]"><span className="muted">Your instruction: </span>“{instruction}”</p>}
+    {instruction && <p className="border-l-2 border-[#e0a96d] pl-2.5 text-[#e8ebf1]"><span className="muted">{review ? 'Suggestion of the review (used once): ' : 'Your instruction: '}</span>“{instruction}”</p>}
+    {!!earlier && <p className="muted pl-2.5">Also followed your {earlier === 1 ? 'earlier instruction' : `${earlier} earlier instructions`} for this shot.</p>}
     {asked && <p className="border-l-2 border-[#e0a96d] pl-2.5 text-[#e8ebf1]"><span className="muted">You asked: </span>“{asked}”</p>}
     {said && <p className="border-l-2 border-[#5a4a8c] pl-2.5 text-[#d6c8ff]"><span className="muted">Assistant: </span>{said}</p>}
   </div>

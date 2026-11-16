@@ -154,7 +154,7 @@ def dialogue_rows(view, bible):
     return rows
 
 
-@tool('get_shot', "Read one shot by number. direction is the JSON object that propose_shot_edit changes (paths such as beats.0.action, camera.move, voices.0.delivery). voices says per speaker how they are heard in this shot from which second (on_screen, off_screen, inner_voice, narrative); voices_set_by_user are ranges the user decided, which no edit may change. Times are seconds from the start of the shot. fields narrows to: plan, dialogue, direction, check, prompt (the rendered H3 prompt; only returned when asked for).",
+@tool('get_shot', "Read one shot by number. direction is the JSON object that propose_shot_edit changes (paths such as beats.0.action, camera.move, voices.0.delivery). voices says per speaker how they are heard in this shot from which second (on_screen, off_screen, inner_voice, narrative); voices_set_by_user are ranges the user decided, which no edit may change. user_instructions are what the user asked for in earlier rewrites of this shot; every rewrite keeps following them, so no edit may undo them. Times are seconds from the start of the shot. fields narrows to: plan, dialogue, direction, check, prompt (the rendered H3 prompt; only returned when asked for).",
       {'shot': {'type': 'integer'}, 'fields': {'type': 'array', 'items': {'type': 'string', 'enum': ['plan', 'dialogue', 'direction', 'check', 'prompt']}}}, ('shot',),
       summary=lambda args, value: f"Read shot {args['shot']}", limit=10000, scope='sequence')
 def get_shot(ctx, args):
@@ -165,6 +165,11 @@ def get_shot(ctx, args):
     out = {'shot': view['index'], 'written': bool(result), 'stale_because': view['stale'] or None, 'origin': result.get('origin')}
     if 'plan' in fields and view['fixed_voices']:
         out['voices_set_by_user'] = view['fixed_voices']
+    if 'plan' in fields:
+        with db.connect() as conn:
+            asked = sequence_store.shot_instructions(conn, ctx.sequence_id, view['key'])
+        if asked:
+            out['user_instructions'] = asked
     if 'plan' in fields:
         out['plan'] = {'t_in_sequence': tools.span(view['t0'], view['t1']), 'seconds': view['duration'], 'generate_seconds': view['generate_seconds'], 'trim_to': view['trim_seconds'],
                        'cut': view['cut'], 'part': view['part'], 'frame': view['frame']['strategy'], 'opens': evidence.edge_words(view, 'opens'), 'closes': evidence.edge_words(view, 'closes'),

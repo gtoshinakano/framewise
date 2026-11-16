@@ -116,6 +116,8 @@ test('a prompt version says what caused it', () => {
   assert.equal(revisionLabel(version({ number: 1, instruction: 'Keep the camera still.' })), 'Written with your instruction')
   assert.equal(revisionLabel(version({ trigger: 'voices' })), 'Rewritten after you changed the voices')
   assert.equal(revisionLabel(version({ origin: 'manual_edit', instruction: 'ignored' })), 'Edited by you')
+  assert.equal(revisionLabel(version({ instruction: 'Keep the camera still.', instruction_source: 'review' })), "Rewritten with the review's suggestion")
+  assert.equal(revisionLabel(version({ instruction: 'Keep the camera still.', instruction_source: 'user' })), 'Rewritten with your instruction')
   assert.equal(revisionLabel(version({ origin: 'assistant_edit' })), 'Edited with the assistant')
 })
 
@@ -125,6 +127,7 @@ test('the current version names its instruction, voice change or assistant edit'
   assert.equal(versionNote(result({ origin: 'manual_edit' })), null)
   assert.equal(versionNote(result({ instruction: 'Keep the camera still.' })), 'Rewritten with your instruction: “Keep the camera still.”')
   assert.equal(versionNote(result({ trigger: 'voices' })), 'Rewritten after you changed the voices')
+  assert.equal(versionNote(result({ instruction: 'Fix the hand.', instruction_source: 'review' })), "Rewritten with the review's suggestion: “Fix the hand.”")
   assert.equal(versionNote(result({ origin: 'assistant_edit', assistant_summary: 'Cooler light' })), 'Edited with the assistant: Cooler light')
   assert.equal(versionNote(result({ instruction: 'a'.repeat(10) }), 4), 'Rewritten with your instruction: “aaaa…”')
 })

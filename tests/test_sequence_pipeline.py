@@ -310,6 +310,85 @@ class SequenceFlowTest(SequenceBase):
         self.assertEqual(self.run_step(sequence_id, 'shots')['queued'], 1)  # only the remaining stale shot
         self.assertEqual(self.client.post(f'/api/sequences/{sequence_id}/run', json={'step': 'shots', 'shot_keys': ['1-2']}).status_code, 404)
 
+    def test_the_users_instructions_are_remembered_by_every_later_rewrite_of_that_shot(self):
+        sequence_id = self.written()
+        first, second = (shot['key'] for shot in self.detail(sequence_id)['shots'][:2])
+
+        def rewrite(key, instruction='', **extra):
+            self.calls.clear()
+            self.run_step(sequence_id, 'shots', shot_keys=[key], instruction=instruction, **extra)
+            self.assertEqual(self.work(), 1)
+            return self.calls[0][1]
+
+        sent = rewrite(first, 'Keep the camera still.')
+        self.assertEqual(sent['instruction_for_this_shot'], 'Keep the camera still.')
+        self.assertNotIn('earlier_instructions_for_this_shot', sent)  # nothing came before it
+        sent = rewrite(first, 'She smiles at the end.')
+        self.assertEqual((sent['instruction_for_this_shot'], sent['earlier_instructions_for_this_shot']), ('She smiles at the end.', ['Keep the camera still.']))
+        # A plain rewrite, and a rewrite after a hand edit, still follow everything the user said.
+        shot = self.detail(sequence_id)['shots'][0]
+        edited = {**shot['result']['content'], 'summary': 'Hero raises a hand and the camera holds still.'}
+        self.assertEqual(self.client.put(f"/api/sequence-results/{shot['result']['id']}", json={'content': edited}).status_code, 200)
+        sent = rewrite(first)
+        self.assertNotIn('instruction_for_this_shot', sent)
+        self.assertEqual(sent['earlier_instructions_for_this_shot'], ['Keep the camera still.', 'She smiles at the end.'])
+        # Saying one again does not repeat it; another shot has its own.
+        sent = rewrite(first, 'keep the camera still.')
+        self.assertEqual((sent['instruction_for_this_shot'], sent['earlier_instructions_for_this_shot']), ('keep the camera still.', ['She smiles at the end.']))
+        self.assertNotIn('earlier_instructions_for_this_shot', rewrite(second))
+        # A suggestion of the automatic review is used once: it ranks below the user's words and is never remembered.
+        sent = rewrite(first, 'End with the hand at shoulder height.', instruction_source='review')
+        self.assertNotIn('instruction_for_this_shot', sent)
+        self.assertEqual((sent['review_suggestion'], sent['earlier_instructions_for_this_shot']), ('End with the hand at shoulder height.', ['She smiles at the end.', 'keep the camera still.']))
+        sent = rewrite(first)
+        self.assertEqual(sent['earlier_instructions_for_this_shot'], ['She smiles at the end.', 'keep the camera still.'])
+        self.assertNotIn('review_suggestion', sent)
+        history = self.client.get(f'/api/sequences/{sequence_id}/shots/{first}/history').json()
+        self.assertEqual(history['remembered'], ['She smiles at the end.', 'keep the camera still.'])
+        by_source = [(row['instruction'], row['instruction_source']) for row in history['revisions'] if row['instruction']]
+        self.assertIn(('End with the hand at shoulder height.', 'review'), by_source)
+        self.assertEqual(history['revisions'][0]['earlier_instructions'], 2)
+        # The review is told what the user asked for, so it does not suggest undoing it.
+        self.calls.clear()
+        self.run_step(sequence_id, 'review')
+        self.work()
+        rows = next(data for step, data in self.calls if step == 'review')['shots']
+        self.assertEqual(rows[0]['user_instructions'], ['She smiles at the end.', 'keep the camera still.'])
+        self.assertNotIn('user_instructions', rows[1])
+        self.assertIn('user_instructions', direction.REVIEW_SYSTEM)
+
+    def test_prompts_make_the_users_dialogue_the_only_truth_and_a_summary_holds_no_speech(self):
+        for system in (direction.BIBLE_SYSTEM, direction.PLAN_SYSTEM, direction.SHOT_SYSTEM, direction.REVIEW_SYSTEM):
+            self.assertIn("The user's own spoken words and timings are absolute", system)
+            self.assertIn('supporting material only', system)
+        self.assertIn('earlier_instructions_for_this_shot', direction.SHOT_SYSTEM)
+        with db.connect() as conn:
+            # A summary written before dialogue moved to the sequence step still holds a Dialogue section with other words and times.
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,settings_json) VALUES ('c1-summary','c1','production_brief','Cut summary',?,'model','{}')",
+                         ('### Scene\nHero in a street.\n### Opening Frame\nCentre.\n### Animation Timeline\n[0-2s] Hero raises a hand.\n'
+                          '### Dialogue\n[1.9s] Hero: 違う言葉\n### Continuity & Constraints\nThe coat stays green.',))
+            conn.execute("INSERT INTO subtitle_runs(id,episode_id,status,language) VALUES ('r','e','complete','Japanese')")
+            conn.execute("INSERT INTO subtitle_lines(id,run_id,episode_id,line_index,start_time,end_time,text,confidence) VALUES ('s1','r','e',0,0.4,1.2,'字幕の言葉','high')")
+        self.written()
+        shot = next(data for step, data in self.calls if step == 'shot')
+        summary = shot['cuts'][0]['cut_summary']
+        self.assertNotIn('違う言葉', summary)
+        self.assertNotIn('Dialogue', summary)
+        self.assertIn('Hero raises a hand', summary)
+        self.assertIn('The coat stays green.', summary)  # the sections around it stay
+        self.assertEqual([(line['text'], line['t']) for line in shot['dialogue']], [('こんにちは', [0.4, 1.2])])
+        # The transcript was used as it is (nobody reconciled it with the subtitles), so they stay available to understand the words.
+        self.assertNotIn('dialogue_reviewed', shot)
+        self.assertEqual(shot['subtitles_for_meaning_only']['lines'], [{'t': 0.4, 'text': '字幕の言葉'}])
+
+    def test_a_summary_loses_only_its_dialogue_section(self):
+        from app import sequence_evidence
+        text = '### Scene\nA.\n### Dialogue\n[0.4s] Hero: words\n### Continuity & Constraints\nB.'
+        self.assertEqual(sequence_evidence.without_dialogue(text), '### Scene\nA.\n### Continuity & Constraints\nB.')
+        self.assertEqual(sequence_evidence.without_dialogue('### Scene\nA.\n### Dialogue\n[0.4s] Hero: words'), '### Scene\nA.')
+        self.assertEqual(sequence_evidence.without_dialogue('### Scene\nHe gives a Dialogue.\n### Continuity & Constraints\nB.'), '### Scene\nHe gives a Dialogue.\n### Continuity & Constraints\nB.')
+        self.assertEqual(sequence_evidence.without_dialogue(None), '')
+
     def test_a_result_edited_while_its_job_ran_is_not_overwritten(self):
         sequence_id = self.directed()
         self.run_step(sequence_id, 'bible')

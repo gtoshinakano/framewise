@@ -228,6 +228,31 @@ def record_sources(conn, sequence_id, result_id, source_hash, subtitle_run_id, t
                  (sequence_id, result_id, source_hash, subtitle_run_id, transcript_count, subtitle_count))
 
 
+MAX_REMEMBERED = 12
+REMEMBERED_CHARS = 6000
+
+
+def shot_instructions(conn, sequence_id, shot_key):
+    """What the user asked for in earlier rewrites of one shot, oldest first: instructions that every later rewrite keeps following.
+
+    Read from the shot's revisions, so there is nothing else to keep in step. Only the user's own instructions count
+    (``instruction_source`` ``user``): a suggestion of the automatic review does not become a standing order, and a
+    revision from before the source was recorded is not counted. A repeated text keeps its latest place, and the oldest go
+    first when there are more than ``MAX_REMEMBERED`` or ``REMEMBERED_CHARS``.
+    """
+    found = []
+    for row in conn.execute("SELECT settings_json FROM sequence_results WHERE sequence_id=? AND type='shot' AND shot_key=? ORDER BY rowid", (sequence_id, shot_key or '')):
+        settings = loads(row['settings_json'], {})
+        text = settings.get('instruction')
+        if settings.get('instruction_source') == 'user' and isinstance(text, str) and text.strip():
+            text = text.strip()
+            found = [item for item in found if item.casefold() != text.casefold()] + [text]
+    found = found[-MAX_REMEMBERED:]
+    while len(found) > 1 and sum(len(item) for item in found) > REMEMBERED_CHARS:
+        found.pop(0)
+    return found
+
+
 def history(conn, sequence_id, result_type, shot_key=''):
     return [serialize(row) for row in conn.execute('SELECT * FROM sequence_results WHERE sequence_id=? AND type=? AND shot_key=? ORDER BY rowid DESC', (sequence_id, result_type, shot_key or ''))]
 

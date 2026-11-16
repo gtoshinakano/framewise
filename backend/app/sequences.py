@@ -29,6 +29,8 @@ class SequenceRunInput(BaseModel):
     shot_keys: list[str] | None = Field(default=None, max_length=200, description='Only these shots (step shots); omitted writes every shot that needs it.')
     only_missing: bool = Field(default=True, description='With step shots and no shot_keys: skip shots that are written, current and pass the format check.')
     instruction: str = Field(default='', max_length=4000, description='A correction for the shots being written.')
+    instruction_source: Literal['user', 'review'] = Field(
+        default='user', description="user: the user's own instruction, which every later rewrite of that shot keeps following. review: a suggestion of the automatic review, used for this rewrite only.")
 
 
 class SequenceResultUpdate(BaseModel):
@@ -155,7 +157,7 @@ def delete_sequence(sequence_id: str):
 @router.post('/sequences/{sequence_id}/run')
 def run_sequence(sequence_id: str, body: SequenceRunInput):
     """Queue a step of the direction; `direct` writes the bible and the shot plan and then stops for review."""
-    job_ids = edit(lambda conn: sequence_edit.queue(conn, require(conn, sequence_id), body.step, body.shot_keys, body.only_missing, body.instruction))
+    job_ids = edit(lambda conn: sequence_edit.queue(conn, require(conn, sequence_id), body.step, body.shot_keys, body.only_missing, body.instruction, instruction_source=body.instruction_source))
     return {'queued': len(job_ids), 'job_ids': job_ids}
 
 

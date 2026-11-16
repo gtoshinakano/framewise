@@ -228,18 +228,18 @@ export function promptSections(prompt: string) {
 }
 
 /** Why a version of a shot's prompt was written, in a few words. */
-export function revisionLabel(revision: Pick<ShotRevision, 'number' | 'origin' | 'instruction' | 'trigger'>) {
+export function revisionLabel(revision: Pick<ShotRevision, 'number' | 'origin' | 'instruction' | 'trigger' | 'instruction_source'>) {
   if (revision.origin === 'manual_edit') return 'Edited by you'
   if (revision.origin === 'assistant_edit') return 'Edited with the assistant'
   const verb = revision.number === 1 ? 'Written' : 'Rewritten'
-  if (revision.instruction) return `${verb} with your instruction`
+  if (revision.instruction) return revision.instruction_source === 'review' ? `${verb} with the review's suggestion` : `${verb} with your instruction`
   if (revision.trigger === 'voices') return `${verb} after you changed the voices`
   return `${verb} by the director`
 }
 
 /** What caused the current version of a shot, for the line above its prompt; null when nothing but the director wrote it. */
-export function versionNote(result: Pick<ShotResult, 'origin' | 'parent_id' | 'instruction' | 'trigger' | 'assistant_summary'>, limit = 240) {
-  const label = revisionLabel({ number: result.parent_id ? 2 : 1, origin: result.origin, instruction: result.instruction, trigger: result.trigger ?? null })
+export function versionNote(result: Pick<ShotResult, 'origin' | 'parent_id' | 'instruction' | 'instruction_source' | 'trigger' | 'assistant_summary'>, limit = 240) {
+  const label = revisionLabel({ number: result.parent_id ? 2 : 1, origin: result.origin, instruction: result.instruction, instruction_source: result.instruction_source, trigger: result.trigger ?? null })
   const clip = (text: string) => text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text
   if (result.origin === 'assistant_edit') return result.assistant_summary ? `${label}: ${clip(result.assistant_summary)}` : label
   if (result.origin !== 'model') return null

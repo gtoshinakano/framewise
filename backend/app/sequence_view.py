@@ -100,7 +100,8 @@ def shot_result(row):
     return {'id': row['id'], 'content': store.loads(row['content'], {}), 'prompt': row['rendered'], 'check': settings.get('check'), 'derived': settings.get('derived') or {},
             'generation_seconds': settings.get('summary_generation_seconds'), 'model_variant': usage.get('model_variant'), 'decode_tokens_per_second': usage.get('decode_tokens_per_second'),
             'origin': row['origin'], 'model_id': row['model_id'], 'job_id': row['job_id'], 'parent_id': row['parent_id'], 'created_at': row['created_at'],
-            'instruction': settings.get('instruction'), 'trigger': settings.get('trigger'), 'completed_by_app': settings.get('completed_by_app'),
+            'instruction': settings.get('instruction'), 'instruction_source': settings.get('instruction_source'), 'trigger': settings.get('trigger'),
+            'completed_by_app': settings.get('completed_by_app'),
             'assistant_summary': (settings.get('assistant_edit') or {}).get('summary')}
 
 
@@ -114,6 +115,7 @@ def shot_history(conn, sequence_id, shot_key):
 
     Each revision is diffed against the version it replaced and says what caused it: the user's
     instruction, a voice change (``trigger``), a hand edit, or an Assistant chat request (``assistant``).
+    ``remembered`` are the user's instructions of earlier rewrites, which every later rewrite keeps following.
     ``pending`` is a rewrite that is queued or running; ``proposals`` are the Assistant tab's changes to
     this shot that wait for the user to apply them.
     """
@@ -133,7 +135,8 @@ def shot_history(conn, sequence_id, shot_key):
         prompt = row['rendered'] or ''
         revisions.append({
             'id': row['id'], 'number': number, 'origin': row['origin'], 'model_id': row['model_id'], 'created_at': row['created_at'],
-            'instruction': extra.get('instruction'), 'trigger': extra.get('trigger'),
+            'instruction': extra.get('instruction'), 'instruction_source': extra.get('instruction_source'), 'earlier_instructions': extra.get('earlier_instructions'),
+            'trigger': extra.get('trigger'),
             'assistant': {'request': clip(requests.get(edit.get('proposal_id'))), 'summary': edit.get('summary') or '', 'provider': edit.get('provider'),
                           'model': edit.get('model'), 'session_id': edit.get('session_id')} if edit else None,
             'model_variant': (extra.get('usage') or {}).get('model_variant'), 'generation_seconds': extra.get('summary_generation_seconds'),
@@ -148,7 +151,7 @@ def shot_history(conn, sequence_id, shot_key):
                  for row in conn.execute(f"""SELECT p.id,p.created_at,p.summary,p.provider,p.model_id,p.base_result_id,p.base_content,p.content,{CHAT_REQUEST} AS request
                      FROM assistant_proposals p WHERE p.sequence_id=? AND p.target='sequence_shot' AND p.status='pending' AND json_extract(p.payload_json,'$.shot_key')=?
                      ORDER BY p.created_at DESC,p.rowid DESC""", (sequence_id, shot_key))]
-    return {'revisions': revisions[::-1], 'pending': {'status': job['status'], 'instruction': job['instruction'] or None, 'trigger': job['reason']} if job else None,
+    return {'revisions': revisions[::-1], 'remembered': store.shot_instructions(conn, sequence_id, shot_key), 'pending': {'status': job['status'], 'instruction': job['instruction'] or None, 'trigger': job['reason']} if job else None,
             'proposals': proposals}
 
 

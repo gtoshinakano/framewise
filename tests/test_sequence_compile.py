@@ -155,6 +155,25 @@ class CompileFlowTest(SequenceBase):
         self.assertTrue(shot_call['dialogue_reviewed'])
         self.assertNotIn('delivery_fixed', json.dumps(shot_call['dialogue']))
 
+    def test_a_shot_of_reviewed_dialogue_gets_no_second_version_of_the_words(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO subtitle_runs(id,episode_id,status,language) VALUES ('r','e','complete','Japanese')")
+            conn.execute("INSERT INTO subtitle_lines(id,run_id,episode_id,line_index,start_time,end_time,text,confidence) VALUES ('s1','r','e',0,0.4,1.2,'字幕の言葉','high')")
+        self.answers['compile'] = self.compile_answer
+        sequence_id = self.create(review=None)
+        self.work()
+        result = self.detail(sequence_id)['compilation']['result']
+        self.client.post(f'/api/sequences/{sequence_id}/compilation/confirm', json={'result_id': result['id']})
+        self.run_step(sequence_id, 'direct')
+        self.work()
+        self.run_step(sequence_id, 'shots')
+        self.work()
+        shot = next(data for step, data in self.calls if step == 'shot')
+        self.assertTrue(shot['dialogue_reviewed'])
+        self.assertEqual([(row['text'], row['t'], row['speaker_known_from']) for row in shot['dialogue']], [('こんにちは', [0.4, 1.2], 'user-reviewed dialogue')])
+        self.assertNotIn('subtitles_for_meaning_only', shot)  # the compilation was reconciled with the subtitles already; they would only compete with the user's words
+        self.assertIn('are final', direction.SHOT_SYSTEM)
+
     def test_use_source_confirms_the_raw_transcript_and_a_silent_range_needs_no_review(self):
         sequence_id = self.create(review=None)
         self.work()

@@ -39,6 +39,8 @@ Read only what the task needs: `get_shot(shot)` for the direction, the dialogue 
 
 Precedence: review answers > production brief > video analysis > initial frame > neighbouring shots (continuity only).
 
+Spoken words and their timing are the exception: only the user's dialogue decides them (its lines, speakers and seconds as `get_shot` shows them, the voice ranges set by the user and the edges the user placed). The transcription, subtitles, the production brief and the video analysis (mouth events, `speaking`) are supporting material: they can show whether a mouth is seen moving, never what is said or at which second. Where they differ from the dialogue, follow the dialogue and do not propose changing it. The user also gives instructions when rewriting a shot in the Shots tab; the director keeps following all of them, so do not propose edits that undo them.
+
 Voices are decided per shot from what the take shows, never per line:
 - `on_screen`: the speaker is a subject, in the picture with the mouth visible, and visibly speaks (video analysis `speaking: yes`, or a review answer). Lip sync.
 - `off_screen`: the speaker is not in the picture at that time, or nobody confirmed the voice.

@@ -141,7 +141,7 @@ def needs_writing(view):
     return not view['result'] or bool(view['stale']) or not (view['result']['check'] or {}).get('ok')
 
 
-def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='', trigger=None, then_shots=False):
+def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='', trigger=None, then_shots=False, instruction_source='user'):
     """Queue a step of the direction and return the new job ids.
 
     ``direct`` writes the bible and then the plan and stops there; ``shots`` writes every shot that is
@@ -149,6 +149,8 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
     batch; ``bible``, ``plan`` and ``review`` run that one step again. ``trigger`` says why shots are
     rewritten when the user did not write an instruction (``voices``), for the shot's history. With
     ``then_shots``, ``direct`` goes on after the plan and writes every shot that needs it (a cut was added).
+    ``instruction_source`` is ``user`` for what the user wrote (every later rewrite of the shot keeps following it) or ``review``
+    for a suggestion of the automatic review (used once, never remembered).
     """
     if conn.execute(BUSY_EPISODE, (sequence['episode_id'],)).fetchone():
         raise EditError(409, 'Wait for media preparation or detection to finish')
@@ -210,6 +212,7 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
         for view in targets:
             job_ids.append(store.insert_job(conn, sequence, {'step': 'shot', 'shot_key': view['key'], 'config': config, 'base_id': view['result']['id'] if view['result'] else None,
                                                             'instruction': instruction.strip(), 'batch_id': batch, 'then_review': shot_keys is None,
+                                                            **({'instruction_source': 'review' if instruction_source == 'review' else 'user'} if instruction.strip() else {}),
                                                             **({'trigger': trigger} if trigger else {})}))
     elif step == 'review':
         if any(job['step'] == 'review' for job in pending):

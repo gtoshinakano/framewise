@@ -31,8 +31,8 @@ export class SourcePlayer {
     video.addEventListener('seeking', () => {
       const range = this.range
       if (!range) return
-      if (video.currentTime < range.start) video.currentTime = range.start
-      else if (video.currentTime > range.end) video.currentTime = range.end
+      if (video.currentTime < range.start - 0.002) video.currentTime = range.start
+      else if (video.currentTime > range.end + 0.002) video.currentTime = range.end
     })
     video.addEventListener('play', () => {
       const range = this.range
@@ -68,7 +68,7 @@ export class SourcePlayer {
   setRange(range: PlayRange | null, moveToStart = false) {
     this.range = range
     this.stopAt = null
-    if (range && (moveToStart || this.video.currentTime < range.start || this.video.currentTime > range.end)) this.seek(range.start)
+    if (range && (moveToStart || this.video.currentTime < range.start - 0.002 || this.video.currentTime > range.end + 0.002)) this.seek(range.start)
   }
 
   seek(time: number) {
