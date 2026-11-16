@@ -10,7 +10,7 @@ edited the result by hand.
 import math
 import re
 
-from . import sequence_compile, sequence_evidence, sequence_prompt, sequence_timeline
+from . import sequence_compile, sequence_evidence, sequence_prompt, sequence_timeline, still_vocabulary
 
 FRAMING = """You are the director of a short video of at most three minutes that re-creates a sequence of an episode with AI, shot by shot. Each shot is generated on its own: first a still image of its opening frame, then a MiniMax H3 video of at most 15 seconds that animates that still in sync with the ORIGINAL audio of the episode. The original audio is kept unchanged under the whole video, so it is the spine every decision follows.
 
@@ -146,17 +146,17 @@ One JSON object:
 - shot: its number, its length in seconds, its cut (and part, when the app divides a cut longer than one take), its intent from the plan, initial_frame (whether the opening still is the cut's first frame or a later moment of it), and opens and closes: how the shot meets its neighbours (see TIMING AT THE EDGES).
 - previous_shot and next_shot: what surrounds this shot. ends_with is how the analysis says the previous shot's characters end, opens_with is how the opening frame of the next shot shows them, and hands_over is the state the previous shot was written to end in.
 - characters: the named characters that appear in the covered cuts, with the bible's anchors and outfit and the user's notes.
-- cuts: the evidence for the shot's own cut. plays_at is when that cut's picture and audio run on THIS shot's clock. first_frame describes the cut's opening still. motion is the motion direction: summary, camera, per character activity, travel, motion, speaking (yes, no, unclear), emotion and end, plus events whose seconds are already on this shot's clock. cut_summary is a written brief of the cut and user_decisions are the user's answers to open review points. A neighbouring cut appears only when this shot borrows some of its audio to keep a phrase whole; its picture is not shown.
+- cuts: the evidence for the shot's own cut. plays_at is when that cut's picture and audio run on THIS shot's clock. first_frame describes the cut's opening still; each character in it may carry pose_detail: state (standing, sitting ...), torso and head facing as a view of the camera with the screen side it turns toward, eyes, looking_at (who or what the character looks at) and check (a disagreement the app found inside those facts). motion is the motion direction: summary, camera, per character activity, travel, motion, gaze (where the eyes and head go, and when), objects (what the character touches, holds or moves), speaking (yes, no, unclear), emotion and end, state_correction when the clip shows a different state than the still read, plus events whose seconds are already on this shot's clock, each with a kind (body, gaze, mouth, expression, object, travel, camera). cut_summary is a written brief of the cut and user_decisions are the user's answers to open review points. A neighbouring cut appears only when this shot borrows some of its audio to keep a phrase whole; its picture is not shown.
 - dialogue: the lines heard during this shot, with id, t (start and end on this shot's clock), the speaker and how the speaker is known. subtitles_for_meaning_only may help you understand the words; never show them.
 - speakers: one entry per speaker heard in this shot: the lines and seconds they speak, and per covered cut whether they are on screen there, whether their mouth visibly moves (yes, no, unclear) and whether that cut's picture is this shot's picture. A neighbouring cut whose audio this shot borrows is marked not shown: this shot's own picture goes on over those seconds. fixed_by_user lists time ranges in which the user decided how the speaker is heard.
 
 ## PRECEDENCE
-fixed_by_user, user_decisions and instruction_for_this_shot, then cut_summary, then motion, then first_frame; the neighbouring shots only for continuity. The first frame decides how the shot starts, the motion decides what changes over time, and what the take shows decides whether lips can be seen moving.
+fixed_by_user, user_decisions and instruction_for_this_shot, then cut_summary, then the structured facts (pose_detail, activity, gaze, objects, end), then the free text of first_frame and motion; the neighbouring shots only for continuity. The first frame decides how the shot starts, the motion decides what changes over time, and what the take shows decides whether lips can be seen moving. When pose_detail and a free-text field disagree about facing, gaze or state, pose_detail wins; a character's state_correction means the video's activity is what the character does from the first second.
 
 ## WHAT YOU WRITE
 - subjects: every character or person who is visible at any point of the shot, the most important first, at most 5. name is the exact name from "characters"; for someone without a record use a short visual label such as "the shop clerk", never a guessed name. anchors: 3 to 6 large visible features that identify the character at any angle and distance (build, hair, main garment and colour) and agree with the bible and the first frame; small accessories (hairpins, clips, jewellery, badges, buttons) go in still.subjects, not here. keep: what must stay identical to that character's reference, as one clause.
 - picture_line: who is where in the opening still, in one sentence, with only what is visible in it. keep_picture: what the video must preserve from the opening still (composition, palette, lighting), as one clause.
-- still: the opening frame as ONE frozen moment for an image generator. shot: size, angle, camera height and where the frame crops the subject. subjects: for each visible character the place in frame, orientation, pose, expression, gaze and visible outfit, with the small accessories and details the first frame shows (hairpins, jewellery, badges). layout: foreground, midground and background and how they relate. setting. lighting: source, softness, time of day, palette. Poses, not actions; no lettering.
+- still: the opening frame as ONE frozen moment for an image generator. shot: size, angle, camera height and where the frame crops the subject. placement: for each visible character, in words, where they are in the frame (left, centre or right, foreground, midground or background, relative to the others and to objects), their body state, which way the torso faces and which way the head points as a view of the camera with the image side it turns toward, where the eyes look and at whom or what. Take these from pose_detail and the user's answers, never from your own reading of the free text, and say them in words from the KEYWORDS below, never as degrees (an image generator does not understand degrees); pose_detail already gives torso, head and eyes in those words. When state_correction says the clip shows motion from the first second, place the character in that state caught mid-motion. subjects: for each visible character the expression, hands and visible outfit, with the small accessories and details the first frame shows (hairpins, jewellery, badges); not placement. layout: foreground, midground and background and how they relate. setting. lighting: source, softness, time of day, palette. Poses, not actions; no lettering.
 - summary: one sentence with what happens in the shot and how the camera behaves.
 - shot_line: shot size, angle and who is where at the start, in one or two sentences. framing_lock: one short sentence that locks the crop you gave in still.shot, naming the same upper and lower edge of the frame and ending with "never wider" (or "never closer" for a wide shot); it must agree with still.shot. light: one sentence on the light.
 - camera: move is ONE of static, push_in, pull_out, pan_left, pan_right, truck_left, truck_right, tilt_up, tilt_down, pedestal_up, pedestal_down, arc, tracking, shake. If the motion evidence says static, use static. amplitude is small, medium or large; speed is slow, medium or fast. detail is one optional sentence on where the move ends or what it reveals; leave it empty for a static shot.
@@ -173,7 +173,7 @@ fixed_by_user, user_decisions and instruction_for_this_shot, then cut_summary, t
 
 ## CONTINUITY, ANIMATION AND AUDIO
 - Continuity: open on the state previous_shot.hands_over (or ends_with) and close on the state the next shot opens with. Carry positions, held props, eyelines, clothing state and time of day across the boundary; when a line of dialogue continues from the previous shot, the speaker's body and gaze continue too.
-- Animation direction: every beat names who moves, which body part leads, in what order, how fast and where the motion ends. Give acting its own beat (a breath, a look away, a hand tightening) at the second the evidence places it; give the camera a start framing and an end framing when it moves. Hold still where the source holds still; do not add motion the evidence does not show.
+- Animation direction: build the shot on the clock first. Anchor every beat to the seconds of the motion events and their kind, in order, so that the picture stays in sync with the original audio; a gaze shift, a mouth movement and a handled object each land at their own second. Position precisely: say where each character starts and ends in the frame (zone, depth, relative to the others and to objects) and which way the torso and head face when a beat begins and ends. Act precisely: name which body part leads, in what order, in which direction, how far and how fast; give a gaze shift its target (who or what, from where to where) and its second, say when the mouth moves (only for an on_screen speaker) and when it stops, and give small acting (a breath, a hand tightening, a nod) its own beat only when the evidence places it. Name every object that is touched, held, moved, pointed at or looked at, and what happens to it, from the video's objects and the first frame's props. Give the camera a start framing and an end framing when it moves. Hold still where the source holds still; do not add motion the evidence does not show.
 - Audio treatment: the original audio is the spine. A mouth moves only while its speaker is on_screen and their words are heard. An off_screen voice needs a picture without that speaker; an inner_voice speaker keeps the lips still (or the mouth hidden) while the words play; a narrative speaker stays far enough away that no lip movement is expected. Beats must agree with the voices: never describe lips moving in speech for someone who is not on_screen at that second.
 - Sound: the app writes the sound section itself. It tells the generator to follow the original audio exactly, with whatever background sound, music or effects it holds. You cannot hear that audio, so never describe or assume a background sound, a room tone, the ambience of a place or music anywhere in your answer. Time the action to the dialogue and the motion evidence.
 
@@ -192,13 +192,13 @@ The edges of the shot are exact and lie on the original audio, so the acting mus
 - When the initial frame is a later moment of its cut, derive the opening state from first_frame plus the motion up to that moment, and add an open question if that state is uncertain.
 - Write 180 to 380 words across shot_line, framing_lock, light and the beats together. Every sentence must be concrete and supported; no filler.
 
-""" + RULES + """
+""" + RULES + "\n\n" + still_vocabulary.shot_block() + """
 
 ## OUTPUT
 Return exactly one JSON object:
 {"subjects": [{"name": "...", "anchors": "...", "keep": "..."}],
  "picture_line": "...", "keep_picture": "...",
- "still": {"shot": "...", "subjects": "...", "layout": "...", "setting": "...", "lighting": "..."},
+ "still": {"shot": "...", "placement": "...", "subjects": "...", "layout": "...", "setting": "...", "lighting": "..."},
  "summary": "...", "shot_line": "...", "framing_lock": "...", "light": "...",
  "camera": {"move": "static", "amplitude": "small", "speed": "slow", "detail": ""},
  "beats": [{"end": 2.4, "action": "..."}],
@@ -213,11 +213,11 @@ REVIEW_SYSTEM = FRAMING + """
 Every shot of the sequence is written. Now you REVIEW the whole sequence before anything is generated, as the director who has to answer for it. Every issue you report sends a shot back to be rewritten, so report only what would visibly go wrong in the generated video, and say exactly what to change.
 
 ## WHAT YOU RECEIVE
-One JSON object: the bible (story, scenes, characters with anchors and outfits, continuity rules), the voices it decided, and shots in order. Each shot has t (start and end in sequence seconds), its cut, scene, intent, opens and closes (how it meets its neighbours: on the hard cut, or moved before or after a phrase so that the phrase stays whole, or placed by the user, with the speech divided there and the director's reason), opening_still, subjects, summary, camera, beats ("end second: action", seconds on the shot's own clock), voices (per speaker how they are heard and from which second: on_screen = lip-synced, off_screen = not in the picture, inner_voice = visible with the mouth still, narrative = too far for lip sync; "(user)" marks a range the user decided), lines and continuity (from_previous, to_next). A shot without "written" has no direction yet.
+One JSON object: the bible (story, scenes, characters with anchors and outfits, continuity rules), the voices it decided, and shots in order. Each shot has t (start and end in sequence seconds), its cut, scene, intent, opens and closes (how it meets its neighbours: on the hard cut, or moved before or after a phrase so that the phrase stays whole, or placed by the user, with the speech divided there and the director's reason), opening_still, opens_with and ends_with (how the analysis says each character is at the start and at the end of the shot: state, torso and head facing, who or what they look at; present only when the shot opens on its cut's first frame or reaches the end of its cut), subjects, summary, camera, beats ("end second: action", seconds on the shot's own clock), voices (per speaker how they are heard and from which second: on_screen = lip-synced, off_screen = not in the picture, inner_voice = visible with the mouth still, narrative = too far for lip sync; "(user)" marks a range the user decided), lines and continuity (from_previous, to_next). A shot without "written" has no direction yet.
 lines lists every line spoken in the shot's original audio as "line id, start-end seconds on the shot's clock, speaker: first words". "none" means nobody speaks anywhere in that shot. The lines are the only evidence of speech you have: the original audio plays unchanged under every shot and you cannot hear it, so never assume a voice, a sound or music it does not list.
 
 ## WHAT TO CHECK
-1. Continuity between consecutive shots of one scene, limited to what drives the animation: who is in the picture and where, pose and facing, what each character is doing, a prop a character holds or uses, a change of the whole outfit (another garment or colour), light and time of day. Compare each shot's to_next with the opening still of the next shot.
+1. Continuity between consecutive shots of one scene, limited to what drives the animation and decides how the next still looks. In this order: who is in the picture and where; each character's state (standing, sitting, walking, lying ...); which way the torso and head face; where they look and at whom; facial expression; a prop a character holds or uses; a change of the whole outfit (another garment, not another shade of the same one); light and time of day. Compare each shot's ends_with and to_next with the next shot's opens_with and opening_still. A change of state, facing or gaze between two shots that nothing in the story explains is a "fix"; a character who sits in one shot and stands in the next opening is a "fix".
 2. Voices, only at the seconds a line of that shot covers: on_screen or inner_voice given to someone who is not a subject of that shot; one voice on_screen for two different subjects; a speaker on_screen while the beats keep the face hidden, turned away or far away.
 3. Timing at the boundaries: where speech or an action continues across a boundary, the end of one shot and the start of the next agree on who speaks, where the words stop and resume, and the action that interrupts and when it lands; a part of a long cut continues the part before it; a camera move that fights the intent.
 4. Rhythm: a shot that is clearly too busy or too empty for its length, against the bible's pacing.
@@ -229,6 +229,7 @@ lines lists every line spoken in the shot's original audio as "line id, start-en
 - A speaker heard differently in different shots, or differently inside one shot when the camera moves (on screen in one, off screen, narrative or an inner voice in another): each shot decides it from its own framing.
 - A voice range marked "(user)": the user decided it.
 - Where an edge "placed by user" sits, even when it divides a phrase: the user placed it. Report only what the shots on either side get wrong around it.
+- A difference of shade, tone or wording of a colour or material (brown-red against grey-red, dark against navy, blonde against light brown), a difference between how two shots describe the same garment, hair or eyes, and any appearance detail that does not change who the character is: such a difference is never an issue unless it is a different garment or a different person. The same holds for light described in different words.
 - A small detail that appears or disappears with the angle, the distance or the crop: hairpins, hair clips, ribbons, earrings, jewellery, buttons, badges, pockets, stitching, small patterns. Such details belong to the opening still and the character references, not to the animation. Report one only when the action of the shot depends on it (a character pulls out the hairpin, shows the badge).
 - A shot that leaves out a feature another shot or the bible mentions, and any difference of wording or of detail between shots.
 - Anything you are not sure would change the generated picture, its motion or its lip sync. When in doubt, leave it out. An empty issues list is the right answer for a sequence that holds together.
@@ -257,6 +258,7 @@ STEPS = {
     'review': {'system': REVIEW_SYSTEM, 'max_tokens': 6144, 'temperature': 0.2},
 }
 STRING = {'type': 'string'}
+STILL_KEYS = ('shot', 'placement', 'subjects', 'layout', 'setting', 'lighting')  # shots written before 2026-11-16 have no placement
 LANGUAGE = re.compile(r'^[A-Za-z][A-Za-z -]{1,30}$')
 BANNED = (
     (re.compile(r'\bcuts?\b', re.IGNORECASE), 'contains the word "cut"; say "shot" or "take"'),
@@ -569,7 +571,7 @@ def shot_format(shot, roster, dialogue):
     return _format('shot_direction', _object({
         'subjects': {'type': 'array', 'maxItems': 5, 'items': _object({'name': STRING, 'anchors': STRING, 'keep': STRING})},
         'picture_line': STRING, 'keep_picture': STRING,
-        'still': _object({key: STRING for key in ('shot', 'subjects', 'layout', 'setting', 'lighting')}),
+        'still': _object({key: STRING for key in STILL_KEYS}),
         'summary': STRING, 'shot_line': STRING, 'framing_lock': STRING, 'light': STRING,
         'camera': _object({'move': {'type': 'string', 'enum': list(sequence_prompt.CAMERA_MOVES)}, 'amplitude': {'type': 'string', 'enum': list(sequence_prompt.AMPLITUDES)},
                            'speed': {'type': 'string', 'enum': list(sequence_prompt.SPEEDS)}, 'detail': STRING}),
@@ -654,11 +656,13 @@ def _voices(output, shot, dialogue, subjects, errors):
     return voices
 
 
-def validate_shot(output, shot, bible, roster, scenario, dialogue):
+def validate_shot(output, shot, bible, roster, scenario, dialogue, generated=False):
     """Check and normalise one shot's direction, render it and apply the H3 format rules.
 
     ``roster`` are the named characters of the covered cuts and ``dialogue`` the resolved lines of the
     shot. Returns the normalised direction; problems (including those of the rendered prompt) are raised.
+    ``generated`` is true for a model's answer, which must give the still's placement; a hand or assistant
+    revision of a shot written before that key existed may leave it empty.
     """
     if not isinstance(output, dict):
         _fail(['The answer must be one JSON object'])
@@ -681,8 +685,8 @@ def validate_shot(output, shot, bible, roster, scenario, dialogue):
         if not content[key]:
             errors.append(f'"{key}" is empty')
     still = output.get('still') if isinstance(output.get('still'), dict) else {}
-    content['still'] = {key: _str(still.get(key)) for key in ('shot', 'subjects', 'layout', 'setting', 'lighting')}
-    for key in ('shot', 'setting', 'lighting'):
+    content['still'] = {key: _str(still.get(key)) for key in STILL_KEYS}
+    for key in ('shot', 'setting', 'lighting', *(('placement',) if generated else ())):
         if not content['still'][key]:
             errors.append(f'"still.{key}" is empty')
     camera = output.get('camera') if isinstance(output.get('camera'), dict) else {}

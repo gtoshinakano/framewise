@@ -1,14 +1,16 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react'
-import { CircleCheck, FileText, ListChecks, RefreshCw, ScanSearch, ShieldCheck, TriangleAlert, UserRoundCheck } from 'lucide-react'
+import { Check, CircleCheck, FileText, ListChecks, RefreshCw, ScanSearch, ShieldCheck, TriangleAlert, UserRoundCheck, X } from 'lucide-react'
 import { api, type AnalysisResult, type Job } from './api'
 import { ResultMetrics } from './ResultMetrics'
 import { ActionButton, Skeleton, StatusChip, WarningLine } from './RunUi'
 import { Disclosure, StepPanel } from './ReviewUi'
-import { parseConsistency, timeParts, type ConsistencyKey, type ConsistencySection } from './consistencyView'
+import { answerLabel, parseConsistency, selection, setAnswer, timeParts, topicLabel, type ConsistencyKey, type ConsistencySection, type Question } from './consistencyView'
 
 // What the user works from comes first. Each field keeps its stored name's wording and gets its own colour and icon,
 // matching the tones used on the Run settings tab; the label and icon always carry the meaning, never colour alone.
 const ORDER: ConsistencyKey[] = ['human_review', 'recommended_checks', 'confusing', 'clear', 'summary']
+// A result with questions has no Human review or Suggested checks text: the questions are what the person decides.
+const QUESTION_ORDER: ConsistencyKey[] = ['confusing', 'clear', 'summary']
 const LOOK: Record<ConsistencyKey, { label: string; none: string; icon: typeof FileText; accent: string; tint: string; ink: string }> = {
   human_review: { label: 'Human review', none: 'Nothing to decide', icon: UserRoundCheck, accent: '#f0a64a', tint: '#2a2314', ink: '#f0d9a5' },
   recommended_checks: { label: 'Suggested checks', none: 'No checks needed', icon: ListChecks, accent: '#6aa8ff', tint: '#141f33', ink: '#b4d2ff' },
@@ -48,7 +50,54 @@ function Field({ section }: { section: ConsistencySection }) {
   </section>
 }
 
-export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onStarted, extra }: { cutId: string; result?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; onStarted: () => Promise<void>; extra?: ReactNode }) {
+/** What the review column needs of "Your answers": the text, a way to change it (unsaved) and whether it may be changed now. */
+export type AnswersApi = { text: string; onChange: (next: string) => void; ready: boolean }
+
+function QuestionCard({ number, question, all, answers }: { number: number; question: Question; all: Question[]; answers: AnswersApi }) {
+  const [own, setOwn] = useState('')
+  const picked = selection(answers.text, question, all)
+  const look = LOOK.human_review
+  const locked = !answers.ready
+  const choose = (text: string | null) => answers.onChange(setAnswer(answers.text, question, text, all))
+  return <li className="flex gap-2.5">
+    <span style={{ background: look.accent }} className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-[#11111a]" aria-hidden>{number}</span>
+    <div className="min-w-0 flex-1 space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5"><StatusChip tone="amber">{topicLabel(question.topic)}</StatusChip>{question.character && <StatusChip tone="blue">{question.character}</StatusChip>}</div>
+      <p id={`question-${question.id}`} className="break-words text-[13px] font-medium leading-[1.55] text-[#f2f4f8]">{question.question}</p>
+      <div role="radiogroup" aria-labelledby={`question-${question.id}`} className="grid gap-1.5">
+        {question.options.map(option => {
+          const on = picked?.option === option.id
+          return <button key={option.id} type="button" role="radio" aria-checked={on} disabled={locked} onClick={() => choose(on ? null : option.text)}
+            title={on ? 'Click again to clear this answer' : 'Write this as the answer'}
+            className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-1.5 text-left text-[12.5px] leading-5 transition-colors disabled:opacity-50 ${on ? 'border-[#f0a64a] bg-[#3a2c12] text-white' : 'border-[#343b49] bg-[#171c25] text-[#d6dbe5] hover:border-[#6b5a2f]'}`}>
+            <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold ${on ? 'border-[#f0a64a] bg-[#f0a64a] text-[#11111a]' : 'border-[#4a5262] text-[#929aa9]'}`} aria-hidden>{on ? <Check size={10} /> : option.id}</span>
+            <span className="min-w-0 flex-1 break-words">{option.text}</span>
+            {question.recommended === option.id && <StatusChip tone="green" className="shrink-0" title="The evidence favours this option">Evidence favours</StatusChip>}
+          </button>
+        })}
+      </div>
+      {picked?.custom && <p className="flex items-start gap-1.5 rounded-lg border border-[#4a4363] bg-[#221c33] px-2.5 py-1.5 text-[12px] text-[#d6c9ff]"><span className="min-w-0 flex-1 break-words">Your own answer: {picked.custom}</span><button type="button" onClick={() => choose(null)} disabled={locked} className="shrink-0 text-[#c3aeff] hover:text-white" aria-label={`Clear your answer to ${answerLabel(question)}`}><X size={13} aria-hidden /></button></p>}
+      <form className="flex gap-1.5" onSubmit={event => { event.preventDefault(); if (own.trim()) { choose(own); setOwn('') } }}>
+        <input className="field min-w-0 flex-1 !px-2 !py-1 !text-[12px]" value={own} maxLength={400} disabled={locked} onChange={event => setOwn(event.target.value)} aria-label={`Your own answer to: ${question.question}`} placeholder="None of these? Write your own answer" />
+        <button type="submit" className="btn btn-quiet !px-2 !py-1 !text-[12px]" disabled={locked || !own.trim()}>Use</button>
+      </form>
+      {question.why && <p className="muted text-[11.5px] leading-4">{question.why}</p>}
+    </div>
+  </li>
+}
+
+function Decisions({ questions, answers }: { questions: Question[]; answers: AnswersApi }) {
+  const look = LOOK.human_review
+  const answered = questions.filter(question => selection(answers.text, question, questions)).length
+  return <section aria-label="Decisions" style={{ borderLeftColor: look.accent, background: look.tint }} className="rounded-lg border-l-[3px] px-3.5 py-3">
+    <h4 style={{ color: look.ink }} className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[.1em]"><UserRoundCheck size={14} aria-hidden />Decisions
+      <StatusChip tone={answered === questions.length ? 'green' : 'amber'} className="ml-auto normal-case tracking-normal">{answered}/{questions.length} answered</StatusChip></h4>
+    <p className="muted mb-3 text-[11.5px] leading-4">Pick an answer and it is written into Your answers (unsaved until you save there). Nothing is decided for you.</p>
+    <ol className="space-y-4">{questions.map((question, index) => <QuestionCard key={question.id} number={index + 1} question={question} all={questions} answers={answers} />)}</ol>
+  </section>
+}
+
+export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onStarted, extra, answers }: { cutId: string; result?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; onStarted: () => Promise<void>; extra?: ReactNode; answers?: AnswersApi }) {
   const [working, setWorking] = useState(false)
   const [message, setMessage] = useState('')
   const view = useMemo(() => result ? parseConsistency(result.content) : null, [result?.content])
@@ -63,7 +112,7 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
   const rerun = <ActionButton compact icon={<RefreshCw size={13} aria-hidden />} pending={working} disabled={disabled || !!activeJob} onClick={() => void queue()} title="Queue a new consistency summary for this cut">{result ? 'Re-run' : 'Queue'}</ActionButton>
   const status = activeJob ? <StatusChip tone="purple" title="A consistency summary for this cut is being written; this text is the previous version.">{activeJob.status === 'queued' ? 'Queued' : 'Updating…'}</StatusChip> : null
   // "All clear" is only said when the model explicitly found nothing to decide or check, never because a field is missing.
-  const quiet = !!view && view.sections.human_review.none && view.sections.recommended_checks.none
+  const quiet = !!view && (view.format === 'questions' ? view.questions.length === 0 : view.sections.human_review.none && view.sections.recommended_checks.none)
   const allClear = !!view && quiet && !view.conflicts
   return <StepPanel step={1} kind="consistency_summary" title="Review" subtitle="Consistency summary · read first" tag={status} actions={rerun}>
     {!loaded ? <div className="space-y-3" aria-busy="true" aria-label="Loading consistency summary"><Skeleton className="h-9" /><Skeleton className="h-28" /><Skeleton className="h-28" /><Skeleton className="h-20" /></div>
@@ -86,7 +135,8 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
             {view.conflicts && <StatusChip tone="red" icon={<TriangleAlert size={11} aria-hidden />}>Conflicts found</StatusChip>}
             {quiet && <StatusChip tone="green" icon={<CircleCheck size={11} aria-hidden />}>No decisions needed</StatusChip>}
           </div>}
-        {ORDER.map(key => <Field key={key} section={view.sections[key]} />)}
+        {view.format === 'questions' && view.questions.length > 0 && <Decisions questions={view.questions} answers={answers ?? { text: '', onChange: () => {}, ready: false }} />}
+        {(view.format === 'questions' ? QUESTION_ORDER : ORDER).map(key => <Field key={key} section={view.sections[key]} />)}
         <Disclosure label="Generation details"><ResultMetrics result={result} /></Disclosure>
         <p className="muted text-[11px] leading-4">To edit this result or see earlier versions, use Analysis fields below.</p>
       </>}

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { noneNote, parseConsistency, splitItems, splitSentences, timeParts, unwrapList } from '../src/consistencyView.ts'
+import { answerLine, answerLabel, noneNote, parseConsistency, parseQuestions, selection, setAnswer, splitItems, splitSentences, timeParts, topicLabel, unwrapList } from '../src/consistencyView.ts'
 
 test('a JSON array written inside a string becomes one line per entry, even when it is not valid JSON', () => {
   assert.equal(unwrapList('[\n  "Determine if A and B merge.",\n  "Confirm the spelling (\\"Mai-san\\")."\n]'), 'Determine if A and B merge.\nConfirm the spelling ("Mai-san").')
@@ -91,4 +91,65 @@ test('all-clear results report nothing to do and invalid or partial content is f
   assert.equal(partial.valid, true)
   assert.equal(partial.sections.summary.present, false)
   assert.equal(partial.conflicts, false)
+})
+
+const QUESTIONS = parseQuestions([
+  { id: 'q1', topic: 'gaze', character: 'Mai', question: 'Where does Mai look?', recommended: 'a', why: 'first frame', options: [{ id: 'a', text: 'At Rio' }, { id: 'b', text: 'Down at the cup' }] },
+  { id: 'q2', topic: 'state', character: '', question: 'What is Rio doing?', options: [{ id: 'a', text: 'Sitting' }, { id: 'b', text: 'Standing' }, 'Walking'] },
+])
+
+test('questions are read leniently and a result with them has no text sections to decide', () => {
+  assert.equal(QUESTIONS.length, 2)
+  assert.deepEqual([QUESTIONS[0].recommended, QUESTIONS[1].recommended], ['a', null])
+  assert.deepEqual(QUESTIONS[1].options.map(option => option.id), ['a', 'b', 'c'])  // an option written as plain text gets an id
+  assert.deepEqual(parseQuestions([{ question: 'one option', options: ['x'] }, { question: '', options: ['a', 'b'] }, 'junk', null]), [])
+  assert.deepEqual(parseQuestions('nothing'), [])
+  assert.equal(parseQuestions([{ question: 'q', recommended: 'zz', options: ['a', 'b'] }])[0].recommended, null)
+  const view = parseConsistency(JSON.stringify({ summary: 's', clear: 'c', confusing: 'None identified.', questions: QUESTIONS }))
+  assert.equal(view.format, 'questions')
+  assert.equal(view.decisions, 2)
+  assert.equal(view.questions.length, 2)
+  const old = parseConsistency(JSON.stringify({ summary: 's', human_review: 'Confirm the coat.', recommended_checks: 'None required.' }))
+  assert.equal(old.format, 'text')
+  assert.equal(old.decisions, 1)
+  assert.equal(parseConsistency(JSON.stringify({ summary: 's', questions: [] })).decisions, 0)
+})
+
+test('an answer is one bullet line named by topic and character', () => {
+  assert.equal(topicLabel('gaze'), 'Gaze')
+  assert.equal(answerLabel(QUESTIONS[0]), 'Gaze (Mai)')
+  assert.equal(answerLabel(QUESTIONS[1]), 'State')
+  assert.equal(answerLine(QUESTIONS[0], 'At  Rio\n'), '- Gaze (Mai): At Rio')
+})
+
+test('choosing writes, replaces and clears the line of that question only', () => {
+  let text = ''
+  text = setAnswer(text, QUESTIONS[0], 'At Rio', QUESTIONS)
+  assert.equal(text, '- Gaze (Mai): At Rio')
+  text = setAnswer(text, QUESTIONS[1], 'Sitting', QUESTIONS)
+  assert.equal(text, '- Gaze (Mai): At Rio\n- State: Sitting')
+  text = setAnswer(text, QUESTIONS[0], 'Down at the cup', QUESTIONS)  // a second choice replaces the first
+  assert.equal(text, '- Gaze (Mai): Down at the cup\n- State: Sitting')
+  assert.deepEqual(selection(text, QUESTIONS[0], QUESTIONS), { option: 'b', custom: '' })
+  text = setAnswer(text, QUESTIONS[0], null, QUESTIONS)
+  assert.equal(text, '- State: Sitting')
+  assert.equal(selection(text, QUESTIONS[0], QUESTIONS), null)
+})
+
+test('text the user wrote around the choices is kept, and an own answer shows as custom', () => {
+  const notes = 'Keep the coat green\n\n- Camera: static\n  but slightly handheld'
+  const withOwn = setAnswer(notes, QUESTIONS[0], 'She looks at the window', QUESTIONS)
+  assert.equal(withOwn, `${notes}\n- Gaze (Mai): She looks at the window`)
+  assert.deepEqual(selection(withOwn, QUESTIONS[0], QUESTIONS), { option: null, custom: 'She looks at the window' })
+  assert.equal(setAnswer(withOwn, QUESTIONS[0], null, QUESTIONS), notes)
+  // A wrapped answer (the AI draft may use two lines) is replaced as one.
+  const wrapped = '- Gaze (Mai): At Rio and then\n  down at the cup\n- State: Standing'
+  assert.deepEqual(selection(wrapped, QUESTIONS[1], QUESTIONS), { option: 'b', custom: '' })
+  assert.equal(setAnswer(wrapped, QUESTIONS[0], 'Down at the cup', QUESTIONS), '- Gaze (Mai): Down at the cup\n- State: Standing')
+})
+
+test('a line that copies an option word for word is found whatever its label says, and labels survive case and a trailing full stop', () => {
+  assert.deepEqual(selection('- Eyes: at rio.', QUESTIONS[0], QUESTIONS), { option: 'a', custom: '' })
+  assert.deepEqual(selection('- gaze (mai): Down at the cup', QUESTIONS[0], QUESTIONS), { option: 'b', custom: '' })
+  assert.equal(selection('- Camera: static', QUESTIONS[0], QUESTIONS), null)
 })

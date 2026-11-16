@@ -28,7 +28,7 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from . import character_detection, db, frame_model, media, structured_results, video_model, worker
+from . import character_detection, db, frame_model, media, pose_detail, structured_results, video_model, worker
 from .visual_contracts import FRAME_INSTRUCTION, VIDEO_INSTRUCTION, video_roster
 
 log = logging.getLogger('framewise.visual_analysis')
@@ -354,7 +354,8 @@ def _frame_stage(cut_run, server, scratch):
         data['subtitle_regions'] = regions
         cut_run.save('initial_frame', data, frame_model.MODEL_ID, FRAME_INSTRUCTION,
                      {'model_revision': frame_model.MODEL_REVISION, 'image_width': 1280, 'generation_seconds': time.monotonic() - started, 'usage': usage,
-                      'frame_mode': 'full', 'marked_characters': len(people)})
+                      'frame_mode': 'full', 'marked_characters': len(people), 'frame_contract': data.get('contract'),
+                     'pose': pose_detail.stats(data.get('visible_characters'))})
 
 
 # -- stage 2: video analysis (Qwen3-VL) -----------------------------------------

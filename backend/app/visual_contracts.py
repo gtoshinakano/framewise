@@ -3,6 +3,8 @@ import json
 import math
 import re
 
+from . import pose_detail
+
 def subtitle_note(language, boxes, space):
     """Closing sentence for visual prompts: the one subtitle language and where the strip sits, if known."""
     if not language and not boxes:
@@ -33,6 +35,9 @@ TRUST_RULE = '''The user has verified every marked character's identity: it is c
 
 NAME_RULE = '''Names: outside a character's own entry, always refer to a marked character by the exact name given in the message (in composition, props, notes, and in another character's gaze or action), never as "a girl", "the male figure" or a box reference. Refer to an unmarked person by a short visible label such as "girl with the red umbrella".'''
 
+FRAME_CONTRACT = 'frame-v2'
+POSE_RULES = pose_detail.POSE_RULES.replace('\n', '\n    ')
+
 FRAME_INSTRUCTION = f'''You write production notes for the FIRST frame of an anime cut, so the shot can be rebuilt as a still image with an AI image model and then animated. Describe only what is visible. Write compact noun phrases, not full sentences; outfit and hair detail is the exception and should be thorough. Never repeat a fact in another field and never restate a caveat.
 
 Return one JSON object with exactly these keys, in this order:
@@ -50,6 +55,7 @@ Return one JSON object with exactly these keys, in this order:
   - emotion: the feeling that face and body read as, with its strength, in 1 to 4 words (for example "mild worry", "furious", "shy happiness", "calm, neutral"); "not readable" when the face is hidden.
   - gaze: where the eyes look, naming the marked character or object looked at (for example "at Mai Sakurajima", "down at the box", "at the camera"); "not visible" when the eyes are hidden.
   - action: starts with the activity the still shows, chosen from standing, sitting, crouching, kneeling, lying, walking, running, jumping, leaning, or another single verb, then what they are doing, holding or reacting to and with whom (for example "sitting, talking to Mai Sakurajima across the desk").
+  - {POSE_RULES}
 - background_people: EVERY person who is not in the marked list, wherever they are, including someone prominent or in the foreground (the key name is historical). One item per person or similar group separated by semicolons: count, position in frame, outfit (garment types, colours, patterns, accessories), hair, and what they do. Describe outfits as carefully as for marked characters, but skip expression and pose nuance. "none" only when the marked characters are the only people in the image.
 - props: the objects that matter for rebuilding the shot and who holds or uses them, separated by semicolons; "none" when there are none.
 - notes: only material details the fields above cannot hold (visual effects, art-style traits), otherwise "none".
@@ -70,11 +76,14 @@ FRAME_TAIL = ('background_people', 'props', 'notes')
 UNCHANGED = 'unchanged'
 
 
+POSE_KEY = 'pose_detail'
+
+
 def frame_schema(handles):
     """JSON schema (a llama.cpp grammar) for one frame answer: fixed key order, a box from ``handles`` per marked character."""
     text = lambda name: {'type': 'string'}  # no maxLength: it expands into a large grammar; the prompt keeps answers short and max_tokens caps them
-    person = {'type': 'object', 'additionalProperties': False, 'required': ['box', *PERSON_TEXT],
-              'properties': {'box': {'enum': list(handles)}, **{name: text(name) for name in PERSON_TEXT}}}
+    person = {'type': 'object', 'additionalProperties': False, 'required': ['box', *PERSON_TEXT, POSE_KEY],
+              'properties': {'box': {'enum': list(handles)}, **{name: text(name) for name in PERSON_TEXT}, POSE_KEY: pose_detail.json_schema(handles)}}
     properties = {**{name: text(name) for name in FRAME_TEXT},
                   'visible_characters': {'type': 'array', 'items': person, 'minItems': len(handles), 'maxItems': len(handles)},
                   **{name: text(name) for name in FRAME_TAIL}}
@@ -111,15 +120,19 @@ def resolve_frame(raw, people):
         for name in PERSON_TEXT:
             if not seen[name]:
                 seen[name] = _text(entry.get(name))
+        if not isinstance(seen.get(POSE_KEY), dict) and isinstance(entry.get(POSE_KEY), dict):
+            seen[POSE_KEY] = entry[POSE_KEY]  # a repeated handle keeps the first pose block
     characters = []
     for person in people:
         details = by_ref.get(person['ref'], {name: '' for name in PERSON_TEXT})
-        characters.append({'character': person['name'], 'character_context_id': person['character_context_id'], **{name: details[name] for name in PERSON_TEXT}})
+        characters.append({'character': person['name'], 'character_context_id': person['character_context_id'], **{name: details[name] for name in PERSON_TEXT},
+                           POSE_KEY: pose_detail.resolve(details.get(POSE_KEY), person, people)})
     result = {name: _text(value.get(name)) for name in FRAME_TEXT}
     result['visible_characters'] = characters
     for name in FRAME_TAIL:
         result[name] = _text(value.get(name)) or 'none'
     result['mode'] = 'full'
+    result['contract'] = FRAME_CONTRACT
     return result
 
 
@@ -156,11 +169,12 @@ def full_last_frame(initial, last):
 
 # -- video analysis: motion direction for one window of a cut -----------------------------------
 
-VIDEO_CONTRACT = 'direction-v2'
+VIDEO_CONTRACT = 'direction-v3'
 CAMERA_MOVES = ('static', 'pan left', 'pan right', 'tilt up', 'tilt down', 'zoom in', 'zoom out', 'push in', 'pull out', 'tracking', 'handheld', 'other')
 VIDEO_PERSON_TEXT = ('activity', 'travel', 'motion', 'speaking', 'emotion', 'end')
+EVENT_KINDS = ('body', 'gaze', 'mouth', 'expression', 'object', 'travel', 'camera')
 
-VIDEO_INSTRUCTION = '''You watch one clip of an anime cut and write motion directions, so the shot can be re-created by animating its opening still with an image-to-video model. The opening still is already described: do not describe outfits, hair, setting or lighting. Report only what the frames show.
+VIDEO_INSTRUCTION = '''You watch one clip of an anime cut and write motion directions, so the shot can be re-created by animating its opening still with an image-to-video model. A sharper model has already described the opening still: for each listed character you are given the state, facing and gaze it read from that one image. Your job is what a single still cannot show: what the characters really do, what changes and when. Do not describe outfits, hair, setting or lighting. Report only what the frames show.
 
 Return one complete JSON object, with no Markdown or additional fields. Its keys are overview, camera, characters, events and uncertainties.
 
@@ -168,16 +182,20 @@ overview: 1 or 2 sentences saying what happens in this clip, using the given cha
 
 camera: an object with movement and detail. movement is exactly one of: static, pan left, pan right, tilt up, tilt down, zoom in, zoom out, push in, pull out, tracking, handheld, other. detail gives the speed, what the camera follows and how the framing ends, or "none". Use static when the viewpoint does not change, even if everything in the picture moves.
 
+First-frame states are read from one still, so they can be wrong about anything that needs motion: an upright figure may be mid-stride, a seated one may be getting up. Decide every character's state from the frames of this clip. When the clip shows a different state than the first frame gave, write the state you see; when it is the same, write the same. Gaze, head turns, mouth and hand movements are only reported when you see them happen.
+
 characters: one entry for every listed character who is visible at any moment of this clip, in the listed order, then one entry for each other clearly visible person. Each entry has:
 - name: the exact name from the list; for an unlisted person a short visual label such as "girl with red umbrella".
-- activity: what the body is doing, in one or two words you can see: standing, sitting, crouching, kneeling, lying, walking, running, jumping, turning, bowing, reaching, eating, writing, fighting, or another verb. Never guess it from the story.
-- travel: how the person moves through the picture: "none" when they stay in place, otherwise "left", "right", "toward camera", "away from camera", "up", "down", "enters from left", "enters from right", "exits left" or "exits right".
+- activity: the state of the body during the clip, in one or two words you can see: standing, sitting, crouching, kneeling, lying, walking, running, jumping, turning, bowing, reaching, eating, writing, crying, fighting, or another verb. A person who changes state writes both in order, for example "sitting, then standing". Never guess it from the story.
+- travel: how the person moves through the picture: "none" when they stay in place, otherwise "left", "right", "toward camera", "away from camera", "up", "down", "enters from left", "enters from right", "exits left" or "exits right". Directions are the image's left and right.
 - motion: one sentence on the visible body movement: which part moves, from where to where (a head turn, a raised arm, a nod, a step, hair or clothes moving). "holds still" when nothing moves.
+- gaze: one sentence on where the eyes and the head go during the clip and when they shift, naming who or what is looked at, or "holds" when the gaze stays where the first frame had it.
 - speaking: "yes" when the mouth opens and closes as in speech, "no" when the mouth stays shut, "unclear" when the mouth is hidden, turned away or too small.
 - emotion: the feeling the face and body show over the clip. When the list gives a character's emotion in the first frame, start from it (it was read from a sharper image) and say whether it stays or how it changes: "stays calm", "worried, then relieved". "not readable" when the face is hidden throughout.
+- objects: an array of short strings, one per object the person touches, holds, moves, points at or looks at, saying what happens to it; an empty array when there is none.
 - end: where and how the person is in the final frames of this clip (place in the picture, posture, facing), or "left frame" when they are no longer visible at the end.
 
-events: the distinct visible changes in time order, at most 6. Each event has start_seconds and end_seconds (numbers relative to the start of this clip and within its duration; null for both if timing is unknown, never 0 as a placeholder), subject (a name used in characters, or "camera") and visual_action (one sentence: who or what moves, from where to where and in which direction; changes of gaze, expression and mouth when discernible). Combine repeated or continuous motion in one event and use overlapping events for simultaneous actions. Report travel only when a position actually changes. Use an empty array only if nothing at all changes.
+events: the distinct visible changes in time order, at most 6. Each event has start_seconds and end_seconds (numbers relative to the start of this clip and within its duration; null for both if timing is unknown, never 0 as a placeholder), subject (a name used in characters, or "camera"), kind (exactly one of body, gaze, mouth, expression, object, travel, camera) and visual_action (one sentence: who or what moves, from where to where and in which direction). Give a gaze shift, a mouth movement and a handled object their own events when they are discernible. Combine repeated or continuous motion in one event and use overlapping events for simultaneous actions. Report travel only when a position actually changes. Use an empty array only if nothing at all changes.
 
 uncertainties: material limitations only, otherwise "none".
 
@@ -187,7 +205,7 @@ Speech: when speech times are given they come from the audio track. A listed spe
 
 Ignore subtitles and all other on-screen writing: do not quote, describe, translate, recreate or use it to infer identity or action.
 
-Example shape: {"overview": "Mia turns to Ken and starts talking while he keeps walking away.", "camera": {"movement": "static", "detail": "none"}, "characters": [{"name": "Mia", "activity": "standing", "travel": "none", "motion": "Turns her head from the window to the right and raises her right hand to shoulder height.", "speaking": "yes", "emotion": "calm, then annoyed", "end": "left of frame, facing right, hand raised"}], "events": [{"start_seconds": 0.0, "end_seconds": 1.5, "subject": "Mia", "visual_action": "Turns her head to the right and raises her right hand to shoulder height."}], "uncertainties": "none"}'''
+Example shape: {"overview": "Mia turns to Ken and starts talking while he keeps walking away.", "camera": {"movement": "static", "detail": "none"}, "characters": [{"name": "Mia", "activity": "standing", "travel": "none", "motion": "Turns her head from the window to the right and raises her right hand to shoulder height.", "gaze": "Looks at the window, then shifts to Ken after the head turn.", "speaking": "yes", "emotion": "calm, then annoyed", "objects": [], "end": "left of frame, facing right, hand raised"}], "events": [{"start_seconds": 0.0, "end_seconds": 1.5, "subject": "Mia", "kind": "gaze", "visual_action": "Turns her head to the right and shifts her gaze from the window to Ken."}], "uncertainties": "none"}'''
 
 
 def _zone(box):
@@ -222,12 +240,22 @@ def video_roster(first_people, last_people, initial=None):
             if key not in seen:
                 notes = described.get(key) or {}
                 seen[key] = {'name': person['name'], 'character_context_id': key, 'at_start': False if first_people is not None else None, 'at_end': None,
-                             **{name: _text(notes.get(name)) for name in ('appearance', 'position', 'pose', 'emotion') if _text(notes.get(name))}}
+                             **{name: _text(notes.get(name)) for name in ('position', 'pose', 'emotion') if _text(notes.get(name))},
+                             **({'pose_detail': notes['pose_detail']} if isinstance(notes.get('pose_detail'), dict) and notes['pose_detail'].get('body_pose') else {})}
                 roster.append(seen[key])
             seen[key]['at_' + label] = True
             if person.get('box') and label + '_box' not in seen[key]:
                 seen[key][label + '_box'] = person['box']
     return roster
+
+
+def _pose_facts(pose):
+    """A character's first-frame pose block as the short clause the video prompt reads."""
+    small = pose_detail.compact(pose) if isinstance(pose, dict) else None
+    if not small:
+        return ''
+    labels = (('state', 'state'), ('torso', 'torso'), ('head', 'head'), ('eyes', 'eyes'), ('looking_at', 'looking at'))
+    return ', '.join(f'{label} {small[key]}' for key, label in labels if small.get(key))
 
 
 def roster_note(roster, initial=None):
@@ -243,8 +271,9 @@ def roster_note(roster, initial=None):
             if person.get('pose'):
                 start += '; ' + _clip_words(person['pose'], 12)
             parts.append(start)
-            if person.get('appearance'):
-                parts.append('look: ' + _clip_words(person['appearance'], 28))
+            facts = _pose_facts(person.get('pose_detail'))
+            if facts:
+                parts.append('first-frame reading (from one still, may miss motion): ' + facts)
             if person.get('emotion') and person['emotion'].lower().rstrip('.') != 'not readable':
                 parts.append('emotion in the first frame: ' + _clip_words(person['emotion'], 8))
         elif person.get('at_start') is False:
@@ -322,6 +351,29 @@ def _match_name(name, roster):
     return matches[0] if len(matches) == 1 else None
 
 
+_KIND_ALIASES = {'movement': 'body', 'motion': 'body', 'gesture': 'body', 'posture': 'body', 'head': 'body', 'look': 'gaze', 'eyes': 'gaze', 'eye': 'gaze',
+                 'speech': 'mouth', 'speaking': 'mouth', 'talk': 'mouth', 'face': 'expression', 'emotion': 'expression', 'prop': 'object', 'item': 'object',
+                 'move': 'travel', 'walk': 'travel', 'position': 'travel'}
+
+
+def event_kind(value):
+    """An event's kind as one of EVENT_KINDS; whatever the model wrote that is not one becomes "other"."""
+    word = _text(value).lower().replace(' ', '_')
+    word = word.split('_')[0] if word not in EVENT_KINDS else word
+    return word if word in EVENT_KINDS else _KIND_ALIASES.get(word, 'other')
+
+
+def _objects(value):
+    """The objects a character handles as a short list of strings, however the model wrote them."""
+    items = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+    found = []
+    for item in items:
+        text = _text(item) if isinstance(item, str) else _text(item.get('object') or item.get('name')) if isinstance(item, dict) else ''
+        if text and text.lower().rstrip('.') not in ('none', 'n/a', 'no objects', 'nothing') and text not in found:
+            found.append(text[:160])
+    return found[:6]
+
+
 def link_video(value, roster):
     """Tie one window's answer to the character records: names become canonical and carry their context id.
 
@@ -349,11 +401,18 @@ def link_video(value, roster):
                      **{name: _text(item.get(name)) for name in VIDEO_PERSON_TEXT}}
             spoken = entry['speaking'].lower()
             entry['speaking'] = 'yes' if spoken.startswith('yes') else 'no' if spoken.startswith('no') else 'unclear'
+            if _text(item.get('gaze')):
+                entry['gaze'] = _text(item.get('gaze'))
+            objects = _objects(item.get('objects'))
+            if objects:
+                entry['objects'] = objects
             linked.append(entry)
         value['characters'] = linked
     events = value.get('events')
     if isinstance(events, list):
         for event in events:
+            if isinstance(event, dict) and 'kind' in event:
+                event['kind'] = event_kind(event['kind'])
             if isinstance(event, dict) and isinstance(event.get('subject'), str):
                 match = _match_name(event['subject'], roster)
                 if match:
@@ -373,6 +432,20 @@ def _join(values, skip=(), separator=' → '):
         if value and value.lower().rstrip('.') not in skip and value.casefold() not in (item.casefold() for item in kept):
             kept.append(value)
     return separator.join(kept)
+
+
+def _state_correction(first_state, activity):
+    """``{first_frame, clip}`` when the clip's first state differs from what the still read, else None.
+
+    Only states both sides name in the shared vocabulary count; "turning" or "writing" says nothing
+    about the body's state. A clip that starts like the still and then changes is a transition, not a correction.
+    """
+    if first_state in (None, '', 'unclear', 'other'):
+        return None
+    clip, _ = pose_detail.body_pose(activity)
+    if clip in ('other', 'unclear') or clip == first_state:
+        return None
+    return {'first_frame': first_state, 'clip': clip}
 
 
 def cut_direction(windows, roster=()):
@@ -398,18 +471,29 @@ def cut_direction(windows, roster=()):
                 merged[key] = {'character': person.get('character'), 'character_context_id': person.get('character_context_id'), 'parts': []}
                 order.append(key)
             merged[key]['parts'].append((index, person))
+    first_states = {person.get('character_context_id'): (person.get('pose_detail') or {}).get('body_pose') for person in roster or [] if isinstance(person, dict) and person.get('character_context_id')}
     people = []
     for key in order:
         parts = [person for _, person in merged[key]['parts']]
         spoken = [person.get('speaking') for person in parts]
         last_index, last = merged[key]['parts'][-1]
-        people.append({'character': merged[key]['character'], 'character_context_id': merged[key]['character_context_id'],
-                       'activity': _join(person.get('activity') for person in parts),
-                       'travel': _join((person.get('travel') for person in parts), skip=('none',)) or 'none',
-                       'motion': _join((person.get('motion') for person in parts), skip=('holds still',), separator=' Then: ') or 'holds still',
-                       'speaking': 'yes' if 'yes' in spoken else 'no' if spoken and all(value == 'no' for value in spoken) else 'unclear',
-                       'emotion': _join(person.get('emotion') for person in parts),
-                       'end': _text(last.get('end')) if last_index == len(analyses) - 1 else 'not seen in the final part of the cut'})
+        entry = {'character': merged[key]['character'], 'character_context_id': merged[key]['character_context_id'],
+                 'activity': _join(person.get('activity') for person in parts),
+                 'travel': _join((person.get('travel') for person in parts), skip=('none',)) or 'none',
+                 'motion': _join((person.get('motion') for person in parts), skip=('holds still',), separator=' Then: ') or 'holds still',
+                 'speaking': 'yes' if 'yes' in spoken else 'no' if spoken and all(value == 'no' for value in spoken) else 'unclear',
+                 'emotion': _join(person.get('emotion') for person in parts),
+                 'end': _text(last.get('end')) if last_index == len(analyses) - 1 else 'not seen in the final part of the cut'}
+        gaze = _join((person.get('gaze') for person in parts), skip=('holds',), separator=' Then: ')
+        if gaze:
+            entry['gaze'] = gaze
+        objects = _objects([item for person in parts for item in (person.get('objects') if isinstance(person.get('objects'), list) else [])])
+        if objects:
+            entry['objects'] = objects
+        correction = _state_correction(first_states.get(merged[key]['character_context_id']), parts[0].get('activity'))
+        if correction:
+            entry['state_correction'] = correction
+        people.append(entry)
     confirmed = [person for person in roster or [] if person.get('at_end')]
     boxed = {person['character_context_id'] for person in confirmed}
     for person in people:

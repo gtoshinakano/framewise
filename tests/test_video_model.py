@@ -58,7 +58,7 @@ class VideoAdapterTest(unittest.TestCase):
             self.assertFalse((path / 'video-window.mp4').exists())
             self.assertEqual(calls[0][0], 4)
             first, second = calls[0][1], calls[1][1]
-            self.assertIn('do not describe outfits', first)
+            self.assertIn('Do not describe outfits', first)
             self.assertIn('Report travel only when a position actually changes', first)
             self.assertIn('overlapping events for simultaneous actions', first)
             self.assertIn('identified by the user', first)
@@ -66,7 +66,7 @@ class VideoAdapterTest(unittest.TestCase):
             self.assertIn('part 2 of 2 of the cut, the final part: its last frames are the end of the cut', second)
             self.assertNotIn('silent', first.lower())
             # The model is told who to follow, where they start and whether they are still there at the end.
-            self.assertIn('- Mia Lee: first frame: left, facing right, box [10, 20, 300, 900]. look: red coat. emotion in the first frame: calm. last frame of the cut: in frame (right, box [600, 20, 900, 900]).', first)
+            self.assertIn('- Mia Lee: first frame: left, facing right, box [10, 20, 300, 900]. emotion in the first frame: calm. last frame of the cut: in frame (right, box [600, 20, 900, 900]).', first)
             self.assertIn('Opening shot: Medium shot of Mia Lee', first)
             self.assertNotIn('Opening shot', second)
             # Speech timing without the words, relative to each window.

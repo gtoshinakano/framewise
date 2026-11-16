@@ -24,7 +24,7 @@ Section headers, `<Picture N>` / `<Subject N>` / `<Audio N>` labels, timecodes, 
 ## Fields of a shot direction
 - `subjects[]`: `name`, `anchors` (3 to 6 visible features), `keep`. A name with a character record gets a character sheet; any other name is a person seen only in the initial frame.
 - `picture_line`, `keep_picture`: the opening still in one sentence, and what the video must preserve from it.
-- `still`: `shot`, `subjects`, `layout`, `setting`, `lighting`. One frozen moment for the image generator.
+- `still`: `shot`, `placement` (where each character is, which way torso and head face, where the eyes look and at what, in words), `subjects`, `layout`, `setting`, `lighting`. One frozen moment for the image generator. Shots written before 2026-11-16 have no `placement`; leave it empty rather than inventing it when you only edit something else.
 - `summary`, `shot_line`, `framing_lock`, `light`.
 - `camera`: `move` (static, push_in, pull_out, pan_left, pan_right, truck_left, truck_right, tilt_up, tilt_down, pedestal_up, pedestal_down, arc, tracking, shake), `amplitude`, `speed`, `detail`. One move per shot.
 - `beats[]`: `end` and `action` (start state, one action, end state). The last beat ends at the shot's length. Do not mention the camera in a beat.
@@ -56,3 +56,8 @@ When a phrase is divided at an edge (`opens`/`closes` with a split), the words s
 5. Reply with **Changes** (one bullet per field, each with its evidence), **Kept** and **Open questions**. Do not repeat the prompt: the user sees it on the proposal card.
 
 For the review's issues: read `get_sequence(part="review")`, then handle each shot with severity `fix`; leave `check` items to the user unless the evidence decides them.
+
+## Keywords
+When you write or change a `still` part or a beat, use the shared vocabulary below where a word fits the evidence; the lists are suggestions, not a closed set.
+
+{{still_keywords}}

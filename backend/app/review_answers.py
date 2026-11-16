@@ -12,7 +12,7 @@ SYSTEM = '''You are a production-direction assistant for a pipeline that re-crea
 
 ## YOUR TASK
 
-You receive a JSON evidence package. Its "review" object contains the Consistency Summary of the current cut, in particular "human_review" (issues needing human judgment) and "recommended_checks" (suggested verification steps). Write the answers a careful human reviewer would enter for those two fields, using only the supplied evidence.
+You receive a JSON evidence package. Its "review" object contains the Consistency Summary of the current cut, in particular "questions": multiple-choice questions about the points where the evidence is unsure (each has a topic, optionally a character, a question, options with ids, an optional recommended option id and a short why). Older summaries carry "human_review" (issues needing human judgment) and "recommended_checks" (suggested verification steps) as text instead. Write the answers a careful human reviewer would enter, using only the supplied evidence.
 
 ## EVIDENCE AND PRIORITY
 
@@ -24,7 +24,8 @@ All supplied observations are model-generated and may contain errors, except "ex
 
 ## RULES
 
-- Address every concrete item in "human_review" and "recommended_checks" with one bullet each. Merge bullets about the same decision. Skip generic disclaimers.
+- Answer every question with one bullet: choose the option the evidence supports best (the recommended one when the evidence agrees with it) and copy that option's text word for word after the label. Only when no option is right, write a short statement of your own in the same form. Never answer with the option id. A question whose decision "existing_answers" already states keeps that answer.
+- For an older summary, address every concrete item in "human_review" and "recommended_checks" with one bullet each. Merge bullets about the same decision. Skip generic disclaimers.
 - State a fact as confirmed only if at least two independent sources agree, or a neighbouring Cut summary or the user's existing answers establish it. Repetition by the same model, or a summary derived from the analysis it summarizes, is not independent confirmation.
 - Source rule: the first frame decides how the cut starts (appearance, pose, expression, emotion at the first frame); the video analysis decides what changes afterwards (motion, camera, speaking, emotion change and final position). A historical "in last frame" confirmation proves presence for that saved result; its absence proves nothing. When two sources differ only in wording or fine nuance, pick by this rule and say so in a few words instead of leaving it open.
 - When evidence supports a choice but does not fully confirm it, give the decisive direction plus the reason in a few words (for example "Use the first frame; the video analysis is vaguer on this point").
@@ -41,9 +42,9 @@ Return exactly one JSON object with one string field, "answers":
 
 {"answers": "- Topic: statement\\n- Topic: statement"}
 
-- The value is a plain-text list of at most 8 short bullets, each one or two lines, each starting with "- " and a topic label such as Characters, Opening pose, Emotion, Camera, Motion, Speaking, Dialogue, Setting or Continuity.
+- The value is a plain-text list of at most 8 short bullets, each one or two lines, each starting with "- " and a topic label. For a question the label is its topic with a capital letter, followed by the character in brackets when the question names one ("- Gaze (Name): option text"). Other bullets use a label such as Characters, Opening pose, Emotion, Camera, Motion, Speaking or Continuity.
 - No preamble, headings, Markdown beyond the "- " bullets, or repetition of the review text.
-- If both "human_review" and "recommended_checks" say "None required." and there are no existing answers, return {"answers": "No review decisions required."}.
+- If there are no questions (or both "human_review" and "recommended_checks" say "None required.") and there are no existing answers, return {"answers": "No review decisions required."}.
 
 Return JSON only.'''
 
@@ -57,9 +58,23 @@ def _neighbour(cut, consistency):
     if not cut:
         return None
     entry = {'cut_index': cut.get('cut_index'), 'start_time': cut.get('start_time'), 'end_time': cut.get('end_time')}
+    if isinstance(consistency, dict):
+        consistency = {key: value for key, value in consistency.items() if key != 'questions'}  # a neighbour's open questions are not facts about it
     if consistency:
         entry['consistency_summary'] = consistency
     return entry
+
+
+def review_view(content):
+    """What the answers prompt reads of a consistency summary: its questions, or the two older text fields."""
+    content = content if isinstance(content, dict) else {}
+    view = {key: content.get(key, '') for key in ('confusing', 'clear')}
+    if isinstance(content.get('questions'), list):
+        view['questions'] = [{key: item[key] for key in ('id', 'topic', 'character', 'question', 'options', 'recommended', 'why') if item.get(key) not in (None, '', [])}
+                             for item in content['questions'] if isinstance(item, dict)]
+    else:
+        view.update({key: content.get(key, '') for key in ('human_review', 'recommended_checks')})
+    return view
 
 
 def build_evidence(results, context, existing_answers, neighbours, pending_review=False):
@@ -76,7 +91,7 @@ def build_evidence(results, context, existing_answers, neighbours, pending_revie
         review = {'content': {}}
     base = consistency_summary.build_input(results, context['transcript_segments'], context['context_items'], context.get('subtitles'))
     evidence = {
-        'review': {key: review['content'].get(key, '') for key in ('human_review', 'recommended_checks', 'confusing', 'clear')},
+        'review': review_view(review['content']),
         'current_cut': {'visual_evidence_text': base['visual_evidence_text'], 'transcript': base['transcript_text'], 'subtitles': base['subtitles']},
         'existing_answers': existing_answers.strip() or None,
     }
@@ -90,6 +105,8 @@ def build_evidence(results, context, existing_answers, neighbours, pending_revie
 def has_review_items(evidence):
     """False when the consistency summary leaves nothing to decide or check."""
     review = evidence.get('review', {})
+    if review.get('questions'):
+        return True
     return any(str(review.get(key) or '').strip().rstrip('.').lower() not in ('', 'none required') for key in ('human_review', 'recommended_checks'))
 
 
@@ -110,7 +127,7 @@ def refresh(payload, results, existing_answers):
     review = next((item for item in results if item['type'] == 'consistency_summary'), None)
     if not review or not isinstance(review['content'], dict):
         raise RuntimeError('The consistency summary this job waited for is missing; queue the chain again')
-    payload['evidence']['review'] = {key: review['content'].get(key, '') for key in ('human_review', 'recommended_checks', 'confusing', 'clear')}
+    payload['evidence']['review'] = review_view(review['content'])
     payload['evidence']['existing_answers'] = existing_answers.strip() or None
     payload['existing_answers'] = existing_answers
     payload['source_result_ids'] = [item['id'] for item in results]

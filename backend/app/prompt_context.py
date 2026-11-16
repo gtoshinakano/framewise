@@ -9,6 +9,8 @@ slimmed snapshot can be slimmed again safely.
 
 import json
 
+from . import pose_detail
+
 CONSISTENCY_TITLE = 'Consistency summary'
 
 
@@ -67,11 +69,16 @@ def slim_neighbors(context):
                 except ValueError:
                     pass
                 source[label] = content
-    return source
+    # A neighbour's open questions are not facts about it.
+    return {label: ({key: value for key, value in content.items() if key != 'questions'} if isinstance(content, dict) else content) for label, content in source.items()}
 
 
-def slim_context(context):
-    """The part of an analysis context that goes into a prompt."""
+def slim_context(context, dialogue=True):
+    """The part of an analysis context that goes into a prompt.
+
+    ``dialogue=False`` leaves out the transcript and the subtitle lines, for prompts that must not
+    work with what is said (the Cut summary).
+    """
     slim = {}
     project, episode = context.get('project') or {}, context.get('episode') or {}
     if project:
@@ -96,13 +103,30 @@ def slim_context(context):
         slim['context_items'] = items
     if context.get('additional_context'):
         slim['additional_context'] = context['additional_context']
-    slim['transcript_segments'] = slim_transcript(context.get('transcript_segments'))
-    if context.get('subtitles') is not None:
-        slim['subtitles'] = context['subtitles']
+    if dialogue:
+        slim['transcript_segments'] = slim_transcript(context.get('transcript_segments'))
+        if context.get('subtitles') is not None:
+            slim['subtitles'] = context['subtitles']
     detections = slim_detections(context.get('character_detections'))
     if detections:
         slim['character_detections'] = detections
     return slim
+
+
+def series_context(context):
+    """Background a reviewer may use: synopsis, scene notes and the series notes that are not about characters.
+
+    Character notes are left out (they carry outfits that get copied into answers) and so are boxes and ids.
+    Empty when there is nothing to say.
+    """
+    if not isinstance(context, dict):
+        return {}
+    project, episode = context.get('project') or {}, context.get('episode') or {}
+    chunks = [_present(title=chunk.get('title'), notes=str(chunk.get('notes') or '')[:300]) for chunk in context.get('chunks') or [] if isinstance(chunk, dict)]
+    items = [_present(kind=item.get('kind'), title=item.get('title'), content=str(item.get('content') or '')[:300])
+             for item in context.get('context_items') or [] if isinstance(item, dict) and item.get('kind') != 'character' and (item.get('content') or item.get('title'))]
+    return _present(synopsis=str(project.get('synopsis') or '')[:600], episode=episode.get('title'), scene_notes=[chunk for chunk in chunks if chunk], notes=items,
+                    extra=str(context.get('additional_context') or '')[:600])
 
 
 MOTION_VIEW = 'motion direction for the whole cut; event times are seconds from its first frame'
@@ -114,10 +138,23 @@ def is_direction(content):
 
 
 def frame_view(content):
-    """A first-frame result as a prompt reads it: the description without run bookkeeping."""
+    """A first-frame result as a prompt reads it: the description without run bookkeeping.
+
+    Each character's pose block becomes its compact form (state, torso, head, eyes, what is looked at,
+    the app's flags); a character without one simply has no pose entry.
+    """
     if not isinstance(content, dict):
         return content
-    return {key: value for key, value in content.items() if key not in ('mode', 'frame_time', 'subtitle_regions')}
+    view = {key: value for key, value in content.items() if key not in ('mode', 'frame_time', 'subtitle_regions', 'contract')}
+    if isinstance(view.get('visible_characters'), list):
+        people = []
+        for person in view['visible_characters']:
+            if isinstance(person, dict) and 'pose_detail' in person:
+                compact = pose_detail.compact(person['pose_detail'])
+                person = {**{key: value for key, value in person.items() if key != 'pose_detail'}, **({'pose_detail': compact} if compact else {})}
+            people.append(person)
+        view['visible_characters'] = people
+    return view
 
 
 def video_view(content):
@@ -169,8 +206,10 @@ def _loaded(content):
         return content
 
 
-def slim_results(results):
+def slim_results(results, drop=()):
     """Results as title and content; origin only for text a person or the assistant wrote. Ids, kinds and model names stay out.
+
+    Results whose title is in ``drop`` are left out.
 
     A first-frame description and a motion-direction video analysis are sent as compact objects
     (`frame_view`, `video_view`). When the cut has a motion direction, a last-frame description kept
@@ -183,7 +222,7 @@ def slim_results(results):
     slim = []
     for row in rows:
         title, content = row.get('title'), row.get('content')
-        if current_flow and title == FRAME_TITLES[1]:
+        if title in drop or (current_flow and title == FRAME_TITLES[1]):
             continue
         if title in FRAME_TITLES or title == VIDEO_TITLE:
             loaded = _loaded(content)

@@ -16,6 +16,8 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+from .. import still_vocabulary
+
 SKILL_DIR = Path(__file__).parent / 'skills'
 NAME = re.compile(r'^[a-z][a-z0-9_]{1,40}$')
 
@@ -34,7 +36,8 @@ def parse(text):
     return {'name': meta['name'], 'title': meta.get('title') or meta['name'], 'description': meta['description'],
             'scope': meta.get('scope') if meta.get('scope') in ('cut', 'sequence', 'any') else 'cut',
             'examples': [item.strip() for item in meta.get('examples', '').split('|') if item.strip()],
-            'body': text[match.end():].strip()}
+            # {{still_keywords}} becomes the dictionary's keyword suggestions (still_vocabulary.yaml), or nothing when it cannot be read.
+            'body': text[match.end():].strip().replace('{{still_keywords}}', still_vocabulary.shot_block())}
 
 
 @lru_cache(maxsize=1)

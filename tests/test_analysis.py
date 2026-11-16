@@ -722,12 +722,15 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(requests[1][0], inference_worker.SUMMARY_SYSTEM)
         self.assertEqual(requests[2][0], inference_worker.PRODUCTION_BRIEF_SYSTEM)
         self.assertIn('every supplied current transcript segment', requests[1][0])
-        self.assertIn('Preserve the source transcript text accurately', requests[2][0])
-        for system, evidence in (requests[1], requests[2]):
-            segments = evidence['context']['transcript_segments']
-            self.assertEqual([item['text'] for item in segments], ['Hello there.', 'Wait!'])
-            self.assertEqual(segments[0]['character_name'], 'Hero')
-            self.assertEqual(segments[1]['end_time'], 2.2)
+        self.assertIn('Dialogue is not part of this brief', requests[2][0])
+        segments = requests[1][1]['context']['transcript_segments']
+        self.assertEqual([item['text'] for item in segments], ['Hello there.', 'Wait!'])
+        self.assertEqual(segments[0]['character_name'], 'Hero')
+        self.assertEqual(segments[1]['end_time'], 2.2)
+        # The Cut summary is written from the analysis and the user's answers: no transcript, subtitles or consistency assessment.
+        self.assertNotIn('transcript_segments', requests[2][1]['context'])
+        self.assertNotIn('subtitles', requests[2][1]['context'])
+        self.assertNotIn('Consistency summary', [row['title'] for row in requests[2][1]['current_results']])
         current = next(item for item in self.client.get('/api/cuts/c1/analysis-results').json() if item['title'] == 'Cut summary')
         self.assertIn('### Dialogue', current['content'])
         self.assertIn('Hello there.', current['content'])

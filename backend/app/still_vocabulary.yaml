@@ -1,0 +1,1676 @@
+version: "1.0.0"
+language: en
+coordinate_system: viewer_relative
+
+# ==================================================
+# EVIDENCE AND VISIBILITY
+# ==================================================
+
+evidence:
+  visibility:
+    - fully visible
+    - partially visible
+    - mostly occluded
+    - fully occluded
+    - outside the frame
+    - not visible
+    - unknown
+
+  confidence:
+    - high
+    - medium
+    - low
+    - unknown
+
+# ==================================================
+# CHARACTER POSITION
+# ==================================================
+
+character_position:
+  horizontal:
+    - far screen-left
+    - screen-left
+    - slightly left of center
+    - centered
+    - slightly right of center
+    - screen-right
+    - far screen-right
+
+  vertical:
+    - at the top of the frame
+    - in the upper part of the frame
+    - vertically centered
+    - in the lower part of the frame
+    - at the bottom of the frame
+
+  depth:
+    - extreme foreground
+    - foreground
+    - near middle ground
+    - middle ground
+    - far middle ground
+    - background
+    - distant background
+
+  relative_position:
+    - in front of another character
+    - behind another character
+    - beside another character
+    - to the screen-left of another character
+    - to the screen-right of another character
+    - between two characters
+    - surrounded by other characters
+    - overlapping another character
+    - partially hidden behind another character
+    - directly opposite another character
+
+  distance:
+    - touching
+    - extremely close
+    - within arm's reach
+    - standing close together
+    - separated by a short distance
+    - separated by a moderate distance
+    - far apart
+
+# ==================================================
+# BODY ORIENTATION
+# ==================================================
+
+body:
+  orientation:
+    - facing the camera
+    - slightly turned toward screen-left
+    - slightly turned toward screen-right
+    - three-quarter view toward screen-left
+    - three-quarter view toward screen-right
+    - side profile facing screen-left
+    - side profile facing screen-right
+    - rear three-quarter view with the front of the torso toward screen-left
+    - rear three-quarter view with the front of the torso toward screen-right
+    - facing away from the camera
+
+  posture:
+    - standing upright
+    - standing casually
+    - standing rigidly
+    - standing with feet apart
+    - standing with feet together
+    - standing on one leg
+    - sitting upright
+    - sitting casually
+    - sitting cross-legged
+    - sitting with legs extended
+    - sitting with knees raised
+    - sitting with legs crossed
+    - sitting on the edge of a seat
+    - sitting on the floor
+    - kneeling on one knee
+    - kneeling on both knees
+    - crouching
+    - squatting
+    - lying on the back
+    - lying on the stomach
+    - lying on the left side
+    - lying on the right side
+    - reclining
+    - curled up
+    - crawling
+    - suspended in midair
+
+  torso:
+    - upright
+    - leaning slightly forward
+    - leaning forward
+    - leaning heavily forward
+    - leaning slightly backward
+    - leaning backward
+    - leaning toward screen-left
+    - leaning toward screen-right
+    - bent forward at the waist
+    - bent backward at the waist
+    - twisted toward screen-left
+    - twisted toward screen-right
+    - hunched forward
+    - slouched
+    - arched backward
+
+  weight_distribution:
+    - evenly distributed on both legs
+    - weight shifted onto the left leg
+    - weight shifted onto the right leg
+    - weight shifted forward
+    - weight shifted backward
+    - supported by both hands
+    - supported by one hand
+    - supported by an external object
+
+  shoulder_position:
+    - relaxed shoulders
+    - squared shoulders
+    - slightly raised shoulders
+    - raised shoulders
+    - lowered shoulders
+    - slumped shoulders
+    - hunched shoulders
+    - tense shoulders
+    - left shoulder raised
+    - right shoulder raised
+    - left shoulder angled forward
+    - right shoulder angled forward
+
+  body_tension:
+    - completely relaxed
+    - relaxed
+    - slightly tense
+    - tense
+    - rigid
+    - visibly strained
+
+  support:
+    - unsupported
+    - leaning against a wall
+    - leaning against a table
+    - leaning against a railing
+    - leaning against another character
+    - supported by a chair
+    - supported by a bed
+    - supported by the floor
+    - supported by an external object
+
+# ==================================================
+# HEAD ORIENTATION
+# ==================================================
+
+head:
+  yaw:
+    - facing the camera
+    - slightly turned toward screen-left
+    - turned toward screen-left
+    - three-quarter view toward screen-left
+    - side profile facing screen-left
+    - rear three-quarter view toward screen-left
+    - slightly turned toward screen-right
+    - turned toward screen-right
+    - three-quarter view toward screen-right
+    - side profile facing screen-right
+    - rear three-quarter view toward screen-right
+    - facing away from the camera
+
+  pitch:
+    - chin strongly lowered
+    - chin lowered
+    - chin slightly lowered
+    - head held level
+    - chin slightly raised
+    - chin raised
+    - chin strongly raised
+
+  roll:
+    - head upright
+    - head tilted slightly toward screen-left
+    - head tilted toward screen-left
+    - head tilted strongly toward screen-left
+    - head tilted slightly toward screen-right
+    - head tilted toward screen-right
+    - head tilted strongly toward screen-right
+
+  relative_to_torso:
+    - aligned with the torso
+    - turned independently of the torso
+    - turned toward the left shoulder
+    - turned toward the right shoulder
+    - looking back over the left shoulder
+    - looking back over the right shoulder
+    - resting against the left shoulder
+    - resting against the right shoulder
+    - resting against an external object
+
+  neck:
+    - relaxed neck
+    - extended neck
+    - slightly retracted neck
+    - retracted neck
+    - tense neck
+    - craning forward
+    - neck bent downward
+    - neck bent backward
+
+# ==================================================
+# EYES AND GAZE
+# ==================================================
+
+eyes:
+  gaze_direction:
+    - directly into the camera
+    - straight ahead
+    - toward screen-left
+    - toward screen-right
+    - upward
+    - downward
+    - diagonally upward toward screen-left
+    - diagonally upward toward screen-right
+    - diagonally downward toward screen-left
+    - diagonally downward toward screen-right
+    - away from the camera
+    - into the distance
+    - over the left shoulder
+    - over the right shoulder
+    - unfocused
+
+  gaze_target:
+    - the camera
+    - another character
+    - another character's face
+    - another character's eyes
+    - another character's hands
+    - an object
+    - the floor
+    - the ceiling
+    - the sky
+    - the horizon
+    - the background
+    - the foreground
+    - a point outside the frame
+    - their own hands
+    - their own reflection
+    - no specific target
+
+  openness:
+    - fully closed
+    - gently closed
+    - tightly closed
+    - nearly closed
+    - slightly open
+    - half-lidded
+    - partially open
+    - naturally open
+    - wide open
+    - extremely wide open
+
+  symmetry:
+    - both eyes equally open
+    - left eye slightly narrower
+    - right eye slightly narrower
+    - left eye closed
+    - right eye closed
+    - left eye more widely open
+    - right eye more widely open
+
+  eyelids:
+    - relaxed eyelids
+    - lowered upper eyelids
+    - raised upper eyelids
+    - tense lower eyelids
+    - raised lower eyelids
+    - narrowed eyelids
+    - drooping eyelids
+    - tightly squeezed eyelids
+
+  gaze_quality:
+    - attentive gaze
+    - focused gaze
+    - unfocused gaze
+    - distant gaze
+    - vacant gaze
+    - intense gaze
+    - soft gaze
+    - piercing gaze
+    - suspicious sideways gaze
+    - dismissive sideways gaze
+    - averted gaze
+    - hesitant gaze
+    - sleepy gaze
+    - direct eye contact
+    - avoiding eye contact
+
+  moisture:
+    - normal eyes
+    - slightly moist eyes
+    - watery eyes
+    - tears gathering in the eyes
+    - tears visible along the lower eyelids
+    - tears running down the cheeks
+    - reddened eyes
+
+# ==================================================
+# EYEBROWS
+# ==================================================
+
+eyebrows:
+  position:
+    - neutral eyebrows
+    - relaxed eyebrows
+    - slightly raised eyebrows
+    - raised eyebrows
+    - strongly raised eyebrows
+    - lowered eyebrows
+    - strongly lowered eyebrows
+    - raised inner eyebrows
+    - lowered inner eyebrows
+    - raised outer eyebrows
+    - lowered outer eyebrows
+    - furrowed eyebrows
+    - tightly furrowed eyebrows
+    - eyebrows drawn together
+
+  symmetry:
+    - symmetrical eyebrows
+    - left eyebrow slightly raised
+    - right eyebrow slightly raised
+    - left eyebrow raised
+    - right eyebrow raised
+    - asymmetrically raised eyebrows
+
+# ==================================================
+# MOUTH AND LIPS
+# ==================================================
+
+mouth:
+  openness:
+    - fully closed
+    - gently closed
+    - slightly parted
+    - partially open
+    - moderately open
+    - wide open
+    - extremely wide open
+
+  lip_position:
+    - relaxed lips
+    - gently pressed lips
+    - firmly pressed lips
+    - tightly pressed lips
+    - slightly pursed lips
+    - pursed lips
+    - protruding lower lip
+    - retracted lips
+    - lower lip tucked inward
+    - upper lip raised
+    - lower lip curled
+    - trembling lips
+    - slightly downturned lips
+    - strongly downturned lips
+    - slightly upturned lips
+
+  shape:
+    - neutral mouth
+    - faint smile
+    - subtle smile
+    - gentle smile
+    - closed-mouth smile
+    - open-mouth smile
+    - broad smile
+    - restrained smile
+    - awkward smile
+    - forced smile
+    - asymmetrical smile
+    - smirk
+    - sneer
+    - grimace
+    - pout
+    - frown
+    - rounded mouth
+    - tightly drawn mouth
+
+  corner_position:
+    - both corners neutral
+    - both corners slightly raised
+    - both corners raised
+    - both corners slightly lowered
+    - both corners lowered
+    - left corner slightly raised
+    - right corner slightly raised
+    - left corner lowered
+    - right corner lowered
+
+  teeth_visibility:
+    - teeth not visible
+    - upper teeth slightly visible
+    - upper teeth visible
+    - upper and lower teeth visible
+    - clenched teeth
+    - bared teeth
+
+  jaw:
+    - relaxed jaw
+    - slightly tense jaw
+    - tense jaw
+    - clenched jaw
+    - dropped jaw
+    - protruding jaw
+    - retracted jaw
+
+  activity:
+    - resting
+    - speaking
+    - whispering
+    - shouting
+    - laughing
+    - crying
+    - gasping
+    - yawning
+    - sighing
+    - biting the lower lip
+    - biting the upper lip
+    - chewing
+    - swallowing
+
+# ==================================================
+# OTHER FACIAL FEATURES
+# ==================================================
+
+face:
+  cheek_position:
+    - relaxed cheeks
+    - slightly raised cheeks
+    - raised cheeks
+    - tense cheeks
+    - puffed cheeks
+    - sucked-in cheeks
+
+  cheek_color:
+    - natural skin tone
+    - slightly flushed cheeks
+    - visibly flushed cheeks
+    - pale cheeks
+
+  nose:
+    - relaxed nose
+    - slightly flared nostrils
+    - flared nostrils
+    - wrinkled nose
+    - slightly scrunched nose
+
+  forehead:
+    - relaxed forehead
+    - slightly creased forehead
+    - wrinkled forehead
+    - tense forehead
+
+  chin:
+    - relaxed chin
+    - tense chin
+    - trembling chin
+    - dimpled chin
+
+  overall_tension:
+    - relaxed facial muscles
+    - slightly tense facial muscles
+    - tense facial muscles
+    - strongly contracted facial muscles
+
+  visible_details:
+    - subtle blush
+    - sweat on the forehead
+    - a bead of sweat on the cheek
+    - tears on the cheeks
+    - visible breathing effort
+    - subtle facial asymmetry
+    - visible neck tension
+
+# ==================================================
+# EMOTIONS AND EXPRESSIONS
+# ==================================================
+
+emotion:
+  primary:
+    # Neutral states
+    - neutral
+    - relaxed
+    - calm
+    - composed
+    - indifferent
+    - serious
+    - stoic
+    - expressionless
+    - contemplative
+    - attentive
+    - focused
+    - distracted
+    - bored
+    - tired
+    - sleepy
+    - exhausted
+
+    # Positive emotions
+    - happy
+    - cheerful
+    - joyful
+    - delighted
+    - amused
+    - excited
+    - enthusiastic
+    - affectionate
+    - tender
+    - relieved
+    - satisfied
+    - proud
+    - confident
+    - playful
+    - mischievous
+    - grateful
+    - hopeful
+    - compassionate
+
+    # Sadness and vulnerability
+    - sad
+    - melancholic
+    - sorrowful
+    - disappointed
+    - discouraged
+    - lonely
+    - heartbroken
+    - grieving
+    - distressed
+    - dejected
+    - vulnerable
+    - nostalgic
+    - resigned
+    - hurt
+    - hopeless
+
+    # Fear and anxiety
+    - worried
+    - concerned
+    - anxious
+    - nervous
+    - uneasy
+    - apprehensive
+    - fearful
+    - frightened
+    - terrified
+    - panicked
+    - insecure
+    - hesitant
+    - uncertain
+    - overwhelmed
+    - intimidated
+
+    # Anger and hostility
+    - annoyed
+    - irritated
+    - frustrated
+    - moderately angry
+    - angry
+    - furious
+    - resentful
+    - hostile
+    - defiant
+    - offended
+    - bitter
+    - indignant
+    - aggressive
+    - contemptuous
+    - disgusted
+    - dismissive
+
+    # Surprise and cognition
+    - surprised
+    - startled
+    - shocked
+    - astonished
+    - confused
+    - puzzled
+    - curious
+    - intrigued
+    - skeptical
+    - suspicious
+    - doubtful
+    - thoughtful
+    - incredulous
+
+    # Social emotions
+    - embarrassed
+    - ashamed
+    - shy
+    - awkward
+    - uncomfortable
+    - guilty
+    - remorseful
+    - apologetic
+    - jealous
+    - envious
+    - sympathetic
+    - empathetic
+
+    # Physical reactions
+    - in pain
+    - physically strained
+    - uncomfortable
+    - nauseated
+    - dizzy
+
+  intensity:
+    - barely perceptible
+    - subtle
+    - mild
+    - moderate
+    - pronounced
+    - intense
+    - extreme
+
+  expression_control:
+    - natural
+    - restrained
+    - suppressed
+    - concealed
+    - controlled
+    - unrestrained
+    - exaggerated
+    - forced
+    - feigned
+    - conflicted
+    - ambiguous
+
+# ==================================================
+# ARMS AND ELBOWS
+# Apply independently to left_arm and right_arm.
+# ==================================================
+
+arm:
+  position:
+    - hanging naturally at the side
+    - hanging loosely at the side
+    - held close to the body
+    - held slightly away from the body
+    - extended forward
+    - extended backward
+    - extended sideways
+    - extended upward
+    - extended downward
+    - raised above the head
+    - raised to shoulder height
+    - raised to chest height
+    - bent in front of the chest
+    - bent in front of the face
+    - bent beside the head
+    - bent behind the head
+    - held behind the back
+    - resting on the hip
+    - resting on the thigh
+    - resting on a table
+    - resting on an external object
+    - reaching toward another character
+    - reaching toward an object
+    - wrapped around another character
+    - crossing the torso
+
+  elbow:
+    - fully extended
+    - slightly bent
+    - moderately bent
+    - bent at approximately a right angle
+    - sharply bent
+    - tucked close to the torso
+    - pointing outward
+    - pointing upward
+    - pointing downward
+    - resting on a surface
+
+  tension:
+    - relaxed
+    - slightly tense
+    - tense
+    - rigid
+    - visibly strained
+
+  bilateral_pose:
+    - both arms relaxed at the sides
+    - arms crossed over the chest
+    - arms loosely crossed
+    - arms folded behind the back
+    - both arms extended forward
+    - both arms extended sideways
+    - both arms raised above the head
+    - both arms resting on a surface
+    - both hands on the hips
+    - both hands behind the head
+    - hands clasped in front of the body
+    - hands clasped behind the back
+
+# ==================================================
+# HANDS AND FINGERS
+# Apply independently to left_hand and right_hand.
+# ==================================================
+
+hand:
+  position:
+    - beside the body
+    - in front of the torso
+    - behind the back
+    - near the face
+    - near the mouth
+    - near the chin
+    - near the cheek
+    - near the forehead
+    - beside the head
+    - above the head
+    - on the chest
+    - on the abdomen
+    - on the waist
+    - on the hip
+    - on the thigh
+    - on the knee
+    - inside a pocket
+    - resting on a surface
+    - touching another character
+    - holding an object
+    - outside the frame
+
+  palm_orientation:
+    - palm facing upward
+    - palm facing downward
+    - palm facing the camera
+    - palm facing away from the camera
+    - palm facing inward
+    - palm facing outward
+    - palm facing screen-left
+    - palm facing screen-right
+
+  finger_configuration:
+    - relaxed fingers
+    - slightly curled fingers
+    - loosely curled fingers
+    - fully extended fingers
+    - fingers spread apart
+    - fingers held together
+    - loosely closed fist
+    - tightly clenched fist
+    - index finger extended
+    - index and middle fingers extended
+    - thumb extended
+    - thumb and index finger touching
+    - fingers interlocked
+    - fingers gripping an object
+    - fingers pinching an object
+    - fingers wrapped around an object
+
+  wrist:
+    - neutral wrist
+    - wrist bent inward
+    - wrist bent outward
+    - wrist flexed downward
+    - wrist extended upward
+    - relaxed wrist
+    - tense wrist
+
+  gesture:
+    - open palm
+    - closed fist
+    - pointing
+    - pointing upward
+    - pointing downward
+    - pointing toward screen-left
+    - pointing toward screen-right
+    - pointing at another character
+    - waving
+    - beckoning
+    - thumbs up
+    - thumbs down
+    - peace sign
+    - stop gesture
+    - shushing gesture
+    - surrender gesture
+    - saluting
+    - shrugging gesture
+    - pinching
+    - grasping
+    - gripping
+    - holding
+    - offering an object
+    - receiving an object
+    - pushing
+    - pulling
+    - reaching
+    - touching
+    - stroking
+    - patting
+    - covering the mouth
+    - covering the face
+    - covering the eyes
+    - rubbing the eyes
+    - scratching the head
+    - rubbing the neck
+    - adjusting glasses
+    - adjusting clothing
+    - brushing hair aside
+    - supporting the chin
+    - resting the cheek on the hand
+
+  grip_strength:
+    - loose grip
+    - gentle grip
+    - firm grip
+    - tight grip
+    - strained grip
+
+# ==================================================
+# LEGS AND FEET
+# Apply independently to each leg and foot.
+# ==================================================
+
+leg:
+  position:
+    - straight
+    - slightly bent
+    - moderately bent
+    - sharply bent
+    - extended forward
+    - extended backward
+    - extended sideways
+    - raised forward
+    - raised backward
+    - crossed over the other leg
+    - tucked underneath the body
+    - resting on the floor
+    - resting on an external object
+    - suspended above the ground
+
+  knee:
+    - fully extended
+    - slightly bent
+    - moderately bent
+    - bent at approximately a right angle
+    - sharply bent
+    - pointing forward
+    - pointing outward
+    - pointing inward
+    - touching the ground
+
+  bilateral_pose:
+    - legs together
+    - legs slightly apart
+    - legs widely apart
+    - legs crossed at the knees
+    - legs crossed at the ankles
+    - sitting cross-legged
+    - both knees raised
+    - one knee raised
+    - one leg extended
+    - both legs extended
+    - one leg crossed over the other
+    - staggered stance
+    - walking stance
+    - running stance
+    - lunging stance
+
+foot:
+  orientation:
+    - pointing forward
+    - pointing toward screen-left
+    - pointing toward screen-right
+    - pointing inward
+    - pointing outward
+    - pointing upward
+    - pointing downward
+
+  ground_contact:
+    - flat on the ground
+    - heel raised
+    - toes touching the ground
+    - heel touching the ground
+    - lifted off the ground
+    - suspended in midair
+    - resting on an external object
+
+# ==================================================
+# CHARACTER ACTIONS
+# Static visual states suitable for image generation.
+# ==================================================
+
+action:
+  locomotion:
+    - standing still
+    - walking
+    - running
+    - jogging
+    - stepping forward
+    - stepping backward
+    - stepping sideways
+    - turning around
+    - jumping
+    - falling
+    - stumbling
+    - climbing
+    - crawling
+    - kneeling
+    - getting up
+    - sitting down
+    - lying down
+
+  communication:
+    - speaking
+    - listening
+    - whispering
+    - shouting
+    - yelling
+    - arguing
+    - explaining
+    - questioning
+    - greeting
+    - apologizing
+    - scolding
+    - laughing
+    - crying
+    - reacting silently
+    - maintaining eye contact
+    - avoiding eye contact
+
+  object_interaction:
+    - holding an object
+    - carrying an object
+    - reaching for an object
+    - picking up an object
+    - putting down an object
+    - handing over an object
+    - receiving an object
+    - examining an object
+    - pointing at an object
+    - opening an object
+    - closing an object
+    - reading a book
+    - writing
+    - typing
+    - using a smartphone
+    - looking at a smartphone
+    - drinking
+    - eating
+    - pushing an object
+    - pulling an object
+    - throwing an object
+    - catching an object
+    - dropping an object
+
+  character_interaction:
+    - facing each other
+    - standing beside each other
+    - standing back to back
+    - walking side by side
+    - looking at each other
+    - avoiding each other's gaze
+    - leaning toward each other
+    - leaning away from each other
+    - shaking hands
+    - holding hands
+    - hugging
+    - patting the shoulder
+    - touching the face
+    - touching the arm
+    - grabbing the arm
+    - grabbing the wrist
+    - pulling another character
+    - pushing another character
+    - blocking another character
+    - comforting another character
+    - supporting another character
+    - protecting another character
+    - confronting another character
+    - pointing at another character
+    - handing an object to another character
+
+# ==================================================
+# CAMERA AND FRAMING
+# ==================================================
+
+camera:
+  shot_size:
+    - extreme close-up
+    - close-up
+    - medium close-up
+    - medium shot
+    - medium long shot
+    - cowboy shot
+    - three-quarter body shot
+    - full-body shot
+    - long shot
+    - wide shot
+    - extreme wide shot
+
+  height:
+    - ground-level
+    - ankle-level
+    - knee-level
+    - hip-level
+    - waist-level
+    - chest-level
+    - shoulder-level
+    - eye-level
+    - above eye-level
+    - overhead
+
+  vertical_angle:
+    - extreme low-angle
+    - low-angle
+    - slightly low-angle
+    - straight-on angle
+    - slightly high-angle
+    - high-angle
+    - extreme high-angle
+    - directly overhead
+    - worm's-eye view
+    - bird's-eye view
+
+  horizontal_angle:
+    - frontal view
+    - slightly off-center frontal view
+    - front three-quarter view from screen-left
+    - front three-quarter view from screen-right
+    - side view from screen-left
+    - side view from screen-right
+    - rear three-quarter view from screen-left
+    - rear three-quarter view from screen-right
+    - rear view
+
+  roll:
+    - level horizon
+    - slight Dutch angle toward screen-left
+    - slight Dutch angle toward screen-right
+    - pronounced Dutch angle toward screen-left
+    - pronounced Dutch angle toward screen-right
+
+  shot_configuration:
+    - single shot
+    - two-shot
+    - three-shot
+    - group shot
+    - over-the-shoulder shot
+    - reverse over-the-shoulder shot
+    - point-of-view shot
+    - subjective camera shot
+    - reaction shot
+    - insert shot
+    - detail shot
+    - establishing shot
+    - silhouette shot
+    - reflection shot
+    - foreground-framed shot
+
+  perspective:
+    - natural perspective
+    - wide-angle perspective
+    - compressed telephoto perspective
+    - exaggerated perspective
+    - flattened perspective
+    - symmetrical perspective
+    - one-point perspective
+    - two-point perspective
+
+  focal_length_feel:
+    - ultra-wide-angle
+    - wide-angle
+    - standard lens perspective
+    - short telephoto
+    - telephoto
+    - macro
+
+  framing:
+    - tightly framed
+    - loosely framed
+    - centered framing
+    - off-center framing
+    - symmetrical framing
+    - asymmetrical framing
+    - subject framed by foreground objects
+    - subject framed by architectural elements
+    - subject partially cropped
+    - subject fully contained within the frame
+    - ample negative space
+    - minimal negative space
+    - ample headroom
+    - minimal headroom
+
+  focus:
+    - sharp focus throughout
+    - sharp focus on the main subject
+    - sharp focus on the face
+    - sharp focus on the eyes
+    - sharp focus on the hands
+    - sharp focus on an object
+    - sharp focus on the foreground
+    - sharp focus on the middle ground
+    - sharp focus on the background
+    - soft focus
+    - selective focus
+
+  depth_of_field:
+    - extremely shallow depth of field
+    - shallow depth of field
+    - moderate depth of field
+    - deep depth of field
+    - background softly blurred
+    - foreground softly blurred
+    - strong background bokeh
+
+# ==================================================
+# COMPOSITION
+# ==================================================
+
+composition:
+  arrangement:
+    - centered composition
+    - symmetrical composition
+    - asymmetrical composition
+    - balanced composition
+    - deliberately unbalanced composition
+    - rule-of-thirds composition
+    - diagonal composition
+    - triangular composition
+    - layered composition
+    - foreground-dominant composition
+    - background-dominant composition
+    - subject-dominant composition
+    - environment-dominant composition
+    - minimal composition
+    - densely populated composition
+
+  visual_priority:
+    - character face
+    - character eyes
+    - character body
+    - character gesture
+    - character interaction
+    - foreground object
+    - background environment
+    - architectural geometry
+    - landscape
+    - negative space
+
+  occlusion:
+    - no occlusion
+    - partial foreground occlusion
+    - face partially occluded
+    - body partially occluded
+    - lower body occluded
+    - upper body occluded
+    - subject obscured by another character
+    - subject obscured by an object
+    - subject obscured by architectural elements
+
+  crop:
+    - entire body visible
+    - head and shoulders visible
+    - chest and above visible
+    - waist and above visible
+    - hips and above visible
+    - knees and above visible
+    - face partially cropped
+    - top of the head cropped
+    - lower body cropped
+    - arms partially cropped
+    - hands outside the frame
+
+# ==================================================
+# ENVIRONMENT
+# ==================================================
+
+environment:
+  type:
+    - indoor environment
+    - outdoor environment
+    - semi-enclosed environment
+    - transitional indoor-outdoor environment
+
+  location:
+    - bedroom
+    - living room
+    - kitchen
+    - dining room
+    - bathroom
+    - apartment entrance
+    - apartment balcony
+    - residential hallway
+    - school classroom
+    - school corridor
+    - school laboratory
+    - school library
+    - school cafeteria
+    - school gymnasium
+    - school rooftop
+    - school courtyard
+    - office
+    - meeting room
+    - hospital room
+    - hospital corridor
+    - waiting room
+    - shopping mall
+    - convenience store
+    - supermarket
+    - restaurant
+    - cafe
+    - bookstore
+    - public library
+    - train interior
+    - train station
+    - train platform
+    - bus interior
+    - bus stop
+    - car interior
+    - pedestrian street
+    - residential street
+    - urban intersection
+    - alleyway
+    - park
+    - playground
+    - garden
+    - beach
+    - coastline
+    - forest
+    - mountain
+    - open field
+    - riverside
+    - bridge
+    - rooftop
+    - studio
+
+  time_of_day:
+    - pre-dawn
+    - sunrise
+    - early morning
+    - morning
+    - late morning
+    - noon
+    - early afternoon
+    - afternoon
+    - late afternoon
+    - golden hour
+    - sunset
+    - dusk
+    - twilight
+    - blue hour
+    - evening
+    - night
+    - late night
+
+  weather:
+    - clear weather
+    - sunny weather
+    - partly cloudy weather
+    - overcast weather
+    - light rain
+    - moderate rain
+    - heavy rain
+    - misty weather
+    - foggy weather
+    - snowy weather
+    - windy weather
+    - stormy weather
+
+  atmosphere:
+    - quiet
+    - peaceful
+    - lively
+    - crowded
+    - deserted
+    - intimate
+    - tense
+    - oppressive
+    - melancholic
+    - nostalgic
+    - mysterious
+    - mundane
+    - welcoming
+    - unsettling
+
+  background_density:
+    - empty background
+    - minimal background
+    - sparse background
+    - moderately detailed background
+    - highly detailed background
+    - cluttered background
+    - crowded background
+
+# ==================================================
+# LIGHTING
+# ==================================================
+
+lighting:
+  source:
+    - natural daylight
+    - direct sunlight
+    - indirect sunlight
+    - diffused daylight
+    - overcast daylight
+    - natural window light
+    - reflected sunlight
+    - moonlight
+    - fluorescent ceiling lights
+    - warm indoor lamps
+    - incandescent lighting
+    - LED lighting
+    - street lighting
+    - neon lighting
+    - candlelight
+    - firelight
+    - screen illumination
+    - mixed natural and artificial lighting
+
+  direction:
+    - frontal lighting
+    - front-left lighting
+    - front-right lighting
+    - side lighting from screen-left
+    - side lighting from screen-right
+    - rear-left lighting
+    - rear-right lighting
+    - backlighting
+    - rim lighting
+    - overhead lighting
+    - underlighting
+    - ambient lighting
+    - omnidirectional lighting
+
+  hardness:
+    - extremely soft lighting
+    - soft diffused lighting
+    - moderately soft lighting
+    - moderately hard lighting
+    - hard directional lighting
+    - harsh direct lighting
+
+  intensity:
+    - very dim lighting
+    - dim lighting
+    - subdued lighting
+    - moderate lighting
+    - bright lighting
+    - very bright lighting
+
+  color_temperature:
+    - very warm lighting
+    - warm lighting
+    - slightly warm lighting
+    - neutral lighting
+    - slightly cool lighting
+    - cool lighting
+    - very cool lighting
+    - mixed color temperatures
+
+  contrast:
+    - flat lighting
+    - low contrast lighting
+    - moderate contrast lighting
+    - high contrast lighting
+    - dramatic chiaroscuro lighting
+
+  shadow:
+    - minimal shadows
+    - soft shadows
+    - diffuse shadows
+    - directional shadows
+    - hard-edged shadows
+    - deep shadows
+    - long shadows
+    - short shadows
+    - soft facial shadows
+
+  exposure:
+    - low-key exposure
+    - slightly underexposed
+    - naturally exposed
+    - evenly exposed
+    - slightly overexposed
+    - high-key exposure
+
+# ==================================================
+# VISUAL STYLE
+# ==================================================
+
+visual_style:
+  medium:
+    - photorealistic
+    - live-action photography
+    - cinematic live-action
+    - documentary photography
+    - editorial photography
+    - portrait photography
+    - naturalistic photography
+    - cinematic film still
+    - anime
+    - manga illustration
+    - digital illustration
+    - realistic digital painting
+    - stylized digital painting
+    - semi-realistic illustration
+    - three-dimensional render
+    - stylized three-dimensional render
+
+  realism:
+    - naturalistic realism
+    - grounded photorealism
+    - cinematic realism
+    - hyperrealism
+    - semi-realistic
+    - stylized realism
+    - non-photorealistic
+
+  skin_rendering:
+    - natural skin texture
+    - realistic skin pores
+    - subtle skin imperfections
+    - natural facial detail
+    - soft natural skin texture
+    - smooth skin texture
+    - realistic subsurface scattering
+
+  color_palette:
+    - natural colors
+    - neutral color palette
+    - muted color palette
+    - pastel color palette
+    - warm color palette
+    - cool color palette
+    - vibrant color palette
+    - desaturated color palette
+    - monochromatic color palette
+    - black and white
+    - high-saturation colors
+    - low-saturation colors
+
+  color_grading:
+    - natural color grading
+    - subtle cinematic color grading
+    - warm cinematic grading
+    - cool cinematic grading
+    - teal and orange grading
+    - faded film grading
+    - neutral documentary grading
+    - low-contrast grading
+    - high-contrast grading
+
+  image_texture:
+    - clean digital image
+    - subtle film grain
+    - visible film grain
+    - soft photographic texture
+    - crisp photographic detail
+    - natural optical softness
+
+# ==================================================
+# CLOTHING AND HAIR STATE
+# ==================================================
+
+clothing:
+  fit:
+    - tight-fitting
+    - fitted
+    - regular-fitting
+    - loose-fitting
+    - oversized
+    - flowing
+
+  condition:
+    - clean
+    - neat
+    - lightly wrinkled
+    - wrinkled
+    - disheveled
+    - worn
+    - wet
+    - damp
+    - dirty
+    - damaged
+    - torn
+
+  physical_state:
+    - hanging naturally
+    - stretched by body movement
+    - folded naturally
+    - compressed against a surface
+    - gently flowing in the wind
+    - strongly flowing in the wind
+    - clinging to the body
+
+hair:
+  physical_state:
+    - neatly arranged
+    - naturally arranged
+    - slightly tousled
+    - tousled
+    - messy
+    - disheveled
+    - gently windswept
+    - strongly windswept
+    - wet
+    - damp
+    - hanging naturally
+
+  relative_position:
+    - behind the shoulders
+    - over both shoulders
+    - over the left shoulder
+    - over the right shoulder
+    - tucked behind the left ear
+    - tucked behind the right ear
+    - tucked behind both ears
+    - partially covering the face
+    - partially covering the left eye
+    - partially covering the right eye
+    - covering the forehead
+    - swept away from the face
+
+# ==================================================
+# IMAGE REFERENCE MANAGEMENT
+# ==================================================
+
+reference:
+  role:
+    - base image
+    - composition reference
+    - character identity reference
+    - facial identity reference
+    - hairstyle reference
+    - body proportions reference
+    - body pose reference
+    - head orientation reference
+    - gaze reference
+    - facial expression reference
+    - hand gesture reference
+    - clothing reference
+    - accessory reference
+    - object reference
+    - environment reference
+    - architectural reference
+    - camera reference
+    - lighting reference
+    - color palette reference
+    - visual style reference
+
+  operation:
+    - preserve
+    - replace
+    - modify
+    - remove
+    - add
+    - replicate
+    - adapt
+    - re-render
+    - reposition
+    - resize
+    - ignore
+
+  authority:
+    - authoritative
+    - primary
+    - secondary
+    - supplementary
+    - ignored
+
+  preserve_attributes:
+    - facial identity
+    - facial features
+    - hairstyle
+    - hair color
+    - eye color
+    - body proportions
+    - body posture
+    - body orientation
+    - head orientation
+    - gaze direction
+    - facial expression
+    - limb placement
+    - hand gestures
+    - clothing
+    - accessories
+    - object placement
+    - character positions
+    - character interaction
+    - spatial relationships
+    - scene layout
+    - background environment
+    - architectural geometry
+    - camera angle
+    - camera perspective
+    - camera framing
+    - lighting direction
+    - shadow direction
+    - color palette
+    - visual style
+
+# ==================================================
+# OUTPUT CONFIGURATION
+# Prefer workflow parameters instead of prompt text.
+# ==================================================
+
+output:
+  layout:
+    - single coherent image
+    - character portrait
+    - full-body character reference
+    - character turnaround sheet
+    - expression sheet
+    - pose sheet
+    - multi-panel composition
+    - contact sheet
+
+  aspect_ratio:
+    - "1:1"
+    - "4:3"
+    - "3:4"
+    - "3:2"
+    - "2:3"
+    - "5:4"
+    - "4:5"
+    - "16:9"
+    - "9:16"
+    - "21:9"
+
+  orientation:
+    - square
+    - portrait
+    - landscape
+
+# ==================================================
+# GLOBAL FALLBACK VALUES
+# Never include these in the final generated prompt.
+# ==================================================
+
+fallback:
+  - unknown
+  - uncertain
+  - not applicable
+  - not visible
+  - partially occluded
+  - fully occluded
+  - outside the frame

@@ -4,6 +4,7 @@ import { api, type ContextItem, type Job } from './api'
 import { cachedCharacters, cachedReferences, invalidateReferences, loadCharacters, loadReferences, type CharacterReference } from './runCache'
 import { ActionButton, Elapsed, Skeleton, StatusChip } from './RunUi'
 import type { CharacterSummary } from './runState'
+import { PoseDetailCard } from './PoseDetailCard'
 
 type Frame = { position: 'first' | 'last'; time: number; image_size: [number, number] }
 type Candidate = { character_id: string; character_name: string; score: number }
@@ -203,6 +204,8 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
       createdIds.current.set(id, result.id)
     })
   }
+  // The pose block belongs to the first-frame result; it is read again whenever a job of this cut changes.
+  const poseKey = jobs.filter(item => item.cuts?.some(entry => entry.id === cutId)).map(item => `${item.id}:${item.status}`).join(',')
   const locked = working || priorSaving || !!active || !!run?.stale || noChars
   const frameBoundaryChanged = (position: 'first' | 'last') => !!run && (position === 'first' ? run.cut_start !== cutStart : run.cut_end !== cutEnd)
   const hasOutdatedFrame = !!run?.frames.some(frame => frameBoundaryChanged(frame.position))
@@ -310,6 +313,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
             {person.label_source === 'auto' && person.match_reason && <p className="mt-1 text-[11px] text-[#e6c58b]">{person.match_reason}</p>}
             <Suggestions person={person} disabled={locked} onPick={id => void label(person.id, id)} />
             {person.label_source === 'manual' && <MatchingUse person={person} disabled={locked} onChange={use => setMatchingUse(person.id, use)} />}
+            {frame.position === 'first' && person.character_context_id && <PoseDetailCard cutId={cutId} person={person} frameBoxes={people} refreshKey={poseKey} disabled={locked} />}
           </div>
         })}
       </div>

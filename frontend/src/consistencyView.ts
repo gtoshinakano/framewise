@@ -19,13 +19,30 @@ export type ConsistencySection = {
   paragraphs: string[]
 }
 
+/** A multiple-choice question of a consistency summary. The user's answer is one line of the saved answers text. */
+export type Question = {
+  id: string
+  topic: string
+  /** The exact character name, or '' when the question is about the whole shot. */
+  character: string
+  question: string
+  options: { id: string; text: string }[]
+  /** The option the evidence favours, or null when it is open. */
+  recommended: string | null
+  why: string
+}
+
 export type ConsistencyView = {
   /** False when the stored content is not a JSON object (older results that the Analysis fields editor can repair). */
   valid: boolean
   sections: Record<ConsistencyKey, ConsistencySection>
+  /** Decisions to make: questions in the current format, else the items of Human review. */
   decisions: number
   checks: number
   conflicts: boolean
+  /** Results written with questions keep no Human review or Suggested checks text; older ones have no questions. */
+  format: 'questions' | 'text'
+  questions: Question[]
 }
 
 const NONE_PREFIX = /^(?:none required|none identified|none needed|not required)\b[\s.!:;,-]*/i
@@ -115,6 +132,87 @@ export function timeParts(text: string): { text: string; time: boolean }[] {
   return parts
 }
 
+function text(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/** Questions as stored, read leniently: anything unusable is skipped, so a hand-edited result still shows what it can. */
+export function parseQuestions(value: unknown): Question[] {
+  if (!Array.isArray(value)) return []
+  const found: Question[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const item = entry as Record<string, unknown>
+    const options = (Array.isArray(item.options) ? item.options : []).map((option, index) => {
+      const raw: Record<string, unknown> = option && typeof option === 'object' ? option as Record<string, unknown> : { text: option }
+      return { id: text(raw.id) || String.fromCharCode(97 + index), text: text(raw.text ?? raw.label) }
+    }).filter(option => option.text)
+    const question = text(item.question)
+    if (!question || options.length < 2) continue
+    const recommended = text(item.recommended)
+    found.push({ id: text(item.id) || `q${found.length + 1}`, topic: text(item.topic).toLowerCase() || 'other', character: text(item.character), question, options,
+      recommended: options.some(option => option.id === recommended) ? recommended : null, why: text(item.why) })
+  }
+  return found
+}
+
+// -- the answers text ---------------------------------------------------------------------------------------------
+// A chosen option is one line of "Your answers": "- Gaze (Mai): At Rio". Nothing else is stored, so a selection is
+// found again by reading the line; text the user wrote or edited shows as a custom answer.
+
+export const topicLabel = (topic: string) => (topic ? topic[0].toUpperCase() + topic.slice(1) : 'Other')
+
+/** "Gaze (Mai)": the label that opens the line of a question's answer. */
+export const answerLabel = (question: Pick<Question, 'topic' | 'character'>) => `${topicLabel(question.topic)}${question.character ? ` (${question.character})` : ''}`
+
+export const answerLine = (question: Pick<Question, 'topic' | 'character'>, answer: string) => `- ${answerLabel(question)}: ${answer.replace(/\s+/g, ' ').trim()}`
+
+const BULLET_LINE = /^\s*[-*•–]\s+/
+const norm = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase().replace(/[.。]+$/, '')
+
+type Located = { start: number; end: number; answer: string }
+
+/** The lines (and their wrapped continuation) that answer a question: by an option's exact text, else by its label. */
+function locate(lines: string[], question: Question, others: Question[]): Located | null {
+  const bullets: { start: number; end: number; label: string; answer: string }[] = []
+  for (let index = 0; index < lines.length; index++) {
+    if (!BULLET_LINE.test(lines[index])) continue
+    let end = index + 1
+    while (end < lines.length && lines[end].trim() && !BULLET_LINE.test(lines[end])) end++
+    const body = lines.slice(index, end).join(' ').replace(BULLET_LINE, '')
+    const colon = body.indexOf(':')
+    bullets.push({ start: index, end, label: colon > 0 ? norm(body.slice(0, colon)) : '', answer: colon > 0 ? body.slice(colon + 1).trim() : body.trim() })
+  }
+  const mine = new Set(question.options.map(option => norm(option.text)))
+  const foreign = new Set(others.filter(other => other !== question).flatMap(other => other.options.map(option => norm(option.text))))
+  const byOption = bullets.find(bullet => mine.has(norm(bullet.answer)))
+  if (byOption) return byOption
+  const label = norm(answerLabel(question))
+  const byLabel = bullets.find(bullet => bullet.label === label && !foreign.has(norm(bullet.answer)))
+  return byLabel ?? null
+}
+
+/** Which option a question's saved line picks, or the custom text written there; null when it is unanswered. */
+export function selection(answers: string, question: Question, all: Question[] = [question]): { option: string | null; custom: string } | null {
+  const found = locate(answers.replace(/\r\n?/g, '\n').split('\n'), question, all)
+  if (!found) return null
+  const match = question.options.find(option => norm(option.text) === norm(found.answer))
+  return match ? { option: match.id, custom: '' } : { option: null, custom: found.answer }
+}
+
+/** The answers text with this question's line replaced, added at the end, or removed when ``answer`` is null. */
+export function setAnswer(answers: string, question: Question, answer: string | null, all: Question[] = [question]): string {
+  const lines = answers.replace(/\r\n?/g, '\n').split('\n')
+  const found = locate(lines, question, all)
+  const line = answer && answer.trim() ? answerLine(question, answer) : null
+  if (found) lines.splice(found.start, found.end - found.start, ...(line ? [line] : []))
+  else if (line) {
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop()
+    lines.push(line)
+  }
+  return lines.join('\n').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n')
+}
+
 export function parseConsistency(content: string): ConsistencyView {
   let data: Record<string, unknown> | null = null
   try {
@@ -133,9 +231,11 @@ export function parseConsistency(content: string): ConsistencyView {
       paragraphs: !actionable && text && !none ? paragraphsOf(text) : [],
     }
   }
+  const format = data && Array.isArray(data.questions) ? 'questions' : 'text'
+  const questions = format === 'questions' ? parseQuestions(data?.questions) : []
   return {
-    valid: data !== null, sections,
-    decisions: sections.human_review.items.length,
+    valid: data !== null, sections, format, questions,
+    decisions: format === 'questions' ? questions.length : sections.human_review.items.length,
     checks: sections.recommended_checks.items.length,
     conflicts: sections.confusing.present && !sections.confusing.none,
   }

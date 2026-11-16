@@ -36,7 +36,8 @@ def shot_answer(speakers=(), seconds=2.0):
         'subjects': [{'name': 'Hero', 'anchors': 'slim build, short dark hair, green wool coat over a white shirt', 'keep': 'face, hair and green coat follow the sheet exactly'}],
         'picture_line': 'Hero stands in the centre of a narrow street at dusk, facing the camera.',
         'keep_picture': 'composition, cel-shaded style, warm palette and low sun of the opening frame',
-        'still': {'shot': 'Medium shot at eye level, cropped at the waist.', 'subjects': 'Hero in the centre, body square to the camera, arms at the sides, calm face, eyes ahead, green coat buttoned.',
+        'still': {'shot': 'Medium shot at eye level, cropped at the waist.', 'placement': 'Hero stands in the centre midground, torso and head facing the camera, eyes looking straight into the lens.',
+                  'subjects': 'Hero with arms at the sides, calm face, green coat buttoned.',
                   'layout': 'Shop fronts on both sides recede to a bright gap in the background.', 'setting': 'A narrow shopping street.', 'lighting': 'Low warm sun from the left, long soft shadows.'},
         'summary': 'Hero raises a hand in greeting and speaks while the camera holds still.',
         'shot_line': 'A medium shot at eye level with Hero standing in the centre of the narrow street, shop fronts receding on both sides toward a bright gap behind.',
@@ -346,6 +347,25 @@ class SequenceFlowTest(SequenceBase):
         self.assertEqual(wrong.status_code, 422)
         self.assertIn('spoken_language', wrong.json()['detail'])
         self.assertEqual(self.client.put(f"/api/sequence-results/{detail['review']['id']}", json={'content': {}}).status_code, 409)
+
+    def test_a_shot_written_before_placement_can_still_be_edited_but_a_model_answer_needs_it(self):
+        sequence_id = self.written()
+        shot = self.detail(sequence_id)['shots'][0]
+        content = shot['result']['content']
+        self.assertIn('Placement and gaze: Hero stands in the centre midground', shot['result']['derived']['still_prompt'])
+        legacy = {**content, 'still': {key: value for key, value in content['still'].items() if key != 'placement'}}
+        saved = self.client.put(f"/api/sequence-results/{shot['result']['id']}", json={'content': legacy})
+        self.assertEqual(saved.status_code, 200, saved.text)  # the editor of an older shot is not asked to invent a placement
+        self.assertNotIn('Placement and gaze', saved.json()['shots'][0]['result']['derived']['still_prompt'])
+        from app import sequence_direction as direction
+        for generated, expected in ((True, True), (False, False)):
+            try:
+                direction.validate_shot({}, {'duration': 2.0}, {}, [], None, [], generated=generated)
+            except ValueError as error:
+                self.assertEqual('"still.placement" is empty' in str(error), expected)
+        required = direction.shot_format({'duration': 2.0}, [], [])['json_schema']['schema']['properties']['still']['required']
+        self.assertEqual(required, list(direction.STILL_KEYS))
+        self.assertIn('placement', required)
 
     def test_shot_history_lists_instructions_and_prompt_changes(self):
         sequence_id = self.written()

@@ -88,6 +88,25 @@ class ReviewAnswersTest(unittest.TestCase):
         self.client.put('/api/cuts/c2/brief-instructions', json={'content': 'Keep the coat green'})  # saved answers are worth keeping
         self.assertEqual(self.queue_from(2).json()['queued'], 1)
 
+    def test_questions_are_what_the_draft_answers(self):
+        self.seed()
+        questions = [{'id': 'q1', 'topic': 'gaze', 'character': 'Mai', 'question': 'Where does Mai look?', 'options': [{'id': 'a', 'text': 'At Rio'}, {'id': 'b', 'text': 'Down'}], 'recommended': 'a', 'why': 'first frame'}]
+        with db.connect() as conn:
+            conn.execute("UPDATE analysis_results SET content=? WHERE id='c1consistency_summary'", (json.dumps({'summary': 's', 'clear': 'c', 'confusing': 'None identified.', 'questions': questions}),))
+            conn.execute("UPDATE analysis_results SET content=? WHERE id='c2consistency_summary'", (json.dumps({'summary': 's', 'clear': 'c', 'confusing': 'None identified.', 'questions': questions}),))
+        evidence = self.payload(self.client.post('/api/cuts/c1/review-answers').json()['job_id'])['evidence']
+        self.assertEqual(evidence['review']['questions'], questions)
+        self.assertNotIn('human_review', evidence['review'])  # only older summaries carry the two text fields
+        self.assertNotIn('questions', evidence['next_cut']['consistency_summary'])  # a neighbour's open questions are not facts about it
+        self.assertTrue(review_answers.has_review_items(evidence))
+        self.assertFalse(review_answers.has_review_items({'review': {'questions': [], 'confusing': 'None identified.'}}))
+        refreshed = review_answers.refresh({'evidence': {'review': {}, 'existing_answers': None}, 'existing_answers': '', 'source_result_ids': []},
+                                           [{'id': 'x', 'type': 'consistency_summary', 'content': {'summary': 's', 'questions': questions}}], '- Gaze (Mai): At Rio')
+        self.assertEqual(refreshed['evidence']['review']['questions'], questions)
+        self.assertEqual(refreshed['evidence']['existing_answers'], '- Gaze (Mai): At Rio')
+        for rule in ('copy that option\'s text word for word', '- Gaze (Name): option text'):
+            self.assertIn(rule, review_answers.SYSTEM)
+
     def test_batch_waits_for_media_work(self):
         self.seed()
         with db.connect() as conn:

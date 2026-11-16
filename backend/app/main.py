@@ -1882,7 +1882,7 @@ def summary_snapshot(conn, cut, config, mode, instruction, current_prompt=None):
     if mode == "edit" and not summary and not (current_prompt or "").strip():
         raise HTTPException(400, "There is no cut summary to edit; regenerate one instead")
     current = current_prompt if current_prompt is not None else (summary["content"] if summary else "")
-    results = prompt_context.slim_results([dict(row) for row in rows if row["title"] != SUMMARY_TITLE])
+    results = prompt_context.slim_results([dict(row) for row in rows if row["title"] != SUMMARY_TITLE], drop=(prompt_context.CONSISTENCY_TITLE,))
     episode = require_episode(cut["episode_id"])
     sampled_frames = []
     for row in rows:
@@ -1902,7 +1902,7 @@ def summary_snapshot(conn, cut, config, mode, instruction, current_prompt=None):
                 sampled_frames.append({"frame_id": row["id"], "time": timestamp, "description": row["content"]})
     saved_instructions = conn.execute("SELECT content FROM cut_brief_instructions WHERE cut_id=?", (cut_id,)).fetchone()
     payload = {"production_brief": True, "human_instructions": saved_instructions["content"] if saved_instructions else "", "result_type": "summary", "cut_id": cut_id, "mode": mode, "instruction": instruction.strip(), "current_prompt": current if mode == "edit" else "",
-               "model": config.openrouter_model, "text_provider": config.text_provider, "local_thinking": config.local_thinking, "base_id": summary["id"] if summary else None, "results": results, "sampled_frames": sampled_frames, "context": prompt_context.slim_context(selected_analysis_context(cut_id, config))}
+               "model": config.openrouter_model, "text_provider": config.text_provider, "local_thinking": config.local_thinking, "base_id": summary["id"] if summary else None, "results": results, "sampled_frames": sampled_frames, "context": prompt_context.slim_context(selected_analysis_context(cut_id, config), dialogue=False)}
     return payload
 
 

@@ -95,8 +95,8 @@ class MotionDirectionEvidenceTest(unittest.TestCase):
         self.assertEqual(legacy['source_result_ids'], ['f', 'v', 'l'])
 
     def test_reviewer_prompt_is_about_the_three_generation_steps(self):
-        for expected in ('a still image of the opening frame', 'the dialogue audio', 'animates the still', 'speaking', 'inner voice', 'NOT an issue',
-                         'is not thereby gone', 'Never reproduce subtitle text'):
+        for expected in ('a still image of the opening frame', 'the dialogue audio', 'animates the still', 'speaking', 'inner voice', 'NOT A QUESTION',
+                         'is not thereby gone', 'Never reproduce subtitle text', 'state_correction', 'at most 5', 'Colour shades'):
             self.assertIn(expected, SYSTEM)
         self.assertNotIn('ending-frame descriptions', SYSTEM)
 
@@ -128,3 +128,61 @@ class MotionDirectionEvidenceTest(unittest.TestCase):
         kept = prompt_context.slim_results(old)
         self.assertEqual([row['title'] for row in kept], ['Initial frame description', 'Video analysis', 'Last frame description'])
         self.assertEqual(kept[1]['content'], {'windows': [{'analysis': {'overview': 'x'}}]})
+
+
+class QuestionsTest(unittest.TestCase):
+    def test_questions_are_normalised_without_rejecting_the_answer(self):
+        from app.consistency_summary import MAX_QUESTIONS, normalize_questions, validate
+        raw = [{'id': 'x', 'topic': 'Facing', 'character': ' Mai ', 'question': 'Where does Mai look?', 'recommended': 'B',
+                'options': [{'id': 'A', 'text': 'At Rio'}, {'id': 'B', 'text': 'At the table'}, {'id': 'C', 'text': 'at rio'}, 'At the camera', {'label': 'Down'}, 'Fifth']},
+               {'question': 'One option only', 'options': ['alone']}, {'question': '', 'options': ['a', 'b']}, 'junk', None,
+               {'question': 'Is Rio speaking?', 'topic': 'nonsense', 'recommended': 1, 'options': ['Yes', 'No']},
+               {'question': 'By text', 'recommended': 'no', 'options': ['Yes', 'No']}, {'question': 'Unknown rec', 'recommended': 'zzz', 'options': ['Yes', 'No']}]
+        found = normalize_questions(raw + [{'question': f'extra {n}', 'options': ['a', 'b']} for n in range(6)])
+        self.assertEqual(len(found), MAX_QUESTIONS)
+        first = found[0]
+        self.assertEqual((first['id'], first['topic'], first['character'], first['recommended']), ('q1', 'pose', 'Mai', 'b'))
+        self.assertEqual([option['text'] for option in first['options']], ['At Rio', 'At the table', 'At the camera', 'Down'])  # duplicates dropped, capped at four
+        self.assertEqual([option['id'] for option in first['options']], ['a', 'b', 'c', 'd'])
+        self.assertEqual((found[1]['topic'], found[1]['recommended']), ('other', 'b'))  # a position counts from zero
+        self.assertEqual(found[2]['recommended'], 'b')
+        self.assertIsNone(found[3]['recommended'])
+        self.assertEqual(normalize_questions('nothing'), [])
+        output = validate({'summary': ' Mai sits. ', 'clear': 'Still: x', 'confusing': '', 'questions': []})
+        self.assertEqual(output, {'summary': 'Mai sits.', 'clear': 'Still: x', 'confusing': 'None identified.', 'questions': []})
+        with self.assertRaises(ValueError): validate({'summary': 'x'})
+        with self.assertRaises(ValueError): validate({'summary': '', 'questions': []})
+        self.assertNotIn('human_review', output)
+
+    def test_the_grammar_allows_five_questions_with_two_to_four_options(self):
+        from app.consistency_summary import question_format
+        schema = question_format()['json_schema']['schema']
+        question = schema['properties']['questions']
+        self.assertEqual(question['maxItems'], 5)
+        self.assertEqual((question['items']['properties']['options']['minItems'], question['items']['properties']['options']['maxItems']), (2, 4))
+        self.assertIn('gaze', question['items']['properties']['topic']['enum'])
+
+    def test_the_app_hands_the_reviewer_its_own_leads(self):
+        frame = {'composition': 'MS', 'visible_characters': [{'character': 'Mai', 'pose_detail': {'body_pose': 'standing', 'body_yaw': 0, 'head_yaw': -60, 'eye_gaze': 'left', 'gaze_target': 'Rio',
+                                                                                              'flags': [{'code': 'gaze_side', 'text': 'Mai looks at Rio, who is on the image right, but the head points left'}]}}]}
+        direction = {'summary': 'x', 'camera': {}, 'characters': [{'character': 'Mai', 'speaking': 'no', 'state_correction': {'first_frame': 'standing', 'clip': 'walking'}},
+                                                               {'character': 'Rio', 'speaking': 'yes'}]}
+        results = [{'type': 'initial_frame', 'content': frame}, {'type': 'video_analysis', 'content': {'direction': direction, 'windows': []}}]
+        lines = [{'start_time': 1, 'end_time': 2, 'text': 'a', 'character_name': 'Mai'}, {'start_time': 1.5, 'end_time': 3, 'text': 'b', 'character_name': 'Mai'},
+                 {'start_time': 4, 'end_time': 5, 'text': 'c', 'speaker_label': 'SPEAKER_01'}, {'start_time': 6, 'end_time': 7, 'text': 'd', 'character_name': 'Kaede'}]
+        data = build_input(results, lines, [], None, {'synopsis': 'A school story'})
+        kinds = [check['kind'] for check in data['app_checks']]
+        self.assertEqual(kinds, ['pose_gaze_side', 'state_differs', 'line_without_visible_speaking', 'unlinked_speaker_may_be'])  # one per character; an off-screen speaker is no lead
+        self.assertEqual(data['app_checks'][3]['character'], 'Rio')
+        self.assertEqual(data['series'], {'synopsis': 'A school story'})
+        self.assertIn('pose detail', data['visual_evidence_text'])
+        self.assertNotIn('app_checks', build_input([{'type': 'initial_frame', 'content': {'composition': 'x'}}], [], []))
+
+    def test_series_context_leaves_out_characters_and_boxes(self):
+        from app import prompt_context
+        context = {'project': {'synopsis': 'A school story'}, 'episode': {'title': 'Ep 1'}, 'chunks': [{'title': 'Classroom scene', 'notes': 'rainy day', 'start_time': 0}],
+                   'context_items': [{'id': 'c', 'kind': 'character', 'title': 'Mai', 'content': 'red tie'}, {'id': 'w', 'kind': 'world', 'title': 'School', 'content': 'a calm school'}],
+                   'additional_context': ''}
+        self.assertEqual(prompt_context.series_context(context), {'synopsis': 'A school story', 'episode': 'Ep 1', 'scene_notes': [{'title': 'Classroom scene', 'notes': 'rainy day'}],
+                                                                  'notes': [{'kind': 'world', 'title': 'School', 'content': 'a calm school'}]})
+        self.assertEqual(prompt_context.series_context({}), {})

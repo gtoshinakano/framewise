@@ -64,7 +64,9 @@ class VisualContractsTest(unittest.TestCase):
         self.assertEqual((people['minItems'], people['maxItems']), (2, 2))
         self.assertEqual(frame_schema([])['properties']['visible_characters']['maxItems'], 0)
         self.assertEqual(list(schema['properties'])[:5], ['composition', 'setting', 'lighting', 'camera', 'mood'])
-        self.assertEqual(people['items']['required'], ['box', 'appearance', 'position', 'pose', 'expression', 'emotion', 'gaze', 'action'])
+        self.assertEqual(people['items']['required'], ['box', 'appearance', 'position', 'pose', 'expression', 'emotion', 'gaze', 'action', 'pose_detail'])
+        pose = people['items']['properties']['pose_detail']
+        self.assertEqual(pose['properties']['gaze_target']['enum'][:2], ['B1', 'B2'])  # a handle or a fixed kind, never free text
         self.assertEqual(list(schema['properties'])[-3:], ['background_people', 'props', 'notes'])
 
     def test_prompts_are_short_and_do_not_ask_for_boilerplate(self):
@@ -118,7 +120,9 @@ class VisualContractsTest(unittest.TestCase):
 
 INITIAL = {'composition': 'Medium shot, Mai left, Sakuta right', 'background_people': 'one girl with a red umbrella, right edge', 'mode': 'full',
            'visible_characters': [{'character': 'Mai', 'character_context_id': 'mai', 'appearance': 'white shirt, dark blue pleated skirt, long black hair', 'position': 'left, facing right',
-                                   'pose': 'standing upright', 'expression': 'calm', 'emotion': 'calm', 'gaze': 'at Sakuta', 'action': 'standing'}]}
+                                   'pose': 'standing upright', 'expression': 'calm', 'emotion': 'calm', 'gaze': 'at Sakuta', 'action': 'standing',
+                                   'pose_detail': {'body_pose': 'standing', 'body_yaw': 45, 'head_yaw': 45, 'head_pitch': 0, 'eye_gaze': 'right', 'gaze_target': 'Sakuta', 'gaze_object': '',
+                                                   'body_view': 'three_quarter_right', 'head_view': 'three_quarter_right'}}]}
 
 
 class VideoDirectionTest(unittest.TestCase):
@@ -129,9 +133,11 @@ class VideoDirectionTest(unittest.TestCase):
         mai, sakuta, kaede = self.roster()
         # A last-frame box proves presence; Mai has none, which proves nothing, so her end is unknown rather than "left".
         self.assertEqual((mai['at_start'], mai['at_end'], sakuta['at_start'], sakuta['at_end'], kaede['at_start'], kaede['at_end']), (True, None, True, True, False, True))
-        self.assertEqual(mai['appearance'], 'white shirt, dark blue pleated skirt, long black hair')
+        self.assertNotIn('appearance', mai)  # outfits are the first frame's job; the video model is not told them
         note = roster_note(self.roster(), INITIAL)
-        self.assertIn('- Mai: first frame: left, facing right, box [10, 20, 300, 900]; standing upright. look: white shirt, dark blue pleated skirt, long black hair. emotion in the first frame: calm.', note)
+        self.assertIn('- Mai: first frame: left, facing right, box [10, 20, 300, 900]; standing upright. first-frame reading (from one still, may miss motion): state standing, '
+                      'torso three-quarter view toward screen-right (+45°), head three-quarter view toward screen-right (+45°), eyes toward screen-right, looking at Sakuta. emotion in the first frame: calm.', note)
+        self.assertNotIn('white shirt', note)
         self.assertNotIn('not in frame', note)  # the detector often misses people who are still there
         self.assertIn('- Sakuta: first frame: centre, box [500, 20, 800, 900]. last frame of the cut: in frame (centre, box [500, 20, 800, 900]).', note)
         self.assertIn('- Kaede: not marked in the first frame. last frame of the cut: in frame (right, box [700, 100, 900, 900]), so this character probably enters during the cut.', note)
@@ -175,6 +181,36 @@ class VideoDirectionTest(unittest.TestCase):
         self.assertEqual(link_video('free text', self.roster()), 'free text')  # unusual answers are kept as they are
         self.assertEqual(link_video({'overview': 'x', 'characters': 'nobody'}, [])['characters'], 'nobody')
 
+    def test_gaze_objects_and_event_kinds_are_coerced_never_rejected(self):
+        raw = {'characters': [{'name': 'Mai', 'activity': 'standing', 'gaze': 'Looks at Sakuta, then down at the cup.', 'objects': ['cup: lifted to her mouth', 'none', {'object': 'door'}, 3, 'cup: lifted to her mouth']},
+                              {'name': 'Sakuta', 'objects': 'a red umbrella: closed and held', 'gaze': ''}, {'name': 'Kaede', 'objects': 'none'}],
+               'events': [{'subject': 'Mai', 'kind': 'Gaze', 'visual_action': 'a'}, {'subject': 'Mai', 'kind': 'speech', 'visual_action': 'b'}, {'subject': 'Mai', 'kind': 'dance', 'visual_action': 'c'},
+                          {'subject': 'Mai', 'kind': None, 'visual_action': 'd'}, {'subject': 'Mai', 'visual_action': 'older event without a kind'}]}
+        linked = link_video(raw, self.roster())
+        mai, sakuta, kaede = linked['characters']
+        self.assertEqual(mai['gaze'], 'Looks at Sakuta, then down at the cup.')
+        self.assertEqual(mai['objects'], ['cup: lifted to her mouth', 'door'])  # junk, duplicates and "none" are dropped
+        self.assertEqual(sakuta['objects'], ['a red umbrella: closed and held'])
+        self.assertNotIn('gaze', sakuta)  # an empty answer is not stored
+        self.assertNotIn('objects', kaede)
+        self.assertEqual([event.get('kind') for event in linked['events']], ['gaze', 'mouth', 'other', 'other', None])
+        self.assertNotIn('kind', linked['events'][4])  # results from before the field keep their shape
+
+    def test_a_clip_that_contradicts_the_still_is_a_state_correction(self):
+        def window(**fields):
+            return {'analysis': link_video({'overview': 'x', 'camera': {'movement': 'static', 'detail': 'none'}, 'events': [],
+                                            'characters': [{'name': 'Mai', 'activity': 'standing', 'gaze': 'holds', 'objects': [], **fields}]}, self.roster())}
+        roster = video_roster(PEOPLE, None, INITIAL)  # the first frame read Mai as standing
+        mai = cut_direction([window(activity='walking', travel='right', gaze='Looks ahead.', objects=['bag: swung'])], roster)['characters'][0]
+        self.assertEqual(mai['state_correction'], {'first_frame': 'standing', 'clip': 'walking'})
+        self.assertEqual((mai['gaze'], mai['objects']), ('Looks ahead.', ['bag: swung']))
+        for activity in ('standing', 'standing, then walking', 'turning', 'writing', ''):  # same state, a later transition, or no body state at all
+            self.assertNotIn('state_correction', cut_direction([window(activity=activity)], roster)['characters'][0], activity)
+        merged = cut_direction([window(gaze='Looks at Sakuta.'), window(gaze='holds'), window(gaze='Looks down.', objects=['cup: set down'])], roster)['characters'][0]
+        self.assertEqual((merged['gaze'], merged['objects']), ('Looks at Sakuta. Then: Looks down.', ['cup: set down']))
+        self.assertNotIn('gaze', cut_direction([window(gaze='holds')], roster)['characters'][0])
+        self.assertNotIn('state_correction', cut_direction([window(activity='walking')], video_roster(PEOPLE, None))['characters'][0])  # no first-frame reading, nothing to compare
+
     def test_a_first_name_links_only_when_it_is_unambiguous(self):
         roster = [{'name': 'Mai Sakurajima', 'character_context_id': 'mai'}, {'name': 'Nodoka Toyohama', 'character_context_id': 'nodoka'}, {'name': 'Mai Clone', 'character_context_id': 'clone'}]
         linked = link_video({'characters': [{'name': 'Nodoka'}, {'name': 'Mai'}, {'name': 'mai sakurajima'}]}, roster)
@@ -203,6 +239,6 @@ class VideoDirectionTest(unittest.TestCase):
         self.assertEqual(earlier_note({'analysis': 'text'}), '')
 
     def test_video_prompt_asks_for_direction_not_description(self):
-        for needed in ('camera:', 'activity:', 'travel:', 'speaking:', 'emotion:', 'end:', 'exact name', 'do not describe outfits', 'never give that voice', 'start from it'):
+        for needed in ('camera:', 'activity:', 'travel:', 'speaking:', 'emotion:', 'end:', 'exact name', 'Do not describe outfits', 'never give that voice', 'start from it', 'gaze:', 'objects:', 'kind (exactly one of'):
             self.assertIn(needed, VIDEO_INSTRUCTION)
         json.loads(VIDEO_INSTRUCTION.split('Example shape: ', 1)[1])  # the example the model copies must be valid JSON

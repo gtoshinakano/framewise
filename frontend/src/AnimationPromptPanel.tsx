@@ -5,6 +5,7 @@ import { SummaryRequestEditor } from './SummaryRequestEditor'
 import { ResultMetrics } from './ResultMetrics'
 import { ActionButton, StatusChip, WarningLine } from './RunUi'
 import { Disclosure, StepPanel } from './ReviewUi'
+import type { AnswersApi } from './ConsistencySummary'
 import { Markdown } from './Markdown'
 
 export const SUMMARY_TITLE = 'Cut summary'
@@ -38,7 +39,7 @@ function visibleSummary(result?: AnalysisResult) {
  * The Results workbench: the Review column handed in as `review`, then the answers and the Cut summary. All three share
  * this component's state because the summary is written from the saved answers.
  */
-export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jobs, disabled, onStarted, onSaved, textProvider }: { cutId: string; review: ReactNode; editorSlot: ReactNode; current?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; textProvider?: 'local' | 'openrouter'; onStarted: () => Promise<void>; onSaved: (result: AnalysisResult) => void }) {
+export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jobs, disabled, onStarted, onSaved, textProvider }: { cutId: string; review: ReactNode | ((answers: AnswersApi) => ReactNode); editorSlot: ReactNode; current?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; textProvider?: 'local' | 'openrouter'; onStarted: () => Promise<void>; onSaved: (result: AnalysisResult) => void }) {
   const [instruction, setInstruction] = useState('')
   const [working, setWorking] = useState(false)
   const [savingInstructions, setSavingInstructions] = useState(false)
@@ -188,10 +189,10 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
   const editHint = !queueBlocked && (!current ? 'Queue edit needs a saved summary to change.' : !instruction.trim() ? 'Add an instruction to use Queue edit.' : '')
 
   return <div role="group" aria-label="Review, answers and Cut summary" className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] gap-4 pt-3 lg:grid-cols-2 lg:grid-rows-[minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
-    <div className="grid min-h-0 grid-rows-[minmax(0,1fr)] lg:col-start-1 lg:row-start-1">{review}</div>
+    <div className="grid min-h-0 grid-rows-[minmax(0,1fr)] lg:col-start-1 lg:row-start-1">{typeof review === 'function' ? review({ text: humanInstructions, onChange: setHumanInstructions, ready: instructionsLoaded && !savingInstructions }) : review}</div>
     <div className="scrollbar flex flex-col gap-4 lg:col-start-2 lg:row-start-1 lg:-mt-3 lg:min-h-0 lg:overflow-y-auto lg:pt-3 2xl:contents">
       <StepPanel className="2xl:col-start-2 2xl:row-start-1" step={2} kind="review_answers" title="Your answers" subtitle="Decisions and checks" tag={answersChip}
-        actions={<ActionButton compact icon={<Wand2 size={13} aria-hidden />} pending={!!activeReview || reviewWorking} disabled={!instructionsLoaded || disabled || !!activeReview} onClick={generateAnswers} title="Draft short answers to the Human review and Suggested checks from this cut's results, neighbouring cut summaries, and transcript. Replaces the text (unsaved) when finished.">{activeReview ? 'Drafting…' : 'Draft with AI'}</ActionButton>}>
+        actions={<ActionButton compact icon={<Wand2 size={13} aria-hidden />} pending={!!activeReview || reviewWorking} disabled={!instructionsLoaded || disabled || !!activeReview} onClick={generateAnswers} title="Draft answers to the questions of the review from this cut's results, neighbouring cut summaries, and transcript. Replaces the text (unsaved) when finished.">{activeReview ? 'Drafting…' : 'Draft with AI'}</ActionButton>}>
         <div className="flex min-h-[15rem] flex-1 flex-col gap-2">
           <label htmlFor={`answers-${cutId}`} className="label !mb-0">Answers to suggested checks and production decisions</label>
           <textarea id={`answers-${cutId}`} aria-label="Answers to suggested checks and production decisions" className="editor-area min-h-[12rem] flex-1" maxLength={50000} value={humanInstructions} disabled={!instructionsLoaded || savingInstructions} onChange={event => setHumanInstructions(event.target.value)} placeholder="Record confirmations, corrections, and production decisions for this cut. One bullet per item in the Review column works well." />

@@ -144,7 +144,7 @@ class LocalTextTest(unittest.TestCase):
         self.assertEqual(json.loads(batch[1]['payload_json'])['depends_on_consistency'], job_ids[0])
         model = Mock(); model.ensure.return_value = 'http://127.0.0.1:1234'; model.variant = 'standard'
         model.request.side_effect = lambda cancel_check=None: contextlib.nullcontext(('http://127.0.0.1:1234', 'standard'))
-        fields = {'summary':'summary','clear':'clear','confusing':'None identified.','human_review':'None required.','recommended_checks':'None required.'}
+        fields = {'summary':'summary','clear':'clear','confusing':'None identified.','questions':[]}
         replies = [{'choices':[{'message':{'content':json.dumps(fields)},'finish_reason':'stop'}], 'model':'path', 'usage':{'prompt_tokens':100,'completion_tokens':20,'total_tokens':120}},
                    {'choices':[{'message':{'content':analysis_tests.PRODUCTION_TEXT},'finish_reason':'stop'}], 'model':'path', 'usage':{'prompt_tokens':200,'completion_tokens':30,'total_tokens':230}}]
         requests=[]
@@ -163,7 +163,7 @@ class LocalTextTest(unittest.TestCase):
         self.assertTrue(settings['thinking'])
         self.assertEqual(settings['usage']['total_tokens'], 230)
         self.assertTrue(requests[0]['chat_template_kwargs']['enable_thinking'])
-        self.assertIn('Consistency summary', requests[1]['messages'][1]['content'])
+        self.assertNotIn('Consistency summary', requests[1]['messages'][1]['content'])  # the Cut summary is written from the analysis and the user's answers only
         consistency = db.one('SELECT settings_json FROM analysis_results WHERE job_id=?', (job_ids[0],))
         self.assertEqual(json.loads(consistency['settings_json'])['usage']['prompt_tokens'], 100)
 
@@ -183,7 +183,7 @@ class LocalTextTest(unittest.TestCase):
         self.seed_visual_results()
         response = self.client.post('/api/cuts/c1/consistency-summary')
         self.assertEqual(response.status_code, 200, response.text)
-        fields = {'summary':'summary','clear':'clear','confusing':'None identified.','human_review':'None required.','recommended_checks':'None required.'}
+        fields = {'summary':'summary','clear':'clear','confusing':'None identified.','questions':[]}
         payload = {'provider':'Example provider','model':'model/example','choices':[{'message':{'content':json.dumps(fields)},'finish_reason':'stop'}], 'usage':{'prompt_tokens':432,'completion_tokens':54,'total_tokens':486}}
         with patch.dict(os.environ, {'OPENROUTER_API_KEY':'test'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps(payload).encode())):
             inference_worker.process_consistency_summary(*worker.claim_job(('consistency_summary',)))

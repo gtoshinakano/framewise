@@ -539,6 +539,8 @@ def fail_job(job_id, owner, episode_id, exc):
 PRODUCTION_BRIEF_SYSTEM = (Path(__file__).parent / "production_brief_prompt.txt").read_text(encoding="utf-8")
 
 
+BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Animation Timeline', 'Continuity & Constraints']
+LEGACY_BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Animation Timeline', 'Dialogue', 'Continuity & Constraints']  # summaries written before dialogue moved to the sequence step; editing one must still save
 BRIEF_MAX_BYTES = 4096  # the brief names an activity, emotion and speaking state per character, which a 3 KB cap cut short
 
 
@@ -551,9 +553,9 @@ def validate_production_brief(text, duration=None):
     if len(text.encode('utf-8')) > BRIEF_MAX_BYTES:
         raise ValueError('production brief exceeds 4 KB')
     headings = list(re.finditer(r'^###\s+(.+?)\s*$', text, flags=re.M))
-    expected = ['Scene', 'Opening Frame', 'Animation Timeline', 'Dialogue', 'Continuity & Constraints']
-    if [m.group(1).strip() for m in headings] != expected or text[:headings[0].start()].strip():
-        raise ValueError('production brief does not match the required section schema')
+    names = [m.group(1).strip() for m in headings]
+    if names not in (BRIEF_SECTIONS, LEGACY_BRIEF_SECTIONS) or text[:headings[0].start()].strip():
+        raise ValueError('production brief does not match the required section schema: use exactly the sections ' + ', '.join(BRIEF_SECTIONS))
     if any(not text[m.end():(headings[i+1].start() if i+1 < len(headings) else len(text))].strip() for i,m in enumerate(headings)):
         raise ValueError('production brief contains an empty section')
     timeline = text[headings[2].end():headings[3].start()].strip()
@@ -597,7 +599,11 @@ def process_regen(job_id, owner):
         candidates = payload.get("sampled_frames", []) if not legacy else []
         candidates = [frame for frame in candidates if frame_source.result_frame_spec(frame['frame_id'])]
         current_prompt = payload["current_prompt"] if legacy else strip_suggested_frame(payload["current_prompt"])
-        request = {"mode": mode, "instruction": payload["instruction"], ("current_animation_prompt" if legacy else "current_summary"): current_prompt, "context": prompt_context.slim_context(payload["context"]), "current_results": prompt_context.slim_results(payload["results"])}
+        # The Cut summary is written from the analysis and the user's answers only: no transcript, subtitles or consistency assessment.
+        brief = bool(payload.get("production_brief")) and not legacy
+        request = {"mode": mode, "instruction": payload["instruction"], ("current_animation_prompt" if legacy else "current_summary"): current_prompt,
+                   "context": prompt_context.slim_context(payload["context"], dialogue=not brief),
+                   "current_results": prompt_context.slim_results(payload["results"], drop=(prompt_context.CONSISTENCY_TITLE,) if brief else ())}
         if not legacy:
             seen = {str(row.get('content')) for row in request["current_results"]}
             candidates = [frame for frame in candidates if str(frame.get('description')) not in seen]

@@ -11,7 +11,7 @@ The still recreates the **first frame of this cut**. It becomes the first frame 
 ## Gather (only what you need)
 1. The prompt to fix: the one the user pasted in this conversation. If none was pasted, `get_result(type="image_prompt")`; if that is missing too, draft a new prompt.
 2. `get_result(type="production_brief")`: the Opening Frame section is the main source.
-3. `get_result(type="initial_frame")`: composition, camera, setting, lighting, mood, props and visible_characters (character, appearance, position, pose, expression, emotion, gaze, action; marked characters only) and background_people (unmarked people, one line). Put each character's emotion and gaze into the image prompt: they decide the face. Results from before emotion, gaze, mood and props existed lack those keys; even older ones may carry other_visual_details and uncertainties.
+3. `get_result(type="initial_frame")`: composition, camera, setting, lighting, mood, props and visible_characters (character, appearance, position, pose, expression, emotion, gaze, action; marked characters only) and background_people (unmarked people, one line). Put each character's emotion and gaze into the image prompt: they decide the face. Each character may also carry `pose_detail` (state, torso and head facing as a view of the camera with the image side, eyes, looking_at, check): use it, in words and never as degrees, for placement and gaze, and let it beat the free-text position, pose and gaze when they disagree. Results from before emotion, gaze, mood and props existed lack those keys; even older ones may carry other_visual_details and uncertainties.
 4. `get_result(type="review_answers")`: human corrections override model output.
 5. `get_characters()` for exact character names and canonical appearance notes of the visible characters.
 
@@ -19,14 +19,20 @@ Precedence: human answers > production brief Opening Frame > initial frame descr
 
 ## Prompt structure (generator-agnostic)
 1. **Shot**: shot size, camera angle and height, lens feel, and where the frame cuts the subject (e.g. "tight close-up from waist to mid-thigh, eye level, shallow depth of field").
-2. **Subjects**: for each character visible in the opening frame, give a short identity tag (name only if user-verified or confirmed), visible appearance (hair, outfit), position in frame, body and head orientation, pose, and expression. Describe only the parts that are visible.
-3. **Objects and layout**: foreground, midground and background elements, and how they relate in space.
-4. **Setting**: location type and environment details.
-5. **Lighting and colour**: light source, softness, time of day, palette.
-6. **Style**: do not state or enforce a style (no medium, art style or rendering technique); the person generating the image chooses it. Keep a style line only when the user's own prompt already has one.
-7. **Constraints**: `no text, subtitles, captions, logos or watermarks`, `no additional characters`, and anything the brief's Continuity section requires.
+2. **Placement and gaze**: for each character visible in the opening frame, where they are in the frame (left, centre or right, foreground to background, relative to the others), their body state, which way the torso faces and the head points, and where the eyes look and at whom or what.
+3. **Subjects**: for each character visible in the opening frame, give a short identity tag (name only if user-verified or confirmed), visible appearance (hair, outfit), pose of the hands and expression. Describe only the parts that are visible.
+4. **Objects and layout**: foreground, midground and background elements, and how they relate in space.
+5. **Setting**: location type and environment details.
+6. **Lighting and colour**: light source, softness, time of day, palette.
+7. **Style**: do not state or enforce a style (no medium, art style or rendering technique); the person generating the image chooses it. Keep a style line only when the user's own prompt already has one.
+8. **Constraints**: `no text, subtitles, captions, logos or watermarks`, `no additional characters`, and anything the brief's Continuity section requires.
 
 If the user's generator uses character reference images (for example "Image 2 = Tomoe reference"), keep that syntax and give each reference one job.
+
+## Keywords
+The lists below are the app's shared vocabulary for describing a still. Use their words where they fit the evidence, so every prompt of the project reads the same; they are suggestions, not a closed set. Leave out any part you cannot support; never write "unknown" or "not visible".
+
+{{still_keywords}}
 
 ## Rules
 - One frozen moment. Describe poses, not actions (no "walks", "turns", "then").

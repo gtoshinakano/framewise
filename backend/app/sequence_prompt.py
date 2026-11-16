@@ -420,7 +420,7 @@ def template(shot, content, bible, subjects, dialogue, prompt):
 def still_prompt(content, bible):
     """A generator-agnostic prompt for the opening still: one frozen moment, no motion, no text."""
     still = content.get('still') or {}
-    rows = [('Shot', still.get('shot')), ('Subjects', still.get('subjects')), ('Objects and layout', still.get('layout')), ('Setting', still.get('setting')),
+    rows = [('Shot', still.get('shot')), ('Placement and gaze', still.get('placement')), ('Subjects', still.get('subjects')), ('Objects and layout', still.get('layout')), ('Setting', still.get('setting')),
             ('Lighting and colour', still.get('lighting')),
             ('Constraints', 'one frozen moment; no text, subtitles, captions, logos or watermarks; no additional characters')]
     return '\n'.join(f'{title}: {sentence(value)}' for title, value in rows if clause(value))

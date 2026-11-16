@@ -488,6 +488,18 @@ class CompositionProjectionTest(unittest.TestCase):
                 inference_worker.validate_production_brief(good.replace('[0–1] Holds still.',timeline),duration=2)
         self.assertEqual(inference_worker.validate_production_brief(good.replace('[0–1]', '[0–2.04s]'),duration=2),good.replace('[0–1]', '[0–2.04s]'))
 
+    def test_summary_sections_no_longer_include_dialogue(self):
+        new = '### Scene\nA store.\n### Opening Frame\nA person.\n### Animation Timeline\n[0–1] Holds still.\n### Continuity & Constraints\nStatic camera.'
+        self.assertEqual(inference_worker.validate_production_brief(new, duration=2), new)
+        legacy = new.replace('### Continuity', '### Dialogue\nNo dialogue timing supplied.\n### Continuity')
+        self.assertEqual(inference_worker.validate_production_brief(legacy, duration=2), legacy)  # an old summary that is edited still saves
+        for bad in (new.replace('### Scene', '### Overview'), new.replace('### Opening Frame\nA person.\n', ''), new.replace('Static camera.', ''), new + '\n### Dialogue\nx'):
+            with self.assertRaises(ValueError): inference_worker.validate_production_brief(bad)
+        self.assertEqual(inference_worker.BRIEF_SECTIONS, ['Scene', 'Opening Frame', 'Animation Timeline', 'Continuity & Constraints'])
+        for rule in ('Dialogue is not part of this brief', 'pose_detail', 'state_correction', 'Return all four headings'):
+            self.assertIn(rule, inference_worker.PRODUCTION_BRIEF_SYSTEM)
+        self.assertNotIn('### Dialogue', inference_worker.PRODUCTION_BRIEF_SYSTEM)
+
     def test_summary_generation_retries_truncation_and_strips_thinking(self):
         good = '### Scene\nA store.\n### Opening Frame\nA person.\n### Animation Timeline\n[0–1] Holds still.\n### Dialogue\nNo dialogue timing supplied.\n### Continuity & Constraints\nStatic camera.'
         replies = [{'choices':[{'finish_reason':'length','message':{'content':'untrusted incomplete output'}}]},

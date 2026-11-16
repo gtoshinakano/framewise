@@ -322,7 +322,7 @@ def run_shot(job, owner, payload, sequence):
     roster, scenario, dialogue = evidence.shot_parts(ctx, bible, shot)
     worker.stage(job['id'], owner, job['episode_id'], f"Writing shot {shot['index']} of {len(shots)}")
     output, model, settings, user_input = ask(job, owner, payload, 'shot', inputs.__getitem__, direction.shot_format(shot, roster, dialogue),
-                                              lambda answer: direction.validate_shot(answer, shot, bible, roster, scenario, dialogue), f"Shot {shot['index']}")
+                                              lambda answer: direction.validate_shot(answer, shot, bible, roster, scenario, dialogue, generated=True), f"Shot {shot['index']}")
     prompt, verdict, derived = sequence_prompt.build(shot, output, bible, roster, scenario, dialogue)
     settings.update(check=verdict, derived=derived, hashes=evidence.shot_hashes(ctx, bible, shot), instruction=payload.get('instruction') or None,
                     trigger=payload.get('trigger'))
@@ -360,7 +360,7 @@ def run_review(job, owner, payload, sequence):
     if not any(shot['key'] in written for shot in shots):
         raise RuntimeError('Write the shot prompts before reviewing them')
     worker.stage(job['id'], owner, job['episode_id'], 'Reviewing continuity')
-    output, model, settings, user_input = ask(job, owner, payload, 'review', lambda level: evidence.review_input(bible, shots, written, level),
+    output, model, settings, user_input = ask(job, owner, payload, 'review', lambda level: evidence.review_input(bible, shots, written, level, evidence.shot_states(state['ctx'], shots)),
                                               direction.review_format(len(shots)), lambda answer: direction.validate_review(answer, len(shots)), 'Sequence review')
     for issue in output['issues']:
         issue['shot_key'] = shots[issue['shot'] - 1]['key']  # shot numbers move when the plan is edited; the key does not

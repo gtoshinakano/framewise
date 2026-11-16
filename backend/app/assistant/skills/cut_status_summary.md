@@ -11,7 +11,7 @@ Goal: one answer that tells the user where the analysis stands and what the cut 
 ## Steps
 1. Use the cut card in the system prompt for stage availability. Call `get_cut_status` only if you need job errors or revision counts that the card does not show.
 2. Read the most consolidated evidence first, and only the fields you need:
-   - `get_result(type="consistency_summary")` (summary, clear, confusing, human_review)
+   - `get_result(type="consistency_summary")` (summary, clear, confusing and `questions`, the multiple-choice decisions; older results have human_review and recommended_checks text instead)
    - `get_result(type="production_brief")` if present
    - `get_result(type="video_analysis")` for timed events when no brief exists
    - `get_transcript()` only if dialogue matters and the card shows segments
@@ -25,7 +25,7 @@ A compact table: Stage | Status | Source. Stages: Character boxes, Initial frame
 3–6 sentences: setting, who is visible in the opening frame (identity only when supported or user-verified), the main action beats with clip-relative times, camera behaviour, dialogue if any.
 
 ### Open questions
-Bullet the unresolved issues (from the consistency summary's confusing/human_review, conflicts between results). Skip this section if none.
+Bullet the unresolved issues (the consistency summary's confusing text and the questions the user has not answered in the saved answers, conflicts between results). Skip this section if none.
 
 ### Suggested next step
 One or two bullets: the next missing stage to run, or a correction worth making.

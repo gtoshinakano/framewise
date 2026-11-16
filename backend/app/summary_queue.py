@@ -11,7 +11,7 @@ def payload_for(cut_id, config, context, results):
     if not prompt_context.is_direction(by_type['video_analysis']['content']) and (by_type.get('last_frame') or {}).get('content') is None:
         # A video analysis from before motion directions only describes the cut together with its last frame.
         raise ValueError('This cut has an older video analysis without a last frame; run the video analysis again')
-    evidence = consistency_summary.build_input(results, context['transcript_segments'], context['context_items'], context.get('subtitles'))
+    evidence = consistency_summary.build_input(results, context['transcript_segments'], context['context_items'], context.get('subtitles'), prompt_context.series_context(context))
     if context.get('character_detections'):
         evidence['character_detections'] = prompt_context.slim_detections(context['character_detections'])
     return {'cut_id': cut_id, 'context': {'cut': prompt_context.slim_cut(context['cut'])}, 'config': config,

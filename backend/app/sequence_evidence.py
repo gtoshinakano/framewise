@@ -9,7 +9,7 @@ import hashlib
 import json
 import os
 
-from . import prompt_context, sequence_compile, sequence_prompt, sequence_timeline, subtitle_store
+from . import pose_detail, prompt_context, sequence_compile, sequence_prompt, sequence_timeline, subtitle_store
 from .assistant import compact
 from .composition_brief import shot_props, short
 
@@ -393,10 +393,21 @@ def _shift_events(view, offset, duration):
     return {key: value for key, value in {**view, 'events': events, 'kind': None}.items() if value not in (None, [], '')}
 
 
-def _without_ids(frame):
+def _without_ids(frame, level=0):
+    """A first-frame view with the characters named only. The pose facts shrink with the detail level: all of them, then state and what is looked at, then none."""
     if not isinstance(frame, dict):
         return frame
-    people = [{key: value for key, value in person.items() if key != 'character_context_id'} if isinstance(person, dict) else person for person in frame.get('visible_characters') or []]
+    people = []
+    for person in frame.get('visible_characters') or []:
+        if isinstance(person, dict):
+            person = {key: value for key, value in person.items() if key != 'character_context_id'}
+            pose = person.get('pose_detail')
+            if isinstance(pose, dict) and level >= 2:
+                keep = {key: pose[key] for key in ('state', 'looking_at') if key in pose} if level == 2 else {}
+                person = {key: value for key, value in person.items() if key != 'pose_detail'}
+                if keep:
+                    person['pose_detail'] = keep
+        people.append(person)
     return {**frame, 'visible_characters': people}
 
 
@@ -534,7 +545,7 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
         summary = (results.get('summary') or {}).get('content')
         consistency = (results.get('consistency_summary') or {}).get('content') or {}
         entry = {'cut': span['number'], 'plays_at': plays_at,
-                 'first_frame': _without_ids(prompt_context.frame_view((results.get('initial_frame') or {}).get('content'))),
+                 'first_frame': _without_ids(prompt_context.frame_view((results.get('initial_frame') or {}).get('content')), level),
                  'motion': _shift_events(prompt_context.video_view((results.get('video_analysis') or {}).get('content')), offset, duration),
                  'user_decisions': results.get('answers'),
                  'cut_summary': summary[:(4200, 2400, 1200, 0)[level]] if isinstance(summary, str) and level < 3 else None,
@@ -562,8 +573,9 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
     def opens_with(other):
         # How the next shot's initial frame shows its characters.
         frame = (ctx['results'].get(other['cut_id'], {}).get('initial_frame') or {}).get('content') or {}
-        return [{'name': person.get('character'), 'position': person.get('position'), 'pose': person.get('pose')} for person in frame.get('visible_characters') or []
-                if isinstance(person, dict) and _text(person.get('character'))] or None
+        return [{'name': person.get('character'), 'position': person.get('position'), 'pose': person.get('pose'),
+                 **({'reading': pose_detail.brief(person.get('pose_detail'))} if pose_detail.brief(person.get('pose_detail')) else {})}
+                for person in frame.get('visible_characters') or [] if isinstance(person, dict) and _text(person.get('character'))] or None
 
     own = next(cut for cut in timeline['cuts'] if cut['id'] == shot['cut_id'])
     later = shot['frame']['time'] - own['start_time']
@@ -621,7 +633,34 @@ def voices_text(content, shot, bible):
     return '; '.join(f"{speaker} {', '.join(items)}" for speaker, items in parts.items()) or None
 
 
-def review_input(bible, shots, results, level=0):
+def shot_states(ctx, shots):
+    """How the analysis says each shot's characters open and end: ``{shot index: {opens_with, ends_with}}``.
+
+    The opening state is the first-frame reading, only when the shot opens on its cut's first frame. The
+    end state is the motion direction's, only when the shot reaches the end of its cut.
+    """
+    states = {}
+    for shot in shots:
+        results = ctx['results'].get(shot['cut_id'], {})
+        entry = {}
+        if shot['frame']['strategy'] == 'cut_first_frame':
+            frame = (results.get('initial_frame') or {}).get('content') or {}
+            opens = [f"{person['character'].strip()}: {pose_detail.brief(person.get('pose_detail'))}" for person in frame.get('visible_characters') or []
+                     if isinstance(person, dict) and _text(person.get('character')) and pose_detail.brief(person.get('pose_detail'))]
+            if opens:
+                entry['opens_with'] = opens
+        if not shot.get('part') or shot['part'][0] == shot['part'][1]:
+            direction = ((results.get('video_analysis') or {}).get('content') or {}).get('direction') or {}
+            ends = [f"{person['character'].strip()}: {short(_text(person['end']), 16)}" for person in direction.get('characters') or []
+                    if isinstance(person, dict) and _text(person.get('character')) and _text(person.get('end'))]
+            if ends:
+                entry['ends_with'] = ends
+        if entry:
+            states[shot['index']] = entry
+    return states
+
+
+def review_input(bible, shots, results, level=0, states=None):
     """The whole sequence as written, shot by shot, compact enough to read in one call."""
     rows = []
     for shot in shots:
@@ -636,6 +675,7 @@ def review_input(bible, shots, results, level=0):
                      # The seconds let the review tell where speech really is; "none" says outright that nobody speaks in the shot.
                      'lines': [f"{line['line']} {line['t0']:.1f}-{line['t1']:.1f} {line['character_name'] or line['speaker_label'] or 'Unknown speaker'}: {line['text'][:40]}"
                                for line in shot_dialogue(shot, bible)] or 'none',
+                     **({key: (states or {}).get(shot['index'], {}).get(key) for key in ('opens_with', 'ends_with')} if level < 3 else {}),
                      'continuity': content.get('continuity') if level < 2 else None})
     return {'bible': bible_brief(bible, level), 'voices': bible.get('voices'), 'shots': [{key: value for key, value in row.items() if value not in (None, [], '')} for row in rows]}
 

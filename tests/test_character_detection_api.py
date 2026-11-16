@@ -140,7 +140,8 @@ class CharacterDetectionAPITest(unittest.TestCase):
         self.assertNotIn('previous', describe.call_args.kwargs)
         hero, = self.video.call_args.kwargs['roster']
         # Named in the first frame; the last frame only has an unnamed box. That does not show Hero left, so the end stays unknown.
-        self.assertEqual((hero['name'], hero['at_start'], hero['at_end'], hero['appearance'], hero['emotion']), ('Hero', True, None, 'coat', 'content'))
+        self.assertEqual((hero['name'], hero['at_start'], hero['at_end'], hero['emotion']), ('Hero', True, None, 'content'))
+        self.assertNotIn('appearance', hero)  # outfits are the first frame's job; the video model is not told them
         self.assertEqual(self.video.call_args.kwargs['initial']['mood'], 'calm')
         from app import structured_results
         saved = {row['type']: row for row in structured_results.list_results('c1')}
