@@ -1,15 +1,17 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { Bookmark, BookmarkMinus, CheckCircle2, ChevronDown, Info, Loader2, PencilLine, ScanFace, Trash2, UserX, XCircle } from 'lucide-react'
+import { Bookmark, BookmarkMinus, CheckCircle2, ChevronDown, Info, Loader2, PencilLine, ScanFace, Trash2, UserPlus, UserX, XCircle } from 'lucide-react'
 import { api, type ContextItem, type Job } from './api'
 import { cachedCharacters, cachedReferences, invalidateReferences, loadCharacters, loadReferences, type CharacterReference } from './runCache'
 import { ActionButton, Elapsed, Skeleton, StatusChip } from './RunUi'
 import type { CharacterSummary } from './runState'
 import { PoseDetailCard } from './PoseDetailCard'
+import { NewCharacterDialog, type NewCharacter, type NewCharacterResult } from './NewCharacterDialog'
 
 type Frame = { position: 'first' | 'last'; time: number; image_size: [number, number] }
 type Candidate = { character_id: string; character_name: string; score: number }
 type Detection = { id: string; position: 'first' | 'last'; box: [number, number, number, number]; character_context_id: string | null; character_name: string | null; label_source: string | null; match_reason: string | null; is_reference: boolean; candidates?: Candidate[]; recognition_use?: number | null; gallery_status?: string | null; gallery_note?: string | null }
 type DetectionRun = { id: string; job_id: string | null; cut_start: number; cut_end: number; stale: boolean; frames: Frame[]; detections: Detection[] }
+const NEW_CHARACTER = '__new'
 const BOX_COLORS = ['#ff6b8b', '#4cc9f0', '#ffd166', '#7bdcb2', '#c3aeff', '#ff9f5a', '#8ecae6', '#f28482']
 type Box = [number, number, number, number]
 type Resize = { id: string; handle: string; box: Box; from?: [number, number]; orig?: Box }
@@ -127,6 +129,22 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     setRun(value => value && { ...value, detections: value.detections.map(item => item.id === detectionId ? { ...item, character_context_id: characterId, character_name: name, label_source: characterId ? 'manual' : null, match_reason: null } : item) })
     enqueueEdit(async () => { await api(`/character-detections/${savedId(detectionId)}`, { method: 'PUT', body: JSON.stringify({ character_context_id: characterId }) }) })
   }
+  /** Creates a character from a box in the edit queue, so it waits for earlier edits and a just-drawn box's id. A refusal goes back to the dialog. */
+  function createCharacter(detectionId: string, input: NewCharacter) {
+    return new Promise<NewCharacterResult>((resolve, reject) => {
+      enqueueEdit(async () => {
+        let result: NewCharacterResult
+        try { result = await api<NewCharacterResult>(`/character-detections/${savedId(detectionId)}/new-character`, { method: 'POST', body: JSON.stringify(input) }) } catch (reason) { reject(reason); return }
+        const character = result.character
+        setRun(value => value && { ...value, detections: value.detections.map(item => item.id === detectionId ? { ...item, character_context_id: character.id, character_name: character.title, label_source: 'manual', match_reason: null, gallery_status: null, gallery_note: null } : item) })
+        setCharacters(items => [...items, character])
+        resolve(result)
+        void loadCharacters(projectId).then(setCharacters).catch(() => {})
+        void onStarted()
+      })
+    })
+  }
+  const [adding, setAdding] = useState<string | null>(null)
   function setMatchingUse(detectionId: string, use: boolean | null) {
     setRun(value => value && { ...value, detections: value.detections.map(item => item.id === detectionId ? { ...item, recognition_use: use === null ? null : Number(use), gallery_status: null, gallery_note: null } : item) })
     enqueueEdit(async () => { await api(`/character-detections/${savedId(detectionId)}/recognition-use`, { method: 'PUT', body: JSON.stringify({ use }) }) })
@@ -304,7 +322,8 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
           const color = BOX_COLORS[index % BOX_COLORS.length]
           return <div key={person.id} className={`rounded-lg border hairline bg-[#1e2430] p-2 text-xs transition-opacity ${noChars ? 'opacity-45' : ''}`} aria-disabled={noChars || undefined} style={{ borderLeft: `4px solid ${noChars ? '#4a5262' : color}` }}>
             <div className="flex flex-wrap items-center gap-1.5"><span className="w-5 shrink-0 text-center font-semibold" style={{ color }}>{index + 1}</span>
-              <select aria-label={`Character for box ${index + 1}`} className="field !w-auto min-w-32 flex-1 !px-2 !py-1.5 !text-xs" value={person.character_context_id || ''} disabled={locked || person.is_reference} onChange={event => void label(person.id, event.target.value || null)}><option value="">Unknown</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+              <select aria-label={`Character for box ${index + 1}`} className="field !w-auto min-w-32 flex-1 !px-2 !py-1.5 !text-xs" value={person.character_context_id || ''} disabled={locked || person.is_reference} onChange={event => { if (event.target.value === NEW_CHARACTER) setAdding(person.id); else void label(person.id, event.target.value || null) }}><option value="">Unknown</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}<option value={NEW_CHARACTER}>+ Add new character…</option></select>
+              {person.label_source !== 'manual' && !person.is_reference && <ActionButton compact icon={<UserPlus size={13} />} disabled={locked} onClick={() => setAdding(person.id)} title="Create a new project character from this box and describe its features" aria-label={`Add new character from box ${index + 1}`} />}
               {person.is_reference ? <StatusChip tone="blue" icon={<Bookmark size={11} />}>Reference</StatusChip> : person.label_source === 'auto' ? <StatusChip tone="amber" title={person.match_reason || 'Automatic match, not yet confirmed by you'}>Auto · unverified</StatusChip> : person.label_source === 'manual' ? <StatusChip tone="green" icon={<CheckCircle2 size={11} />}>Confirmed</StatusChip> : <StatusChip tone="grey">No name</StatusChip>}
               {person.label_source === 'auto' && <ActionButton compact icon={<CheckCircle2 size={13} />} disabled={locked} onClick={() => void label(person.id, person.character_context_id)} title="Mark this label as yours; it then helps recognize this character elsewhere">Confirm</ActionButton>}
               {person.character_context_id && <ActionButton compact icon={person.is_reference ? <BookmarkMinus size={13} /> : <Bookmark size={13} />} disabled={locked || !!saving} onClick={() => void action(() => api(`/character-detections/${savedId(person.id)}/reference`, { method: person.is_reference ? 'DELETE' : 'POST' }), true)} title={person.is_reference ? 'Stop using this box as a saved reference' : 'Keep this box as a reference image for the whole project'} aria-label={person.is_reference ? 'Remove reference' : 'Save as reference'} />}
@@ -319,9 +338,16 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
       </div>
     })}</div>}
     {!!references.length && <details className="group rounded-lg border hairline"><summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-semibold text-[#c3aeff]"><Bookmark size={13} aria-hidden />Project character references <StatusChip tone="blue">{references.length}</StatusChip><ChevronDown size={14} className="ml-auto transition-transform group-open:rotate-180" aria-hidden /></summary><div className="grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 xl:grid-cols-4">{references.map(ref => <div key={ref.id} className="rounded-lg border hairline bg-[#1e2430] p-2"><svg viewBox={`${ref.box[0]} ${ref.box[1]} ${ref.box[2]-ref.box[0]} ${ref.box[3]-ref.box[1]}`} className="h-24 w-full rounded bg-black"><image href={`/api/character-detection-runs/${ref.run_id}/frame/${ref.position}`} width={ref.image_size[0]} height={ref.image_size[1]} /></svg><div className="mt-1 flex items-center justify-between gap-1 text-xs"><span className="truncate" title={ref.character_name}>{ref.character_name}</span><ActionButton compact variant="danger" icon={<Trash2 size={12} />} disabled={working || !!saving} onClick={() => void action(() => api(`/character-references/${ref.id}`, { method: 'DELETE' }), true)} title="Remove this reference" aria-label={`Remove reference for ${ref.character_name}`} /></div></div>)}</div></details>}
+    {adding && run && (() => {
+      const index = run.detections.filter(item => item.position === 'first').findIndex(item => item.id === adding)
+      const person = run.detections.find(item => item.id === adding)
+      const frame = person && run.frames.find(item => item.position === person.position)
+      if (!person || !frame) return null
+      return <NewCharacterDialog projectId={projectId} box={person.box} frameUrl={`/api/character-detection-runs/${run.id}/frame/${frame.position}`} imageSize={frame.image_size} boxNumber={index + 1} onCreate={input => createCharacter(person.id, input)} onClose={() => setAdding(null)} />
+    })()}
     <details className="group text-[11px] text-[#929aa9]"><summary className="inline-flex cursor-pointer items-center gap-1.5 hover:text-[#c3aeff]"><Info size={13} aria-hidden />How matching works</summary>
       <ul className="mt-2 list-disc space-y-1 pl-5 leading-5">
-        <li>Create character names in project context before labelling.</li>
+        <li>Pick a character for each box, or choose Add new character to create one from the box. Qwen then writes the character's look and outfit from that box into its Details.</li>
         <li>Every box you label or confirm becomes a matching example for the whole project. Tiny or unidentifiable boxes (a hand, a strand of hair) are left out of matching but keep their label for analysis.</li>
         <li>Automatic matches stay unverified until you queue this cut. Queuing treats named boxes as verified, so correct or clear them first.</li>
         <li>Single-cut frame analysis receives up to four reference images; video analysis receives text and box hints.</li>

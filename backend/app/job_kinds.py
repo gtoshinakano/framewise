@@ -177,6 +177,9 @@ KINDS = {kind.pipeline: kind for kind in (
     Kind('character_detect', 'Character detection', True, label=_character_label, cuts=_one_cut, keys=_cut_keys('character_detect'),
          # Bulk detection keeps one lease per cut and skips a cut whose lease is gone; the older workflow cannot stop midway.
          cancel_running=lambda payload: payload.get('workflow') == 'anime_bulk_v1'),
+    # Describes one labelled box of a character created from it and appends the text to its Details.
+    Kind('character_profile', 'Character description', True, cuts=_one_cut, cancel_running=_always, retry=_always,
+         keys=lambda payload, cut_ids: [f"character_profile:{payload.get('character_context_id')}"]),
     Kind('consistency_summary', 'Consistency summary', True, cuts=_one_cut, keys=_cut_keys('consistency_summary'), cancel_running=_always),
     Kind('review_answers', 'Production decisions draft', True, cuts=_one_cut, keys=_cut_keys('review_answers'), cancel_running=_always),
     Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always),

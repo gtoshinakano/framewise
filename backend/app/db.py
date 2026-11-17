@@ -201,6 +201,7 @@ def init_db():
             id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             episode_id TEXT REFERENCES episodes(id) ON DELETE CASCADE,
             kind TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '',
+            is_main INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -301,6 +302,9 @@ def init_db():
         if "extension_json" not in sequence_columns:
             # Workflow marker of a cut added to the range: {cut_id, cut, from_time, rewrite_shots}; cleared when the direction is queued again.
             db.execute("ALTER TABLE sequences ADD COLUMN extension_json TEXT")
+        if "is_main" not in {row["name"] for row in db.execute("PRAGMA table_info(context_items)")}:
+            # A character the user marked as one of the series' main characters.
+            db.execute("ALTER TABLE context_items ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0")
         voice_columns = {row["name"] for row in db.execute("PRAGMA table_info(character_voice_samples)")}
         if "ranges_json" not in voice_columns:
             db.execute("ALTER TABLE character_voice_samples ADD COLUMN ranges_json TEXT")

@@ -26,7 +26,7 @@ export type Episode = EpisodeSummary & { project_id: string; original_filename: 
 export type CutEditEntry = { id: string; label: string; action: string; created_at: string }
 export type CutHistory = { undo: CutEditEntry | null; redo: CutEditEntry | null }
 export type Project = { id: string; title: string; synopsis: string; created_at: string; episodes: EpisodeSummary[] }
-export type ContextItem = { id: string; project_id: string; episode_id: string | null; kind: 'chapter_synopsis' | 'chapter_happenings' | 'character' | 'world' | 'scenario' | 'object' | 'general'; title: string; content: string; created_at: string; updated_at: string }
+export type ContextItem = { id: string; project_id: string; episode_id: string | null; kind: 'chapter_synopsis' | 'chapter_happenings' | 'character' | 'world' | 'scenario' | 'object' | 'general'; title: string; content: string; is_main?: number; created_at: string; updated_at: string }
 export type Waveform = { peaks: number[]; duration: number }
 // A part of the audio picked on the timeline or in the Audio tab, in seconds.
 export type AudioSelection = { start: number; end: number }

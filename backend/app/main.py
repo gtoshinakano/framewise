@@ -113,6 +113,14 @@ class CharacterDetectionLabelInput(BaseModel):
     character_context_id: str | None = None
 
 
+class NewCharacterInput(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(default="", max_length=50000)
+    is_main: bool = False
+    # True scopes the character to the box's episode; otherwise it belongs to the whole project.
+    episode_only: bool = False
+
+
 class RecognitionUseInput(BaseModel):
     # None: decided automatically; True: always a matching example; False: never.
     use: bool | None = None
@@ -254,6 +262,7 @@ class ContextInput(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     content: str = Field(default="", max_length=50000)
     episode_id: str | None = None
+    is_main: bool = False
 
 
 def json_object_or_empty(value):
@@ -432,8 +441,8 @@ def create_context(project_id: str, body: ContextInput):
         raise HTTPException(400, "Episode belongs to another project")
     context_id = str(uuid.uuid4())
     with db.connect() as conn:
-        conn.execute("INSERT INTO context_items (id,project_id,episode_id,kind,title,content) VALUES (?,?,?,?,?,?)",
-                     (context_id, project_id, body.episode_id, body.kind, body.title.strip(), body.content))
+        conn.execute("INSERT INTO context_items (id,project_id,episode_id,kind,title,content,is_main) VALUES (?,?,?,?,?,?,?)",
+                     (context_id, project_id, body.episode_id, body.kind, body.title.strip(), body.content, int(body.is_main and body.kind == 'character')))
     return db.one("SELECT * FROM context_items WHERE id=?", (context_id,))
 
 
@@ -445,8 +454,8 @@ def update_context(context_id: str, body: ContextInput):
     if body.episode_id and require_episode(body.episode_id)["project_id"] != item["project_id"]:
         raise HTTPException(400, "Episode belongs to another project")
     with db.connect() as conn:
-        conn.execute("UPDATE context_items SET episode_id=?,kind=?,title=?,content=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                     (body.episode_id, body.kind, body.title.strip(), body.content, context_id))
+        conn.execute("UPDATE context_items SET episode_id=?,kind=?,title=?,content=?,is_main=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                     (body.episode_id, body.kind, body.title.strip(), body.content, int(body.is_main and body.kind == 'character'), context_id))
     return db.one("SELECT * FROM context_items WHERE id=?", (context_id,))
 
 
@@ -1461,6 +1470,42 @@ def label_character_detection(detection_id: str, body: CharacterDetectionLabelIn
     return {'ok': True}
 
 
+@app.post('/api/character-detections/{detection_id}/new-character')
+def create_character_from_detection(detection_id: str, body: NewCharacterInput):
+    """Create a project character, label this box with it and queue a description of its features.
+
+    The ``character_profile`` job appends a character sheet and an outfit sheet, read from this box,
+    to the character's Details. The payload holds ids only: the worker reads the box when it starts.
+    """
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(400, 'Enter a character name')
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('''SELECT d.id,r.cut_start,r.cut_end,c.id AS cut_id,c.cut_index,c.title AS cut_title,c.start_time,c.end_time,
+                                     c.episode_id,e.project_id FROM character_detections d
+                              JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id
+                              JOIN episodes e ON e.id=c.episode_id WHERE d.id=?''', (detection_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Detection not found')
+        if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
+            raise HTTPException(409, 'Remove the saved reference before changing this label')
+        if row['cut_start'] != row['start_time'] or row['cut_end'] != row['end_time']:
+            raise HTTPException(409, 'Cut timing changed. Detect characters again before labelling this box')
+        # Sequences link subjects to records by name, so two characters must not share one.
+        if conn.execute("SELECT 1 FROM context_items WHERE project_id=? AND kind='character' AND lower(trim(title))=lower(?)", (row['project_id'], title)).fetchone():
+            raise HTTPException(409, f'A character named “{title}” already exists in this project')
+        character_id, job_id = str(uuid.uuid4()), str(uuid.uuid4())
+        conn.execute("INSERT INTO context_items (id,project_id,episode_id,kind,title,content,is_main) VALUES (?,?,?,'character',?,?,?)",
+                     (character_id, row['project_id'], row['episode_id'] if body.episode_only else None, title, body.content, int(body.is_main)))
+        conn.execute("UPDATE character_detections SET character_context_id=?,label_source='manual',match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (character_id, detection_id))
+        cut = {'id': row['cut_id'], 'cut_index': row['cut_index'], 'title': row['cut_title'], 'start_time': row['start_time'], 'end_time': row['end_time']}
+        payload = {'detection_id': detection_id, 'character_context_id': character_id, 'cut_id': row['cut_id'], 'cut': cut}
+        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'character_profile',?)", (job_id, row['episode_id'], json.dumps(payload)))
+        worker.sync_episode_status(conn, row['episode_id'])
+    return {'character': db.one('SELECT * FROM context_items WHERE id=?', (character_id,)), 'job_id': job_id}
+
+
 @app.put('/api/character-detections/{detection_id}/recognition-use')
 def set_recognition_use(detection_id: str, body: RecognitionUseInput):
     """Override whether a confirmed box is used as a matching example (null restores the automatic choice)."""
@@ -1518,6 +1563,14 @@ def character_detection_status(job_id: str):
     job = db.one("SELECT id,status,stage,error FROM jobs WHERE id=? AND pipeline='character_detect'", (job_id,))
     if not job:
         raise HTTPException(404, 'Character detection job not found')
+    return job
+
+
+@app.get('/api/jobs/{job_id}/character-profile-status')
+def character_profile_status(job_id: str):
+    job = db.one("SELECT id,status,stage,error,json_extract(payload_json,'$.character_context_id') AS character_context_id FROM jobs WHERE id=? AND pipeline='character_profile'", (job_id,))
+    if not job:
+        raise HTTPException(404, 'Character description job not found')
     return job
 
 
@@ -2686,6 +2739,16 @@ def retry_analysis(job_id: str):
                     raise HTTPException(409, 'Compaction is already queued or running')
                 retry_id = str(uuid.uuid4())
                 conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
+                return {'job_id': retry_id}
+            if job['pipeline'] == 'character_profile' and job['status'] in ('failed', 'cancelled'):
+                payload = json_object_or_empty(job['payload_json'])
+                if not conn.execute("SELECT 1 FROM context_items WHERE id=? AND kind='character'", (payload.get('character_context_id'),)).fetchone():
+                    raise HTTPException(409, 'The character was deleted')
+                if conn.execute("SELECT 1 FROM jobs WHERE pipeline='character_profile' AND status IN ('queued','running') AND json_extract(payload_json,'$.character_context_id')=?", (payload.get('character_context_id'),)).fetchone():
+                    raise HTTPException(409, 'A description of this character is already queued or running')
+                retry_id = str(uuid.uuid4())
+                conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
+                worker.sync_episode_status(conn, job['episode_id'])
                 return {'job_id': retry_id}
             if job["pipeline"] != "analyze" or job["status"] not in ("failed", "cancelled"):
                 raise HTTPException(409, "Only failed or cancelled analysis jobs can be retried")

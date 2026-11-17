@@ -82,6 +82,7 @@ class ContextItem(BaseModel):
     kind: str = Field(description="chapter_synopsis, chapter_happenings, character, world, scenario, object, or general.")
     title: str
     content: str
+    is_main: bool = Field(False, description="Characters only: the user marked this character as a main character.")
     created_at: str
     updated_at: str
 

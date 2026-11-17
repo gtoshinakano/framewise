@@ -1105,7 +1105,7 @@ def main():
             main_cfg = remote_text.config()
             # Text jobs need one of this host's job slots (and no chat waiting); visual and other jobs are claimed regardless.
             text_slot = remote_text.pool.try_job('local', main_cfg)
-            main_pipelines = ("analyze", "character_detect", "composition_compact", "subtitles") + (worker.TEXT_PIPELINES if text_slot else ())
+            main_pipelines = ("analyze", "character_detect", "character_profile", "composition_compact", "subtitles") + (worker.TEXT_PIPELINES if text_slot else ())
             try:
                 claimed = worker.claim_job(main_pipelines, remote_only=remote_text.remote_only(main_cfg))
             except Exception:
@@ -1138,7 +1138,7 @@ def main():
                         anime_runtime.close()
                         anime_runtime = None
                         anime_batch_id = None
-                    if kind in ('character_detect', 'subtitles') or (kind == 'analyze' and not text_only):
+                    if kind in ('character_detect', 'character_profile', 'subtitles') or (kind == 'analyze' and not text_only):
                         local_text_runtime.runtime.begin_gpu_work()
                         local_text_runtime.runtime.stop('Released for visual analysis')
                     if kind == 'composition_compact':
@@ -1147,6 +1147,9 @@ def main():
                     elif kind == 'subtitles':
                         from . import subtitle_pipeline
                         subtitle_pipeline.process(job_id, owner)
+                    elif kind == 'character_profile':
+                        from . import character_profile
+                        character_profile.process(job_id, owner)
                     elif kind == 'sequence':
                         from . import sequence_pipeline
                         sequence_pipeline.process(job_id, owner)
