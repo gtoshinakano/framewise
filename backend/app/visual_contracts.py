@@ -84,8 +84,12 @@ def frame_schema(handles):
     text = lambda name: {'type': 'string'}  # no maxLength: it expands into a large grammar; the prompt keeps answers short and max_tokens caps them
     person = {'type': 'object', 'additionalProperties': False, 'required': ['box', *PERSON_TEXT, POSE_KEY],
               'properties': {'box': {'enum': list(handles)}, **{name: text(name) for name in PERSON_TEXT}, POSE_KEY: pose_detail.json_schema(handles)}}
+    # With no marked characters the list must stay empty. Leave out the per-person schema: its empty box
+    # enum is an invalid grammar (llama-server answers HTTP 500 and the answer fell back to plain JSON).
+    characters = ({'type': 'array', 'items': person, 'minItems': len(handles), 'maxItems': len(handles)} if handles
+                  else {'type': 'array', 'maxItems': 0})
     properties = {**{name: text(name) for name in FRAME_TEXT},
-                  'visible_characters': {'type': 'array', 'items': person, 'minItems': len(handles), 'maxItems': len(handles)},
+                  'visible_characters': characters,
                   **{name: text(name) for name in FRAME_TAIL}}
     return {'type': 'object', 'additionalProperties': False, 'required': list(properties), 'properties': properties}
 
@@ -185,7 +189,7 @@ camera: an object with movement and detail. movement is exactly one of: static, 
 First-frame states are read from one still, so they can be wrong about anything that needs motion: an upright figure may be mid-stride, a seated one may be getting up. Decide every character's state from the frames of this clip. When the clip shows a different state than the first frame gave, write the state you see; when it is the same, write the same. Gaze, head turns, mouth and hand movements are only reported when you see them happen.
 
 characters: one entry for every listed character who is visible at any moment of this clip, in the listed order, then one entry for each other clearly visible person. Each entry has:
-- name: the exact name from the list; for an unlisted person a short visual label such as "girl with red umbrella".
+- name: the exact name from the list. Never give a listed name to anyone else, and never invent a name. For an unlisted person write a short label made only of what this clip shows about them (what they wear or hold, or the visible body part when only part of them is in view). List only people you can see in these frames.
 - activity: the state of the body during the clip, in one or two words you can see: standing, sitting, crouching, kneeling, lying, walking, running, jumping, turning, bowing, reaching, eating, writing, crying, fighting, or another verb. A person who changes state writes both in order, for example "sitting, then standing". Never guess it from the story.
 - travel: how the person moves through the picture: "none" when they stay in place, otherwise "left", "right", "toward camera", "away from camera", "up", "down", "enters from left", "enters from right", "exits left" or "exits right". Directions are the image's left and right.
 - motion: one sentence on the visible body movement: which part moves, from where to where (a head turn, a raised arm, a nod, a step, hair or clothes moving). "holds still" when nothing moves.
@@ -320,6 +324,12 @@ def speech_note(segments, start, end, roster=()):
         return 'Speech heard in this clip: none in the transcript.'
     return 'Speech heard in this clip (from the audio track, seconds from the clip start): ' + '; '.join(
         f'{begin - start:.1f}-{finish - start:.1f} {speaker}' for speaker, begin, finish in turns) + '.'
+
+
+# Added to the video prompt when the clip carries its soundtrack (a model that hears audio, such as LFM3-Omni).
+AUDIO_NOTE = ('This clip includes its soundtrack. Use the sound only to judge who is speaking and when (a mouth that moves with a voice, '
+              'an off-screen voice, a voice over a closed mouth) and when a sound marks an event. Never quote, translate or summarise the words, '
+              'and do not describe music or ambience.')
 
 
 def earlier_note(previous):

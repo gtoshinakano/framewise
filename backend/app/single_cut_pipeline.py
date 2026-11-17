@@ -4,8 +4,11 @@ The worker only calls this for jobs explicitly marked single_cut_v2. A job may
 hold one cut (the per-cut buttons) or every cut of an episode (batch queueing).
 Work always runs stage by stage across all cuts, so each model is loaded once:
 
-    1. initial_frame   - one llama-server (Qwen3.5), the first frame of every cut: the still image
-    2. video_analysis  - Qwen3-VL, every cut: camera, motion, speaking and emotion over time
+    1. initial_frame   - one llama-server, the first frame of every cut: the still image
+    2. video_analysis  - one video runtime, every cut: camera, motion, speaking and emotion over time
+
+Which model runs each stage is the job's ``payload.models`` snapshot (visual_models.py): Qwen3.5-27B
+and Qwen3-VL-8B by default, or e.g. LFM3-Omni-2B for either. Results record the model that wrote them.
 
 The last frame is no longer described or character-detected. The video stage reports how each
 character ends, using first-frame character boxes and the first-frame description to follow named
@@ -28,7 +31,7 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from . import character_detection, db, frame_model, media, pose_detail, structured_results, video_model, worker
+from . import character_detection, db, frame_model, media, pose_detail, structured_results, video_model, visual_models, worker
 from .visual_contracts import FRAME_INSTRUCTION, VIDEO_INSTRUCTION, video_roster
 
 log = logging.getLogger('framewise.visual_analysis')
@@ -56,22 +59,16 @@ def release_gpu_models():
 ALL_STAGES = ('initial_frame', 'video_analysis')
 
 
-def ensure_models_available(stages=None):
-    stages = set(stages or ALL_STAGES)
-    required = [Path(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server')),
-                Path(os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf')),
-                Path(os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'))]
-    if 'video_analysis' in stages:
-        video_dir = Path(os.environ.get('QWEN3_VIDEO_MODEL_PATH', '/models/qwen3-vl-8b'))
-        try:
-            index = json.loads((video_dir / 'model.safetensors.index.json').read_text())
-            shards = set(index['weight_map'].values())
-            if not shards or any(Path(name).name != name or not (video_dir / name).is_file() for name in shards):
-                raise ValueError('Missing model shard')
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise RuntimeError('Qwen3-VL 8B video model download is incomplete') from exc
-    if 'initial_frame' in stages and any(not path.is_file() for path in required):
-        raise RuntimeError('Qwen3.5 frame model or llama-server runtime is not available')
+def job_models(payload):
+    """{stage: VisualModel} this job runs: its snapshot (``payload.models``), else the defaults."""
+    return {stage: visual_models.for_job(payload, stage) for stage in ALL_STAGES}
+
+
+def ensure_models_available(stages=None, models=None):
+    """Fail before any model loads when a model a stage needs is missing."""
+    models = models or job_models({})
+    for stage in sorted(set(stages or ALL_STAGES) & set(ALL_STAGES)):
+        visual_models.require(models[stage].key)
 
 DETECTION_NOTE = ('Boxes are pixel coordinates in the named boundary frame only. When labels_confirmed_by_queue is true, '
                   'the user verified the named boxes when queuing this cut; use those names for the corresponding visible people. '
@@ -205,12 +202,13 @@ def run_batch(job, owner, episode, items):
         return
     for cut_run in runs:
         cut_run.validate()
-    ensure_models_available(set().union(*(cut_run.stages for cut_run in runs)))
+    models = job_models(payload)
+    ensure_models_available(set().union(*(cut_run.stages for cut_run in runs)), models)
     release_gpu_models()
     try:
         with tempfile.TemporaryDirectory(prefix='framewise-cut-analysis-') as scratch:
-            _first_frame_stage(runs, scratch)
-            _video_stage(runs, scratch)
+            _first_frame_stage(runs, scratch, models['initial_frame'])
+            _video_stage(runs, scratch, models['video_analysis'])
     finally:
         release_gpu_models()
     # Finished cuts are kept even when another cut failed; a retry only redoes the failed ones.
@@ -267,17 +265,16 @@ def _for_each(cut_runs, work, parallel=1):
             raise error
 
 
-# -- stage 1: first frame (Qwen3.5 through one llama-server) --------------------
+# -- stage 1: first frame (the chosen still model through one llama-server) -----
 
-def _first_frame_stage(runs, scratch):
+def _first_frame_stage(runs, scratch, model=None):
     todo = [cut_run for cut_run in runs if not cut_run.failure and cut_run.needs('initial_frame')]
     if not todo:
         return
-    with frame_model.frame_server(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'),
-        os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
-        os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'),
-        cancel_check=todo[0].cancel_check, parallel=FRAME_PARALLEL) as server:
-        _for_each(todo, lambda cut_run: _frame_stage(cut_run, server, scratch), parallel=FRAME_PARALLEL)
+    model = model or visual_models.MODELS[visual_models.DEFAULTS['initial_frame']]
+    with frame_model.frame_server(*model.server_files(), cancel_check=todo[0].cancel_check, parallel=FRAME_PARALLEL,
+                                  extra_args=model.server_args) as server:
+        _for_each(todo, lambda cut_run: _frame_stage(cut_run, server, scratch, model), parallel=FRAME_PARALLEL)
 
 
 def marked_people(cut_run, position):
@@ -334,7 +331,8 @@ def _first_frame_result(cut_run):
     return content, row['id']
 
 
-def _frame_stage(cut_run, server, scratch):
+def _frame_stage(cut_run, server, scratch, model=None):
+    model = model or visual_models.MODELS[visual_models.DEFAULTS['initial_frame']]
     if not cut_run.needs('initial_frame'):
         return
     with cut_run.stage('initial_frame', 'Initial frame'):
@@ -352,26 +350,29 @@ def _frame_stage(cut_run, server, scratch):
                                           subtitle_language=(cut_run.strip or {}).get('language'), people=people, frame_label='first frame')
         data['frame_time'] = actual
         data['subtitle_regions'] = regions
-        cut_run.save('initial_frame', data, frame_model.MODEL_ID, FRAME_INSTRUCTION,
-                     {'model_revision': frame_model.MODEL_REVISION, 'image_width': 1280, 'generation_seconds': time.monotonic() - started, 'usage': usage,
+        cut_run.save('initial_frame', data, model.model_id, FRAME_INSTRUCTION,
+                     {'model_revision': model.revision, 'visual_model': model.key, 'image_width': 1280, 'generation_seconds': time.monotonic() - started, 'usage': usage,
                       'frame_mode': 'full', 'marked_characters': len(people), 'frame_contract': data.get('contract'),
                      'pose': pose_detail.stats(data.get('visible_characters'))})
 
 
-# -- stage 2: video analysis (Qwen3-VL) -----------------------------------------
+# -- stage 2: video analysis (the chosen video model) ---------------------------
 
-def _video_stage(runs, scratch):
+def _video_stage(runs, scratch, model=None):
     todo = [cut_run for cut_run in runs if not cut_run.failure and cut_run.needs('video_analysis')]
     if not todo:
         return
-    runtime = video_model.VideoRuntime()
+    model = model or visual_models.MODELS[visual_models.DEFAULTS['video_analysis']]
+    runtime = video_model.runtime_for(model)
     try:
-        _for_each(todo, lambda cut_run: _video_analysis(cut_run, scratch, runtime))
+        _for_each(todo, lambda cut_run: _video_analysis(cut_run, scratch, runtime, model))
     finally:
         runtime.close()
 
 
-def _video_analysis(cut_run, scratch, runtime):
+def _video_analysis(cut_run, scratch, runtime, model=None):
+    model = model or visual_models.MODELS[visual_models.DEFAULTS['video_analysis']]
+    revision = model.revision
     job_id, owner, cut_id = cut_run.job['id'], cut_run.owner, cut_run.cut_id
     proxy = cut_run.original.parent / 'proxy.mp4'
 
@@ -379,9 +380,8 @@ def _video_analysis(cut_run, scratch, runtime):
         row = db.one('SELECT * FROM analysis_video_windows WHERE job_id=? AND cut_id=? AND window_index=?', (job_id, cut_id, index))
         if not row:
             return None
-        if row['model_revision'] != video_model.MODEL_REVISION:
-            raise RuntimeError('A saved video window no longer matches this run')
-        if row['start_time'] != start or row['end_time'] != end:
+        if row['model_revision'] != revision or row['start_time'] != start or row['end_time'] != end:
+            return None  # saved by another model or for other boundaries: analyse the window again
             return None
         data = json.loads(row['content_json'])
         if not isinstance(data, dict) or not isinstance(data.get('source'), dict) or 'analysis' not in data:
@@ -395,7 +395,7 @@ def _video_analysis(cut_run, scratch, runtime):
             cut_run.check_cut(conn)
             conn.execute('''INSERT INTO analysis_video_windows(job_id,cut_id,window_index,start_time,end_time,model_revision,content_json) VALUES (?,?,?,?,?,?,?)
                 ON CONFLICT(job_id,cut_id,window_index) DO UPDATE SET start_time=excluded.start_time,end_time=excluded.end_time,model_revision=excluded.model_revision,content_json=excluded.content_json''',
-                (job_id, cut_id, index, window['source']['source_start'], window['source']['source_end'], video_model.MODEL_REVISION, json.dumps(window, ensure_ascii=False)))
+                (job_id, cut_id, index, window['source']['source_start'], window['source']['source_end'], revision, json.dumps(window, ensure_ascii=False)))
 
     def save_invalid_response(index, start, end, error, response):
         with db.connect() as conn:
@@ -409,13 +409,13 @@ def _video_analysis(cut_run, scratch, runtime):
         roster = video_roster(marked_people(cut_run, 'first'), None, initial)
         data = video_model.analyze_video(
             proxy if proxy.is_file() else cut_run.original, cut_run.cut, cut_run.config,
-            os.environ.get('QWEN3_VIDEO_MODEL_PATH', '/models/qwen3-vl-8b'), scratch,
+            model.path('model'), scratch,
             on_window=lambda start, end: cut_run.progress(f'Analyzing video {start:.1f}–{end:.1f}s'),
             subtitle_strip=cut_run.strip, source_size=(cut_run.episode['width'], cut_run.episode['height']), load_window=load_window, save_window=save_window,
             context_hints=cut_run.hints, on_invalid_response=save_invalid_response, cancel_check=cut_run.cancel_check, runtime=runtime,
             roster=roster, initial=initial, transcript=cut_run.context.get('transcript_segments'))
         if initial_id:
             data['based_on_initial_frame'] = initial_id
-        cut_run.save('video_analysis', data, video_model.MODEL_ID, VIDEO_INSTRUCTION,
-                     {'model_revision': video_model.MODEL_REVISION, 'generation_seconds': time.monotonic() - started, 'usage': data.get('usage', {}),
+        cut_run.save('video_analysis', data, model.model_id, VIDEO_INSTRUCTION,
+                     {'model_revision': model.revision, 'visual_model': model.key, 'generation_seconds': time.monotonic() - started, 'usage': data.get('usage', {}),
                       'video_contract': data.get('contract'), 'followed_characters': len(roster)})

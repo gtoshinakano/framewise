@@ -175,9 +175,7 @@ class Run:
             finished += 1
             self.progress(f'Reading subtitles {len(done) + finished}/{len(events)}', force=finished == 1)
 
-        with frame_model.frame_server(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'),
-                                      os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
-                                      os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'),
+        with frame_model.frame_server(*frame_model.default_server_files(),  # subtitle reading stays on Qwen3.5
                                       cancel_check=self.cancel_check, parallel=workers, context_per_slot=4096) as server:
             subtitle_reader.read_events(server, self.original, self.band, self.language, todo, save, workers=workers, cancel_check=self.cancel_check)
         self.timings['read_seconds'] = round(time.monotonic() - started, 1)

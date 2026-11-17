@@ -66,6 +66,8 @@ from .sequences import router as sequences_router
 app.include_router(sequences_router)
 from .queue_api import router as queue_router
 app.include_router(queue_router)
+from .visual_models_api import router as visual_models_router
+app.include_router(visual_models_router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
 
@@ -1500,7 +1502,9 @@ def create_character_from_detection(detection_id: str, body: NewCharacterInput):
                      (character_id, row['project_id'], row['episode_id'] if body.episode_only else None, title, body.content, int(body.is_main)))
         conn.execute("UPDATE character_detections SET character_context_id=?,label_source='manual',match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (character_id, detection_id))
         cut = {'id': row['cut_id'], 'cut_index': row['cut_index'], 'title': row['cut_title'], 'start_time': row['start_time'], 'end_time': row['end_time']}
-        payload = {'detection_id': detection_id, 'character_context_id': character_id, 'cut_id': row['cut_id'], 'cut': cut}
+        from . import visual_models
+        payload = {'detection_id': detection_id, 'character_context_id': character_id, 'cut_id': row['cut_id'], 'cut': cut,
+                   'models': visual_models.snapshot(conn, ('character_profile',))}
         conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'character_profile',?)", (job_id, row['episode_id'], json.dumps(payload)))
         worker.sync_episode_status(conn, row['episode_id'])
     return {'character': db.one('SELECT * FROM context_items WHERE id=?', (character_id,)), 'job_id': job_id}
@@ -1799,7 +1803,10 @@ def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[st
                     item['character_references'] = character_detection.select_analysis_references(character_detection.reference_snapshots(conn, project_id), labeled)
                     item['base_result_ids'] = {result['type']: result['id'] for result in structured_results.list_results(cut['id'])}
                 inputs.append(item)
-            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs, **({'workflow': 'single_cut_v2', 'auto_consistency': False} if cut_id is not None else {}), **({'stages': stages} if stages else {})})))
+            from . import visual_models
+            # A single-cut job snapshots the models chosen in the Visual engine dialog (visual_models.py).
+            single = {'workflow': 'single_cut_v2', 'auto_consistency': False, 'models': visual_models.snapshot(conn, VISUAL_STAGES)} if cut_id is not None else {}
+            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs, **single, **({'stages': stages} if stages else {})})))
             worker.sync_episode_status(conn, episode_id)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc
@@ -1879,7 +1886,8 @@ def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, 
         job_ids = []
         if items:
             job_id = str(uuid.uuid4())
-            payload = {'cuts': items, 'workflow': 'single_cut_v2', 'auto_consistency': False}
+            from . import visual_models
+            payload = {'cuts': items, 'workflow': 'single_cut_v2', 'auto_consistency': False, 'models': visual_models.snapshot(conn, VISUAL_STAGES)}
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'analyze',?)", (job_id, episode_id, json.dumps(payload, ensure_ascii=False)))
             job_ids.append(job_id)
             worker.sync_episode_status(conn, episode_id)

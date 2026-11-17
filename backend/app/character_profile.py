@@ -1,7 +1,8 @@
 """The ``character_profile`` job: describe a newly created character from the box it was created on.
 
 ``POST /api/character-detections/{id}/new-character`` creates the character, labels the box and queues this
-job. The Qwen3.5 frame model sees the whole frame (the box outlined) and a close crop of the box and writes a
+job. The chosen character-profile model (``visual_models``: Qwen3.5-27B by default, snapshotted in
+``payload.models`` when queued) sees the whole frame (the box outlined) and a close crop of the box and writes a
 character sheet (what identifies the character in any outfit) and an outfit sheet (what they wear here).
 The rendered text is appended to the character's Details; the answer, prompt and model are kept on the job
 (``payload.result``) as provenance.
@@ -10,7 +11,6 @@ import base64
 import io
 import json
 import logging
-import os
 import tempfile
 import time
 import urllib.error
@@ -18,7 +18,7 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-from . import db, frame_model, media, worker
+from . import db, frame_model, media, visual_models, worker
 from .visual_contracts import OUTFIT_RULE
 
 log = logging.getLogger('framewise.character_profile')
@@ -184,16 +184,14 @@ def process(job_id, owner):
             frame_jpeg, crop_jpeg = images(original, frame, row['cut_start'], row['cut_end'], box, scratch)
         text = user_text(row['name'], row['notes'] or '', grid_box(box, frame['image_size']))
         usage, started = {}, time.monotonic()
-        worker.stage(job_id, owner, episode_id, 'Starting the frame model')
-        with frame_model.frame_server(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'),
-                                      os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
-                                      os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'),
-                                      cancel_check=cancel_check) as server:
+        model = visual_models.for_job(payload, 'character_profile')
+        worker.stage(job_id, owner, episode_id, f'Starting {model.short_name}')
+        with frame_model.frame_server(*model.server_files(), cancel_check=cancel_check, extra_args=model.server_args) as server:
             worker.stage(job_id, owner, episode_id, 'Describing features')
             profile = describe(server, frame_jpeg, crop_jpeg, text, cancel_check=cancel_check, usage_out=usage)
         cut_number = row['cut_index'] + 1
-        block = render(profile, row['episode_title'], cut_number, 'Qwen3.5-27B', date.today().isoformat())
-        result = {'model_id': frame_model.MODEL_ID, 'model_revision': frame_model.MODEL_REVISION, 'profile': profile, 'appended': block,
+        block = render(profile, row['episode_title'], cut_number, model.short_name, date.today().isoformat())
+        result = {'model_id': model.model_id, 'model_revision': model.revision, 'visual_model': model.key, 'profile': profile, 'appended': block,
                   'box': box, 'frame_time': frame['time'], 'usage': usage, 'seconds': round(time.monotonic() - started, 1),
                   'prompt': {'system': PROFILE_INSTRUCTION, 'user': text}}
         with db.connect() as conn:

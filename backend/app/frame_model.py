@@ -18,11 +18,19 @@ MODEL_REVISION = '4d92249e905871588b9c64fddb8ea6498507fa90'
 FRAME_MAX_TOKENS = 3072  # detailed outfits make answers longer; the cap only stops a runaway
 
 
+def default_server_files():
+    """(llama-server, model, projector) of the Qwen3.5 frame model, for callers that are not switchable."""
+    return (os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'),
+            os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
+            os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'))
+
+
 @contextmanager
-def frame_server(runtime, model, projector, startup_timeout=300, cancel_check=None, parallel=1, context_per_slot=8192):
+def frame_server(runtime, model, projector, startup_timeout=300, cancel_check=None, parallel=1, context_per_slot=8192, extra_args=()):
+    """A private llama-server for one multimodal GGUF model (any model of ``visual_models`` with that runtime)."""
     runtime, model, projector = map(Path, (runtime, model, projector))
     if not all(path.is_file() for path in (runtime, model, projector)):
-        raise RuntimeError('Qwen3.5 frame model or llama-server runtime is missing')
+        raise RuntimeError(f'Vision model {model.name} or llama-server runtime is missing')
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0))
         port = listener.getsockname()[1]
@@ -30,7 +38,7 @@ def frame_server(runtime, model, projector, startup_timeout=300, cancel_check=No
         env = os.environ.copy()
         env['LD_LIBRARY_PATH'] = str(runtime.parent) + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
         process = subprocess.Popen([str(runtime), '-m', str(model), '--mmproj', str(projector), '--host', '127.0.0.1', '--port', str(port),
-                                    '--n-gpu-layers', '99', '--ctx-size', str(context_per_slot * parallel), '--parallel', str(parallel), '--jinja'],
+                                    '--n-gpu-layers', '99', '--ctx-size', str(context_per_slot * parallel), '--parallel', str(parallel), '--jinja', *extra_args],
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=env)
         try:
             url = f'http://127.0.0.1:{port}'

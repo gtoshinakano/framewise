@@ -62,7 +62,9 @@ class VisualContractsTest(unittest.TestCase):
         people = schema['properties']['visible_characters']
         self.assertEqual(people['items']['properties']['box']['enum'], ['B1', 'B2'])
         self.assertEqual((people['minItems'], people['maxItems']), (2, 2))
-        self.assertEqual(frame_schema([])['properties']['visible_characters']['maxItems'], 0)
+        self.assertEqual(frame_schema([])['properties']['visible_characters'], {'type': 'array', 'maxItems': 0})
+        # No empty enum anywhere: llama-server refuses "enum": [] as a grammar (HTTP 500).
+        self.assertNotIn('"enum": []', json.dumps(frame_schema([])))
         self.assertEqual(list(schema['properties'])[:5], ['composition', 'setting', 'lighting', 'camera', 'mood'])
         self.assertEqual(people['items']['required'], ['box', 'appearance', 'position', 'pose', 'expression', 'emotion', 'gaze', 'action', 'pose_detail'])
         pose = people['items']['properties']['pose_detail']

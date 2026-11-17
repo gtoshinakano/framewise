@@ -1093,6 +1093,8 @@ def main():
     logging.basicConfig(level=logging.INFO)
     db.init_db()
     local_text_runtime.runtime = local_text_runtime.LocalTextRuntime()
+    from . import visual_models
+    visual_models.publish(force=True)  # the API can only see the model folders through this report
     start_assistant()
     start_chat_gateway()
     for number in range(1, local_text_runtime.text_job_concurrency()):
@@ -1182,6 +1184,7 @@ def main():
                     anime_runtime = None
                     anime_batch_id = None
                 local_text_runtime.runtime.reconcile()
+                visual_models.publish()
                 time.sleep(2)
         except Exception:
             log.exception("Inference worker error")

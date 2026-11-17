@@ -1,5 +1,6 @@
 import { AlertTriangle, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
 import { LocalModelControl } from './LocalModelControl'
+import { VisualEngineControl } from './VisualEngineControl'
 import { Menu, type MenuEntry } from './Popover'
 import { attentionText, attentionTitle, counterText, counterTitle, type QueueSummary } from './queueView'
 
@@ -76,6 +77,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
         className="inline-flex h-8 items-center gap-1 whitespace-nowrap rounded-lg border border-[#63363e] bg-[#2b191f] px-2 text-xs font-semibold text-[#ff9fa7] hover:bg-[#3a2027]">
         <AlertTriangle size={13} aria-hidden />{attentionText(queue.attention)}
       </button>}
+      <VisualEngineControl compact />
       <LocalModelControl compact />
       <Menu label="Episode" items={episodeItems} align="end" width="w-72" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md" aria-label="Episode menu" title="Episode menu"><MoreHorizontal size={16} aria-hidden /></button>} />
     </div>

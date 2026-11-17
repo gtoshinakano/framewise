@@ -102,6 +102,24 @@ class CharacterProfileTest(unittest.TestCase):
         self.assertEqual((result['model_id'], result['profile'], result['usage']['prompt_tokens']), (frame_model.MODEL_ID, ANSWER, 900))
         self.assertEqual(result['prompt']['system'], character_profile.PROFILE_INSTRUCTION)
 
+    def test_job_runs_the_profile_model_chosen_when_it_was_queued(self):
+        with db.connect() as conn:  # the API refuses a model the worker has not reported; set it directly
+            conn.execute("INSERT INTO visual_model_settings(role,model) VALUES ('character_profile','lfm3-omni-2b')")
+        self.add_box()
+        created = self.create().json()
+        with db.connect() as conn:
+            conn.execute("DELETE FROM visual_model_settings")  # changed after queuing: the job keeps its snapshot
+        claimed = worker.claim_job(('character_profile',))
+        with patch.object(character_profile, 'images', return_value=(b'frame', b'crop')), \
+             patch.object(frame_model, 'frame_server', return_value=nullcontext('http://model')) as server, \
+             patch.object(inference_worker, 'request_json', return_value=model_reply()):
+            character_profile.process(*claimed)
+        self.assertTrue(str(server.call_args.args[1]).endswith('LFM3-Omni-2B-BF16.gguf'))
+        self.assertEqual(server.call_args.kwargs['extra_args'], ('--reasoning', 'off'))
+        result = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (claimed[0],))['payload_json'])['result']
+        self.assertEqual((result['model_id'], result['visual_model']), ('LiquidAI/LFM3-Omni-2B-GGUF:BF16', 'lfm3-omni-2b'))
+        self.assertIn('_Described by LFM3-Omni-2B', db.one('SELECT content FROM context_items WHERE id=?', (created['character']['id'],))['content'])
+
     def test_removed_or_relabelled_box_is_skipped_without_the_model(self):
         self.add_box()
         created = self.create().json()

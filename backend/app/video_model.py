@@ -1,12 +1,23 @@
-"""Local Qwen3-VL video inference for bounded windows of a single cut."""
+"""Video motion analysis of one cut, in bounded windows, on a switchable model.
+
+``analyze_video`` owns everything that does not depend on the model (windows, frame budget, saved
+windows, the prompt notes, linking names and merging windows into one direction). The model is a
+*runtime* with ``load(path)``, ``generate(...)``, ``close()``, ``model_id``, ``revision`` and
+``hears_audio``: ``VideoRuntime`` runs Qwen3-VL through transformers, ``LlamaVideoRuntime`` runs any
+GGUF model that reads video through the bundled llama-server (LFM3-Omni). ``runtime_for`` picks one
+for a ``visual_models.VisualModel``.
+"""
+import base64
 import gc
 import json
 import math
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from . import media
-from .visual_contracts import VIDEO_CONTRACT, VIDEO_INSTRUCTION, cut_direction, earlier_note, link_video, roster_note, series_note, speech_note, subtitle_note, validate_video
+from .visual_contracts import AUDIO_NOTE, VIDEO_CONTRACT, VIDEO_INSTRUCTION, cut_direction, earlier_note, link_video, roster_note, series_note, speech_note, subtitle_note, validate_video
 
 MODEL_ID = 'Qwen/Qwen3-VL-8B-Instruct'
 MODEL_REVISION = '0c351dd01ed87e9c1b53cbc748cba10e6187ff3b'
@@ -26,9 +37,13 @@ class VideoRuntime:
     cut still loads and frees the model by itself. A batch passes one runtime
     for every cut and calls `close()` once at the end.
     """
+    model_id, revision, hears_audio = MODEL_ID, MODEL_REVISION, False
 
     def __init__(self):
         self.torch = self.processor = self.model = None
+
+    def generate(self, clip, fps, prompt, duration, start, on_invalid_response=None, cancel_check=None):
+        return generate_window(self.processor, self.model, self.torch, clip, fps, prompt, duration, start, on_invalid_response, cancel_check)
 
     def load(self, model_path):
         if self.model is None:
@@ -118,6 +133,87 @@ def generate_window(processor, model, torch, clip, fps, prompt, duration, start,
     raise RuntimeError(f'Invalid Qwen3-VL video response for {start:.3f}–{start + duration:.3f}s after {len(VIDEO_TOKEN_LIMITS)} attempts: {last_error}')
 
 
+# One window holds at most 32 frames plus its soundtrack; a 32K slot leaves ample room for the prompt and answer.
+LLAMA_VIDEO_CONTEXT = 32768
+
+
+class LlamaVideoRuntime:
+    """A GGUF video model behind a private llama-server, started once for every cut of a stage.
+
+    Each window is sent as an mp4 data URL (with its soundtrack when the model hears audio). The server
+    resamples it to the model's own video rate (``sample_fps``; LFM3 reads 2 fps whatever the clip, the
+    request or ``--video-fps`` says, verified on build 12110), so the saved window records that rate.
+    The answer is validated and retried exactly like the Qwen3-VL runtime.
+    """
+
+    def __init__(self, model):
+        self.spec = model
+        self.model_id, self.revision, self.hears_audio = model.model_id, model.revision, model.hears_audio
+        self.sample_fps = model.video_fps
+        self.server = self.url = None
+
+    def load(self, _model_path=None):
+        if self.url is None:
+            from . import frame_model
+            self.server = frame_model.frame_server(*self.spec.server_files(), parallel=1, context_per_slot=LLAMA_VIDEO_CONTEXT,
+                                                   extra_args=self.spec.server_args)
+            self.url = self.server.__enter__()
+        return self.url
+
+    def close(self):
+        if self.server is not None:
+            server, self.server, self.url = self.server, None, None
+            server.__exit__(None, None, None)
+
+    def body(self, clip, prompt, limit):
+        video = base64.b64encode(Path(clip).read_bytes()).decode('ascii')
+        return {'messages': [{'role': 'user', 'content': [
+                    {'type': 'video_url', 'video_url': {'url': 'data:video/mp4;base64,' + video}},
+                    {'type': 'text', 'text': prompt}]}],
+                'temperature': 0, 'max_tokens': limit, 'response_format': {'type': 'json_object'},
+                'chat_template_kwargs': {'enable_thinking': False}}
+
+    def generate(self, clip, fps, prompt, duration, start, on_invalid_response=None, cancel_check=None):
+        from .inference_worker import request_json
+        url = self.load()
+        usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+        last_error = ''
+        for attempt, limit in enumerate(VIDEO_TOKEN_LIMITS):
+            if cancel_check:
+                cancel_check()
+            request = urllib.request.Request(url + '/v1/chat/completions', data=json.dumps(self.body(clip, prompt + (RETRY_INSTRUCTION if attempt else ''), limit)).encode(),
+                                             headers={'Content-Type': 'application/json'}, method='POST')
+            try:
+                payload = request_json(request, cancel_check, timeout=600)
+                choice = payload['choices'][0]
+                raw = choice['message']['content'] or ''
+            except urllib.error.HTTPError as exc:
+                raise RuntimeError(f'{self.spec.label} rejected the video request: HTTP {exc.code} {exc.read()[:500].decode("utf-8", "replace")}') from exc
+            except (OSError, KeyError, IndexError, TypeError, ValueError) as exc:
+                raise RuntimeError(f'{self.spec.label} video request failed: {exc}') from exc
+            for key in usage:
+                if isinstance((payload.get('usage') or {}).get(key), int):
+                    usage[key] += payload['usage'][key]
+            try:
+                return validate_video(raw, duration, start), usage, attempt + 1
+            except (ValueError, json.JSONDecodeError) as exc:
+                last_error = str(exc)
+                if choice.get('finish_reason') == 'length':
+                    last_error = f'Output reached the {limit}-token generation limit; {last_error}'
+                if on_invalid_response:
+                    on_invalid_response(last_error, raw)
+        raise RuntimeError(f'Invalid {self.spec.label} video response for {start:.3f}–{start + duration:.3f}s after {len(VIDEO_TOKEN_LIMITS)} attempts: {last_error}')
+
+
+def runtime_for(model):
+    """The video runtime of a ``visual_models.VisualModel``; Qwen3-VL keeps its transformers runtime."""
+    if model is None or model.runtime == 'transformers':
+        return VideoRuntime()
+    if model.runtime == 'llama-server':
+        return LlamaVideoRuntime(model)
+    raise RuntimeError(f'No video runtime for {model.label}')
+
+
 def analyze_video(original, cut, config, model_path, scratch, on_window=None, subtitle_strip=None, source_size=None, load_window=None, save_window=None, context_hints=None, on_invalid_response=None, cancel_check=None, runtime=None,
                   roster=None, initial=None, transcript=None):
     """Process every cut window, recording both clip-relative and episode times.
@@ -131,6 +227,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
     """
     owns_runtime = runtime is None
     runtime = runtime or VideoRuntime()
+    hears_audio = getattr(runtime, 'hears_audio', False) is True
     windows = []
     start, cut_end = float(cut['start_time']), float(cut['end_time'])
     first, last = cut.get('first_frame_time'), cut.get('last_frame_time')
@@ -167,13 +264,14 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
                 continue
             if on_window:
                 on_window(start, end)
-            torch, processor, model = runtime.load(model_path)
+            runtime.load(model_path)
             clip = Path(scratch) / 'video-window.mp4'
+            sound = {'keep_audio': True} if hears_audio else {}
             if remaining_frames is None:
-                metadata = media.prepare_analysis_video(Path(original), clip, start, end, config['video_width'], config['video_height'], fps)
+                metadata = media.prepare_analysis_video(Path(original), clip, start, end, config['video_width'], config['video_height'], fps, **sound)
             else:
                 limit = min(32, remaining_frames - 2 * (window_count - window_index - 1))
-                metadata = media.prepare_analysis_video(Path(original), clip, start, end, config['video_width'], config['video_height'], fps, frame_limit=limit)
+                metadata = media.prepare_analysis_video(Path(original), clip, start, end, config['video_width'], config['video_height'], fps, frame_limit=limit, **sound)
                 frame_probe = media.run(['ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0', '-show_entries', 'stream=nb_read_frames', '-of', 'json', str(clip)])
                 count = int(json.loads(frame_probe.stdout)['streams'][0]['nb_read_frames'])
                 if count < 2 or count > limit:
@@ -183,6 +281,8 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
             metadata['boundary_policy'] = BOUNDARY_POLICY
             metadata['source_file'] = Path(original).name
             metadata['contract'] = VIDEO_CONTRACT
+            if isinstance(getattr(runtime, 'sample_fps', None), (int, float)):
+                metadata['model_sample_fps'] = runtime.sample_fps  # the rate the model really read, not the clip's
             boxes = []
             if subtitle_strip and subtitle_strip.get('top') is not None and source_size and all(source_size):
                 width, height = source_size
@@ -207,8 +307,10 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
             if notes:
                 prompt += '\n' + notes
             prompt += subtitle_note((subtitle_strip or {}).get('language'), boxes, 'video canvas pixels')
+            if metadata.get('has_audio'):
+                prompt += '\n\n' + AUDIO_NOTE
             reject = (lambda error, raw: on_invalid_response(window_index, start, end, error, raw)) if on_invalid_response else None
-            output, usage, attempts = generate_window(processor, model, torch, clip, config['video_fps'], prompt, end - start, start, reject, cancel_check)
+            output, usage, attempts = runtime.generate(clip, config['video_fps'], prompt, end - start, start, reject, cancel_check)
             result = {'source': metadata, 'analysis': link_video(output, roster), 'generation_attempts': attempts}
             if attempts > 1:
                 result['retry_instruction'] = RETRY_INSTRUCTION.strip()
@@ -220,7 +322,7 @@ def analyze_video(original, cut, config, model_path, scratch, on_window=None, su
             clip.unlink(missing_ok=True)
             start, window_index = end, window_index + 1
         usage = {key: sum(window.get('usage', {}).get(key, 0) for window in windows) for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')} if windows and all('usage' in window for window in windows) else {}
-        return {'model': MODEL_ID, 'revision': MODEL_REVISION, 'contract': VIDEO_CONTRACT, 'direction': cut_direction(windows, roster), 'windows': windows, 'usage': usage,
+        return {'model': runtime.model_id, 'revision': runtime.revision, 'contract': VIDEO_CONTRACT, 'direction': cut_direction(windows, roster), 'windows': windows, 'usage': usage,
                 'limitations': 'Window boundaries may split events. Model-provided event times are unverified and may overlap, be incomplete, or fall outside the source window.'}
     finally:
         if owns_runtime:

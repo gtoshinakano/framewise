@@ -1,0 +1,12 @@
+{
+  "lfm3-omni-2b": {
+    "repo": "LiquidAI/LFM3-Omni-2B-GGUF",
+    "revision": "d508b88f08a5b4286f2d2805a6a8d69a0ff44c72",
+    "dir_env": "LFM3_OMNI_MODEL_DIR",
+    "default_dir": ".models/lfm3-omni-2b",
+    "files": [
+      {"name": "LFM3-Omni-2B-BF16.gguf", "size": 3466628608, "sha256": "58a6d91f532e4685336ec90699d425f89f61bffa1b0bc685bf7ae9e09f72efff"},
+      {"name": "mmproj-LFM3-Omni-2B-BF16.gguf", "size": 949841248, "sha256": "76f31874557110106046f1ce94386fb9888889f0e046092f5fab66380a723b38"}
+    ]
+  }
+}

@@ -49,8 +49,13 @@ def probe(path: Path):
 MP4_TIMESCALE = ('-video_track_timescale', '90000')
 
 
-def prepare_analysis_video(source: Path, output: Path, start: float, end: float, width: int = 640, height: int = 360, fps: float = 4, frame_limit: int | None = None):
-    """Create a temporary, silent cut clip and return its reproducibility metadata."""
+def prepare_analysis_video(source: Path, output: Path, start: float, end: float, width: int = 640, height: int = 360, fps: float = 4, frame_limit: int | None = None,
+                           keep_audio: bool = False):
+    """Create a temporary cut clip and return its reproducibility metadata.
+
+    The clip is silent unless ``keep_audio`` (for a video model that also hears the soundtrack): then the
+    source's first audio track is kept as 16 kHz mono AAC and ``has_audio`` says whether there was one.
+    """
     if source.resolve() == output.resolve():
         raise ValueError('Analysis clip cannot replace its source')
     if not all(math.isfinite(v) for v in (start, end, fps)) or start < 0 or end <= start or not 0 < fps <= 30:
@@ -77,9 +82,12 @@ def prepare_analysis_video(source: Path, output: Path, start: float, end: float,
         # The Qwen video processor needs at least two frames, even for a very
         # short cut. Clone the final sampled frame without reading the next cut.
         filters += ',tpad=stop_mode=clone:stop=1'
+    has_audio = keep_audio and probe(source)['has_audio']
+    sound = ['-map', '0:v:0', '-map', '0:a:0', '-c:a', 'aac', '-ac', '1', '-ar', '16000', '-b:a', '64k'] if has_audio else ['-an']
     run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', f'{start:.9f}', '-t', f'{end - start:.9f}', '-i', str(source),
-         '-an', '-vf', filters, *(['-frames:v', str(frame_limit)] if frame_limit is not None else []), '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', *MP4_TIMESCALE, str(output)])
-    return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps, 'padded_tail': padded_tail}
+         *sound, '-vf', filters, *(['-frames:v', str(frame_limit)] if frame_limit is not None else []), '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', *MP4_TIMESCALE, str(output)])
+    return {'source_start': start, 'source_end': end, 'width': width, 'height': height, 'fps': fps, 'padded_tail': padded_tail,
+            **({'has_audio': has_audio} if keep_audio else {})}
 
 
 def make_proxy(original: Path, output: Path, width: int, crf: int, preset: str):

@@ -8,6 +8,18 @@ The inference worker processes GPU models sequentially and releases their memory
 
 The requested [WeVisOne-VL paper](https://huggingface.co/papers/2610.31329) and [official implementation](https://github.com/Tencent/WeVisOne-VL) describe image-level detection, referring localization, counting, OCR, segmentation, and matting. The official repository currently shows 2B and 4B variants and a Python 3.10 installation example. Its documented device choices include CUDA, NPU, and CPU; ROCm is not explicitly documented. Framewise has a separate pinned inference worker and download scripts. A host GPU test loaded WeVisOne and confirmed that free-form requests returned bounding-box output, so Qwen3-VL-2B-Instruct supplies natural-language captions while WeVisOne supplies configurable object detections. The container deployment still requires validation.
 
+## Switchable visual models (LFM3-Omni-2B)
+
+The first-frame, video-motion and character-profile steps can each run on another model, chosen per step in the **Visual engine** dialog and snapshotted by every queued job (`backend/app/visual_models.py`). The defaults are unchanged: Qwen3.5-27B for stills and profiles, Qwen3-VL-8B for video.
+
+[LiquidAI/LFM3-Omni-2B](https://huggingface.co/LiquidAI/LFM3-Omni-2B) (2.2B, LFM Open License v1.0) is the first alternative and can run all three steps. It is a non-reasoning omni model that reads images, video and audio. The app uses the BF16 GGUF build (`LiquidAI/LFM3-Omni-2B-GGUF`, model 3.47 GB + projector 0.95 GB, pinned revision and sha256 in `backend/app/model_manifest.json`), served by the same bundled llama.cpp `llama-server` (LFM3 needs build b11960 or newer; ours is 12110) with `--reasoning off`.
+- Stills use the same `frame_schema` grammar as Qwen3.5.
+- Video windows are sent as mp4 data URLs (`video_url`) *with their soundtrack*. The model may use the sound only to judge who speaks and when.
+- llama-server always resamples LFM3 video to 2 fps and encodes frames in pairs, about 220 tokens per second at 640x360. Neither a request field nor `--video-fps` changes this (verified on build 12110). Each window records `model_sample_fps`. This is coarser than Qwen3-VL's 4–5 fps, so fast motion can be missed.
+- Its own ASR is not used for transcription, because it returns no word timestamps.
+
+Install it on the host with `python3 scripts/install-model.py lfm3-omni-2b`, then recreate the inference worker so the new mount appears. The dialog shows download progress and refuses a model until the worker reports it installed. Quality against the default models has to be judged on real cuts: re-run visual analysis for a few cuts under each model and compare the revisions in the result history.
+
 ## Episode-wide subtitle extraction
 
 Burned-in subtitles are extracted once per episode by a `subtitles` job in the inference worker, after audio transcription and independent of cuts. The user gives the subtitle language, which applies to the whole video: it is stored on the episode and on the run, the reading prompt states it as certain and forbids translating or reading other text, and each answer is checked against the language's script so a sign or logo cannot enter the track.

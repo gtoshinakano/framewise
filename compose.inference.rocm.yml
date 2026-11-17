@@ -27,6 +27,9 @@ services:
       QWEN35_SERVER_PATH: /models/llamacpp/llama-server
       QWEN35_MODEL_PATH: /models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf
       QWEN35_PROJECTOR_PATH: /models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf
+      # Optional visual model (Visual engine dialog); install with: python3 scripts/install-model.py lfm3-omni-2b
+      LFM3_OMNI_MODEL_PATH: /models/lfm3-omni-2b/LFM3-Omni-2B-BF16.gguf
+      LFM3_OMNI_PROJECTOR_PATH: /models/lfm3-omni-2b/mmproj-LFM3-Omni-2B-BF16.gguf
       QWEN36_MODEL_PATH: /models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf
       # Same model with multi-token-prediction heads (speculative decoding); choose it in the text engine dialog.
       QWEN36_MTP_MODEL_PATH: /models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
@@ -50,6 +53,7 @@ services:
       - ${TEXT_MODEL_DIR:-./.models/qwen3.6-35b}:/models/qwen3.6-35b:ro
       - ${TEXT_MTP_MODEL_DIR:-./.models/qwen3.6-35b-mtp}:/models/qwen3.6-35b-mtp:ro
       - ${LLAMACPP_RUNTIME_DIR:-./.models/llamacpp-runtime}:/models/llamacpp:ro
+      - ${LFM3_OMNI_MODEL_DIR:-./.models/lfm3-omni-2b}:/models/lfm3-omni-2b:ro
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri

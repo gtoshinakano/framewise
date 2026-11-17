@@ -75,6 +75,13 @@ def init_db():
             local_model TEXT NOT NULL DEFAULT 'standard'
         );
         INSERT OR IGNORE INTO text_generation_settings(id) VALUES (1);
+        -- The model the user chose per visual role (visual_models.py); a missing row means the default.
+        CREATE TABLE IF NOT EXISTS visual_model_settings (role TEXT PRIMARY KEY, model TEXT NOT NULL);
+        -- Installed/downloading status of every visual model, published by the inference worker.
+        CREATE TABLE IF NOT EXISTS visual_model_state (
+            id INTEGER PRIMARY KEY CHECK(id=1), models_json TEXT NOT NULL DEFAULT '{}', updated_at REAL NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO visual_model_state(id) VALUES (1);
         -- A llama.cpp server on another PC that takes local-provider text jobs (remote_text.py).
         CREATE TABLE IF NOT EXISTS remote_text_server (
             id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 0,
