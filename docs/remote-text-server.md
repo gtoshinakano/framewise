@@ -1,6 +1,6 @@
 # Remote llama.cpp text server
 
-Framewise can send local-provider text jobs to a llama.cpp server on another PC on the LAN. These are consistency summaries, production decisions, Cut summaries and sequence steps. Cut Assistance can also use it. The worker treats the remote as extra lanes on the same queue. A job goes to whichever lane is free, as the routing table in the Text engine dialog allows. Remote lanes never wait for this host's GPU, so text work continues while visual analysis runs here.
+Framewise can send local-provider text jobs to a llama.cpp server on another PC on the LAN. These are consistency summaries, production decisions, Cut summaries and sequence steps. Cut Assistance can also use it. The worker treats the remote as extra lanes on the same queue. A job goes to whichever lane is free, as the routing table in the Text engine dialog allows. Remote lanes never wait for this host's GPU, so text work continues while visual analysis runs here, also for the same episode. A job a remote lane runs does not hold its episode against the next visual analysis job either. Other work on the episode (transcription, subtitle extraction, character detection, media preparation, hard-cut detection) still runs alone: a remote text job waits for it, and it waits for a remote text job.
 
 ## What Framewise expects from the other PC
 

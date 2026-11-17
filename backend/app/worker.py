@@ -119,14 +119,22 @@ def cleanup_voice_upload(job):
 TEXT_PIPELINES = ('regen', 'consistency_summary', 'review_answers', 'sequence')
 # The provider a text job was queued with: ``regen`` keeps it at the top of its payload, the others in ``config``.
 JOB_TEXT_PROVIDER_SQL = "COALESCE(json_extract(jobs.payload_json,'$.text_provider'), json_extract(jobs.payload_json,'$.config.text_provider'), 'openrouter')"
+# A text job run by a remote lane uses neither this host's GPU nor its media files, so it does not hold its
+# episode against visual analysis, and a running visual analysis does not hold it against a remote lane.
+# Remote lanes mark the jobs they hold with this lease-owner prefix; every other pipeline (transcription,
+# subtitles, character detection, media preparation, hard cuts, ...) still holds the episode alone.
+REMOTE_OWNER = 'remote:'
+ALONGSIDE_REMOTE = ('analyze',)
 
 
-def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), remote_only=(), local_provider_only=False):
+def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), remote_only=(), local_provider_only=False, remote_lane=False):
     """Lease the next runnable job of ``pipelines``; returns ``(job_id, owner)`` or ``None``.
 
     Routing to the remote text server (``remote_text``) only concerns jobs queued with the local provider:
     ``remote_only`` names pipelines whose local-provider jobs this caller leaves to the remote lanes,
     and ``local_provider_only`` (a remote lane) skips every job that was not queued for the local model.
+    ``remote_lane`` marks the lease as a remote lane's and lets the job start while ``ALONGSIDE_REMOTE``
+    jobs of its episode run.
     """
     if not pipelines:
         return None
@@ -138,6 +146,9 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
         routing += f" AND {JOB_TEXT_PROVIDER_SQL}='local'"
     placeholders = ",".join("?" for _ in pipelines)
     text = ",".join(f"'{name}'" for name in TEXT_PIPELINES)
+    alongside = ",".join(f"'{name}'" for name in ALONGSIDE_REMOTE)
+    # Jobs of ``alongside`` pipelines are never held by a job a remote lane runs; a remote lane is never held by them.
+    remote_free = f"AND NOT (jobs.pipeline IN ({alongside}) AND other.lease_owner LIKE '{REMOTE_OWNER}%')" + (f" AND other.pipeline NOT IN ({alongside})" if remote_lane else '')
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         exhausted = conn.execute(f"SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND status='running' AND (lease_until IS NULL OR lease_until<=?) AND attempt_count>=?", (*pipelines, now, MAX_ATTEMPTS)).fetchall()
@@ -162,6 +173,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
                 -- Only a job with a live lease holds the episode. Interrupted jobs (lease
                 -- expired) must not block each other: a bulk batch leaves many at once.
                 AND other.lease_until>?
+                {remote_free}
                 AND NOT (jobs.pipeline IN ({text}) AND other.pipeline IN ({text}))
                 AND NOT ((jobs.pipeline='cutframes' AND other.pipeline IN ('analyze','regen')) OR (other.pipeline='cutframes' AND jobs.pipeline IN ('analyze','regen'))))
             )
@@ -169,7 +181,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
                      CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid LIMIT 1""", (*pipelines, *remote_only, now, now)).fetchone()
         claimed = None
         if job:
-            owner = str(uuid.uuid4())
+            owner = (REMOTE_OWNER if remote_lane else '') + str(uuid.uuid4())
             conn.execute("UPDATE jobs SET status='running',stage=?,error=NULL,lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                          ("Resuming" if job["status"] == "running" else "Starting", owner, now + LEASE_SECONDS, job["id"]))
             if job['pipeline'] not in ('brief_export', 'composition_compact'):

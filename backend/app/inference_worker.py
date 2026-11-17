@@ -1031,7 +1031,7 @@ def remote_lane(index):
             if not remote_text.pool.try_job('remote', cfg):  # chat is waiting, or the remote's share for jobs is in use
                 time.sleep(2)
                 continue
-            claimed = worker.claim_job(remote_text.remote_pipelines(cfg), local_provider_only=True)
+            claimed = worker.claim_job(remote_text.remote_pipelines(cfg), local_provider_only=True, remote_lane=True)
             if not claimed:
                 remote_text.pool.release_job('remote')
                 time.sleep(2)

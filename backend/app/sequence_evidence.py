@@ -255,7 +255,7 @@ def compile_input(ctx, timeline, window, subtitles, previous, decided, level=0):
         digest.append({key: value for key, value in entry.items() if value not in (None, [], '')})
     table = '\n'.join(f"{line['id']} {line['t0']:.2f}-{line['t1']:.2f} {line['speaker_label'] or 'Unknown speaker'}"
                       + (f" / {line['character_name']}" if line.get('character_name') else '') + f": {line['text']}" for line in lines)
-    payload = {'window': {'part': window['index'], 'of': window['of'], 'spoken_language': ctx.get('spoken_language') or ctx['subtitle_language'] or 'Japanese'},
+    payload = {'window': {'part': window['index'], 'of': window['of'], 'spoken_language': ctx.get('spoken_language') or 'the language of the recognised lines (not the subtitles)', 'subtitle_language': ctx['subtitle_language'] or None},
                'lines': table,
                'subtitles': '\n'.join(f"{sub['id']} {sub['t0']:.2f}-{sub['t1']:.2f}: {sub['text']}" for sub in nearby) or 'No subtitle lines were read for this part.',
                'pairs': {line_id: [f"{item['subtitle']} overlap {item['overlap']}s similarity {item['similarity']}" for item in found] for line_id, found in pairs.items() if found} if level < 3 else None,

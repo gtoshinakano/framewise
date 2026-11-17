@@ -104,6 +104,48 @@ class RemoteTextTest(unittest.TestCase):
         self.assertIsNone(lane[2])
         self.assertIsNone(worker.claim_job((), local_provider_only=True))
 
+    def running(self, job_id, pipeline, owner='other-worker'):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status,lease_owner,lease_until,payload_json) VALUES (?,'e',?,'running',?,?,'{}')",
+                         (job_id, pipeline, owner, time.time() + 60))
+
+    def test_remote_lane_runs_text_beside_visual_analysis_without_holding_it_back(self):
+        self.running('visual', 'analyze')
+        self.job('summary', 'consistency_summary', 'local')
+        # This host's text lane waits for the episode's visual job (one GPU); a remote lane does not need it.
+        self.assertIsNone(worker.claim_job(worker.TEXT_PIPELINES))
+        job_id, owner = worker.claim_job(('consistency_summary',), local_provider_only=True, remote_lane=True)
+        self.assertEqual(job_id, 'summary')
+        self.assertTrue(owner.startswith(worker.REMOTE_OWNER))
+        self.assertEqual(db.one("SELECT lease_owner FROM jobs WHERE id='summary'")['lease_owner'], owner)
+        # The remote text job running now does not stop the next visual job of the episode from starting.
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='done' WHERE id='visual'")
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('visual-2','e','analyze','{}')")
+        self.assertEqual(worker.claim_job(('analyze',))[0], 'visual-2')
+
+    def test_a_job_held_by_this_hosts_text_lane_still_holds_the_episode_from_visual_analysis(self):
+        self.running('local-summary', 'consistency_summary')  # plain owner: this host's lane
+        with db.connect() as conn:
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('visual','e','analyze','{}')")
+        self.assertIsNone(worker.claim_job(('analyze',)))
+
+    def test_other_running_jobs_still_hold_the_episode_from_remote_lanes(self):
+        for pipeline in ('transcribe', 'subtitles', 'character_detect', 'hardcuts', 'prepare'):
+            with self.subTest(pipeline):
+                with db.connect() as conn:
+                    conn.execute('DELETE FROM jobs')
+                self.running('busy', pipeline)
+                self.job('summary', 'consistency_summary', 'local')
+                self.assertIsNone(worker.claim_job(('consistency_summary',), local_provider_only=True, remote_lane=True))
+        # A remote text job also keeps holding the episode from work that is not visual analysis.
+        with db.connect() as conn:
+            conn.execute('DELETE FROM jobs')
+        self.running('remote-summary', 'consistency_summary', owner=worker.REMOTE_OWNER + 'x')
+        with db.connect() as conn:
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('prep','e','prepare','{}')")
+        self.assertIsNone(worker.claim_job(('prepare',)))
+
     def test_disabled_server_routes_nothing(self):
         cfg = self.configure(routes={'review_answers': {'mode': 'remote', 'model': 'bonsai2'}}, enabled=False)
         self.assertEqual(remote_text.remote_only(cfg), ())
