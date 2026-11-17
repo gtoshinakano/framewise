@@ -2,6 +2,8 @@
 import asyncio
 import concurrent.futures
 import logging
+import math
+import subprocess
 import shutil
 import tempfile
 import threading
@@ -32,7 +34,42 @@ def _prune(now):
 def _key(spec):
     path = Path(spec['source'])
     st = path.stat()
-    return (str(path), st.st_mtime_ns, st.st_size, spec['time'], spec['start'], spec['end'], spec['width'], spec['last'], spec.get('quality'), spec.get('seek_tolerance', 0), spec.get('probe_padding', 0))
+    return (str(path), st.st_mtime_ns, st.st_size, spec['time'], spec['start'], spec['end'], spec['width'], spec['last'], spec.get('quality'), spec.get('seek_tolerance', 0), spec.get('probe_padding', 0), spec.get('ordinal'))
+
+
+def _target_frame(spec, output):
+    """Use fast timestamp seeking only when the target PTS uniquely identifies a frame.
+
+    Duplicate or unprobeable PTS require the slower source-ordinal path. Temporary
+    JPEGs live only inside the preview directory owned by the caller.
+    """
+    source = Path(spec['source'])
+    target = spec['time']
+    try:
+        origin_text = media.run(['ffprobe', '-v', 'error', '-show_entries', 'format=start_time', '-of', 'default=noprint_wrappers=1:nokey=1', str(source)], timeout=30).stdout.strip()
+        origin = float(origin_text)
+        if not math.isfinite(origin): raise ValueError('Invalid video start time')
+        target_pts = target + origin
+        interval = f'{max(origin, target_pts - .25):.9f}%{target_pts + .25:.9f}'
+        probe = media.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-read_intervals', interval,
+                           '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'csv=p=0', str(source)], timeout=30)
+        times = []
+        for line in probe.stdout.splitlines():
+            try: times.append(float(line.split(',')[0]))
+            except ValueError: continue
+        if sum(abs(t - target_pts) <= .000010 for t in times) == 1:
+            actual = media.extract_cut_frame(source, output, target, spec['start'], spec['end'], width=spec['width'],
+                                             seek_tolerance=.000002, timeout=60)
+            if abs(actual - target) <= .000005:
+                return output.read_bytes()
+    except (RuntimeError, ValueError, OSError):
+        pass  # Ordinal decoding is the correctness fallback.
+    command = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-i', str(source), '-map', '0:v:0',
+               '-vf', f"select=eq(n\\,{spec['ordinal']}),scale=w='min(iw,{spec['width']})':h=-2", '-fps_mode', 'passthrough',
+               '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1']
+    result = subprocess.run(command, capture_output=True, timeout=120, check=True)
+    if not result.stdout: raise RuntimeError('Could not extract target frame')
+    return result.stdout
 
 
 def _generate(spec):
@@ -40,6 +77,13 @@ def _generate(spec):
     # removed as soon as the bytes are read, even on extraction errors.
     with tempfile.TemporaryDirectory(prefix='framewise-preview-') as tmp:
         output = Path(tmp) / 'frame.jpg'
+        if spec.get('ordinal') is not None:
+            before = Path(spec['source']).stat()
+            data = _target_frame(spec, output)
+            after = Path(spec['source']).stat()
+            if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+                raise RuntimeError('Original video changed')
+            return data
         media.extract_cut_frame(Path(spec['source']), output, spec['time'], spec['start'], spec['end'], width=spec['width'], last=spec['last'], quality=spec.get('quality'), seek_tolerance=spec.get('seek_tolerance', 0), probe_padding=spec.get('probe_padding', 0), timeout=60)
         return output.read_bytes()
 

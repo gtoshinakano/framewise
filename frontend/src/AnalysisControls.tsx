@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronsRight, Film, Image as ImageIcon, Layers, Play, RotateCcw, Save, SlidersHorizontal } from 'lucide-react'
 import { api, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type VisualStage } from './api'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
+import { TargetFrames, useTargetSelection } from './TargetFrames'
 import { FrameImage } from './FrameImage'
 import { automaticVideoFps, estimatedVideoFrames } from './analysisFrames'
 import { ANSWERS_BATCH_REASONS, CHAIN_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
@@ -57,6 +58,7 @@ type Props = {
 
 export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enabled, results, stages, prefetchIds, charactersTarget, onStarted, onConfigChange, onNext, jobs, children }: Props) {
   const cutId = cut.id
+  const targetFrames = useTargetSelection(cutId, `${cut.start_time}:${cut.end_time}`)
   const [config, setConfig] = useState<AnalysisConfig | null>(() => cachedConfig(cutId) ?? null)
   const [saved, setSaved] = useState(() => { const known = cachedConfig(cutId); return known ? JSON.stringify(known) : '' })
   const [loadError, setLoadError] = useState('')
@@ -66,6 +68,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const [optimistic, setOptimistic] = useState<Optimistic>({})
   const [characters, setCharacters] = useState<CharacterSummary | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [characterTab, setCharacterTab] = useState<'characters' | 'targets'>('characters')
   const [boundaryDraft, setBoundaryDraft] = useState<Partial<Record<'first' | 'last', { times: number[]; index: number; original: number }>>>({})
   const [boundaryLoading, setBoundaryLoading] = useState<'first' | 'last' | null>(null)
   const boundaryBase = useRef<{ start: number; end: number } | null>(null)
@@ -302,6 +305,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
         <ActionButton variant="primary" icon={<ArrowRight size={14} />} pending={isPending('visual-next')} disabled={!!nextReason} title={nextReason || 'Queue visual analysis for this cut, then open the next cut'} onClick={() => void queueVisual('next')} >Analyze &amp; next</ActionButton>
         <ActionButton icon={<Play size={14} />} pending={isPending('visual-cut')} disabled={!!settingsReason} title={settingsReason || 'Queue visual analysis for this cut (Ctrl+Enter in the context box)'} onClick={() => void queueVisual('cut')} >Analyze cut</ActionButton>
       </div>
+      <ActionButton compact icon={<ImageIcon size={13} />} pending={isPending('keyframes')} disabled={busy || !!pending} onClick={() => void perform('keyframes', async () => { await api(`/cuts/${cutId}/keyframe-selection`, { method: 'POST', body: JSON.stringify({}) }); window.dispatchEvent(new Event('framewise:keyframes-changed')); return 'Cut evaluation queued.' })}>Evaluate cut</ActionButton>
       <div className="flex flex-wrap items-center gap-1.5"><span className="muted text-[11px]">Only:</span>{STAGE_BUTTONS.map(item => <ActionButton key={item.stage} compact icon={item.icon} pending={isPending(`stage-${item.stage}`)} disabled={!!settingsReason} title={settingsReason || item.hint} onClick={() => void queueStage(item.stage)}>{item.label}</ActionButton>)}</div>
       {notice && <NoticeStrip notice={notice} onDismiss={() => setNotice(null)} />}
     </section>
@@ -387,9 +391,15 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
       </div>
     </details>}
 
-    {charactersTarget && createPortal(projectId
-      ? <CharacterDetectionPanel cutId={cutId} cutStart={cut.start_time} cutEnd={cut.end_time} projectId={projectId} jobs={jobs} onStarted={onStarted} onSummary={setCharacters} noCharacters={!!cut.no_characters} boundaryKey={`${cut.start_time}:${cut.end_time}`} />
-      : <div className="space-y-2 rounded-xl border hairline bg-[#171c25] p-3" aria-busy="true" aria-label="Loading characters"><Skeleton className="h-5 w-48" /><div className="grid gap-3 xl:grid-cols-2"><Skeleton className="aspect-video" /><Skeleton className="aspect-video" /></div></div>, charactersTarget)}
+    {charactersTarget && createPortal(<div className="space-y-3">
+      <div role="tablist" aria-label="Cut frames" className="flex gap-1 rounded-lg border hairline p-1">
+        {([['characters', 'Characters in this cut'], ['targets', 'Target frames']] as const).map(([value, label]) => <button key={value} role="tab" type="button" aria-selected={characterTab === value} onClick={() => setCharacterTab(value)} className={`rounded-md px-4 py-1.5 text-xs font-semibold ${characterTab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}{value === 'targets' && targetFrames.selection?.result && <span className="ml-1.5 rounded-full bg-[#3a4352] px-1.5 py-0.5 text-[10px] tabular-nums" aria-label={`${targetFrames.selection.result.selected_frames.length} target frames`}>{targetFrames.selection.result.selected_frames.length}</span>}</button>)}
+      </div>
+      <div hidden={characterTab !== 'characters'}>{projectId
+        ? <CharacterDetectionPanel cutId={cutId} cutStart={cut.start_time} cutEnd={cut.end_time} projectId={projectId} jobs={jobs} onStarted={onStarted} onSummary={setCharacters} noCharacters={!!cut.no_characters} boundaryKey={`${cut.start_time}:${cut.end_time}`} />
+        : <div className="space-y-2 rounded-xl border hairline bg-[#171c25] p-3" aria-busy="true" aria-label="Loading characters"><Skeleton className="h-5 w-48" /><Skeleton className="aspect-video" /></div>}</div>
+      {characterTab === 'targets' && <TargetFrames cutId={cutId} selection={targetFrames.selection} error={targetFrames.error} />}
+    </div>, charactersTarget)}
     {children}
   </div>
 })

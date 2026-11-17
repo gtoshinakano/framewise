@@ -41,6 +41,10 @@ def _analysis_cuts(payload):
     return refs
 
 
+def _keyframe_cuts(payload):
+    return [_cut_ref(item['id'], item) for item in payload.get('cuts', []) if isinstance(item, dict) and isinstance(item.get('id'), str)]
+
+
 def _frame_cuts(payload):
     ids = payload.get('cut_ids') if isinstance(payload.get('cut_ids'), list) else []
     ids = [*ids, *(payload[key] for key in ('cut_id', 'next_cut_id') if isinstance(payload.get(key), str))]
@@ -193,6 +197,7 @@ KINDS = {kind.pipeline: kind for kind in (
     Kind('voice_sample', 'Voice sample', True, audio_range=_voice_range, cancel_running=_always,
          keys=lambda payload, cut_ids: [f"voice_sample:{payload.get('character_context_id')}"]),
     # Media work runs on the CPU in the API process: listed, never counted, not cancellable while it runs.
+    Kind('keyframes', 'Keyframe selection', False, cuts=_keyframe_cuts, cancel_running=_always, retry=_always, keys=lambda payload, cut_ids: ['keyframes']),
     Kind('prepare', 'Prepare media', False, cancel_queued=False, keys=lambda payload, cut_ids: ['prepare']),
     Kind('hardcuts', 'Hard-cut detection', False, cuts=_one_cut, cancel_queued=False,
          keys=lambda payload, cut_ids: [f'hardcuts:{cut_id}' for cut_id in cut_ids] or ['hardcuts']),

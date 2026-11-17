@@ -345,7 +345,7 @@ def heartbeat(job_id: str, owner: str, done: threading.Event):
             log.exception('Could not release job lease: %s', job_id)
 
 
-def work_loop(pipelines=("prepare", "hardcuts", "cutframes")):
+def work_loop(pipelines=("prepare", "hardcuts", "cutframes", "keyframes")):
     while not stop_event.is_set():
         try:
             claimed = claim_job(pipelines)
@@ -396,6 +396,14 @@ def process(job_id: str, owner: str):
             with db.connect() as conn:
                 require_lease(conn, job_id, owner)
                 conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+            return
+        if job['pipeline'] == 'keyframes':
+            from . import keyframes
+            keyframes.process(job, owner, episode, payload, original)
+            with db.connect() as conn:
+                require_lease(conn, job_id, owner)
+                conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+                sync_episode_status(conn, episode_id)
             return
         targeted = job["pipeline"] == "hardcuts" and bool(payload.get('cut_id'))
         if job["pipeline"] != "cutframes" and not targeted:

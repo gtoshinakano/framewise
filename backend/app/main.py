@@ -58,6 +58,8 @@ async def composition_error_handler(_request, exc):
     return JSONResponse(status_code=exc.status_code, content={'detail':exc.detail})
 
 app.include_router(storage.router)
+from .keyframes_api import router as keyframes_router
+app.include_router(keyframes_router)
 from .assistant.api import router as assistant_router
 app.include_router(assistant_router)
 from .chat_gateway import router as chat_gateway_router
@@ -2747,6 +2749,14 @@ def retry_analysis(job_id: str):
                     raise HTTPException(409, 'Compaction is already queued or running')
                 retry_id = str(uuid.uuid4())
                 conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
+                return {'job_id': retry_id}
+            if job['pipeline'] == 'keyframes' and job['status'] in ('failed', 'cancelled'):
+                if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running') AND pipeline NOT IN ('brief_export','composition_compact')", (job['episode_id'],)).fetchone():
+                    raise HTTPException(409, 'An episode job is already running')
+                retry_id = str(uuid.uuid4())
+                conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
+                worker.sync_episode_status(conn, job['episode_id'])
+                worker.wake_event.set()
                 return {'job_id': retry_id}
             if job['pipeline'] == 'character_profile' and job['status'] in ('failed', 'cancelled'):
                 payload = json_object_or_empty(job['payload_json'])

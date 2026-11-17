@@ -106,6 +106,11 @@ def init_db():
             UNIQUE(episode_id, cut_index)
         );
         CREATE INDEX IF NOT EXISTS cuts_episode_idx ON cuts(episode_id);
+        CREATE TABLE IF NOT EXISTS keyframe_results (
+            cache_key TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE, result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS cut_brief_instructions (
             cut_id TEXT PRIMARY KEY REFERENCES cuts(id) ON DELETE CASCADE,
             content TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
