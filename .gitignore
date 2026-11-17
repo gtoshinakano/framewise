@@ -29,3 +29,5 @@ frontend/public/analysis-experiments/**/*.jpeg
 frontend/public/analysis-experiments/**/*.png
 frontend/public/analysis-experiments/**/*.webp
 analysis_experiments/watcher.log
+frontend/public/multiframe-experiment/
+multiframe_experiment/watcher.log

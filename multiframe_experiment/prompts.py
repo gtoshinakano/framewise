@@ -1,0 +1,132 @@
+"""Prompt styles and context levels. A config is (model, style, context); add a style or a context here and nothing else changes.
+
+Every style asks for the same JSON (``schema.py``); they differ in framing and in how a change is phrased.
+Every context level adds information on top of the frames; the stored video analysis is never given (it is the baseline).
+"""
+import json
+
+COMMON_RULES = '''Frames are labelled F<n> with their time in seconds from the start of the shot. They are keyframes picked where the picture changed, so the time between two frames varies.
+Return one JSON object only:
+{"frames": [one entry per frame, in order: {"frame": "F1", "characters": [{"name": "...", "state": "..."}]}],
+ "segments": [one entry per pair of consecutive frames, in order: {"from": "F1", "to": "F2", "camera": {"move": ..., "detail": "..."}, "characters": [{"name": "...", "walking": "yes|no|unclear", "speaking": "yes|no|unclear", "blinking": "yes|no|unclear", "changes": [{"part": "body_pose|head|eyes|mouth|arms|hands|legs|position|expression", "description": "..."}]}], "other_changes": [{"kind": "outfit|color|lighting|object|background|effect", "description": "..."}]}],
+ "summary": "..."}
+First fill "frames": look at each frame on its own and write, for every visible character, a short state of that frame only: pose, head angle, where the eyes look and whether they are open or closed, whether the mouth is open or closed, arm, hand and leg positions, place in the image. Then write "segments" by comparing the states of the two frames of each pair: a change exists only where the two states differ. Consecutive pairs usually differ, so do not repeat the same change for every pair unless the frames really show it each time.
+camera.move is one of: static, pan_left, pan_right, tilt_up, tilt_down, zoom_in, zoom_out, dolly_in, dolly_out, truck, orbit, shake, unclear.
+Priorities, most important first: who walks; whether and how the camera moves; who speaks (mouth movement); pose changes; head angle changes; eye blinks and gaze; arm, hand and leg positions. Outfit, colours and lighting matter only when they visibly change.
+"changes" and "other_changes" list only what differs between the two frames; never list a part that stays the same (an empty list is fine). Keep each description to one short sentence.
+Left and right always mean the viewer's left and right of the image.
+A burned-in subtitle strip, if any, is not part of the picture: ignore its text and its appearance.'''
+
+STYLES = {
+    'animator': {
+        'label': 'Animator: "how would you animate these frames?"',
+        'system': '''You are a key animator for an anime production. You receive the keyframes of one shot. Your job: tell the in-between animator exactly how to animate from each keyframe to the next one.
+For every pair of consecutive frames write the animation directions: how the camera moves, and for each character which body parts move, from where to where, in which direction and how strongly (for example a small head turn versus a full turn). Write each change as a direction an animator can follow, with the start and end state of the part.
+''' + COMMON_RULES + '''
+"walking", "speaking" and "blinking" say whether that motion must be animated between the two frames. "changes" lists every other part that must move. "summary" is the animation plan of the whole window in two or three sentences.''',
+        'retry_hint': 'Keep the animation directions concrete.',
+    },
+    'observer': {
+        'label': 'Observer: "describe exactly what changed between frames"',
+        'system': '''You compare consecutive keyframes of one anime shot and report exactly what changed between them.
+Only report what you can see change between the two images. Small changes count: a blink, a slight head tilt, a mouth opening, a hand shifting a few pixels. Do not report something that stays the same, and do not guess motion that the frames do not show. When a body part is hidden or too small to judge, say "unclear" or leave it out; "no" and an empty "changes" list are valid answers.
+''' + COMMON_RULES + '''
+"walking", "speaking" and "blinking" say whether that motion is visible between the two frames. "changes" lists every other part that visibly changed, each with what it looked like in the first frame and what it looks like in the second. "summary" says in two or three sentences what happens across the window.''',
+        'retry_hint': 'Report only visible changes.',
+    },
+}
+
+
+def _roster_lines(sample):
+    if sample.get('no_characters'):
+        return ['The user marked this shot as having no characters.']
+    people = sample.get('roster') or []
+    if not people:
+        return ['No character was identified in the first frame; describe anyone visible as "unknown person 1", "unknown person 2" and so on.']
+    lines = ['Characters identified in the first frame (box on a 0-1000 grid of the image: left, top, right, bottom). Use exactly these names; '
+             'anyone else is "unknown person 1", "unknown person 2" and so on:']
+    for person in people:
+        lines.append(f"- {person['name']}: box {person['box']} ({person['side']})")
+    return lines
+
+
+def _subtitle_line(sample):
+    band = sample.get('subtitle_band') or {}
+    if band.get('top') is None:
+        return []
+    return [f"A burned-in subtitle strip covers {band['top'] * 100:.0f}-{band['bottom'] * 100:.0f}% of the image height; ignore it."]
+
+
+def _transcript_lines(sample, window):
+    start, end = window['frames'][0]['t'], window['frames'][-1]['t']
+    lines = [line for line in sample.get('transcript') or [] if line['start'] < end + 0.05 and line['end'] > start - 0.05]
+    if not lines:
+        return ['Transcript: nobody speaks during these frames (the audio may still have off-screen sounds).']
+    out = ['Transcript lines heard during these frames (seconds from the start of the shot; the speaker may be off screen):']
+    for line in lines:
+        out.append(f"- {line['start']:.2f}-{line['end']:.2f} s, {line.get('speaker') or 'unknown speaker'}: {line['text']}")
+    return out
+
+
+def _first_frame_lines(sample):
+    view = sample.get('first_frame_view')
+    if not isinstance(view, dict):
+        return []
+    keep = {key: view.get(key) for key in ('composition', 'camera', 'background_people') if view.get(key)}
+    people = []
+    for person in view.get('visible_characters') or []:
+        if isinstance(person, dict):
+            people.append({key: person.get(key) for key in ('character', 'position', 'pose', 'expression', 'gaze', 'action', 'pose_detail') if person.get(key)})
+    if people:
+        keep['characters'] = people
+    return ['Description of the shot\'s first frame (F1) written earlier; use it to know who is who, but report only what changes between frames:',
+            json.dumps(keep, ensure_ascii=False)]
+
+
+def _previous_lines(previous):
+    if not previous:
+        return []
+    last = previous['segments'][-1] if previous.get('segments') else None
+    note = {'summary': previous.get('summary'), 'last_segment': last}
+    return ['Your answer for the frames just before these (the first frame here is the last frame there):', json.dumps(note, ensure_ascii=False)]
+
+
+CONTEXTS = {
+    'frames': {'label': 'Frames + timestamps only', 'tells_speech': False, 'chained': False,
+               'build': lambda sample, window, previous: []},
+    'roster': {'label': 'Frames + character roster (names, boxes) + subtitle band', 'tells_speech': False, 'chained': False,
+               'build': lambda sample, window, previous: [*_roster_lines(sample), *_subtitle_line(sample)]},
+    'full': {'label': 'Roster + first-frame description + transcript + previous window', 'tells_speech': True, 'chained': True,
+             'build': lambda sample, window, previous: [*_roster_lines(sample), *_subtitle_line(sample), *_first_frame_lines(sample),
+                                                        *_transcript_lines(sample, window), *_previous_lines(previous)]},
+}
+
+
+def frame_heading(frame):
+    return f"{frame['label']} · t={frame['t']:.2f} s"
+
+
+def build_messages(sample, window, style, context, images, previous=None):
+    """The chat messages for one window: system = style, user = context lines then each frame label followed by its image."""
+    names = [frame['label'] for frame in window['frames']]
+    pairs = ', '.join(f'{a}→{b}' for a, b in zip(names, names[1:]))
+    intro = [f"Shot length {sample['duration']:.2f} s. These are frames {names[0]} to {names[-1]} of the shot ({len(names)} frames).",
+             *CONTEXTS[context]['build'](sample, window, previous)]
+    content = [{'type': 'text', 'text': '\n'.join(intro)}]
+    for frame, image in zip(window['frames'], images):
+        content.append({'type': 'text', 'text': frame_heading(frame)})
+        content.append({'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image}})
+    content.append({'type': 'text', 'text': f'Answer with exactly {len(names) - 1} segments: {pairs}. JSON only.'})
+    return [{'role': 'system', 'content': STYLES[style]['system']}, {'role': 'user', 'content': content}]
+
+
+def prompt_text(messages):
+    """The messages with images replaced by a placeholder (stored with each call for the report)."""
+    out = []
+    for message in messages:
+        if isinstance(message['content'], str):
+            out.append(f"[{message['role']}]\n{message['content']}")
+            continue
+        parts = [part['text'] if part['type'] == 'text' else '<image>' for part in message['content']]
+        out.append(f"[{message['role']}]\n" + '\n'.join(parts))
+    return '\n\n'.join(out)
