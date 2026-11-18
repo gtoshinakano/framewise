@@ -15,8 +15,10 @@ from app import db, media, worker, inference_worker
 from app.main import app, enqueue_analysis
 
 PRODUCTION_TEXT = ('### Scene\nA store.\n\n### Opening Frame\nA person.\n\n'
-                   '### Animation Timeline\n[0–1] Holds still.\n\n### Dialogue\nHello there. Wait!\n\n'
-                   '### Continuity & Constraints\nStatic camera.')
+                   '### Performance Beats\n[0.0–1.0] Camera: static.\n\n### Acting Notes\nThe person waits.\n\n'
+                   '### Continuity & Constraints\nStatic camera.\n\n'
+                   '### Cinematic Camera\n- Camera body: ARRI Alexa 35\n- Lens: Cooke S4/i\n- Focal length: 35 mm\n- Aperture: T2.8\n'
+                   '- Lighting: soft key from the left\n- Color grading: muted, warm highlights\n- Image texture: fine grain')
 
 
 class AnalysisTest(unittest.TestCase):
@@ -707,9 +709,9 @@ class AnalysisTest(unittest.TestCase):
         self.assertNotIn('subtitles', requests[2][1]['context'])
         self.assertNotIn('Consistency summary', [row['title'] for row in requests[2][1]['current_results']])
         current = next(item for item in self.client.get('/api/cuts/c1/analysis-results').json() if item['title'] == 'Cut summary')
-        self.assertIn('### Dialogue', current['content'])
-        self.assertIn('Hello there.', current['content'])
-        self.assertIn('Wait!', current['content'])
+        self.assertEqual(current['content'], PRODUCTION_TEXT)
+        self.assertNotIn('### Dialogue', current['content'])
+        self.assertIn('### Cinematic Camera', current['content'])
 
     def test_summary_requires_spoken_dialogue_section(self):
         sections = {key: {'content': 'Evidence', 'confidence': 'unknown'} for key, _ in inference_worker.SUMMARY_TOPICS}

@@ -575,11 +575,35 @@ BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Performance Beats', 'Acting Notes',
 # Summaries written earlier must still save when edited: the four sections of 2026-11-16, and before that with Dialogue.
 PREVIOUS_BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Animation Timeline', 'Continuity & Constraints']
 LEGACY_BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Animation Timeline', 'Dialogue', 'Continuity & Constraints']
-BRIEF_MAX_BYTES = 6144  # body, face, gaze, mouth and intent per character and beat, plus acting notes; 4 KB cut that short
+# The cinematic camera look of the opening frame (2026-11-19) is the last section, so the timed one stays third. A brief without it is
+# still a valid older brief; a model answer must have it (``camera=True``).
+CAMERA_SECTION = 'Cinematic Camera'
+CAMERA_BRIEF_SECTIONS = BRIEF_SECTIONS + [CAMERA_SECTION]
+# (label shown in errors, pattern of the label as written in the line)
+CAMERA_FIELDS = (('Camera body', r'camera[ _]body'), ('Lens', r'lens'), ('Focal length', r'focal[ _]length'), ('Aperture', r'aperture'),
+                 ('Lighting', r'lighting'), ('Color grading', r'colou?r[ _]grading'), ('Image texture', r'image[ _]texture'))
+CAMERA_NON_ANSWER = re.compile(r'(?:unknown|n/?a|none|not (?:established|visible|available|specified)|unclear|unspecified)[\s.]*', re.I)
+BRIEF_MAX_BYTES = 7168  # body, face, gaze, mouth and intent per character and beat, acting notes and the camera look; 4 KB cut that short
 
 
-def validate_production_brief(text, duration=None):
-    """Validate the existing Markdown section contract before any revision is saved."""
+def validate_camera_section(body):
+    """The Cinematic Camera section: one nonempty labelled line per field, each a decision."""
+    problems = []
+    for label, pattern in CAMERA_FIELDS:
+        match = re.search(rf'^[ \t]*(?:[-*][ \t]*)?\**[ \t]*{pattern}[ \t]*\**[ \t]*:[ \t]*\**[ \t]*(\S.*)$', body, re.I | re.M)
+        if not match:
+            problems.append(f'{label} is missing')
+        elif CAMERA_NON_ANSWER.fullmatch(match.group(1).strip().strip('*').strip()):
+            problems.append(f'{label} has no decision')
+    if problems:
+        raise ValueError(f'{CAMERA_SECTION} needs one line "- Label: value" for each of ' + ', '.join(label for label, _ in CAMERA_FIELDS) + ', each a real choice: ' + '; '.join(problems))
+
+
+def validate_production_brief(text, duration=None, camera=False):
+    """Validate the existing Markdown section contract before any revision is saved.
+
+    ``camera`` is true for a model's answer: it must end with the Cinematic Camera section. Older layouts stay valid for editing.
+    """
     from .output_hygiene import strip_reasoning_blocks
     text = strip_reasoning_blocks(text)
     if re.search(r'\[the model.s response was cut off|let me analy[sz]e|i(?: am|\x27m) a (?:senior animation reconstruction|performance) director', text, re.I) or re.search(r'(?:\.\.\.|…|[,;:\-–])\s*$', text):
@@ -588,10 +612,12 @@ def validate_production_brief(text, duration=None):
         raise ValueError(f'production brief exceeds {BRIEF_MAX_BYTES} bytes')
     headings = list(re.finditer(r'^###\s+(.+?)\s*$', text, flags=re.M))
     names = [m.group(1).strip() for m in headings]
-    if names not in (BRIEF_SECTIONS, PREVIOUS_BRIEF_SECTIONS, LEGACY_BRIEF_SECTIONS) or text[:headings[0].start()].strip():
-        raise ValueError('production brief does not match the required section schema: use exactly the sections ' + ', '.join(BRIEF_SECTIONS))
+    if names not in ((CAMERA_BRIEF_SECTIONS,) if camera else (CAMERA_BRIEF_SECTIONS, BRIEF_SECTIONS, PREVIOUS_BRIEF_SECTIONS, LEGACY_BRIEF_SECTIONS)) or text[:headings[0].start()].strip():
+        raise ValueError('production brief does not match the required section schema: use exactly the sections ' + ', '.join(CAMERA_BRIEF_SECTIONS if camera else BRIEF_SECTIONS))
     if any(not text[m.end():(headings[i+1].start() if i+1 < len(headings) else len(text))].strip() for i,m in enumerate(headings)):
         raise ValueError('production brief contains an empty section')
+    if CAMERA_SECTION in names:
+        validate_camera_section(text[headings[names.index(CAMERA_SECTION)].end():])
     timeline = text[headings[2].end():headings[3].start()].strip()
     event_pattern = re.compile(r'^\s*(?:[-*]\s*)?\[\s*(\d+(?:\.\d+)?)\s*(?:(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*)?(?:s|secs?|seconds?)?\s*\]\s*(\S.*)$', re.I)
     previous_start = -1.
@@ -658,19 +684,34 @@ def process_regen(job_id, owner):
         context_cut = payload.get('context', {}).get('cut', {})
         begin, end = context_cut.get('start_time'), context_cut.get('end_time')
         duration = end - begin if all(isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value) for value in (begin,end)) and end > begin else None
-        validator = (lambda text: validate_production_brief(text, duration)) if payload.get('production_brief') and not legacy else None
+        # A model answer must end with the Cinematic Camera section when the instructions ask for it (an edited request may not).
+        camera = brief and CAMERA_SECTION in system
+        validator = (lambda text: validate_production_brief(text, duration, camera)) if payload.get('production_brief') and not legacy else None
+        cancel = lambda: check_summary_lease(job_id, owner)
+        request_json = json.dumps(request, ensure_ascii=False)
+        # The first frame goes with the evidence when the model can see it: it only informs the camera section. Never a reason to fail.
+        picture, picture_skipped = [], None
+        if camera and override is None:
+            from . import brief_picture, sequence_evidence
+            if not endpoint_vision(provider, cancel):
+                picture_skipped = 'the text endpoint cannot read images'
+            else:
+                picture, picture_skipped = brief_picture.opening_frame(cut_id, system, request_json, sequence_evidence.slot_tokens(provider))
+                if picture:
+                    system += brief_picture.PICTURE_NOTE
         generation_started = time.monotonic()
-        output, actual_model = chat_json(model, system, json.dumps(request, ensure_ascii=False), fields, 6144, summary_topics=not legacy, progress=lambda attempt, total: worker.stage(job_id, owner, job["episode_id"], f"Waiting for {'local model' if provider == 'local' else 'OpenRouter'} summary (attempt {attempt}/{total})"), cancel_check=lambda: check_summary_lease(job_id, owner), plain_text=not legacy, provider=provider, thinking=thinking, usage_out=telemetry, text_validator=validator)
+        output, actual_model = chat_json(model, system, request_json, fields, 6144, summary_topics=not legacy, progress=lambda attempt, total: worker.stage(job_id, owner, job["episode_id"], f"Waiting for {'local model' if provider == 'local' else 'OpenRouter'} summary (attempt {attempt}/{total})"), cancel_check=cancel, plain_text=not legacy, provider=provider, thinking=thinking, usage_out=telemetry, text_validator=validator, images=picture or None)
         generation_seconds = time.monotonic() - generation_started
         content = output[field].strip() if legacy else None
-        settings = json.dumps({"mode": mode, "instruction": payload["instruction"], "summary_model": actual_model, "summary_generation_seconds": generation_seconds, "provider": provider, "model_revision": local_text_runtime.revision_for(telemetry.get('model_variant')) if provider == 'local' else None, "thinking": thinking if provider == "local" else None, "thinking_budget_tokens": int(os.environ.get("QWEN36_THINKING_BUDGET", "2048")) if provider == "local" and thinking else None, "usage": telemetry}, ensure_ascii=False)
+        settings = json.dumps({"mode": mode, "instruction": payload["instruction"], "summary_model": actual_model, "summary_generation_seconds": generation_seconds, "provider": provider, "model_revision": local_text_runtime.revision_for(telemetry.get('model_variant')) if provider == 'local' else None, "thinking": thinking if provider == "local" else None, "thinking_budget_tokens": int(os.environ.get("QWEN36_THINKING_BUDGET", "2048")) if provider == "local" and thinking else None, "usage": telemetry,
+                               **({'picture': 'first frame'} if picture else {}), **({'picture_skipped': picture_skipped} if picture_skipped else {})}, ensure_ascii=False)
         snapshot = json.dumps(request, ensure_ascii=False)
         new_id = str(uuid.uuid4())
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             worker.require_lease(conn, job_id, owner)
             if not legacy:
-                content = validate_production_brief(output, duration) if payload.get("production_brief") and isinstance(output, str) else render_relaxed_summary(output)
+                content = validate_production_brief(output, duration, camera) if payload.get("production_brief") and isinstance(output, str) else render_relaxed_summary(output)
                 if payload.get('production_brief') and (content.startswith('{') or re.match(r'^```(?:json)?\s*\{', content, re.IGNORECASE)):
                     content = render_relaxed_summary(content)
                 if len(content) > 50000:

@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 import unittest
 import wave
@@ -481,7 +482,7 @@ class CompositionProjectionTest(unittest.TestCase):
         roomy = good + ' ' + 'x' * 3500  # a brief with activity, emotion and speaking per character needs more than the old 3 KB
         self.assertEqual(inference_worker.validate_production_brief(roomy), roomy)
         self.assertEqual(inference_worker.validate_production_brief('<analysis>private</analysis><reasoning>private</reasoning>\n' + good), good)
-        for bad in (fixture(48)['results'][0]['type'], good + ('x'*6145), good + "\n[The model's response was cut off and may be incomplete.]", '<think>unfinished', '<analysis>unfinished'):
+        for bad in (fixture(48)['results'][0]['type'], good + ('x'*7169), good + "\n[The model's response was cut off and may be incomplete.]", '<think>unfinished', '<analysis>unfinished'):
             with self.assertRaises(ValueError): inference_worker.validate_production_brief(bad)
         for timeline in ('Holds still.', '[1–0] Holds still.', '[0–3] Holds still.', '[0–1]', '[1–2] Turns.\n[0–1] Stands.'):
             with self.assertRaises(ValueError):
@@ -496,8 +497,8 @@ class CompositionProjectionTest(unittest.TestCase):
         for bad in (new.replace('### Scene', '### Overview'), new.replace('### Opening Frame\nA person.\n', ''), new.replace('Static camera.', ''), new + '\n### Dialogue\nx'):
             with self.assertRaises(ValueError): inference_worker.validate_production_brief(bad)
         self.assertEqual(inference_worker.BRIEF_SECTIONS, ['Scene', 'Opening Frame', 'Performance Beats', 'Acting Notes', 'Continuity & Constraints'])
-        for rule in ('Dialogue is not part of this brief', 'pose_detail', 'state_correction', 'Return all five headings', 'Performance Director',
-                     'the keyframes win', '[start–end seconds] Name: body; face; gaze; mouth (delivery). Intent:', 'at most 6144 UTF-8 bytes'):
+        for rule in ('Dialogue is not part of this brief', 'pose_detail', 'state_correction', 'Return all six headings', 'Performance Director',
+                     'the keyframes win', '[start–end seconds] Name: body; face; gaze; mouth (delivery). Intent:', 'at most 7168 UTF-8 bytes'):
             self.assertIn(rule, inference_worker.PRODUCTION_BRIEF_SYSTEM)
         self.assertNotIn('### Dialogue', inference_worker.PRODUCTION_BRIEF_SYSTEM)
         self.assertNotIn('### Animation Timeline', inference_worker.PRODUCTION_BRIEF_SYSTEM)
@@ -513,10 +514,52 @@ class CompositionProjectionTest(unittest.TestCase):
             inference_worker.validate_production_brief(brief.replace('### Acting Notes\nHero stays warm and steady.\n', ''), duration=2)
         long = brief.replace('Hero stays warm and steady.', 'Hero stays warm. ' * 300)
         self.assertGreater(len(long.encode()), 4096)
-        self.assertLess(len(long.encode()), 6144)
+        self.assertLess(len(long.encode()), 7168)
         self.assertEqual(inference_worker.validate_production_brief(long, duration=2), long)
-        with self.assertRaisesRegex(ValueError, 'exceeds 6144 bytes'):
-            inference_worker.validate_production_brief(brief.replace('Hero stays warm and steady.', 'x ' * 3200), duration=2)
+        with self.assertRaisesRegex(ValueError, 'exceeds 7168 bytes'):
+            inference_worker.validate_production_brief(brief.replace('Hero stays warm and steady.', 'x ' * 3700), duration=2)
+
+    CAMERA_SECTION = ('### Cinematic Camera\n- Camera body: ARRI Alexa 35\n- Lens: Cooke S4/i spherical primes\n- Focal length: 35 mm\n- Aperture: T2.8\n'
+                      '- Lighting: soft window key from camera left over warm practicals\n- Color grading: muted teal shadows with warm highlights\n'
+                      '- Image texture: fine grain with gentle halation')
+    FIVE_SECTIONS = ('### Scene\nA store.\n### Opening Frame\nHero stands left.\n### Performance Beats\n[0.0–2.0] Camera: static.\n'
+                     '[0.0–1.0] Hero: stands; calm; looks at Mia; mouth stays closed. Intent: waits.\n[2.0] End state: Hero stands.\n'
+                     '### Acting Notes\nHero stays calm.\n### Continuity & Constraints\nStatic camera.')
+
+    def test_a_model_answer_must_end_with_the_cinematic_camera_section(self):
+        validate = inference_worker.validate_production_brief
+        self.assertEqual(inference_worker.CAMERA_BRIEF_SECTIONS, [*inference_worker.BRIEF_SECTIONS, 'Cinematic Camera'])
+        full = self.FIVE_SECTIONS + '\n' + self.CAMERA_SECTION
+        self.assertEqual(validate(full, duration=2, camera=True), full)
+        self.assertEqual(validate(full, duration=2), full)  # an edit of a summary that has the section saves
+        self.assertEqual(validate(self.FIVE_SECTIONS, duration=2), self.FIVE_SECTIONS)  # and so does an older summary without it
+        with self.assertRaisesRegex(ValueError, 'Cinematic Camera'):  # the sentence that goes back to the model names the section
+            validate(self.FIVE_SECTIONS, duration=2, camera=True)
+        with self.assertRaises(ValueError):  # it is the last section, after the constraints
+            validate(self.FIVE_SECTIONS.replace('### Acting Notes', self.CAMERA_SECTION + '\n### Acting Notes'), duration=2, camera=True)
+        camera_lines = self.CAMERA_SECTION.splitlines()
+        for index, label in ((1, 'Camera body'), (2, 'Lens'), (3, 'Focal length'), (4, 'Aperture'), (5, 'Lighting'), (6, 'Color grading'), (7, 'Image texture')):
+            missing = '\n'.join(line for i, line in enumerate(camera_lines) if i != index)
+            with self.assertRaisesRegex(ValueError, f'{label} is missing'):
+                validate(self.FIVE_SECTIONS + '\n' + missing, duration=2, camera=True)
+            for answer in ('unknown', 'N/A', 'Not established.', ''):
+                blank = camera_lines[index].split(':')[0] + ': ' + answer
+                with self.assertRaisesRegex(ValueError, f'{label} (?:has no decision|is missing)|leaked'):  # an empty last line also reads as a cut-off answer
+                    validate(self.FIVE_SECTIONS + '\n' + '\n'.join([*camera_lines[:index], blank, *camera_lines[index + 1:]]), duration=2, camera=True)
+        # The labels may be written in bold, in another order, or with the British spelling.
+        loose = ['### Cinematic Camera', '- **Lens:** Cooke S4/i', '**Camera body**: ARRI Alexa Mini LF', '* Focal length: 50 mm', '- Aperture: T2', '- Lighting: hard sun',
+                 '- Colour grading: bleach bypass', '- Image texture: coarse grain']
+        validate(self.FIVE_SECTIONS + '\n' + '\n'.join(loose), duration=2, camera=True)
+        self.assertLess(len(self.CAMERA_SECTION.encode()), 800)  # the section fits the 1 KB the byte cap grew by
+
+    def test_the_prompt_asks_for_the_camera_look_and_prefers_arri_alexa(self):
+        system = inference_worker.PRODUCTION_BRIEF_SYSTEM
+        for rule in ('### Cinematic Camera', 'Return all six headings', 'prefer the ARRI Alexa family', 'Alexa 35', 'Alexa Mini LF', 'Camera body, Lens, Focal length, Aperture, Lighting, Color grading, Image texture',
+                     'Never mention anime', 'Camera movement stays in Performance Beats', 'The one deliberate exception is the Cinematic Camera section'):
+            self.assertIn(rule, system)
+        for field, _ in inference_worker.CAMERA_FIELDS:
+            self.assertIn(field, system)
+        self.assertEqual([heading for heading in re.findall(r'^### (.+)$', system, re.M)], inference_worker.CAMERA_BRIEF_SECTIONS)
 
     def test_summary_generation_retries_truncation_and_strips_thinking(self):
         good = '### Scene\nA store.\n### Opening Frame\nA person.\n### Animation Timeline\n[0–1] Holds still.\n### Dialogue\nNo dialogue timing supplied.\n### Continuity & Constraints\nStatic camera.'
@@ -672,8 +715,9 @@ class CompositionApiTest(unittest.TestCase):
         response = self.client.post(f'/api/cuts/{cut_id}/regenerate-summary',json={'mode':'regenerate'})
         self.assertEqual(response.status_code,200,response.text)
         job_id = response.json()['job_id']
-        bad = ('### Scene\nA store.\n### Opening Frame\nA person.\n### Animation Timeline\n'
-               '[0–99] A person turns.\n### Dialogue\nNo dialogue timing supplied.\n### Continuity & Constraints\nStatic camera.')
+        bad = ('### Scene\nA store.\n### Opening Frame\nA person.\n### Performance Beats\n[0–99] Camera: a person turns.\n### Acting Notes\nWaits.\n'
+               '### Continuity & Constraints\nStatic camera.\n### Cinematic Camera\n- Camera body: ARRI Alexa 35\n- Lens: Cooke S4/i\n- Focal length: 35 mm\n'
+               '- Aperture: T2.8\n- Lighting: soft key\n- Color grading: muted\n- Image texture: fine grain')
         result = {'choices':[{'finish_reason':'stop','message':{'content':bad}}]}
         with patch.dict(os.environ,{'OPENROUTER_API_KEY':'test'}), patch.object(inference_worker,'request_json',return_value=result) as call:
             inference_worker.process_regen(*worker.claim_job(('regen',)))
