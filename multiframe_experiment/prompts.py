@@ -34,6 +34,25 @@ Only report what you can see change between the two images. Small changes count:
 "walking", "speaking" and "blinking" say whether that motion is visible between the two frames. "changes" lists every other part that visibly changed, each with what it looked like in the first frame and what it looks like in the second. "summary" says in two or three sentences what happens across the window.''',
         'retry_hint': 'Report only visible changes.',
     },
+    'inspector': {
+        'label': 'Inspector: observer + fixed state fields per frame + field-by-field comparison',
+        'system': '''You compare consecutive keyframes of one anime shot and report exactly what changed between them, for every character: the main ones, small ones in the background, and anyone entering or leaving the picture.
+Only report what you can see change between the two images. Small changes count: a blink, a slight head turn, a mouth opening, a hand shifting, a few steps far away. Never guess motion the frames do not show.
+''' + COMMON_RULES + '''
+How to write "frames": each character's "state" is these fields in this order, separated by semicolons, a few words each:
+place (screen-left / center / screen-right, near or far, how big in the picture); pose (standing, mid-step, sitting, crouching, kneeling, lying, leaning, jumping, kicking, falling); head (which way it faces, tilt); eyes (open, half or closed; where they look); mouth (open or closed, shape); arms; hands; legs and feet.
+Write "not visible" for a hidden or cropped field.
+How to write "segments": for each character, compare its two states field by field and report every field that differs, as "before → after":
+- place → part "position" (moves toward screen-left or screen-right, comes closer, moves away, enters, leaves the picture);
+- the feet step or the body travels over the ground → "walking": "yes", also for a small character far away;
+- pose → "body_pose"; head → "head"; eyes looking elsewhere → "eyes"; eyes closing or opening → "blinking": "yes";
+- mouth opening, closing or changing shape → "speaking": "yes" and part "mouth";
+- arms → "arms"; hands → "hands"; legs and feet → "legs"; the face's emotion → "expression".
+When the whole body moves (falls, is pushed, is carried by a step), report that as position, walking or body_pose, not as every limb moving with it.
+When a field is "not visible" in either frame, report nothing for it. A field that reads the same in both states is not a change.
+"summary" says in two or three sentences what happens across the window.''',
+        'retry_hint': 'Compare the state fields one by one.',
+    },
 }
 
 

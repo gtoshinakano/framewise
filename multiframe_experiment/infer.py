@@ -26,6 +26,9 @@ MODELS = {
     'qwen35': {'visual_key': 'qwen35-27b', 'label': 'Qwen3.5-27B · Q4_K_M', 'context_per_slot': 16384},
 }
 BASELINE_KEY = 'baseline|production|video'
+# Setups without a model call of their own (computed on the CPU from keypoints and other answers).
+PSEUDO = {'dwpose': 'DWPose whole-body + rules (CPU)', 'hybrid': 'Hybrid: DWPose body + Qwen3.5 rest'}
+LABELS = {**{key: value['label'] for key, value in MODELS.items()}, **PSEUDO}
 
 
 def config_key(model, style, context):

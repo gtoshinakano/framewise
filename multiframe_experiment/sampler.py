@@ -118,12 +118,23 @@ def recompute_keyframes(source, cuts, overrides, band):
     return results, settings
 
 
+def _latest_run(conn, cut):
+    """The cut's latest detection run when it starts where the cut starts (its first frame is still the cut's first frame)."""
+    run = conn.execute('SELECT * FROM character_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1', (cut['id'],)).fetchone()
+    if not run or abs((run['cut_start'] or -1) - cut['start_time']) > 1e-3:
+        return None
+    return run
+
+
 def roster(conn, cut, size_hint):
-    """Named boxes of the first frame (latest detection run for exactly these boundaries), left to right, 0-1000 grid."""
+    """Named boxes of the first frame (latest detection run starting at the cut's start), left to right, 0-1000 grid.
+
+    A cut that was split after detection keeps its start, so its first-frame boxes still hold (cut 143).
+    """
     if cut['no_characters']:
         return []
-    run = conn.execute('SELECT * FROM character_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1', (cut['id'],)).fetchone()
-    if not run or abs((run['cut_start'] or -1) - cut['start_time']) > 1e-3 or abs((run['cut_end'] or -1) - cut['end_time']) > 1e-3:
+    run = _latest_run(conn, cut)
+    if not run:
         return []
     frames = _json(run['frames_json'], [])
     size = next((frame.get('image_size') for frame in frames if frame.get('position') == 'first'), None) or size_hint
@@ -141,6 +152,28 @@ def roster(conn, cut, size_hint):
         people.append({'name': row['title'], 'character_context_id': row['character_context_id'], 'box': grid, 'side': side, 'label_source': row['label_source']})
     people.sort(key=lambda p: p['box'][0])
     return people
+
+
+def detection_boxes(conn, cut):
+    """Every box of the latest detection run (labelled or not) with the time of its frame, in source pixels.
+
+    First-frame boxes need the run to start at the cut's start; last-frame boxes also need the same end.
+    """
+    run = _latest_run(conn, cut)
+    if not run:
+        return []
+    same_end = abs((run['cut_end'] or -1) - cut['end_time']) <= 1e-3
+    times = {frame.get('position'): frame.get('time') for frame in _json(run['frames_json'], []) if isinstance(frame, dict)}
+    rows = conn.execute('''SELECT d.position, d.box_json, d.label_source, c.title FROM character_detections d
+                           LEFT JOIN context_items c ON c.id=d.character_context_id WHERE d.run_id=? ORDER BY d.rowid''', (run['id'],)).fetchall()
+    out = []
+    for row in rows:
+        box = _json(row['box_json'])
+        if not (isinstance(box, list) and len(box) == 4) or (row['position'] == 'last' and not same_end) or times.get(row['position']) is None:
+            continue
+        out.append({'position': row['position'], 'time': times[row['position']], 'box': [float(v) for v in box], 'name': row['title'],
+                    'label_source': row['label_source']})
+    return out
 
 
 def current_result(conn, cut_id, kind, structured):
@@ -252,7 +285,7 @@ def build(db_path, data_dir, episode, cut_spec, run_dir, kf_overrides=None, wind
                 'id': sid, 'cut_number': number, 'cut_id': cut['id'], 'episode': ep['title'], 'episode_id': ep['id'], 'source': str(source),
                 'start': cut['start_time'], 'end': cut['end_time'], 'duration': round(cut['end_time'] - cut['start_time'], 3),
                 'width': ep['width'], 'height': ep['height'], 'no_characters': bool(cut['no_characters']),
-                'roster': people, 'first_frame_view': first_frame_view(conn, cut['id']), 'transcript': transcript(conn, cut),
+                'roster': people, 'boxes': [] if cut['no_characters'] else detection_boxes(conn, cut), 'first_frame_view': first_frame_view(conn, cut['id']), 'transcript': transcript(conn, cut),
                 'subtitle_band': band or result.get('subtitle_mask'),
                 'keyframes': {'origin': origin.get(cut['id']), 'settings': settings_used if origin.get(cut['id']) == 'recomputed' else None,
                               'change_level': result.get('change_level'), 'shot_change_score': round(result.get('shot_change_score', 0), 1),

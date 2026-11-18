@@ -171,7 +171,7 @@ class Pipeline(unittest.TestCase):
             for model in ('lfm3', 'qwen35'):
                 store = infer.Store(run, f'answers-{model}')
                 infer.run_model(store, samples, model, [(s, c) for s in prompts.STYLES for c in prompts.CONTEXTS], client, run)
-                self.assertEqual(len(store.records), 2 * 6)
+                self.assertEqual(len(store.records), 2 * len(prompts.STYLES) * len(prompts.CONTEXTS))
             answers = report.load_answers(run)
             jstore = infer.Store(run, 'judge')
             judge.run_judge(jstore, samples, answers, client, run, parallel=2)

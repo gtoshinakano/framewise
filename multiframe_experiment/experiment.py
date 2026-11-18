@@ -127,6 +127,7 @@ def stage_prepare(args, run, progress):
         run.write('config.json', {'created_at': now(), 'dry': args.dry, 'episode': meta['episode'], 'episode_id': meta['episode_id'], 'cuts': args.cuts,
                                   'missing_cuts': meta['missing'], 'kf_overrides': overrides, 'window_size': args.window, 'image_width': args.image_width,
                                   'models': args.models, 'styles': args.styles, 'contexts': args.contexts, 'judge': not args.no_judge,
+                                  'pose': args.pose, 'merge_with': args.merge_with if args.pose else None,
                                   'grammar': not args.no_grammar, 'max_attempts': infer.MAX_ATTEMPTS, 'judge_parallel': args.judge_parallel,
                                   'windows': sum(len(s['windows']) for s in samples if len(s['frames']) > 1),
                                   'model_labels': {k: infer.MODELS[k]['label'] for k in args.models}})
@@ -195,6 +196,97 @@ def stage_judge(args, run, progress):
     rebuild(run)
 
 
+def _write_records(run, name, records):
+    """Deterministic stages (pose rules, merge) rewrite their answer file instead of appending."""
+    path = run.dir / 'raw' / f'{name}.jsonl'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + '.tmp')
+    temp.write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in records))
+    os.chmod(temp, 0o666)
+    os.replace(temp, path)
+
+
+def _pose_record(config, sample, window, answer, seconds, extra=None):
+    model, style, context = config.split('|')
+    return {'key': f"{config}|{sample['id']}|w{window['index']}", 'stage': 'answer', 'model': model, 'style': style, 'context': context, 'config': config,
+            'sample': sample['id'], 'window': window['index'], 'labels': [f['label'] for f in window['frames']], 'ok': answer is not None,
+            'first_try_ok': answer is not None, 'attempts': [], 'seconds': round(seconds, 2), 'answer': answer, 'prompt': None,
+            'error': None if answer is not None else 'no answer', 'finished_at': time.time(), **(extra or {})}
+
+
+POSE_PROMPT = """No language model. DWPose whole-body (dw-ll_ucoco_384.onnx, top-down, person crops from the cut's character boxes, else YOLOX-L) on every keyframe, CPU onnxruntime.
+Per frame and person: body pose from torso tilt and hip-knee-ankle angles, torso and head yaw from shoulders, nose, eyes and ears, each arm's elevation and elbow angle, each hand's region (near the face, beside/above the head, in front of the torso, beside the body), knee angles and a lifted foot, place in the frame (character_position.horizontal) and box size.
+A keypoint counts at score >= {kp}; a body is usable with >= {n} of 17 body points. Limbs are named by screen side. Changes need a large angle or a region change; position changes have the pixel camera transform removed.
+Blinking, speaking, mouth and expression are left unclear (face points are unreliable on anime). The camera is the ORB/RANSAC pixel estimate."""
+
+
+def stage_pose(args, run, progress):
+    """Setup C on the CPU: DWPose keypoints (pose.json, overlays) and the rule-based answers (raw/answers-dwpose.jsonl)."""
+    import pose
+    import pose_rules
+    samples = run.read('samples.json', [])
+    progress.set('pose', 'running', 0, len(samples), 'Loading DWPose (CPU)')
+    data = pose.run(samples, run.dir, lambda done, total, message: progress.set('pose', 'running', done, total, message))
+    pose.save(run.dir, data)
+    records = []
+    for sample in samples:
+        result = data['samples'].get(sample['id'])
+        if not result or len(sample['frames']) < 2:
+            continue
+        states = pose_rules.frame_states(result)
+        cost = {f['label']: f['seconds'] for f in result['frames']}
+        charged = set()
+        for window in sample['windows']:
+            labels = [f['label'] for f in window['frames']]
+            seconds = sum(cost.get(label, 0) for label in labels if label not in charged)
+            charged.update(labels)
+            record = _pose_record(pose_rules.CONFIG_C, sample, window, pose_rules.answer_for_window(states, window, sample.get('pairs')), seconds)
+            if not records:
+                record['prompt'] = POSE_PROMPT.format(kp=pose.KP_THRESHOLD, n=pose.USABLE_BODY_POINTS)
+            records.append(record)
+    _write_records(run, 'answers-dwpose', records)
+    progress.set('pose', 'done', len(samples), len(samples), f'{len(records)} windows')
+    rebuild(run)
+
+
+def stage_merge(args, run, progress):
+    """Setup D on the CPU: C's body parts merged into A's answers (raw/answers-hybrid.jsonl). No model call."""
+    import pose_rules
+    samples = run.read('samples.json', [])
+    data = run.read('pose.json') or {}
+    answers = report.load_answers(run.dir)
+    progress.set('merge', 'running', message=f"Merging DWPose into {', '.join(args.merge_with)}")
+    records = []
+    for merge_with in args.merge_with:
+        records += _merge_records(samples, data, answers, merge_with)
+    _write_records(run, 'answers-hybrid', records)
+    progress.set('merge', 'done', message=f'{len(records)} windows')
+    rebuild(run)
+
+
+def _merge_records(samples, data, answers, merge_with):
+    import pose_rules
+    config = pose_rules.hybrid_config(merge_with)
+    records = []
+    for sample in samples:
+        result = (data.get('samples') or {}).get(sample['id'])
+        if not result or len(sample['frames']) < 2:
+            continue
+        states = pose_rules.frame_states(result)
+        for window in sample['windows']:
+            a = answers.get(f"{merge_with}|{sample['id']}|w{window['index']}")
+            c = answers.get(f"{pose_rules.CONFIG_C}|{sample['id']}|w{window['index']}")
+            if not a or not c:
+                continue
+            merged = pose_rules.merge(a['answer'], c['answer'], states, sample.get('pairs')) if a.get('ok') and c.get('ok') else None
+            record = _pose_record(config, sample, window, merged, (a.get('seconds') or 0) + (c.get('seconds') or 0),
+                                  {'first_try_ok': bool(a.get('first_try_ok')) and merged is not None, 'merged_from': [merge_with, pose_rules.CONFIG_C]})
+            if not records:
+                record['prompt'] = f'No model call: {pose_rules.CONFIG_C} body parts (arms, hands, legs, body_pose, position, walking) where its keypoints pass in both frames, everything else from {merge_with}; camera from the pixel estimate.'
+            records.append(record)
+    return records
+
+
 def stage_report(args, run, progress):
     rebuild(run, quiet=False)
     print(run.dir / 'report.html')
@@ -215,7 +307,8 @@ def stage_labels(args, run, progress):
     print(folder)
 
 
-STAGES = {'prepare': stage_prepare, 'infer': stage_infer, 'judge': stage_judge, 'report': stage_report, 'labels-template': stage_labels}
+STAGES = {'prepare': stage_prepare, 'pose': stage_pose, 'infer': stage_infer, 'merge': stage_merge, 'judge': stage_judge, 'report': stage_report,
+          'labels-template': stage_labels}
 
 
 def child_args(args, run):
@@ -238,7 +331,16 @@ def stage_all(args, run, progress):
         rebuild(run)
         return 1
     failed = []
+    if args.pose:
+        try:
+            stage_pose(args, run, progress)  # CPU only: the GPU stays free
+        except Exception:
+            log.exception('pose failed')
+            progress.set('pose', 'failed')
+            failed.append('pose')
     steps = [('infer', ['--model', model], f'infer:{model}') for model in args.models]
+    if args.pose and 'pose' not in failed:
+        steps.append(('merge', ['--merge-with', *args.merge_with], 'merge'))
     if not args.no_judge:
         steps.append(('judge', [], 'judge'))
     for stage, extra, name in steps:
@@ -279,6 +381,8 @@ def main(argv=None):
     parser.add_argument('--model', choices=list(infer.MODELS), help='infer stage: only this model')
     parser.add_argument('--styles', nargs='+', default=list(prompts.STYLES), choices=list(prompts.STYLES))
     parser.add_argument('--contexts', nargs='+', default=list(prompts.CONTEXTS), choices=list(prompts.CONTEXTS))
+    parser.add_argument('--pose', action='store_true', help='add setup C (DWPose + rules, CPU) and D (C merged into --merge-with, no model call)')
+    parser.add_argument('--merge-with', nargs='+', default=['qwen35|observer|frames'], help='Qwen configs whose answers D merges with DWPose (one hybrid per config)')
     parser.add_argument('--judge-parallel', type=int, default=2)
     parser.add_argument('--no-judge', action='store_true')
     parser.add_argument('--no-grammar', action='store_true', help='json_object instead of the json_schema grammar')

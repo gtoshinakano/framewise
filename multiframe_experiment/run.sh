@@ -9,6 +9,7 @@
 #
 # Experiment args: --episode "Episode 2" --cuts 139-158 --models lfm3 qwen35 --styles animator observer
 #                  --contexts frames roster full --window 5 --image-width 1024 --kf budget=10 --no-judge
+#                  --pose [--merge-with qwen35|observer|frames]   (DWPose setups C and D, CPU; weights in .models/dwpose)
 #
 # Only one GPU process at a time: the inference worker keeps a model in VRAM while idle, and a second GPU process
 # beside it once crashed this host's kernel. So `start` stops the worker, waits for the VRAM to drain and arms a
@@ -74,6 +75,9 @@ case "${1:-}" in
     echo "queue: $state"
     docker exec "$WORKER" sh -c 'test -f "$QWEN35_MODEL_PATH" && test -f "$QWEN35_PROJECTOR_PATH" && test -f "$LFM3_OMNI_MODEL_PATH" && test -f "$LFM3_OMNI_PROJECTOR_PATH" && test -x "$QWEN35_SERVER_PATH"' \
       || { echo "A model file or llama-server is missing in the worker container."; exit 1; }
+    if [[ " $* " == *" --pose "* ]] && ! { [ -f .models/dwpose/yolox_l.onnx ] && [ -f .models/dwpose/dw-ll_ucoco_384.onnx ]; }; then
+      echo "--pose needs .models/dwpose/yolox_l.onnx and dw-ll_ucoco_384.onnx (see multiframe_experiment/README.md)."; exit 1
+    fi
     prepare_dirs
     echo "VRAM in use before: $(vram_mib) MiB; stopping $WORKER ..."
     docker stop -t 60 "$WORKER" >/dev/null
@@ -88,6 +92,7 @@ case "${1:-}" in
       >"multiframe_experiment/watcher.log" 2>&1 < /dev/null &
     if ! docker compose run -d --no-deps --name "$EXP" --entrypoint python \
          -v "$PWD/backend/app:/app/app:ro" -v "$PWD/multiframe_experiment:/work:ro" -v "$PWD/$RUNS:/report/runs" \
+         -v "$PWD/.models/dwpose:/models/dwpose:ro" \
          inference-worker /work/experiment.py all --run-id "$RUN_ID" "$@"; then
       echo "The experiment container did not start; the watcher will restart the worker."; exit 1
     fi
@@ -128,14 +133,15 @@ PY
     prepare_dirs
     docker run --rm -v "$PWD/$RUNS:/runs" --entrypoint sh "$IMAGE" -c 'rm -rf /runs/dry-run'
     docker run --rm --entrypoint python -e DATA_DIR=/data -e TMPDIR=/tmp -v framewise_data:/data -v "$PWD/backend/app:/app/app:ro" \
-      -v "$PWD/multiframe_experiment:/work:ro" -v "$PWD/$RUNS:/report/runs" "$IMAGE" /work/experiment.py all --dry --run-id dry-run "$@"
+      -v "$PWD/multiframe_experiment:/work:ro" -v "$PWD/$RUNS:/report/runs" -v "$PWD/.models/dwpose:/models/dwpose:ro" "$IMAGE" \
+      /work/experiment.py all --dry --run-id dry-run "$@"
     echo "Report: $BASE/dry-run/report.html"
     ;;
   report)
     if [ -n "${2:-}" ]; then python3 multiframe_experiment/report.py "$RUNS/$2"; else python3 multiframe_experiment/report.py --root "$RUNS"; fi
     ;;
   *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

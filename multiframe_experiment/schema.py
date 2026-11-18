@@ -83,7 +83,7 @@ def json_schema(window):
         'other_changes': {'type': 'array', 'maxItems': MAX_OTHER, 'items': {'type': 'object', 'properties': {'kind': {'enum': list(OTHER_KINDS)}, 'description': TEXT},
                                                                            'required': ['kind', 'description']}}},
         'required': ['from', 'to', 'camera', 'characters', 'other_changes']}
-    state = {'type': 'object', 'properties': {'name': {'type': 'string'}, 'state': {'type': 'string', 'maxLength': 300}}, 'required': ['name', 'state']}
+    state = {'type': 'object', 'properties': {'name': {'type': 'string'}, 'state': {'type': 'string', 'maxLength': 420}}, 'required': ['name', 'state']}
     frame = {'type': 'object', 'properties': {'frame': {'enum': names}, 'characters': {'type': 'array', 'maxItems': MAX_CHARACTERS, 'items': state}},
              'required': ['frame', 'characters']}
     # "frames" comes first so the model writes every frame's state before it compares them.

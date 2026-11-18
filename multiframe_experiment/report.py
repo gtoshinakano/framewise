@@ -57,6 +57,18 @@ def load_labels(run_dir):
     return labels
 
 
+def matching_labels(labels, samples):
+    """Keep only label pairs whose frame times match this run's pairs (labels copied from another run stay honest)."""
+    times = {(s['id'], p['from'], p['to']): (p['start'], p['end']) for s in samples for p in s.get('pairs') or []}
+    out = {}
+    for sid, data in labels.items():
+        pairs = [p for p in data.get('pairs', []) if (sid, p['from'], p['to']) in times
+                 and abs(times[(sid, p['from'], p['to'])][0] - p['start']) < 0.02 and abs(times[(sid, p['from'], p['to'])][1] - p['end']) < 0.02]
+        if pairs:
+            out[sid] = {**data, 'pairs': pairs}
+    return out
+
+
 def _slim_answer_record(record, keep_prompt):
     out = {k: record.get(k) for k in ('config', 'sample', 'window', 'ok', 'first_try_ok', 'seconds', 'answer', 'error')}
     out['attempts'] = [{k: a.get(k) for k in ('n', 'seconds', 'prompt_tokens', 'completion_tokens', 'predicted_per_second', 'finish', 'grammar', 'errors')}
@@ -66,6 +78,37 @@ def _slim_answer_record(record, keep_prompt):
     return out
 
 
+def slim_pose(data):
+    """pose.json without the 133 keypoints per person: what the report shows (usability, overlays, cost)."""
+    if not data:
+        return None
+    out = {'model': data.get('model'), 'samples': {}}
+    for sid, sample in (data.get('samples') or {}).items():
+        out['samples'][sid] = {
+            'seconds': sample.get('seconds'), 'cpu_seconds': sample.get('cpu_seconds'), 'characters': sample.get('characters'),
+            'frames': [{'label': f['label'], 'overlay': f.get('overlay'), 'seconds': f.get('seconds'), 'detected': f.get('detected'),
+                        'persons': [{k: p.get(k) for k in ('name', 'source', 'usable', 'confidence', 'close_up', 'swap')} for p in f['persons']]} for f in sample['frames']]}
+    return out
+
+
+def pose_summary(pose):
+    """Per character across the run, and the run totals (share of person-frames with a usable body)."""
+    if not pose:
+        return None
+    rows, frames, usable, swaps, close, close_ok, seconds = [], 0, 0, 0, 0, 0, 0.0
+    for sid, sample in pose['samples'].items():
+        seconds += sample.get('seconds') or 0
+        for c in sample.get('characters') or []:
+            rows.append({'sample': sid, **c})
+            frames += c['frames']
+            usable += c['usable']
+            swaps += c['swaps']
+            close += c['close_ups']
+            close_ok += c['close_up_usable']
+    return {'characters': rows, 'person_frames': frames, 'usable': usable, 'usable_share': usable / frames if frames else None, 'swaps': swaps,
+            'close_ups': close, 'close_ups_usable': close_ok, 'seconds': round(seconds, 1)}
+
+
 def build(run_dir):
     run_dir = Path(run_dir)
     samples = _read(run_dir / 'samples.json', []) or []
@@ -73,8 +116,10 @@ def build(run_dir):
     progress = _read(run_dir / 'progress.json', {}) or {}
     answers = load_answers(run_dir)
     judge_records = infer.load_records(run_dir, 'judge')
-    labels = load_labels(run_dir)
+    labels = matching_labels(load_labels(run_dir), samples)
     rows = scoring.build_rows(samples, answers, judge_records, labels)
+    agreement = scoring.judge_agreement(samples, judge_records, labels)
+    pose_data = _read(run_dir / 'pose.json', {}) or {}
     complete = progress.get('status') == 'done'
     notes = scoring.findings(rows, complete)
 
@@ -110,10 +155,11 @@ def build(run_dir):
         'run_id': run_dir.name, 'updated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'config': config, 'progress': progress,
         'weights': scoring.WEIGHTS, 'rows': rows, 'findings': notes, 'pareto': scoring.pareto(rows),
         'styles': {k: v['label'] for k, v in prompts.STYLES.items()}, 'contexts': {k: v['label'] for k, v in prompts.CONTEXTS.items()},
-        'models': {k: v['label'] for k, v in infer.MODELS.items()}, 'categories': schema.CATEGORY_LABELS, 'importance': schema.IMPORTANCE,
+        'models': infer.LABELS, 'categories': schema.CATEGORY_LABELS, 'importance': schema.IMPORTANCE,
         'samples': [{k: s.get(k) for k in ('id', 'cut_number', 'start', 'end', 'duration', 'roster', 'transcript', 'frames', 'windows', 'pairs', 'keyframes', 'no_characters')}
                     | {'baseline': {k: (s.get('baseline') or {}).get(k) for k in ('model', 'seconds', 'contract')}} for s in samples],
-        'calls': calls + baselines, 'references': references, 'labels': sorted(labels),
+        'calls': calls + baselines, 'references': references, 'labels': sorted(labels), 'label_pairs': {k: v['pairs'] for k, v in labels.items()},
+        'judge_agreement': agreement, 'pose': slim_pose(pose_data), 'pose_summary': pose_summary(slim_pose(pose_data)),
     }
     _write(run_dir / 'results.json', json.dumps(results, ensure_ascii=False))
     _write(run_dir / 'report.html', render_html(results))
@@ -138,11 +184,14 @@ def render_markdown(results):
              f"window {cfg.get('window_size')} · image width {cfg.get('image_width')} · judge {'on' if cfg.get('judge', True) else 'off'}", '',
              '## Findings', '', *[f'- {line}' for line in results['findings']], '',
              '## Leaderboard', '',
-             '| Config | Score | Precision | Recall | Camera | Speaking | Reliability | False claims | Invented names | Claims on still pairs | s/window | s per footage s | Tokens in/out |',
-             '|---|---|---|---|---|---|---|---|---|---|---|---|---|']
-    for row in sorted(results['rows'].values(), key=lambda r: -(r['score'] or -1)):
+             '| Config | GT F1 | GT precision | GT recall | GT body F1 | Score | Precision | Recall | Camera (diag.) | Speaking | Reliability | False claims | Invented names | Claims on still pairs | s/window | s per footage s | Tokens in/out |',
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+    gt_key = lambda r: -((r.get('ground_truth') or {}).get('f1') or -1)  # noqa: E731
+    for row in sorted(results['rows'].values(), key=lambda r: (gt_key(r), -(r['score'] or -1))):
         c = row['components']
-        lines.append(f"| {row['config']} | {_num(row['score'])} | {_pct(c['precision'])} | {_pct(c['recall'])} | {_pct(c['camera'])} | {_pct(c['speaking'])}"
+        g = row.get('ground_truth') or {}
+        lines.append(f"| {row['config']} | {_pct(g.get('f1'))} | {_pct(g.get('precision'))} | {_pct(g.get('recall'))} | {_pct((g.get('body') or {}).get('f1'))} | "
+                     f"{_num(row['score'])} | {_pct(c['precision'])} | {_pct(c['recall'])} | {_pct(c['camera'])} | {_pct(c['speaking'])}"
                      f"{' (told)' if row['speaking']['told'] else ''} | {_pct(c['reliability'])} | {_pct(row['hallucination_rate'])} | "
                      f"{row['names']['invented']}/{row['names']['entries']} | {row['pixel']['claims_on_still']} in {row['pixel']['still_pairs']} | "
                      f"{_num(row['cost']['per_window'])} | {_num(row['cost']['per_footage_second'], 2)} | {row['cost']['prompt_tokens'] or '—'}/{row['cost']['completion_tokens'] or '—'} |")
@@ -151,10 +200,50 @@ def render_markdown(results):
     for row in sorted(results['rows'].values(), key=lambda r: r['config']):
         cells = [f"{_pct(row['categories'][c]['precision'])} / {_pct(row['categories'][c]['recall'])}" for c in schema.REFERENCE_FLAGS]
         lines.append(f"| {row['config']} | " + ' | '.join(cells) + ' |')
+    if any(r.get('ground_truth') for r in results['rows'].values()):
+        lines += ['', '## Hand labels by category (true precision / recall)', '', '| Config | ' + ' | '.join(results['categories'][c] for c in schema.REFERENCE_FLAGS) + ' |',
+                  '|---|' + '---|' * len(schema.REFERENCE_FLAGS)]
+        for row in sorted(results['rows'].values(), key=lambda r: r['config']):
+            g = (row.get('ground_truth') or {}).get('categories') or {}
+            cells = [f"{_pct((g.get(c) or {}).get('precision'))} / {_pct((g.get(c) or {}).get('recall'))}" for c in schema.REFERENCE_FLAGS]
+            lines.append(f"| {row['config']} | " + ' | '.join(cells) + ' |')
+        support = {c: 0 for c in schema.REFERENCE_FLAGS}
+        for pairs in results.get('label_pairs', {}).values():
+            for pair in pairs:
+                for c in schema.REFERENCE_FLAGS:
+                    support[c] += bool((pair.get('flags') or {}).get(c))
+        lines.append('| labelled pairs | ' + ' | '.join(str(support[c]) for c in schema.REFERENCE_FLAGS) + ' |')
+    agreement = results.get('judge_agreement')
+    if agreement:
+        ref = agreement['reference']
+        lines += ['', '## Judge against the hand labels', '',
+                  f"Reference table: precision {_pct(ref['precision'])}, recall {_pct(ref['recall'])}, F1 {_pct(ref['f1'])} (labels = truth).",
+                  f"Camera: judge agrees with the labels on {agreement['camera_judge']['agree']}/{agreement['camera_judge']['pairs']} pairs, "
+                  f"the pixel estimate on {agreement['camera_pixels']['agree']}/{agreement['camera_pixels']['pairs']}.", '',
+                  '| Category | ' + ' | '.join(results['categories'][c] for c in schema.REFERENCE_FLAGS) + ' |', '|---|' + '---|' * len(schema.REFERENCE_FLAGS),
+                  '| judge P / R | ' + ' | '.join(f"{_pct(ref['categories'][c]['precision'])} / {_pct(ref['categories'][c]['recall'])}" for c in schema.REFERENCE_FLAGS) + ' |', '',
+                  '| Config | Verdicts judged | Agree with labels | "true" on an unlabelled change | "false" on a labelled change |', '|---|---|---|---|---|']
+        for row in sorted(results['rows'].values(), key=lambda r: r['config']):
+            v = row.get('judge_vs_labels')
+            if v:
+                lines.append(f"| {row['config']} | {v['judged']} | {_pct(v['rate'])} | {v['true_but_unlabelled']} | {v['false_but_labelled']} |")
+    pose = results.get('pose_summary')
+    if pose:
+        lines += ['', '## DWPose on anime', '',
+                  f"Usable bodies (>= {((results.get('pose') or {}).get('model') or {}).get('usable_points', 6)} of 17 body points over "
+                  f"{((results.get('pose') or {}).get('model') or {}).get('threshold', 0.3)}): {pose['usable']}/{pose['person_frames']} person-frames "
+                  f"({_pct(pose['usable_share'])}); close-ups usable {pose['close_ups_usable']}/{pose['close_ups']}; suspected left/right swaps {pose['swaps']}; "
+                  f"{pose['seconds']} s wall on the CPU.", '',
+                  '| Cut | Character | Keyframes | Usable | Mean body confidence | Swaps | Close-ups (usable) | Box source |', '|---|---|---|---|---|---|---|---|']
+        for c in pose['characters']:
+            lines.append(f"| {c['sample']} | {c['name']} | {c['frames']} | {c['usable']} ({_pct(c['usable_share'])}) | {_num(c['mean_confidence'], 2)} | {c['swaps']} | "
+                         f"{c['close_ups']} ({c['close_up_usable']}) | {', '.join(c['sources'])} |")
     lines += ['', '## How to read', '',
               f"Score weights: {', '.join(f'{k} {v}' for k, v in results['weights'].items())} (missing components are left out and the rest renormalised).",
-              'Precision and recall come from a blind Qwen3.5-27B judge (shares weights with one candidate). Camera is checked against an ORB/RANSAC pixel estimate, '
-              'speaking against the transcript (the `full` context is given the transcript, marked "told"). No hand labels unless `labels/*.json` exist.', '']
+              'GT = hand labels (`labels/<cut>.json`, made before any model answer): per pair and category, a reported category is a true positive when the label '
+              'marks it. Precision and recall come from a blind Qwen3.5-27B judge (shares weights with one candidate). Camera is a diagnostic (weight 0) against an '
+              'ORB/RANSAC pixel estimate; every setup\'s camera in the report is that estimate. Speaking is scored against transcript speech by a character marked on '
+              'screen (boxed), and not at all for setups that cannot see mouths (DWPose).', '']
     return '\n'.join(lines)
 
 
@@ -222,9 +311,11 @@ function header() {
   <div class="panel"><div class="chips">${stages}</div><p class="muted" style="margin:8px 0 0">Episode ${esc(c.episode)} · cuts ${esc(c.cuts)} (${(R.samples || []).length} cuts, ${c.windows ?? '?'} windows) · window ${esc(c.window_size)} frames · image width ${esc(c.image_width)} px · models ${esc((c.models || []).join(', '))} · styles ${esc((c.styles || []).join(', '))} · contexts ${esc((c.contexts || []).join(', '))} · judge ${c.judge === false ? 'off' : 'Qwen3.5-27B'} · grammar ${c.grammar === false ? 'off' : 'json_schema'}</p></div>`;
 }
 function findings() { return `<h2>Findings</h2><div class="panel"><ul>${R.findings.map(f => `<li>${esc(f)}</li>`).join('')}</ul><p class="muted">Deterministic summary of the numbers below; no model wrote it. Weights: ${Object.entries(R.weights).map(([k, v]) => k + ' ' + v).join(', ')}.</p></div>`; }
+const gt = (r, k) => r.ground_truth ? r.ground_truth[k] : null;
 const COLS = [
+  ['GT F1', r => gt(r, 'f1'), pct], ['GT precision', r => gt(r, 'precision'), pct], ['GT recall', r => gt(r, 'recall'), pct], ['GT body F1', r => r.ground_truth ? r.ground_truth.body.f1 : null, pct],
   ['Score', r => r.score, v => num(v)], ['Precision', r => r.components.precision, pct], ['Recall', r => r.components.recall, pct],
-  ['Camera', r => r.components.camera, pct], ['Speaking', r => r.components.speaking, pct], ['Reliability', r => r.components.reliability, pct],
+  ['Camera (diag.)', r => r.components.camera, pct], ['Speaking', r => r.components.speaking, pct], ['Reliability', r => r.components.reliability, pct],
   ['Efficiency', r => r.components.efficiency, pct], ['False claims', r => r.hallucination_rate, pct, true], ['Not visible', r => r.unverifiable_rate, pct, true],
   ['Invented names', r => r.names.entries ? r.names.invented / r.names.entries : null, pct, true], ['Claims on still pairs', r => r.pixel.claims_on_still, v => v ?? '—', true],
   ['Claims judged', r => r.claims.true + r.claims.false + r.claims.not_visible, v => v],
@@ -232,22 +323,45 @@ const COLS = [
   ['s / window', r => r.cost.per_window, v => num(v), true], ['s per footage s', r => r.cost.per_footage_second, v => num(v, 2), true],
   ['Tokens in/out', r => r.cost.prompt_tokens, (v, r) => `${r.cost.prompt_tokens ?? '—'}/${r.cost.completion_tokens ?? '—'}`], ['Decode tok/s', r => r.cost.decode_tps, v => num(v)],
 ];
-let sortCol = 0, sortDir = -1;
+let sortCol = rows.some(r => r.ground_truth) ? 0 : 4, sortDir = -1;
 function leaderboard() {
   const sorted = [...rows].sort((a, b) => { const x = COLS[sortCol][1](a), y = COLS[sortCol][1](b); return ((x ?? -1e9) - (y ?? -1e9)) * sortDir; });
   const best = COLS.map(([, get, , low]) => { const vals = rows.filter(r => !r.baseline).map(get).filter(v => v != null); return vals.length ? (low ? Math.min(...vals) : Math.max(...vals)) : null; });
-  const body = sorted.map(r => `<tr><td>${esc(label(r.config))}${R.pareto.includes(r.config) ? ' <span class="chip" title="cost/quality frontier">frontier</span>' : ''}${r.speaking.told ? ' <span class="chip" title="given the transcript">told speech</span>' : ''}</td>${COLS.map(([, get, fmt], i) => { const v = get(r); return `<td class="${v != null && v === best[i] && !r.baseline ? 'best' : ''}">${fmt(v, r)}${i === 0 && v != null ? `<span class="bar" style="width:${Math.round(v * .6)}px"></span>` : ''}</td>`; }).join('')}</tr>`).join('');
+  const body = sorted.map(r => `<tr><td>${esc(label(r.config))}${R.pareto.includes(r.config) ? ' <span class="chip" title="cost/quality frontier">frontier</span>' : ''}${r.speaking.told ? ' <span class="chip" title="given the transcript">told speech</span>' : ''}</td>${COLS.map(([, get, fmt], i) => { const v = get(r); return `<td class="${v != null && v === best[i] && !r.baseline ? 'best' : ''}">${fmt(v, r)}${i === 0 && v != null ? `<span class="bar" style="width:${Math.round(v * 60)}px"></span>` : ''}</td>`; }).join('')}</tr>`).join('');
   return `<h2>Leaderboard</h2><div class="panel scroll"><table id="lb"><thead><tr><th>Config</th>${COLS.map((c, i) => `<th data-i="${i}">${c[0]}${i === sortCol ? (sortDir < 0 ? ' ▾' : ' ▴') : ''}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>
-  <p class="muted">Precision: judge-verified claims true ÷ (true + false), outfit/colour/lighting weighted 0.3. Recall: the judge's reference changes per pair and category that the answer also reports. Camera: agreement with an ORB/RANSAC pixel estimate. Speaking: speaking=yes against transcript speech in the pair's interval. Efficiency: cheapest compute per footage second ÷ this one. Claims on still pairs: claims made where the pixels barely changed (lower is better). Green = best among the candidates.</p></div>`;
+  <p class="muted">GT: hand labels made before any model answer (per pair and category; body = walking, arms &amp; hands, legs, body pose, position). Precision: judge-verified claims true ÷ (true + false), outfit/colour/lighting weighted 0.3. Recall: the judge's reference changes per pair and category that the answer also reports. Camera: agreement with an ORB/RANSAC pixel estimate, diagnostic only (weight 0). Speaking: speaking=yes against transcript speech by a character marked on screen; not scored for DWPose. Efficiency: cheapest compute per footage second ÷ this one. Claims on still pairs: claims made where the pixels barely changed (lower is better). Green = best among the candidates.</p></div>`;
 }
 function heat(v) { if (v == null) return ''; const h = Math.round(v * 120); return `background:hsla(${h},60%,45%,.25)`; }
 function categories() {
   const cats = ['walking', 'speaking', 'blink', 'head', 'eyes_gaze', 'arms_hands', 'legs', 'body_pose', 'position', 'expression', 'outfit', 'color', 'lighting', 'object', 'background', 'effect'];
   const body = [...rows].sort((a, b) => a.config.localeCompare(b.config)).map(r => `<tr><td>${esc(label(r.config))}</td>${cats.map(c => { const v = r.categories[c]; return `<td><span class="heat" style="${heat(v.precision)}" title="precision: ${v.true} true, ${v.false} false, ${v.not_visible} not visible">${pct(v.precision)}</span> / <span class="heat" style="${heat(v.recall)}" title="recall: ${v.hit} of ${v.ref}">${pct(v.recall)}</span></td>`; }).join('')}</tr>`).join('');
-  return `<h2>By category (precision / recall)</h2><div class="panel scroll"><table><thead><tr><th>Config</th>${cats.map(c => `<th>${esc(R.categories[c])}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table><p class="muted">Hover a cell for the counts. Recall exists only for the reference categories (the judge does not annotate outfit, colour, lighting, objects).</p></div>`;
+  return truthSection() + `<h2>By category, judge (precision / recall)</h2><div class="panel scroll"><table><thead><tr><th>Config</th>${cats.map(c => `<th>${esc(R.categories[c])}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table><p class="muted">Hover a cell for the counts. Recall exists only for the reference categories (the judge does not annotate outfit, colour, lighting, objects).</p></div>` + judgeSection() + poseSection();
+}
+const FLAGS = ['walking', 'speaking', 'blink', 'head', 'eyes_gaze', 'arms_hands', 'legs', 'body_pose', 'position', 'expression'];
+function truthSection() {
+  const withGt = rows.filter(r => r.ground_truth); if (!withGt.length) return '';
+  const support = Object.fromEntries(FLAGS.map(c => [c, 0])); Object.values(R.label_pairs || {}).forEach(ps => ps.forEach(p => FLAGS.forEach(c => { if ((p.flags || {})[c]) support[c]++; })));
+  const body = [...withGt].sort((a, b) => (b.ground_truth.f1 ?? -1) - (a.ground_truth.f1 ?? -1)).map(r => `<tr><td>${esc(label(r.config))}</td>${FLAGS.map(c => { const v = r.ground_truth.categories[c]; return `<td><span class="heat" style="${heat(v.precision)}" title="${v.tp} right, ${v.fp} wrong">${pct(v.precision)}</span> / <span class="heat" style="${heat(v.recall)}" title="${v.tp} of ${v.tp + v.fn} labelled">${pct(v.recall)}</span></td>`; }).join('')}</tr>`).join('');
+  return `<h2>By category, hand labels (true precision / recall)</h2><div class="panel scroll"><table><thead><tr><th>Config</th>${FLAGS.map(c => `<th>${esc(R.categories[c])}</th>`).join('')}</tr></thead><tbody>${body}<tr><td class="muted">labelled pairs</td>${FLAGS.map(c => `<td class="muted">${support[c]}</td>`).join('')}</tr></tbody></table><p class="muted">Per pair and category, any character. Labels: ${esc((R.labels || []).join(', '))}.</p></div>`;
+}
+function judgeSection() {
+  const a = R.judge_agreement; if (!a) return '';
+  const ref = a.reference;
+  const per = rows.filter(r => r.judge_vs_labels).sort((x, y) => x.config.localeCompare(y.config)).map(r => `<tr><td>${esc(label(r.config))}</td><td>${r.judge_vs_labels.judged}</td><td>${pct(r.judge_vs_labels.rate)}</td><td>${r.judge_vs_labels.true_but_unlabelled}</td><td>${r.judge_vs_labels.false_but_labelled}</td></tr>`).join('');
+  return `<h2>Judge against the hand labels</h2><div class="panel scroll"><p>Reference table vs labels: precision <b>${pct(ref.precision)}</b>, recall <b>${pct(ref.recall)}</b>, F1 <b>${pct(ref.f1)}</b>. Camera: judge ${a.camera_judge.agree}/${a.camera_judge.pairs}, pixel estimate ${a.camera_pixels.agree}/${a.camera_pixels.pairs} pairs agree with the labels.</p>
+  <table><thead><tr><th>Category</th>${FLAGS.map(c => `<th>${esc(R.categories[c])}</th>`).join('')}</tr></thead><tbody><tr><td>judge P / R</td>${FLAGS.map(c => `<td>${pct(ref.categories[c].precision)} / ${pct(ref.categories[c].recall)}</td>`).join('')}</tr></tbody></table>
+  <h3>Claim verdicts vs labels</h3><table><thead><tr><th>Config</th><th>Verdicts</th><th>Agree</th><th>"true" on an unlabelled change</th><th>"false" on a labelled change</th></tr></thead><tbody>${per}</tbody></table>
+  <p class="muted">A verdict agrees when "true" falls on a pair and category the labels mark, or "false" on one they do not. High "true on unlabelled" = a lenient judge.</p></div>`;
+}
+function poseSection() {
+  const p = R.pose_summary; if (!p) return '';
+  const body = p.characters.map(c => `<tr><td>${esc(c.sample)}</td><td>${esc(c.name)}</td><td>${c.frames}</td><td>${c.usable} (${pct(c.usable_share)})</td><td>${num(c.mean_confidence, 2)}</td><td class="${c.swaps ? 'bad' : ''}">${c.swaps}</td><td>${c.close_ups} (${c.close_up_usable})</td><td>${esc((c.sources || []).join(', '))}</td></tr>`).join('');
+  const m = (R.pose || {}).model || {};
+  return `<h2>DWPose on anime</h2><div class="panel scroll"><p>Usable bodies (at least ${m.usable_points ?? 6} of 17 body points over ${m.threshold ?? 0.3}): <b>${p.usable}/${p.person_frames}</b> person-frames (${pct(p.usable_share)}) · close-ups usable ${p.close_ups_usable}/${p.close_ups} · suspected left/right swaps ${p.swaps} · ${p.seconds} s wall on the CPU (${esc(m.provider || '')}).</p>
+  <table><thead><tr><th>Cut</th><th>Character</th><th>Keyframes</th><th>Usable</th><th>Mean body conf.</th><th>Swaps</th><th>Close-ups (usable)</th><th>Box source</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 const configs = [...new Set(R.calls.map(c => c.config))].sort();
-let cutIndex = 0, shown = new Set(configs.filter(c => !c.startsWith('baseline')).slice(0, 2));
+let cutIndex = 0, shown = new Set(configs.filter(c => !c.startsWith('baseline')).slice(0, 4));
 function claimLines(call, sample, w) {
   if (!call) return '<div class="muted">not run yet</div>';
   if (!call.ok) return `<div class="bad">invalid: ${esc(call.error)}</div>`;
@@ -262,7 +376,7 @@ function claimLines(call, sample, w) {
       return `<div><b>${esc(p.name)}</b> ${flags}${ch}</div>`;
     }).join('') || '<div class="muted">no characters</div>';
     const others = seg.other_changes.map(o => `<span class="claim">◦ ${esc(o.kind)}: ${esc(o.description)}</span>`).join('');
-    return `<div class="seg"><h4>${seg.from}→${seg.to} <span class="muted">${num(seg.start, 2)}–${num(seg.end, 2)} s</span> · camera <span class="${camClass}">${esc(seg.camera.move)}</span> <span class="muted">(pixels: ${esc(cv)})</span></h4>${people}${others}</div>`;
+    return `<div class="seg"><h4>${seg.from}→${seg.to} <span class="muted">${num(seg.start, 2)}–${num(seg.end, 2)} s</span> · camera (pixel estimate) <b>${esc(cv)}</b> <span class="muted">· model said <span class="${camClass}">${esc(seg.camera.move)}</span></span></h4>${people}${others}</div>`;
   }).join('') + verdictList(call);
 }
 function verdictList(call) {
@@ -278,6 +392,9 @@ function drill() {
   const s = R.samples[cutIndex]; if (!s) return '<h2>Cuts</h2><div class="panel muted">No cuts yet.</div>';
   const opts = R.samples.map((x, i) => `<option value="${i}" ${i === cutIndex ? 'selected' : ''}>Cut ${x.cut_number} · ${num(x.duration, 2)} s · ${x.frames.length} frames</option>`).join('');
   const strip = s.frames.map(f => `<figure><img loading="lazy" src="${esc(f.path)}" alt="${esc(f.label)}"><figcaption><b>${esc(f.label)}</b> t=${num(f.t, 2)} s · ${esc(f.reason || '')} · change ${num(f.change_score)}</figcaption></figure>`).join('');
+  const pose = R.pose && R.pose.samples[s.id];
+  const overlays = pose ? `<details open><summary>DWPose overlays (${num(pose.seconds)} s CPU)</summary><div class="strip">${pose.frames.map(f => `<figure><img loading="lazy" src="${esc(f.overlay)}" alt="${esc(f.label)} pose"><figcaption><b>${esc(f.label)}</b> ${f.persons.map(x => `${esc(x.name)} ${num(x.confidence, 2)}${x.usable ? '' : ' ✗'}${x.swap ? ' swap?' : ''}`).join(' · ') || 'nobody'}</figcaption></figure>`).join('')}</div></details>` : '';
+  const truth = (R.label_pairs || {})[s.id];
   const pairs = (s.pairs || []).map(p => `<div class="pair">${p.from}→${p.to}: camera <b>${esc(p.camera.move)}</b>${p.camera.dx != null ? ` (dx ${num(p.camera.dx * 100)}%, dy ${num(p.camera.dy * 100)}%, scale ${num(p.camera.scale, 3)}, ${p.camera.inliers} inliers)` : ''} · change global ${num(p.global, 2)} regional ${num(p.regional, 2)}${p.still ? ' · <i>still</i>' : ''}${Object.keys(p.boxes || {}).length ? ' · boxes ' + Object.entries(p.boxes).map(([n, v]) => `${esc(n)} ${num(v, 2)}`).join(', ') : ''}</div>`).join('');
   const speech = (s.transcript || []).map(l => `<div class="pair">${num(l.start, 2)}–${num(l.end, 2)} s · ${esc(l.speaker || '?')}: ${esc(l.text)}</div>`).join('') || '<div class="muted">no speech</div>';
   const toggles = configs.map(c => `<label class="chip"><input type="checkbox" data-c="${esc(c)}" ${shown.has(c) ? 'checked' : ''}> ${esc(label(c))}</label>`).join('');
@@ -285,10 +402,12 @@ function drill() {
     const ref = R.references[`${s.id}|${w}`];
     const refHtml = ref ? `<details><summary>Judge reference for this window</summary>${ref.map(p => `<div class="pair">${p.from}→${p.to}: camera ${esc(p.camera)} · ${p.categories.length ? p.categories.map(esc).join(', ') : 'no change'}${p.characters.length ? ' — ' + p.characters.map(c => esc(c.name)).join(', ') : ''}</div>`).join('')}</details>` : '';
     const cols = [...shown].map(c => { const call = R.calls.find(x => x.config === c && x.sample === s.id && x.window === w); return `<div class="panel"><h3>${esc(label(c))}${call && call.seconds ? ` <span class="muted">${num(call.seconds)} s</span>` : ''}</h3>${claimLines(call, s, w)}${judgedText(call)}${call && call.answer && call.answer.summary ? `<p class="muted">${esc(call.answer.summary)}</p>` : ''}</div>`; }).join('');
-    return `<h3>Window ${w + 1}: ${win.frames.map(f => f.label).join(' ')}</h3>${refHtml}<div class="grid">${cols}</div>`;
+    const names = win.frames.map(f => f.label); const inWin = (truth || []).filter(p => names.includes(p.from) && names.includes(p.to));
+    const truthHtml = inWin.length ? `<details open><summary>Hand labels for this window</summary>${inWin.map(p => `<div class="pair">${p.from}→${p.to}: camera ${esc(p.camera)} · <b>${FLAGS.filter(c => p.flags[c]).map(esc).join(', ') || 'no change'}</b> — ${esc(p.note)}</div>`).join('')}</details>` : '';
+    return `<h3>Window ${w + 1}: ${win.frames.map(f => f.label).join(' ')}</h3>${truthHtml}${refHtml}<div class="grid">${cols}</div>`;
   }).join('');
   return `<h2>Cuts</h2><div class="panel"><select id="cut">${opts}</select> <span class="muted">roster: ${s.roster.length ? s.roster.map(p => esc(p.name) + ' (' + p.side + ')').join(', ') : (s.no_characters ? 'no characters (user)' : 'nobody identified')} · keyframes ${esc(s.keyframes.origin)} · change level ${esc(s.keyframes.change_level)} · baseline ${s.baseline.seconds ? num(s.baseline.seconds) + ' s' : '—'}</span>
-  <div class="strip" style="margin-top:10px">${strip}</div><details><summary>Pixel evidence per pair</summary>${pairs}</details><details><summary>Transcript</summary>${speech}</details>
+  <div class="strip" style="margin-top:10px">${strip}</div>${overlays}<details><summary>Pixel evidence per pair</summary>${pairs}</details><details><summary>Transcript</summary>${speech}</details>
   <div class="chips" style="margin-top:10px">${toggles}</div></div>${windows}`;
 }
 function promptsSection() {
@@ -300,7 +419,8 @@ function promptsSection() {
   <li>The judge (Qwen3.5-27B, thinking off) is blind to which config wrote a claim, but it is the same model as one candidate: Qwen answers may read more naturally to it. Its reference table is a second opinion, not ground truth.</li>
   <li>The camera check uses the dominant image transform; a character filling the frame can mislead it, and animated background pans on a static camera count as pans.</li>
   <li>The stored video analysis (baseline) is mapped onto the pairs by its event times; its camera is one value for the whole cut, its cost is the production stage time.</li>
-  <li>Ground truth: put <code>labels/&lt;cut&gt;.json</code> files (see README) into the run folder and rebuild the report to add true precision/recall.</li></ul></div>`;
+  <li>DWPose (setup C) is no language model: keypoints on the CPU and fixed rules; D merges C's body parts into ${esc(R.config.merge_with || 'the Qwen reference')} without a new call. Both name limbs by screen side.</li>
+  <li>Ground truth: <code>labels/&lt;cut&gt;.json</code> (see README), made before any model answer; the report ranks by it first.</li></ul></div>`;
 }
 function render() {
   app.replaceChildren($(header() + findings() + leaderboard() + categories() + drill() + promptsSection()));

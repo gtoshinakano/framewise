@@ -24,7 +24,7 @@ MAX_TOKENS = 4096
 
 REFERENCE_SYSTEM = '''You annotate keyframes of one anime shot for a quality check. The frames are labelled F<n> with their time in seconds from the start of the shot.
 For every pair of consecutive frames, list each character visible in either frame and mark true only for what visibly changes between the two frames:
-- walking: the character walks or runs (steps, travel across the ground)
+- walking: the character walks or runs (steps, travel across the ground), also a small character far in the background
 - speaking: the mouth opens, closes or changes shape
 - blink: the eyes close or half close in one frame and not the other
 - head: the head turns, tilts, nods or changes angle
@@ -32,7 +32,7 @@ For every pair of consecutive frames, list each character visible in either fram
 - arms_hands: an arm or hand changes position
 - legs: a leg or foot changes position
 - body_pose: the torso or overall pose changes (bending, leaning, sitting down, standing up, turning the body)
-- position: the character moves to another place in the image
+- position: the character moves to another place in the image, comes closer or moves away, or enters or leaves the picture (count it even when the camera also moves)
 - expression: the facial expression changes
 Mark false when it stays the same or you cannot see it. Also give the camera move between the two frames: static, pan_left, pan_right, tilt_up, tilt_down, zoom_in, zoom_out, dolly_in, dolly_out, truck, orbit, shake or unclear.
 Left and right mean the viewer's left and right. Ignore any burned-in subtitle text. Be strict: small but real changes count, invented ones do not.
@@ -44,7 +44,8 @@ For each statement answer:
 - "true" when the two frames clearly show it (the direction and rough size of the change are right; different wording is fine),
 - "false" when the frames contradict it: the part does not change, it changes another way or in the other direction, the person is not there, or it describes something not in the picture,
 - "not_visible" when the frames cannot show it (the part is hidden, cropped or too small to judge).
-Left and right mean the viewer's left and right. Ignore any burned-in subtitle text. Judge every statement independently.
+Left and right mean the viewer's left and right. "screen-left arm/hand/leg" is the limb on the viewer's left side of the image, whichever way the character faces. Some statements are terse measurements ("screen-right arm: hanging naturally at the side → raised to chest height", "moves toward screen-left (staying screen-right)"): judge whether that change is visible; approximate heights and angles are fine.
+A character entering or leaving the picture, or travelling across it with steps, counts even when small or in the background. Ignore any burned-in subtitle text. Judge every statement independently.
 Return JSON only: {"verdicts": [{"id": 1, "verdict": "true|false|not_visible"}, ...]} with one entry per statement.'''
 
 
