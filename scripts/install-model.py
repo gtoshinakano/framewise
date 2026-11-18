@@ -4,6 +4,7 @@
     python3 scripts/install-model.py --list
     python3 scripts/install-model.py lfm3-omni-2b
     python3 scripts/install-model.py lfm3-omni-2b --verify
+    python3 scripts/install-model.py dwpose          # DWPose keypoints for the keyframe analysis (CPU)
 
 Files land in the model's directory (``default_dir`` under the project, or the directory named by
 its ``dir_env`` variable) as ``<name>.partial`` while downloading, so the inference worker can show

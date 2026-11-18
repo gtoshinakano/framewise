@@ -426,7 +426,7 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
                     if last_error in ("response was truncated", "response was empty"):
                         payload["max_tokens"] = min(max_tokens * 2, 12288)
                     continue
-                repair = "The previous response was invalid (" + last_error + "). Return the complete requested format, without reasoning, in at most 4096 UTF-8 bytes." if plain_text and text_validator else "The previous response was empty. Return the analysis as nonempty plain text." if plain_text else "The previous response was invalid (" + last_error + "). Return a complete JSON object with every required field: " + ", ".join(fields) + (". Each field must be an object with nonempty string content and confidence exactly high, medium, low, or unknown." if summary_topics else ". Each field must be a nonempty string.") + " Preserve evidence uncertainty and do not omit any field or supplied dialogue."
+                repair = "The previous response was invalid (" + last_error + "). Return the complete requested format, without reasoning, within the size limit the instructions give." if plain_text and text_validator else "The previous response was empty. Return the analysis as nonempty plain text." if plain_text else "The previous response was invalid (" + last_error + "). Return a complete JSON object with every required field: " + ", ".join(fields) + (". Each field must be an object with nonempty string content and confidence exactly high, medium, low, or unknown." if summary_topics else ". Each field must be a nonempty string.") + " Preserve evidence uncertainty and do not omit any field or supplied dialogue."
                 payload["messages"] = payload["messages"][:2] + [{"role": "user", "content": repair}]
                 if last_error in ("response was truncated", "response was empty"):
                     payload["max_tokens"] = min(max_tokens * 2, 12288)
@@ -539,22 +539,25 @@ def fail_job(job_id, owner, episode_id, exc):
 PRODUCTION_BRIEF_SYSTEM = (Path(__file__).parent / "production_brief_prompt.txt").read_text(encoding="utf-8")
 
 
-BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Animation Timeline', 'Continuity & Constraints']
-LEGACY_BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Animation Timeline', 'Dialogue', 'Continuity & Constraints']  # summaries written before dialogue moved to the sequence step; editing one must still save
-BRIEF_MAX_BYTES = 4096  # the brief names an activity, emotion and speaking state per character, which a 3 KB cap cut short
+# The performance director's brief (2026-11-18): the third section is always the timed one.
+BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Performance Beats', 'Acting Notes', 'Continuity & Constraints']
+# Summaries written earlier must still save when edited: the four sections of 2026-11-16, and before that with Dialogue.
+PREVIOUS_BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Animation Timeline', 'Continuity & Constraints']
+LEGACY_BRIEF_SECTIONS = ['Scene', 'Opening Frame', 'Animation Timeline', 'Dialogue', 'Continuity & Constraints']
+BRIEF_MAX_BYTES = 6144  # body, face, gaze, mouth and intent per character and beat, plus acting notes; 4 KB cut that short
 
 
 def validate_production_brief(text, duration=None):
     """Validate the existing Markdown section contract before any revision is saved."""
     from .output_hygiene import strip_reasoning_blocks
     text = strip_reasoning_blocks(text)
-    if re.search(r'\[the model.s response was cut off|let me analy[sz]e|i(?: am|\x27m) a senior animation reconstruction director', text, re.I) or re.search(r'(?:\.\.\.|…|[,;:\-–])\s*$', text):
+    if re.search(r'\[the model.s response was cut off|let me analy[sz]e|i(?: am|\x27m) a (?:senior animation reconstruction|performance) director', text, re.I) or re.search(r'(?:\.\.\.|…|[,;:\-–])\s*$', text):
         raise ValueError('reasoning or truncation leaked into production brief')
     if len(text.encode('utf-8')) > BRIEF_MAX_BYTES:
-        raise ValueError('production brief exceeds 4 KB')
+        raise ValueError(f'production brief exceeds {BRIEF_MAX_BYTES} bytes')
     headings = list(re.finditer(r'^###\s+(.+?)\s*$', text, flags=re.M))
     names = [m.group(1).strip() for m in headings]
-    if names not in (BRIEF_SECTIONS, LEGACY_BRIEF_SECTIONS) or text[:headings[0].start()].strip():
+    if names not in (BRIEF_SECTIONS, PREVIOUS_BRIEF_SECTIONS, LEGACY_BRIEF_SECTIONS) or text[:headings[0].start()].strip():
         raise ValueError('production brief does not match the required section schema: use exactly the sections ' + ', '.join(BRIEF_SECTIONS))
     if any(not text[m.end():(headings[i+1].start() if i+1 < len(headings) else len(text))].strip() for i,m in enumerate(headings)):
         raise ValueError('production brief contains an empty section')
@@ -565,11 +568,11 @@ def validate_production_brief(text, duration=None):
         if not line.strip(): continue
         event = event_pattern.fullmatch(line)
         if not event:
-            raise ValueError('animation timeline requires time-coded event lines: ' + repr(line.strip()[:120]))
+            raise ValueError(f'{names[2]} requires time-coded lines: ' + repr(line.strip()[:120]))
         start = float(event.group(1))
         end = float(event.group(2)) if event.group(2) is not None else start  # a single time marks an instant, such as the end state
         if (event.group(2) is not None and end <= start) or start < previous_start or (duration is not None and end > duration + .05):
-            raise ValueError('animation timeline contains an invalid cut-relative interval')
+            raise ValueError(f'{names[2]} contains an invalid cut-relative interval')
         previous_start = start
     return text
 
@@ -587,6 +590,10 @@ def process_regen(job_id, owner):
         field = "minimax_animation_prompt" if legacy else "cut_summary"
         system = ANIMATION_SYSTEM if legacy else PRODUCTION_BRIEF_SYSTEM if payload.get("production_brief") else SUMMARY_TEXT_SYSTEM
         worker.stage(job_id, owner, job["episode_id"], "Rewriting cut summary" if mode == "edit" else "Regenerating cut summary")
+        if payload.get('refresh_results'):
+            # A chained summary reads the analysis as it is now (the performance beats were written after it was queued).
+            rows = db.all_rows("SELECT id,kind,title,content,origin,context_json FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut_id,))
+            payload['results'] = prompt_context.slim_results([row for row in rows if row['title'] != SUMMARY_TITLE], drop=(prompt_context.CONSISTENCY_TITLE,))
         if payload.get('depends_on_consistency'):
             dependency = db.one("SELECT status FROM jobs WHERE id=?", (payload['depends_on_consistency'],))
             result = db.one("SELECT kind,title,content,origin FROM analysis_results WHERE job_id=? AND title='Consistency summary' ORDER BY rowid DESC LIMIT 1", (payload['depends_on_consistency'],))
@@ -675,6 +682,14 @@ def process_consistency_summary(job_id, owner):
             return
         with worker.analysis_stage(job_id, owner, cut_id, 'consistency_summary', 'Consistency summary'):
             worker.stage(job_id, owner, job['episode_id'], 'Summarizing consistency')
+            if payload.get('refresh_evidence'):
+                # Queued behind a performance beats job: build the evidence from what the chain wrote.
+                from . import summary_queue
+                results = structured_results.list_results(cut_id)
+                problem = summary_queue.missing_evidence({item['type']: item for item in results})
+                if problem:
+                    raise RuntimeError(problem)
+                consistency_summary.refresh(payload, results)
             telemetry = {}
             started = time.monotonic()
             output, actual_model = consistency_summary.generate(payload['config'], payload['evidence'],
@@ -750,8 +765,13 @@ def process(job_id, owner):
             from . import single_cut_pipeline, structured_results, summary_queue
             items = payload['cuts']
             single_cut_pipeline.run_batch(job, owner, episode, items)
-            summaries = [summary_queue.payload_for(item['cut_id'], item['config'], item['context'], structured_results.list_results(item['cut_id']))
-                         for item in items] if payload.get('auto_consistency', True) else []
+            summaries = []
+            for item in items if payload.get('auto_consistency', True) else []:
+                # Jobs queued before 2026-11-14 summarize every cut that is ready; a cut whose beats are still queued is left to the user.
+                try:
+                    summaries.append(summary_queue.payload_for(item['cut_id'], item['config'], item['context'], structured_results.list_results(item['cut_id'])))
+                except ValueError:
+                    continue
             with db.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 worker.require_lease(conn, job_id, owner)
@@ -943,8 +963,9 @@ def text_lane(name):
     they release the GPU, and the lane claims nothing while visual work owns the GPU.
     """
     import contextlib
-    from . import sequence_pipeline
-    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers, 'sequence': sequence_pipeline.process}
+    from . import performance_beats, sequence_pipeline
+    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers, 'sequence': sequence_pipeline.process,
+                'performance_beats': performance_beats.process}
     runtime = local_text_runtime.runtime
     while True:
         try:
@@ -1018,8 +1039,9 @@ def remote_lane(index):
     handler bound to the route's model. It never holds a chat session or waits for the local GPU. A job
     whose server stopped answering goes back to the queue, where a local lane can take it if routing allows.
     """
-    from . import sequence_pipeline
-    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers, 'sequence': sequence_pipeline.process}
+    from . import performance_beats, sequence_pipeline
+    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers, 'sequence': sequence_pipeline.process,
+                'performance_beats': performance_beats.process}
     while True:
         try:
             cfg = remote_text.config()
@@ -1155,6 +1177,9 @@ def main():
                     elif kind == 'sequence':
                         from . import sequence_pipeline
                         sequence_pipeline.process(job_id, owner)
+                    elif kind == 'performance_beats':
+                        from . import performance_beats
+                        performance_beats.process(job_id, owner)
                     elif anime_batch:
                         from . import anime_bulk
                         if anime_runtime is None:

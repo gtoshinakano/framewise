@@ -46,28 +46,35 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(sorted(call.args[0].name for call in frame_stage.call_args_list), ['a', 'b', 'c'])
 
     def test_frame_server_is_skipped_when_no_frame_stage_is_needed(self):
-        runs = [FakeCutRun('a', [], stages=('video_analysis',))]
+        runs = [FakeCutRun('a', [], stages=('keyframe_analysis',))]
         with patch.object(pipeline.frame_model, 'frame_server') as server:
             pipeline._first_frame_stage(runs, '/scratch')
         server.assert_not_called()
 
-    def test_a_job_queued_with_the_removed_last_frame_stage_runs_nothing_for_it(self):
-        runs = [FakeCutRun('a', [], stages=('last_frame',))]
-        with patch.object(pipeline.frame_model, 'frame_server') as server, patch.object(pipeline.video_model, 'VideoRuntime') as runtime:
-            pipeline._first_frame_stage(runs, '/scratch')
-            pipeline._video_stage(runs, '/scratch')
-        server.assert_not_called()
-        runtime.assert_not_called()
-        self.assertEqual(pipeline.ALL_STAGES, ('initial_frame', 'video_analysis'))
+    def test_a_job_queued_with_a_removed_stage_runs_nothing_for_it(self):
+        # last_frame (dropped 2026-11-12) and video_analysis (replaced by keyframes 2026-11-18) may still be named by older queued jobs.
+        for stage in ('last_frame', 'video_analysis'):
+            runs = [FakeCutRun('a', [], stages=(stage,))]
+            with patch.object(pipeline.frame_model, 'frame_server') as server, patch.object(pipeline.keyframe_analysis, 'load_pose') as pose:
+                pipeline._first_frame_stage(runs, '/scratch')
+                pipeline.keyframe_analysis.stage(runs, '/scratch', pipeline.visual_models.MODELS['qwen35-27b'])
+            server.assert_not_called()
+            pose.assert_not_called()
+        self.assertEqual(pipeline.ALL_STAGES, ('initial_frame', 'keyframe_analysis'))
 
-    def test_video_model_is_shared_by_every_cut_and_closed_once(self):
+    def test_keyframe_stage_starts_one_server_and_loads_dwpose_once_for_every_cut(self):
         runs = [FakeCutRun(name, []) for name in ('a', 'b')]
-        runtime = MagicMock()
-        with patch.object(pipeline.video_model, 'VideoRuntime', return_value=runtime), \
-             patch.object(pipeline, '_video_analysis') as analysis:
-            pipeline._video_stage(runs, '/scratch')
-        self.assertEqual([call.args[2] for call in analysis.call_args_list], [runtime, runtime])
-        runtime.close.assert_called_once()
+        server = MagicMock()
+        server.return_value.__enter__.return_value = 'http://server'
+        with patch.object(pipeline.keyframe_analysis, 'load_pose', return_value=('pose', {'model_id': 'dwpose'})) as pose, \
+             patch.object(pipeline.frame_model, 'frame_server', server), patch.object(pipeline.keyframe_analysis, 'analyze') as analyze:
+            pipeline.keyframe_analysis.stage(runs, '/scratch', pipeline.visual_models.MODELS['qwen35-27b'])
+        pose.assert_called_once()
+        self.assertEqual(server.call_count, 1)
+        self.assertEqual(server.call_args.kwargs['context_per_slot'], pipeline.keyframe_analysis.CONTEXT_PER_SLOT)
+        self.assertEqual([call.args[0].name for call in analyze.call_args_list], ['a', 'b'])
+        self.assertTrue(all(call.args[1:] == ('http://server', '/scratch', pipeline.visual_models.MODELS['qwen35-27b'], 'pose', {'model_id': 'dwpose'})
+                            for call in analyze.call_args_list))
 
     def test_run_batch_runs_stages_in_model_order_for_all_cuts(self):
         order = []
@@ -76,11 +83,11 @@ class BatchPipelineTest(unittest.TestCase):
         with patch.object(pipeline, 'CutRun', side_effect=runs), \
              patch.object(pipeline, 'ensure_models_available'), patch.object(pipeline, 'release_gpu_models'), \
              patch.object(pipeline, '_first_frame_stage', side_effect=lambda *_: order.append('frames')), \
-             patch.object(pipeline, '_video_stage', side_effect=lambda *_: order.append('video')):
+             patch.object(pipeline.keyframe_analysis, 'stage', side_effect=lambda *_: order.append('keyframes')):
             for run in runs:
                 run.validate = lambda: None
             pipeline.run_batch(job, 'owner', {}, [{}, {}])
-        self.assertEqual(order, ['frames', 'video'])  # the video stage builds on the first frame; subtitles are an episode-wide step of their own
+        self.assertEqual(order, ['frames', 'keyframes'])  # the keyframe roster builds on the first frame; subtitles are an episode-wide step of their own
         self.assertTrue(all(run.completed for run in runs))
 
 

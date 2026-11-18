@@ -30,6 +30,12 @@ services:
       # Optional visual model (Visual engine dialog); install with: python3 scripts/install-model.py lfm3-omni-2b
       LFM3_OMNI_MODEL_PATH: /models/lfm3-omni-2b/LFM3-Omni-2B-BF16.gguf
       LFM3_OMNI_PROJECTOR_PATH: /models/lfm3-omni-2b/mmproj-LFM3-Omni-2B-BF16.gguf
+      # Keyframe analysis: DWPose body keypoints on the CPU (install with: python3 scripts/install-model.py dwpose; recreate this
+      # container after the first install). Without them the keyframe stage runs on Qwen3.5 alone.
+      DWPOSE_DIR: /models/dwpose
+      DWPOSE_THREADS: ${DWPOSE_THREADS:-}
+      # Keyframe windows described at once by the Qwen3.5 server (16384 tokens each); lower to 1 if the server fails to start.
+      KEYFRAME_PARALLEL: ${KEYFRAME_PARALLEL:-2}
       QWEN36_MODEL_PATH: /models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf
       # Same model with multi-token-prediction heads (speculative decoding); choose it in the text engine dialog.
       QWEN36_MTP_MODEL_PATH: /models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
@@ -54,6 +60,7 @@ services:
       - ${TEXT_MTP_MODEL_DIR:-./.models/qwen3.6-35b-mtp}:/models/qwen3.6-35b-mtp:ro
       - ${LLAMACPP_RUNTIME_DIR:-./.models/llamacpp-runtime}:/models/llamacpp:ro
       - ${LFM3_OMNI_MODEL_DIR:-./.models/lfm3-omni-2b}:/models/lfm3-omni-2b:ro
+      - ${DWPOSE_MODEL_DIR:-./.models/dwpose}:/models/dwpose:ro
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri

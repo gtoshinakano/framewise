@@ -8,6 +8,10 @@ The inference worker processes GPU models sequentially and releases their memory
 
 The requested [WeVisOne-VL paper](https://huggingface.co/papers/2610.31329) and [official implementation](https://github.com/Tencent/WeVisOne-VL) describe image-level detection, referring localization, counting, OCR, segmentation, and matting. The official repository currently shows 2B and 4B variants and a Python 3.10 installation example. Its documented device choices include CUDA, NPU, and CPU; ROCm is not explicitly documented. Framewise has a separate pinned inference worker and download scripts. A host GPU test loaded WeVisOne and confirmed that free-form requests returned bounding-box output, so Qwen3-VL-2B-Instruct supplies natural-language captions while WeVisOne supplies configurable object detections. The container deployment still requires validation.
 
+## Keyframe analysis (since 2026-11-18)
+
+The motion stage of a single-cut job is the keyframe analysis (`backend/app/keyframe_analysis.py`), which replaced the Qwen3-VL-8B video analysis described below. It runs Qwen3.5-27B through the same bundled `llama-server` on the keyframe selector's frames (windows of five frames at 1024 px, the observer prompt of `multiframe_experiment/`), merges in DWPose whole-body keypoints computed on the CPU with onnxruntime (`keyframe_pose.py`, weights pinned as `dwpose` in `model_manifest.json`, mounted at `/models/dwpose`), and measures the camera from the background pixels with OpenCV (`keyframe_camera.py`). DWPose never touches the GPU, so it runs while Qwen3.5 holds it. Without the DWPose weights the stage runs on Qwen3.5 alone. A text job then writes the cut's performance beats from the result (`performance_beats.py`). The paragraphs on Qwen3-VL-8B and on LFM3 video windows below describe results stored before that date.
+
 ## Switchable visual models (LFM3-Omni-2B)
 
 The first-frame, video-motion and character-profile steps can each run on another model, chosen per step in the **Visual engine** dialog and snapshotted by every queued job (`backend/app/visual_models.py`). The defaults are unchanged: Qwen3.5-27B for stills and profiles, Qwen3-VL-8B for video.

@@ -108,7 +108,7 @@ class ToolTest(AssistantBase):
         self.assertTrue({'cut_status_summary', 'explain_result', 'h3_animation_prompt', 'still_image_prompt', 'correct_result'} <= names)
         examples = [example for skill in skills.all_skills() for example in skill['examples']]
         for prompt in ('Summarize the cut analysis so far', 'What was analyzed from first image?', 'Fix this H3 prompt based on results',
-                       'Fix the still image generation prompt', 'Fix the video analysis character name'):
+                       'Fix the still image generation prompt', 'Fix the character name in the keyframe analysis'):
             self.assertIn(prompt, examples)
         with self.assertRaises(ValueError):
             skills.parse('no front matter')

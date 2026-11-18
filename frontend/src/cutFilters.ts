@@ -21,7 +21,7 @@ const expectsCharacters = (cut: Cut) => enabled(cut) && !cut.no_characters
 
 /** Each filter answers one question: does this cut still need a person or a queued run? */
 export const CUT_FILTERS: CutFilter[] = [
-  { key: 'needs_analysis', group: 'Analysis', label: 'No visual analysis', color: '#f2a65a', hint: 'Frames and video have not been analyzed yet',
+  { key: 'needs_analysis', group: 'Analysis', label: 'No visual analysis', color: '#f2a65a', hint: 'The first frame and the keyframes (with their performance beats) have not been analyzed yet',
     matches: cut => enabled(cut) && !cut.has_visual_results },
   { key: 'no_boxes', group: 'Characters', label: 'No boxes', color: '#e5646c', hint: 'No first-frame character boxes detected yet (cuts marked as having no characters are skipped)',
     matches: cut => expectsCharacters(cut) && !cut.has_boxes },
@@ -29,7 +29,7 @@ export const CUT_FILTERS: CutFilter[] = [
     matches: cut => expectsCharacters(cut) && !!cut.has_boxes && !!cut.has_unlabeled_boxes },
   { key: 'unknown_target_characters', group: 'Characters', label: 'Unknown in target frames', color: '#e2709c', hint: 'A person on the evaluated frames has no character assigned',
     matches: cut => expectsCharacters(cut) && !!cut.has_unlabeled_target_boxes },
-  { key: 'needs_consistency', group: 'Text steps', label: 'Needs consistency summary', color: '#a58ae8', hint: 'Visual analysis is done but there is no consistency summary',
+  { key: 'needs_consistency', group: 'Text steps', label: 'Needs consistency summary', color: '#a58ae8', hint: 'Visual analysis and beats are done but there is no consistency summary',
     matches: cut => enabled(cut) && !!cut.has_visual_results && !cut.has_consistency_summary },
   { key: 'needs_summary', group: 'Text steps', label: 'Needs cut summary', color: '#7bdcb2', hint: 'There is a consistency summary but no final cut summary',
     matches: cut => enabled(cut) && !!cut.has_consistency_summary && !cut.has_summary },

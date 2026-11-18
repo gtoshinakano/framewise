@@ -9,7 +9,7 @@ slimmed snapshot can be slimmed again safely.
 
 import json
 
-from . import pose_detail
+from . import keyframe_view as _keyframes, pose_detail
 
 CONSISTENCY_TITLE = 'Consistency summary'
 
@@ -195,6 +195,70 @@ def video_view(content):
 
 FRAME_TITLES = ('Initial frame description', 'Last frame description')
 VIDEO_TITLE = 'Video analysis'
+KEYFRAME_TITLE = 'Keyframe analysis'
+BEATS_TITLE = 'Performance beats'
+
+
+# -- the motion of a cut: keyframes (since 2026-11-18), else an older video analysis ------------------------------------
+
+def keyframe_view(content, level='review'):
+    """A keyframe analysis as a prompt reads it (``keyframe_view.keyframe_view``)."""
+    return _keyframes.keyframe_view(content, level)
+
+
+def beats_view(content):
+    """Performance beats as a prompt reads them (``keyframe_view.beats_view``)."""
+    return _keyframes.beats_view(content)
+
+
+def beats_current(by_type):
+    """True when the cut's performance beats were built from its current keyframe analysis."""
+    keyframes, beats = by_type.get('keyframe_analysis'), by_type.get('performance_beats')
+    if not keyframes or not beats or not isinstance(beats.get('content'), dict):
+        return False
+    return (beats['content'].get('based_on') or {}).get('keyframe_analysis') == keyframes.get('id')
+
+
+def motion_source(by_type):
+    """``{type, id, content}`` of what tells a cut's motion: the keyframe analysis in the motion-direction shape when the
+    cut has one (``keyframe_view.direction_from_keyframes``), else its older video analysis, else None.
+
+    ``by_type`` maps result types to ``{id, content}`` (``structured_results.list_results`` items).
+    """
+    keyframes = by_type.get('keyframe_analysis')
+    if keyframes and _keyframes.is_keyframes(keyframes.get('content')):
+        beats = (by_type.get('performance_beats') or {}).get('content') if beats_current(by_type) else None
+        return {'type': 'keyframe_analysis', 'id': keyframes.get('id'), 'content': _keyframes.direction_from_keyframes(keyframes['content'], beats)}
+    video = by_type.get('video_analysis')
+    if video and video.get('content') is not None:
+        return {'type': 'video_analysis', 'id': video.get('id'), 'content': video['content']}
+    return None
+
+
+def with_motion(by_type):
+    """A copy of ``by_type`` whose ``video_analysis`` is the cut's motion source, for readers written for the video analysis."""
+    source = motion_source(by_type)
+    if not source or source['type'] == 'video_analysis':
+        return dict(by_type)
+    return {**by_type, 'video_analysis': {'id': source['id'], 'content': source['content'], 'source_type': source['type']}}
+
+
+def motion_view(by_type):
+    """The cut's motion as a prompt reads a motion direction (``video_view``), or None."""
+    source = motion_source(by_type)
+    return video_view(source['content']) if source else None
+
+
+def current_motion(conn, cut_id):
+    """The current motion source of a cut read straight from the database (keyframes first, then video)."""
+    rows = conn.execute("""SELECT id,content,json_extract(settings_json,'$.structured_type') AS type FROM analysis_results
+                           WHERE cut_id=? AND superseded_by IS NULL AND json_extract(settings_json,'$.structured_type') IN ('keyframe_analysis','performance_beats','video_analysis')
+                           ORDER BY rowid DESC""", (cut_id,)).fetchall()
+    by_type = {}
+    for row in rows:
+        if row['type'] not in by_type:
+            by_type[row['type']] = {'id': row['id'], 'content': _loaded(row['content'])}
+    return motion_source(by_type)
 
 
 def _loaded(content):
@@ -211,22 +275,25 @@ def slim_results(results, drop=()):
 
     Results whose title is in ``drop`` are left out.
 
-    A first-frame description and a motion-direction video analysis are sent as compact objects
-    (`frame_view`, `video_view`). When the cut has a motion direction, a last-frame description kept
-    from an older analysis is left out: it was written against an earlier first frame, and the
-    direction already says how the cut ends.
+    A first-frame description, a keyframe analysis, performance beats and a motion-direction video analysis are
+    sent as compact objects (`frame_view`, `keyframe_view`, `beats_view`, `video_view`). When the cut has keyframes
+    or a motion direction, a last-frame description kept from an older analysis is left out: it was written against
+    an earlier first frame, and the newer motion already says how the cut ends. An older video analysis is left
+    out once the cut has keyframes.
     """
     rows = list(results or [])
     video = next((_loaded(row.get('content')) for row in rows if row.get('title') == VIDEO_TITLE), None)
-    current_flow = is_direction(video) or (isinstance(video, dict) and video.get('kind') == MOTION_VIEW)
+    keyframes = any(row.get('title') == KEYFRAME_TITLE for row in rows)
+    current_flow = keyframes or is_direction(video) or (isinstance(video, dict) and video.get('kind') == MOTION_VIEW)
     slim = []
     for row in rows:
         title, content = row.get('title'), row.get('content')
-        if title in drop or (current_flow and title == FRAME_TITLES[1]):
+        if title in drop or (current_flow and title == FRAME_TITLES[1]) or (keyframes and title == VIDEO_TITLE):
             continue
-        if title in FRAME_TITLES or title == VIDEO_TITLE:
+        if title in FRAME_TITLES or title in (VIDEO_TITLE, KEYFRAME_TITLE, BEATS_TITLE):
             loaded = _loaded(content)
             if isinstance(loaded, dict):
-                content = frame_view(loaded) if title in FRAME_TITLES else video_view(loaded)
+                content = (frame_view(loaded) if title in FRAME_TITLES else video_view(loaded) if title == VIDEO_TITLE
+                           else keyframe_view(loaded, 'brief') if title == KEYFRAME_TITLE else beats_view(loaded))
         slim.append(_present(title=title, content=content, origin=row.get('origin') if row.get('origin') != 'model' else None))
     return slim

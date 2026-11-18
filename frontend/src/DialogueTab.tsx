@@ -260,7 +260,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const rewrite = !!info.extension?.rewrite_shots || detail.shots.some(shot => shot.result)
   const directed = !!(detail.bible || detail.plan)
   const addBlocked = !nextCut ? '' : !nextCut.fits ? `With cut ${nextCut.number} the sequence would last more than ${clock(detail.limits.sequence_seconds)}`
-    : !nextCut.ready ? `Cut ${nextCut.number} needs a first-frame and a video analysis first` : dirty ? 'Save your changes first' : busy ? 'Wait for the running jobs to finish' : ''
+    : !nextCut.ready ? `Cut ${nextCut.number} needs a first-frame and a keyframe analysis first` : dirty ? 'Save your changes first' : busy ? 'Wait for the running jobs to finish' : ''
   function addCut() {
     if (!nextCut || addBlocked) return
     const then = directed ? ` Once the new lines are saved (at once if nobody speaks in it), the bible and the shot plan are written again${rewrite ? ', then every shot prompt is rewritten and reviewed' : ''}.` : ''

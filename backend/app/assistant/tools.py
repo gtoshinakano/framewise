@@ -17,14 +17,15 @@ from ..text_diff import diff_segments  # noqa: F401  (re-exported for the propos
 from . import compact, h3_prompt, skills, store, transcript_edit
 from .transcript_edit import join_text, merged_transcript, transcript_rows  # noqa: F401  (re-exported for callers and tests)
 
-STRUCTURED = ('initial_frame', 'last_frame', 'video_analysis', 'subtitle_ocr', 'consistency_summary')
+STRUCTURED = ('initial_frame', 'keyframe_analysis', 'performance_beats', 'last_frame', 'video_analysis', 'subtitle_ocr', 'consistency_summary')
 TEXT_RESULTS = {
     'production_brief': {'titles': ('Cut summary',), 'title': 'Cut summary', 'kind': 'cut_description'},
     'h3_prompt': {'titles': ('H3 animation prompt', 'MiniMax animation prompt'), 'title': 'H3 animation prompt', 'kind': 'generation_prompt'},
     'image_prompt': {'titles': ('Still image prompt',), 'title': 'Still image prompt', 'kind': 'generation_prompt'},
 }
 RESULT_TYPES = (*STRUCTURED, 'production_brief', 'review_answers', 'h3_prompt', 'image_prompt')
-LABELS = {'initial_frame': 'initial frame', 'last_frame': 'last frame', 'video_analysis': 'video analysis', 'subtitle_ocr': 'subtitle OCR',
+LABELS = {'initial_frame': 'initial frame', 'keyframe_analysis': 'keyframe analysis', 'performance_beats': 'performance beats',
+          'last_frame': 'last frame', 'video_analysis': 'video analysis', 'subtitle_ocr': 'subtitle OCR',
           'consistency_summary': 'consistency summary', 'production_brief': 'production brief', 'review_answers': 'review answers',
           'h3_prompt': 'H3 prompt', 'image_prompt': 'still image prompt', 'transcript': 'transcript',
           'sequence_shot': 'shot prompt', 'sequence_plan': 'shot plan', 'sequence_bible': 'sequence bible'}
@@ -215,6 +216,14 @@ def project(result_type, row, cut):
             return {'value': content}
         if result_type == 'video_analysis':
             return project_video(content, cut)
+        if result_type == 'keyframe_analysis':
+            # Already clip-relative: each frame's states and the changes between consecutive keyframes.
+            view = prompt_context.keyframe_view(content, 'review')
+            return {key: value for key, value in view.items() if key != 'kind'} if isinstance(view, dict) else view
+        if result_type == 'performance_beats':
+            view = prompt_context.beats_view(content)
+            return {**({key: value for key, value in view.items() if key != 'kind'} if isinstance(view, dict) else {'value': view}),
+                    **({'checks': content['checks']} if content.get('checks') else {})}
         if result_type in ('initial_frame', 'last_frame'):
             view = {key: value for key, value in content.items() if key not in ('subtitle_regions', 'frame_time')}
             if is_number(content.get('frame_time')):
@@ -418,10 +427,14 @@ def get_neighbors(ctx, args):
         with db.connect() as conn:
             brief = find_current(conn, other['id'], 'production_brief')
             consistency = find_current(conn, other['id'], 'consistency_summary')
+            beats = find_current(conn, other['id'], 'performance_beats')
+            keyframes = find_current(conn, other['id'], 'keyframe_analysis')
             video = find_current(conn, other['id'], 'video_analysis')
         text = brief['content'][:900] if brief else None
         if not text and consistency:
             text = store.loads(consistency['content'], {}).get('summary')
+        if not text and (beats or keyframes):
+            text = store.loads((beats or keyframes)['content'], {}).get('summary')
         if not text and video:
             view = project('video_analysis', video, other)
             text = view.get('summary') or view.get('overview')

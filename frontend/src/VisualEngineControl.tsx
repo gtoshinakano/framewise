@@ -46,9 +46,10 @@ export function VisualEngineControl({ compact = false }: { compact?: boolean } =
             <select className="field" value={data.selected[role.role]} disabled={!!saving || options.length < 2} onChange={event => void choose(role.role, event.target.value)}>
               {options.map(option => <option key={option.key} value={option.key} disabled={option.disabled}>{option.label}</option>)}
             </select>
-            {current && <span className="muted mt-1 block text-[11px]">{current.note}{role.role === 'video_analysis' && current.hears_audio ? ' The clip is sent with its soundtrack, used only to judge who speaks.' : ''}</span>}
+            {current && <span className="muted mt-1 block text-[11px]">{current.note}</span>}
           </label>
         })}
+        {data?.models.filter(model => model.helper).map(model => <p key={model.key} className="text-xs"><strong>{model.label}</strong> <span className={model.available ? 'text-[#7bd88f]' : 'text-[#f5c678]'}>· {model.available ? 'Installed' : model.detail}</span><span className="muted mt-0.5 block text-[11px]">{model.note}</span></p>)}
         {hints.length > 0 && <div className="rounded-lg border hairline p-3 text-xs"><strong>Not installed</strong>
           {hints.map(hint => <p key={hint.key} className="muted mt-1">{hint.label} · {hint.detail}. Install on the host with <code className="rounded bg-[#11151c] px-1">{hint.command}</code>, then recreate the inference worker.</p>)}
         </div>}

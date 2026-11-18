@@ -481,7 +481,7 @@ class CompositionProjectionTest(unittest.TestCase):
         roomy = good + ' ' + 'x' * 3500  # a brief with activity, emotion and speaking per character needs more than the old 3 KB
         self.assertEqual(inference_worker.validate_production_brief(roomy), roomy)
         self.assertEqual(inference_worker.validate_production_brief('<analysis>private</analysis><reasoning>private</reasoning>\n' + good), good)
-        for bad in (fixture(48)['results'][0]['type'], good + ('x'*4097), good + "\n[The model's response was cut off and may be incomplete.]", '<think>unfinished', '<analysis>unfinished'):
+        for bad in (fixture(48)['results'][0]['type'], good + ('x'*6145), good + "\n[The model's response was cut off and may be incomplete.]", '<think>unfinished', '<analysis>unfinished'):
             with self.assertRaises(ValueError): inference_worker.validate_production_brief(bad)
         for timeline in ('Holds still.', '[1–0] Holds still.', '[0–3] Holds still.', '[0–1]', '[1–2] Turns.\n[0–1] Stands.'):
             with self.assertRaises(ValueError):
@@ -495,10 +495,28 @@ class CompositionProjectionTest(unittest.TestCase):
         self.assertEqual(inference_worker.validate_production_brief(legacy, duration=2), legacy)  # an old summary that is edited still saves
         for bad in (new.replace('### Scene', '### Overview'), new.replace('### Opening Frame\nA person.\n', ''), new.replace('Static camera.', ''), new + '\n### Dialogue\nx'):
             with self.assertRaises(ValueError): inference_worker.validate_production_brief(bad)
-        self.assertEqual(inference_worker.BRIEF_SECTIONS, ['Scene', 'Opening Frame', 'Animation Timeline', 'Continuity & Constraints'])
-        for rule in ('Dialogue is not part of this brief', 'pose_detail', 'state_correction', 'Return all four headings'):
+        self.assertEqual(inference_worker.BRIEF_SECTIONS, ['Scene', 'Opening Frame', 'Performance Beats', 'Acting Notes', 'Continuity & Constraints'])
+        for rule in ('Dialogue is not part of this brief', 'pose_detail', 'state_correction', 'Return all five headings', 'Performance Director',
+                     'the keyframes win', '[start–end seconds] Name: body; face; gaze; mouth (delivery). Intent:', 'at most 6144 UTF-8 bytes'):
             self.assertIn(rule, inference_worker.PRODUCTION_BRIEF_SYSTEM)
         self.assertNotIn('### Dialogue', inference_worker.PRODUCTION_BRIEF_SYSTEM)
+        self.assertNotIn('### Animation Timeline', inference_worker.PRODUCTION_BRIEF_SYSTEM)
+
+    def test_the_performance_director_brief_has_five_sections_and_six_kilobytes(self):
+        brief = ('### Scene\nA store.\n### Opening Frame\nHero stands left.\n### Performance Beats\n[0.0–2.0] Camera: static.\n'
+                 '[0.0–1.0] Hero: stands; calm; looks at Mia; mouth moves as in speech (lip-synced). Intent: greets her.\n[2.0] End state: Hero stands.\n'
+                 '### Acting Notes\nHero stays warm and steady.\n### Continuity & Constraints\nStatic camera.')
+        self.assertEqual(inference_worker.validate_production_brief(brief, duration=2), brief)
+        with self.assertRaisesRegex(ValueError, 'Performance Beats requires time-coded lines'):
+            inference_worker.validate_production_brief(brief.replace('[0.0–1.0] Hero', 'Hero'), duration=2)
+        with self.assertRaisesRegex(ValueError, 'Acting Notes'):  # the error names the required sections
+            inference_worker.validate_production_brief(brief.replace('### Acting Notes\nHero stays warm and steady.\n', ''), duration=2)
+        long = brief.replace('Hero stays warm and steady.', 'Hero stays warm. ' * 300)
+        self.assertGreater(len(long.encode()), 4096)
+        self.assertLess(len(long.encode()), 6144)
+        self.assertEqual(inference_worker.validate_production_brief(long, duration=2), long)
+        with self.assertRaisesRegex(ValueError, 'exceeds 6144 bytes'):
+            inference_worker.validate_production_brief(brief.replace('Hero stays warm and steady.', 'x ' * 3200), duration=2)
 
     def test_summary_generation_retries_truncation_and_strips_thinking(self):
         good = '### Scene\nA store.\n### Opening Frame\nA person.\n### Animation Timeline\n[0–1] Holds still.\n### Dialogue\nNo dialogue timing supplied.\n### Continuity & Constraints\nStatic camera.'

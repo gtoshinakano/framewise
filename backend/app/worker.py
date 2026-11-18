@@ -116,13 +116,15 @@ def cleanup_voice_upload(job):
 
 # Local text jobs of one episode may run side by side (two llama-server slots); every other
 # pipeline still holds its episode alone.
-TEXT_PIPELINES = ('regen', 'consistency_summary', 'review_answers', 'sequence')
+TEXT_PIPELINES = ('regen', 'consistency_summary', 'review_answers', 'sequence', 'performance_beats')
 # The provider a text job was queued with: ``regen`` keeps it at the top of its payload, the others in ``config``.
 JOB_TEXT_PROVIDER_SQL = "COALESCE(json_extract(jobs.payload_json,'$.text_provider'), json_extract(jobs.payload_json,'$.config.text_provider'), 'openrouter')"
 # A text job run by a remote lane uses neither this host's GPU nor its media files, so it does not hold its
 # episode against visual analysis, and a running visual analysis does not hold it against a remote lane.
 # Remote lanes mark the jobs they hold with this lease-owner prefix; every other pipeline (transcription,
 # subtitles, character detection, media preparation, hard cuts, ...) still holds the episode alone.
+# Chained text jobs: held until the job named by ``payload.wait_for`` is done, cancelled when it cannot be.
+WAITING_PIPELINES = ('regen', 'review_answers', 'consistency_summary')
 REMOTE_OWNER = 'remote:'
 ALONGSIDE_REMOTE = ('analyze',)
 
@@ -146,6 +148,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
         routing += f" AND {JOB_TEXT_PROVIDER_SQL}='local'"
     placeholders = ",".join("?" for _ in pipelines)
     text = ",".join(f"'{name}'" for name in TEXT_PIPELINES)
+    waiting = ",".join(f"'{name}'" for name in WAITING_PIPELINES)
     alongside = ",".join(f"'{name}'" for name in ALONGSIDE_REMOTE)
     # Jobs of ``alongside`` pipelines are never held by a job a remote lane runs; a remote lane is never held by them.
     remote_free = f"AND NOT (jobs.pipeline IN ({alongside}) AND other.lease_owner LIKE '{REMOTE_OWNER}%')" + (f" AND other.pipeline NOT IN ({alongside})" if remote_lane else '')
@@ -159,7 +162,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
         # A chained text job (payload.wait_for) is held until the job it names is done. If that job
         # failed, was cancelled or is gone, the waiting job can never run, so cancel it now.
         while True:  # cancelling one job can orphan the next link of its chain
-            orphans = conn.execute(f"""SELECT id,episode_id FROM jobs WHERE status='queued' AND pipeline IN ('regen','review_answers') AND pipeline IN ({placeholders})
+            orphans = conn.execute(f"""SELECT id,episode_id FROM jobs WHERE status='queued' AND pipeline IN ({waiting}) AND pipeline IN ({placeholders})
                 AND json_extract(payload_json,'$.wait_for') IS NOT NULL
                 AND NOT EXISTS (SELECT 1 FROM jobs dep WHERE dep.id=json_extract(jobs.payload_json,'$.wait_for') AND dep.status IN ('queued','running','done'))""", pipelines).fetchall()
             if not orphans:
@@ -167,8 +170,11 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
             cancel_jobs(conn, orphans, WAITED_FOR_FAILED)
         job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}){routing} AND
             (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
-            AND (jobs.pipeline NOT IN ('regen','review_answers') OR json_extract(jobs.payload_json,'$.wait_for') IS NULL
+            AND (jobs.pipeline NOT IN ({waiting}) OR json_extract(jobs.payload_json,'$.wait_for') IS NULL
                  OR EXISTS (SELECT 1 FROM jobs dep WHERE dep.id=json_extract(jobs.payload_json,'$.wait_for') AND dep.status='done'))
+            -- A visual job waits for the keyframe selection its keyframe stage reads; a failed selection fails only that stage.
+            AND (jobs.pipeline!='analyze' OR NOT EXISTS (SELECT 1 FROM json_each(jobs.payload_json,'$.wait_for_keyframes') w
+                 JOIN jobs dep ON dep.id=w.value WHERE dep.status IN ('queued','running')))
             AND (jobs.pipeline='brief_export' OR NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status='running' AND other.id!=jobs.id AND other.pipeline!='brief_export'
                 -- Only a job with a live lease holds the episode. Interrupted jobs (lease
                 -- expired) must not block each other: a bulk batch leaves many at once.

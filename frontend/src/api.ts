@@ -12,9 +12,9 @@ export type CutSubtitles = { extracted: boolean; language: string | null; strip:
 export type EpisodeSubtitles = { language: string | null; run: SubtitleRun | null; lines: SubtitleLine[] }
 export type Chunk = { id: string; chunk_index: number; start_time: number; end_time: number; title: string; notes: string }
 export type JobCut = { id: string; cut_index: number | null; title: string; start_time: number | null; end_time: number | null; completed: boolean }
-export type VisualStage = 'initial_frame' | 'video_analysis'
+export type VisualStage = 'initial_frame' | 'keyframe_analysis'
 // Jobs queued before subtitles became an episode-wide step, or before the last frame stopped being analyzed, may still list these stages in their history.
-export type JobStage = VisualStage | 'subtitle_ocr' | 'last_frame'
+export type JobStage = VisualStage | 'video_analysis' | 'subtitle_ocr' | 'last_frame'  // the last three only on jobs queued before they were retired
 // What the queue may do with a job (backend job_kinds): cancel it now, or retry it after it failed or was cancelled.
 export type JobActions = { cancel: boolean; retry: boolean }
 // `cancelled` is its own status since 2026-11-15; older cancels were `failed` with the stage `Cancelled`.
@@ -60,3 +60,30 @@ export function upload<T>(path: string, body: FormData, onProgress: (value: numb
 
 export const mediaUrl = (episodeId: string, name: string) => `/api/episodes/${episodeId}/media/${name}`
 export const jsonBody = (value: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(value) })
+
+/** One character in one keyframe (keyframes-v1): the vision model's state and, when DWPose read the body, the measured one. */
+export type KeyframeCharacter = { name: string; character_context_id: string | null; state: string | null; pose: string | null }
+export type KeyframeChange = { part: string; description: string; source: 'dwpose' | 'qwen' }
+export type KeyframeSegment = {
+  from: string; to: string; start: number; end: number; camera: { move: string; detail: string }
+  characters: { name: string; character_context_id: string | null; walking: string; speaking: string; blinking: string; changes: KeyframeChange[] }[]
+  other_changes: { kind: string; description: string }[]
+}
+export type KeyframeAnalysis = {
+  id: string; contract: 'keyframes-v1'; method: 'hybrid' | 'qwen'; selection_key: string; summary: string
+  frames: { label: string; ordinal: number; t: number; reason: string | null; characters: KeyframeCharacter[] }[]
+  segments: KeyframeSegment[]
+}
+/** What the Target frames tab reads (GET /cuts/{id}/keyframe-analysis). */
+export type KeyframeAnalysisState = {
+  status: 'missing' | 'current' | 'stale'; selection_key: string | null; result: KeyframeAnalysis | null
+  run: { id: string; phase: string; method: string; roster_source: string; target_run_id: string | null; roster: { name: string }[]; timings: Record<string, number> } | null
+  job: { id: string; status: string; stage: string; error: string | null } | null
+}
+export type BeatSpeech = { line: string; speaker: string; start: number; end: number; delivery: 'on_screen' | 'off_screen' | 'inner_voice' | 'narrative'; suggested: string | null }
+export type PerformanceBeats = {
+  contract: 'beats-v1'; duration: number; summary: string; based_on: { keyframe_analysis: string; initial_frame: string | null }
+  beats: { start: number; end: number; camera: { move: string; detail: string }; intent: string
+           characters: { character: string; body: string; face: string; gaze: string; mouth: string }[]; speech: BeatSpeech[] }[]
+  speech: BeatSpeech[]; checks: { kind: string; [key: string]: unknown }[]
+}

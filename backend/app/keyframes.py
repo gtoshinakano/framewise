@@ -6,6 +6,7 @@ import queue
 import re
 import subprocess
 import threading
+import uuid
 from collections import deque
 
 import cv2
@@ -57,6 +58,77 @@ def mask_for(episode_id, settings):
     if isinstance(top, (int, float)) and isinstance(bottom, (int, float)) and 0 <= top < bottom <= 1 and (top > 0 or bottom < 1):
         return {'top': top, 'bottom': bottom, 'source': 'detected', 'subtitle_run_id': run['id']}
     return {'top': settings['mask_top'], 'bottom': settings['mask_bottom'], 'source': 'fallback', 'subtitle_run_id': None}
+
+
+def latest_job(conn, episode_id, cut_id):
+    """The newest ``keyframes`` job that covers the cut (any status), or None."""
+    return conn.execute('''SELECT j.id,j.status,j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='keyframes'
+                           AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') item WHERE json_extract(item.value,'$.id')=?)
+                           ORDER BY j.rowid DESC LIMIT 1''', (episode_id, cut_id)).fetchone()
+
+
+def current_selection(cut_id):
+    """``(cut, source path, key, result)`` of the cut's latest selection; key and result are None when it is missing or stale.
+
+    The cut is None when it does not exist or is not active. The key is the ``keyframe_results`` cache key: the
+    settings of the cut's latest selection job with today's subtitle mask, so extracting subtitles makes it stale.
+    """
+    from . import db, media
+    cut = db.one('''SELECT c.*,e.project_id,e.original_ext FROM cuts c JOIN episodes e ON e.id=c.episode_id
+                    WHERE c.id=? AND c.active=1''', (cut_id,))
+    if not cut:
+        return None, None, None, None
+    source = media.episode_dir(cut['project_id'], cut['episode_id']) / f"original{cut['original_ext']}"
+    with db.connect() as conn:
+        job = latest_job(conn, cut['episode_id'], cut_id)
+    if not job:
+        return cut, source, None, None
+    settings = json.loads(job['payload_json'])['keyframe_settings']
+    try:
+        key = cache_key(source, cut, settings, mask_for(cut['episode_id'], settings))
+    except OSError:
+        return cut, source, None, None
+    row = db.one('SELECT result_json FROM keyframe_results WHERE cache_key=?', (key,))
+    return (cut, source, key, json.loads(row['result_json'])) if row else (cut, source, None, None)
+
+
+def ensure_selection(conn, episode_id, cut_ids):
+    """Queue keyframe selection for the cuts without a current one, inside the caller's transaction.
+
+    The keyframe analysis needs the selection; the visual analysis job that runs it waits for the jobs returned
+    here (``payload.wait_for_keyframes``). A pending job that already covers a cut is reused. A new job uses the
+    settings of the cut's latest selection, else the defaults, so a selection the user tuned is not reset.
+    Returns the ids of the keyframes jobs to wait for.
+    """
+    from . import media
+    episode = conn.execute('SELECT project_id,original_ext FROM episodes WHERE id=?', (episode_id,)).fetchone()
+    source = media.episode_dir(episode['project_id'], episode_id) / f"original{episode['original_ext']}"
+    if not source.is_file():
+        return []  # nothing to select from; the keyframe stage reports the missing selection itself
+    waits, groups = [], {}
+    for cut_id in cut_ids:
+        cut = conn.execute('SELECT id,start_time,end_time FROM cuts WHERE id=? AND episode_id=? AND active=1', (cut_id, episode_id)).fetchone()
+        if not cut:
+            continue
+        job = latest_job(conn, episode_id, cut_id)
+        if job and job['status'] in ('queued', 'running'):
+            waits.append(job['id'])
+            continue
+        settings = json.loads(job['payload_json'])['keyframe_settings'] if job else config({})
+        band = mask_for(episode_id, settings)
+        try:
+            key = cache_key(source, cut, settings, band)
+        except OSError:
+            key = None
+        if key and conn.execute('SELECT 1 FROM keyframe_results WHERE cache_key=?', (key,)).fetchone():
+            continue
+        group = groups.setdefault(json.dumps(settings, sort_keys=True), {'keyframe_settings': settings, 'subtitle_mask': band, 'cuts': []})
+        group['cuts'].append({name: cut[name] for name in ('id', 'start_time', 'end_time')})
+    for payload in groups.values():
+        job_id = str(uuid.uuid4())
+        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'keyframes',?)", (job_id, episode_id, json.dumps(payload)))
+        waits.append(job_id)
+    return list(dict.fromkeys(waits))
 
 
 def decoded(source, width, height, edge):

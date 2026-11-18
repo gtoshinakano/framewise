@@ -93,3 +93,16 @@ async def get_target_frame(cut_id: str, ordinal: int, revision: str | None = Non
     except (RuntimeError, OSError, TimeoutError, subprocess.SubprocessError) as exc:
         raise HTTPException(503, 'Could not extract target frame') from exc
     return Response(content=image, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=300' if revision else 'no-store'})
+
+
+@router.get('/api/cuts/{cut_id}/keyframe-analysis')
+def get_keyframe_analysis(cut_id: str):
+    """The cut's current keyframe analysis for the Target frames tab: per-frame states, the changes between frames, its run and job.
+
+    ``status`` is ``current`` when it was made for the cut's current keyframe selection, ``stale`` when the selection
+    changed since, ``missing`` before the first analysis.
+    """
+    from . import keyframe_analysis
+    if not db.one('SELECT id FROM cuts WHERE id=? AND active=1', (cut_id,)):
+        raise HTTPException(404, 'Active cut not found')
+    return keyframe_analysis.state(cut_id)

@@ -285,7 +285,7 @@ class SequenceFlowTest(SequenceBase):
             conn.execute("DELETE FROM analysis_results WHERE id='c2-video_analysis'")
         sequence_id = self.create()
         self.assertEqual(self.detail(sequence_id)['missing'], [2])
-        self.assertIn('first-frame and a video analysis first: 2', self.run_step(sequence_id, 'direct', expected=409)['detail'])
+        self.assertIn('first-frame and a keyframe analysis first: 2', self.run_step(sequence_id, 'direct', expected=409)['detail'])
         self.run_step(sequence_id, 'shots', expected=409)
         self.run_step(sequence_id, 'review', expected=409)
 

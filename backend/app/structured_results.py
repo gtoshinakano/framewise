@@ -5,7 +5,9 @@ from . import db, worker
 
 KINDS = {
     'initial_frame': ('first_frame', 'Initial frame description'),
-    'video_analysis': ('cut_description', 'Video analysis'),
+    'video_analysis': ('cut_description', 'Video analysis'),  # replaced by keyframe_analysis on 2026-11-18; older results stay readable
+    'keyframe_analysis': ('cut_description', 'Keyframe analysis'),
+    'performance_beats': ('cut_description', 'Performance beats'),
     'last_frame': ('last_frame', 'Last frame description'),
     'subtitle_ocr': ('other', 'Subtitle OCR'),
     'consistency_summary': ('cut_description', 'Consistency summary'),

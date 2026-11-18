@@ -11,9 +11,10 @@ A new pipeline needs one entry in ``KINDS`` (``tests/test_runs.py`` checks every
 from dataclasses import dataclass, field
 from typing import Callable
 
-STAGE_LABELS = {'initial_frame': 'Initial frame', 'video_analysis': 'Video analysis', 'subtitle_ocr': 'Subtitle detection and OCR', 'last_frame': 'Last frame'}
+STAGE_LABELS = {'initial_frame': 'Initial frame', 'keyframe_analysis': 'Keyframe analysis', 'video_analysis': 'Video analysis', 'subtitle_ocr': 'Subtitle detection and OCR',
+                'last_frame': 'Last frame'}
 # The stages a visual job runs when its payload names none (single_cut_pipeline.ALL_STAGES).
-DEFAULT_STAGES = ('initial_frame', 'video_analysis')
+DEFAULT_STAGES = ('initial_frame', 'keyframe_analysis')
 SEQUENCE_STEPS = {'compile': 'Dialogue', 'bible': 'Bible', 'plan': 'Plan', 'shot': 'Shot', 'review': 'Review'}
 
 
@@ -192,6 +193,8 @@ KINDS = {kind.pipeline: kind for kind in (
     # Describes one labelled box of a character created from it and appends the text to its Details.
     Kind('character_profile', 'Character description', True, cuts=_one_cut, cancel_running=_always, retry=_always,
          keys=lambda payload, cut_ids: [f"character_profile:{payload.get('character_context_id')}"]),
+    # The timed acting plan a text model compiles from the keyframe analysis (performance_beats.py).
+    Kind('performance_beats', 'Performance beats', True, cuts=_one_cut, keys=_cut_keys('performance_beats'), cancel_running=_always, retry=_always),
     Kind('consistency_summary', 'Consistency summary', True, cuts=_one_cut, keys=_cut_keys('consistency_summary'), cancel_running=_always),
     Kind('review_answers', 'Production decisions draft', True, cuts=_one_cut, keys=_cut_keys('review_answers'), cancel_running=_always),
     Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always),

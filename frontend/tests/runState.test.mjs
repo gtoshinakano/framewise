@@ -1,57 +1,45 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { activeRunFor, batchCounts, cutStepStates, preflight, videoSettingsErrors, videoSettingsSummary } from '../src/runState.ts'
+import { activeRunFor, batchCounts, cutStepStates, preflight } from '../src/runState.ts'
 
-const config = { frame_mode: 'per_second', frame_count: 8, video_width: 896, video_height: 504, video_fps: 2, video_frame_budget: null, context_ids: [], detection_queries: [], additional_context: '', text_provider: 'local', local_thinking: false, openrouter_model: '' }
-const cut = { start_time: 0, end_time: 10 }
 const job = (over = {}) => ({ id: 'j1', pipeline: 'analyze', status: 'queued', stage: 'Queued', stages: null, cuts: [{ id: 'c1', completed: false }], ...over })
 const result = (type, extra = {}) => ({ title: 'x', superseded_by: null, settings: { structured_type: type }, ...extra })
-
-test('validation reports each field separately', () => {
-  assert.deepEqual(videoSettingsErrors(config), {})
-  assert.equal(videoSettingsErrors({ ...config, video_width: 897 }).width, 'Must be even')
-  assert.match(videoSettingsErrors({ ...config, video_height: 100 }).height, /128 to 1080/)
-  assert.ok(videoSettingsErrors({ ...config, video_fps: 0 }).fps)
-  assert.ok(videoSettingsErrors({ ...config, video_fps: Number.NaN }).fps)
-  assert.ok(videoSettingsErrors({ ...config, video_fps: 31 }).fps)
-})
-
-test('summary line shows canvas, rate and estimated frames, or flags invalid input', () => {
-  assert.match(videoSettingsSummary(config, cut), /^896×504 · 2 fps · ≈\d+ frames$/)
-  assert.equal(videoSettingsSummary({ ...config, video_width: 3 }, cut), 'Invalid settings')
-})
+const NONE = { initial_frame: 'none', keyframe_analysis: 'none', beats: 'none', consistency: 'none', summary: 'none' }
 
 test('finished results are done; superseded ones are ignored', () => {
-  const state = cutStepStates([result('initial_frame'), result('video_analysis', { superseded_by: 'n' }), { title: 'Cut summary', superseded_by: null, settings: {} }], [], [], 'c1')
-  assert.deepEqual(state, { initial_frame: 'done', video_analysis: 'none', consistency: 'none', summary: 'done' })
+  const state = cutStepStates([result('initial_frame'), result('keyframe_analysis', { superseded_by: 'n' }), result('performance_beats'), { title: 'Cut summary', superseded_by: null, settings: {} }], [], [], 'c1')
+  assert.deepEqual(state, { ...NONE, initial_frame: 'done', beats: 'done', summary: 'done' })
 })
 
 test('an active run shows queued, running, and checkpointed stages for this cut only', () => {
-  const stages = [{ id: 's1', job_id: 'j1', stage_key: 'initial_frame', status: 'done' }, { id: 's2', job_id: 'j1', stage_key: 'video_analysis', status: 'running' }]
+  const stages = [{ id: 's1', job_id: 'j1', stage_key: 'initial_frame', status: 'done' }, { id: 's2', job_id: 'j1', stage_key: 'keyframe_analysis', status: 'running' }]
   const state = cutStepStates([], stages, [job({ status: 'running' })], 'c1')
-  assert.deepEqual([state.initial_frame, state.video_analysis], ['done', 'running'])
-  assert.deepEqual(cutStepStates([], [], [job()], 'c1'), { initial_frame: 'queued', video_analysis: 'queued', consistency: 'none', summary: 'none' })
-  assert.equal(cutStepStates([], [], [job({ cuts: [{ id: 'other', completed: false }] })], 'c1').video_analysis, 'none')
-  assert.equal(cutStepStates([], [], [job({ stages: ['video_analysis'] })], 'c1').initial_frame, 'none')
-  // A job queued before the last frame stopped being analyzed does not add a step.
-  assert.deepEqual(Object.keys(cutStepStates([result('last_frame')], [], [job({ stages: ['last_frame'] })], 'c1')), ['initial_frame', 'video_analysis', 'consistency', 'summary'])
+  assert.deepEqual([state.initial_frame, state.keyframe_analysis], ['done', 'running'])
+  assert.deepEqual(cutStepStates([], [], [job()], 'c1'), { ...NONE, initial_frame: 'queued', keyframe_analysis: 'queued' })
+  assert.equal(cutStepStates([], [], [job({ cuts: [{ id: 'other', completed: false }] })], 'c1').keyframe_analysis, 'none')
+  assert.equal(cutStepStates([], [], [job({ stages: ['keyframe_analysis'] })], 'c1').initial_frame, 'none')
+  // Jobs queued before the last frame and the video stage were retired add no step, and old results show nowhere.
+  const old = cutStepStates([result('last_frame'), result('video_analysis')], [], [job({ stages: ['last_frame', 'video_analysis'] })], 'c1')
+  assert.deepEqual(old, NONE)
 })
 
-test('summary pipelines map to their own steps and failed attempts show until a result exists', () => {
-  const state = cutStepStates([], [{ id: 's', job_id: 'old', stage_key: 'video_analysis', status: 'failed' }], [job({ pipeline: 'consistency_summary', status: 'running' }), job({ id: 'j2', pipeline: 'regen' })], 'c1')
-  assert.deepEqual([state.consistency, state.summary, state.video_analysis], ['running', 'queued', 'failed'])
-  assert.equal(cutStepStates([result('video_analysis')], [{ id: 's', job_id: 'old', stage_key: 'video_analysis', status: 'failed' }], [], 'c1').video_analysis, 'done')
+test('text pipelines map to their own steps and failed attempts show until a result exists', () => {
+  const state = cutStepStates([], [{ id: 's', job_id: 'old', stage_key: 'keyframe_analysis', status: 'failed' }],
+    [job({ pipeline: 'consistency_summary', status: 'running' }), job({ id: 'j2', pipeline: 'regen' }), job({ id: 'j3', pipeline: 'performance_beats' })], 'c1')
+  assert.deepEqual([state.consistency, state.summary, state.keyframe_analysis, state.beats], ['running', 'queued', 'failed', 'queued'])
+  assert.equal(cutStepStates([result('keyframe_analysis')], [{ id: 's', job_id: 'old', stage_key: 'keyframe_analysis', status: 'failed' }], [], 'c1').keyframe_analysis, 'done')
 })
 
 test('the running job is preferred as the active run', () => {
   assert.equal(activeRunFor([job({ id: 'a' }), job({ id: 'b', status: 'running' })], 'c1').id, 'b')
   assert.equal(activeRunFor([job({ status: 'done' })], 'c1'), undefined)
+  assert.equal(activeRunFor([job({ id: 'b', pipeline: 'performance_beats', status: 'running' })], 'c1').id, 'b')
 })
 
 test('preflight explains what is blocking or risky', () => {
-  assert.deepEqual(preflight({ mediaBusy: false, enabled: true, errors: {}, characters: null }), [])
-  const texts = preflight({ mediaBusy: true, enabled: false, errors: { fps: 'x' }, characters: { boxes: 3, autoUnverified: 2, unknown: 1, stale: true } })
-  assert.equal(texts.length, 6)
+  assert.deepEqual(preflight({ mediaBusy: false, enabled: true, characters: null }), [])
+  const texts = preflight({ mediaBusy: true, enabled: false, characters: { boxes: 3, autoUnverified: 2, unknown: 1, stale: true } })
+  assert.equal(texts.length, 5)
   assert.equal(texts[0].level, 'error')
   assert.match(texts.find(item => /unverified/.test(item.text)).text, /^2 automatic labels are unverified/)
 })

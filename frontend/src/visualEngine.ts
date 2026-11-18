@@ -1,7 +1,8 @@
 // Pure helpers of the Visual engine dialog (VisualEngineControl.tsx), kept apart so node tests can import them.
 
 export type VisualRole = { role: string; label: string; default: string }
-export type VisualModel = { key: string; label: string; model_id: string; roles: string[]; note: string; hears_audio: boolean; install: string | null; available: boolean; detail: string }
+// A model without roles is a helper (DWPose): never chosen, only installed.
+export type VisualModel = { key: string; label: string; model_id: string; roles: string[]; note: string; helper: boolean; install: string | null; available: boolean; detail: string }
 export type VisualModels = { roles: VisualRole[]; models: VisualModel[]; selected: Record<string, string>; worker_reported: boolean }
 
 /** The models that can run a role, the default first. A missing model stays listed but cannot be chosen,

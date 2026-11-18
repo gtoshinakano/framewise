@@ -8,7 +8,7 @@ export function ResultMetrics({ result }: { result: AnalysisResult }) {
     return <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#aeb5c1]" aria-label="Generation details"><span>Source: <strong className="text-[#e8ebf1]">Cut Assistance edit (approved)</strong></span><span>Model: <strong className="text-[#e8ebf1]">{result.model_id || 'Unavailable'}</strong></span>{typeof edit.summary === 'string' && edit.summary && <span>Change: {edit.summary}</span>}</div>
   }
   if (result.origin === 'manual_edit' || result.origin === 'manual') return <div className="text-[11px] text-[#aeb5c1]" aria-label="Generation details">Source: <strong className="text-[#e8ebf1]">Manual</strong></div>
-  const visual = ['initial_frame', 'last_frame', 'video_analysis', 'subtitle_ocr'].includes(String(settings.structured_type || '')) || /^(Frame|Object detections|Raw OCR) at /.test(result.title)
+  const visual = ['initial_frame', 'keyframe_analysis', 'last_frame', 'video_analysis', 'subtitle_ocr'].includes(String(settings.structured_type || '')) || /^(Frame|Object detections|Raw OCR) at /.test(result.title)
   const legacyText = ['Cut summary', 'Consistency summary', 'MiniMax animation prompt', 'Visual evidence and confidence', 'On-screen text and confidence'].includes(result.title)
   const provider = settings.provider === 'local' ? 'Local' : settings.provider === 'openrouter' ? 'OpenRouter' : visual ? 'Local (legacy)' : legacyText ? 'OpenRouter (legacy)' : 'Unavailable'
   const duration = visual ? settings.generation_seconds : settings.summary_generation_seconds ?? settings.generation_seconds
@@ -22,6 +22,7 @@ export function ResultMetrics({ result }: { result: AnalysisResult }) {
     {typeof usage.request_seconds === 'number' && <span>Request: {(usage.request_seconds as number).toFixed(1)}s</span>}
     {typeof usage.reasoning_tokens === 'number' && <span>Thinking tokens: {value('reasoning_tokens')}</span>}
     {typeof usage.load_seconds === 'number' && <span>Model preparation: {(usage.load_seconds as number).toFixed(1)}s</span>}
+    {settings.structured_type === 'keyframe_analysis' && <span>Method: <strong className="text-[#e8ebf1]">{settings.method === 'hybrid' ? 'Qwen3.5 + DWPose keypoints' : 'Qwen3.5 only (DWPose not installed)'}</strong> · {String(settings.keyframes ?? '?')} keyframes in {String(settings.windows ?? '?')} windows{Number(settings.retries) ? ` · ${String(settings.retries)} retries` : ''}</span>}
     {settings.provider === 'local' && <span>Thinking: {settings.thinking ? 'On' : 'Off'}{settings.thinking && typeof settings.thinking_budget_tokens === 'number' ? ` (budget ${settings.thinking_budget_tokens})` : ''}</span>}
   </div>
 }

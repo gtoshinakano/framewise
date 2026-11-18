@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Ban, Check, CircleDashed, Clapperboard, FileText, Loader2, MessageSquareText, PenLine, ScanSearch, Sparkles, Square, UserRoundCheck, X } from 'lucide-react'
+import { Ban, Check, CircleDashed, Clapperboard, Drama, FileText, Loader2, MessageSquareText, PenLine, ScanSearch, Sparkles, Square, UserRoundCheck, X } from 'lucide-react'
 import { api } from './api'
 
 type TimelineEvent = { kind: string; label: string; status: string; at: string | null; seconds: number; job_id: string | null; detail: string | null }
@@ -11,6 +11,7 @@ export const KINDS: Record<string, { color: string; icon: typeof Check }> = {
   character_boxes: { color: '#f0a64a', icon: Square },
   character_identity: { color: '#e2709c', icon: UserRoundCheck },
   visual_analysis: { color: '#6aa8ff', icon: ScanSearch },
+  performance_beats: { color: '#f08a5d', icon: Drama },
   consistency_summary: { color: '#b496ff', icon: Sparkles },
   review_answers: { color: '#4cc9c0', icon: MessageSquareText },
   answers_saved: { color: '#7bd88f', icon: PenLine },

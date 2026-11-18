@@ -1,16 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronsRight, Film, Image as ImageIcon, Layers, Play, RotateCcw, Save, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChevronsRight, Drama, GalleryHorizontal, Image as ImageIcon, Layers, Play, RotateCcw, Save } from 'lucide-react'
 import { api, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type VisualStage } from './api'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
 import { TargetFrames, useTargetDetections, useTargetSelection } from './TargetFrames'
 import { isJobActive, targetQueueMessage, unknownSlots, type TargetQueueResult } from './targetView'
 import { FrameImage } from './FrameImage'
-import { automaticVideoFps, estimatedVideoFrames } from './analysisFrames'
 import { ANSWERS_BATCH_REASONS, CHAIN_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
 import { ActionButton, Elapsed, NoticeStrip, Skeleton, StateChip, StatusChip, WarningLine, type Notice } from './RunUi'
 import { cachedConfig, cachedProjectId, loadConfig, loadProjectId, prefetchConfigs, storeConfig } from './runCache'
-import { STEP_LABELS, VISUAL_STEPS, activeRunFor, batchCounts, cutStepStates, hasVideoErrors, preflight, queueNotice, videoSettingsErrors, videoSettingsSummary, type CharacterSummary, type StageRow, type StepKey, type StepState } from './runState'
+import { STEP_LABELS, VISUAL_STEPS, activeRunFor, batchCounts, cutStepStates, preflight, queueNotice, type CharacterSummary, type StageRow, type StepKey, type StepState } from './runState'
 
 type BatchQueueResult = { queued?: number; skipped?: number; blocked?: { unknown_characters: number[]; not_detected: number[] } }
 type Optimistic = Partial<Record<StepKey, StepState>>
@@ -32,7 +31,7 @@ function fromHereMessage(firstCut: number, result: BatchQueueResult) {
 
 const STAGE_BUTTONS: { stage: VisualStage; label: string; icon: ReactNode; hint: string }[] = [
   { stage: 'initial_frame', label: 'Initial frame', icon: <ImageIcon size={13} />, hint: 'Describe only the first frame: the still image, with each character\'s look, pose, expression and emotion' },
-  { stage: 'video_analysis', label: 'Video', icon: <Film size={13} />, hint: 'Analyze only the motion: camera, what each character does, who speaks, emotion and how the cut ends. Uses the first-frame result to tell characters apart, so run the initial frame first' },
+  { stage: 'keyframe_analysis', label: 'Keyframes', icon: <GalleryHorizontal size={13} />, hint: 'Analyze only what changes between the keyframes: each character\'s state per frame, body changes measured from keypoints, the camera measured from the background. Selects the keyframes first if the cut has none; uses the first-frame names, or the Target frames names when they are current. Its performance beats are written afterwards' },
 ]
 
 /** One state for a group of steps: anything running or queued wins, then failures, then complete or not run. */
@@ -41,12 +40,6 @@ function overall(states: StepState[]): StepState {
   if (states.includes('queued')) return 'queued'
   if (states.includes('failed')) return 'failed'
   return states.every(state => state === 'done') ? 'done' : 'none'
-}
-
-function NumberField({ label, unit, value, error, min, max, step, onChange }: { label: string; unit: string; value: number; error?: string; min: number; max: number; step: number | 'any'; onChange: (value: number) => void }) {
-  return <label className="block min-w-0"><span className="muted text-[11px]">{label} · {unit}</span>
-    <input className={`field !px-2.5 !py-1.5 text-sm ${error ? '!border-[#8a3b46]' : ''}`} type="number" min={min} max={max} step={step} value={Number.isFinite(value) ? value : ''} aria-invalid={!!error} onChange={event => onChange(event.target.valueAsNumber)} />
-    <span className={`mt-0.5 block min-h-4 text-[11px] ${error ? 'text-[#ff9fa7]' : 'text-transparent'}`} role={error ? 'alert' : undefined}>{error || '.'}</span></label>
 }
 
 type Props = {
@@ -69,7 +62,6 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const [notice, setNotice] = useState<Notice | null>(null)
   const [optimistic, setOptimistic] = useState<Optimistic>({})
   const [characters, setCharacters] = useState<CharacterSummary | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [characterTab, setCharacterTab] = useState<'characters' | 'targets'>('characters')
   const [boundaryDraft, setBoundaryDraft] = useState<Partial<Record<'first' | 'last', { times: number[]; index: number; original: number }>>>({})
   const [boundaryLoading, setBoundaryLoading] = useState<'first' | 'last' | null>(null)
@@ -125,9 +117,6 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
     return () => clearTimeout(timer)
   }, [boundaryDraft, cutId])
 
-  const errors = useMemo(() => config ? videoSettingsErrors(config) : {}, [config])
-  const invalid = hasVideoErrors(errors)
-  useEffect(() => { if (invalid) setSettingsOpen(true) }, [invalid])
   const dirty = !!config && JSON.stringify(config) !== saved
   const active = activeRunFor(jobs, cutId)
   const steps = useMemo(() => {
@@ -135,11 +124,11 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
     return Object.fromEntries((Object.keys(base) as StepKey[]).map(key => [key, optimistic[key] && base[key] !== 'running' ? optimistic[key] : base[key]])) as Record<StepKey, StepState>
   }, [results, stages, jobs, cutId, optimistic])
   const counts = useMemo(() => batchCounts(cuts, cut), [cuts, cut])
-  const warnings = useMemo(() => preflight({ mediaBusy: busy, enabled, errors, characters }), [busy, enabled, errors, characters])
+  const warnings = useMemo(() => preflight({ mediaBusy: busy, enabled, characters }), [busy, enabled, characters])
 
   const boundaryDirty = Object.values(boundaryDraft).some(draft => draft && draft.index !== draft.original)
-  const settingsReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !enabled ? 'Analysis is disabled for this cut' : !config ? 'Settings are still loading' : invalid ? 'Fix the video analysis settings first' : ''
-  const batchReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !config ? 'Settings are still loading' : invalid ? 'Fix the video analysis settings first' : ''
+  const settingsReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !enabled ? 'Analysis is disabled for this cut' : !config ? 'Settings are still loading' : ''
+  const batchReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !config ? 'Settings are still loading' : ''
   const textReason = pending ? 'Another action is being queued' : !cut.active ? 'Only active cuts can be queued' : ''
   const consistencyReason = pending ? 'Another action is being queued' : !enabled ? 'Analysis is disabled for this cut' : ''
   const targetBatchReason = pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : ''
@@ -211,10 +200,9 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   }
 
   /** Saves the settings only when they changed, so a clean queue is a single request. */
-  async function persist(required: boolean) {
+  async function persist(_required: boolean) {
     const snapshot = configRef.current
     if (!snapshot || JSON.stringify(snapshot) === savedRef.current) return
-    if (hasVideoErrors(videoSettingsErrors(snapshot))) { if (required) throw new Error('Enter even dimensions within the listed limits and a frame rate greater than 0 and at most 30.'); return }
     await api(`/cuts/${cutId}/analysis-config`, { method: 'PUT', body: JSON.stringify(snapshot) })
     storeConfig(cutId, snapshot)
     setSaved(JSON.stringify(snapshot)); savedRef.current = JSON.stringify(snapshot)
@@ -252,6 +240,11 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
     await api(`/cuts/${cutId}/analysis-stages/run`, { method: 'POST', body: JSON.stringify({ stage }) })
     return `${STEP_LABELS[stage]} analysis queued for this cut.`
   }, { settings: true, steps: [stage] })
+
+  const queueBeats = () => perform('beats-cut', async () => {
+    await api(`/cuts/${cutId}/performance-beats`, { method: 'POST' })
+    return 'Performance beats queued for this cut.'
+  }, { steps: ['beats'] })
 
   const queueConsistency = () => perform('consistency-cut', async () => {
     await api(`/cuts/${cutId}/consistency-summary`, { method: 'POST' })
@@ -294,7 +287,6 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
 
   async function saveSettings() {
     if (!config || pending) return
-    if (invalid) { setNotice({ tone: 'error', lines: ['Enter even dimensions within the listed limits and a frame rate greater than 0 and at most 30.'] }); return }
     setPending('save'); setNotice(null)
     try { await persist(true); show({ tone: 'success', lines: ['Settings saved for this cut.'] }) }
     catch (err) { setNotice({ tone: 'error', lines: [(err as Error).message] }) } finally { setPending(null) }
@@ -352,13 +344,16 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
       <table className="w-full text-xs">
         <thead><tr className="muted text-[10px] uppercase tracking-wider"><th className="w-[38%] pb-1.5 text-left font-semibold">Step</th><th className="pb-1.5 font-semibold">This cut</th><th className="pb-1.5 font-semibold" title="This cut and every later cut">From cut {cut.cut_index + 1}</th><th className="pb-1.5 font-semibold">Whole episode</th></tr></thead>
         <tbody>
-          {row('Visual analysis', 'First frame + video', overall(VISUAL_STEPS.map(key => steps[key])),
+          {row('Visual analysis', 'First frame + keyframes', overall(VISUAL_STEPS.map(key => steps[key])),
             cell(settingsReason, (disabled, title) => <ActionButton compact icon={<Play size={13} />} pending={isPending('visual-cut')} disabled={disabled} title={title || 'Queue visual analysis for this cut'} onClick={() => void queueVisual('cut')}>Run</ActionButton>),
             cell(batchReason || (!cut.active ? 'Only active cuts can be queued' : ''), (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('visual-from-here')} disabled={disabled} title={title || `Queue this cut and every later cut whose characters are settled (marked as no characters, or every box named). Cuts with unknown or undetected characters are skipped and listed. Up to ${batchLabel(counts.from)}.`} onClick={() => void queueVisual('from-here')}>{batchLabel(counts.from)}</ActionButton>),
             cell(batchReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('visual-batch')} disabled={disabled} title={title || `Queue visual analysis for all ${batchLabel(counts.all)}; completed ones are skipped`} onClick={() => void queueVisual('batch')}>All {counts.all}</ActionButton>))}
-          {row('Consistency summary', 'Needs visual results', steps.consistency,
+          {row('Performance beats', 'Written after the keyframes', steps.beats,
+            cell(consistencyReason || (steps.keyframe_analysis !== 'done' ? 'Analyze the keyframes first' : ''), (disabled, title) => <ActionButton compact icon={<Drama size={13} />} pending={isPending('beats-cut')} disabled={disabled} title={title || 'Write the performance beats of this cut again from its keyframe analysis'} onClick={() => void queueBeats()}>Run</ActionButton>),
+            none, none)}
+          {row('Consistency summary', 'Needs the first frame and beats', steps.consistency,
             cell(consistencyReason, (disabled, title) => <ActionButton compact icon={<Play size={13} />} pending={isPending('consistency-cut')} disabled={disabled} title={title || 'Queue a consistency summary for this cut'} onClick={() => void queueConsistency()}>Run</ActionButton>),
-            cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('consistency-from')} disabled={disabled} title={title || 'Queue for this cut and every later enabled cut. Nothing is queued unless each already has its initial frame, video and last frame results.'} onClick={() => void queueConsistencyFromHere()}>{batchLabel(counts.from)}</ActionButton>),
+            cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('consistency-from')} disabled={disabled} title={title || 'Queue for this cut and every later enabled cut. Nothing is queued unless each already has its initial frame and current performance beats (cuts analysed before keyframes: their video analysis).'} onClick={() => void queueConsistencyFromHere()}>{batchLabel(counts.from)}</ActionButton>),
             none)}
           {row('Production decisions', 'Drafts review answers', 'none',
             none,
@@ -374,12 +369,12 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
             cell(targetBatchReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('targets-all')} disabled={disabled} title={title || 'Queue every cut with evaluated frames and no detection yet'} onClick={() => void queueTargets('all')}>All {counts.all}</ActionButton>))}
           {row('All three text steps', 'Runs in order, each waits for the last', 'none',
             none,
-            cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('chain-from')} disabled={disabled} title={title || 'For this cut and every later ready cut, queue a consistency summary, then production-decision answers from it, then a Cut summary from both. Each job starts only after the one before it finishes. Cuts that already have a Cut summary keep it. Cuts without initial frame, video and last frame results, or with jobs already pending, are skipped and listed.'} onClick={() => void queueTextChain()}>{batchLabel(counts.from)}</ActionButton>),
+            cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('chain-from')} disabled={disabled} title={title || 'For this cut and every later ready cut, queue a consistency summary, then production-decision answers from it, then a Cut summary from both. Each job starts only after the one before it finishes. Cuts that already have a Cut summary keep it. Cuts whose keyframes have no current performance beats get them written first. Cuts without an initial frame and keyframes (or an older video analysis), or with jobs already pending, are skipped and listed.'} onClick={() => void queueTextChain()}>{batchLabel(counts.from)}</ActionButton>),
             none)}
         </tbody>
       </table>
       <p className="muted mt-1 text-[11px]">Queue visual analysis first. Text steps work from its results.</p>
-      <ActionButton compact className="mt-2" icon={<RotateCcw size={13} />} pending={isPending('visual-redo-all')} disabled={!!batchReason} title={batchReason || `Queue first-frame and video analysis again for all ${batchLabel(counts.all)}, even those already complete. Existing results stay in history as earlier revisions.`} onClick={() => { if (window.confirm(`Re-run visual analysis for all ${batchLabel(counts.all)}, including cuts already analysed?`)) void queueVisual('redo-all') }}>Re-run all visual analysis</ActionButton>
+      <ActionButton compact className="mt-2" icon={<RotateCcw size={13} />} pending={isPending('visual-redo-all')} disabled={!!batchReason} title={batchReason || `Queue first-frame and keyframe analysis again for all ${batchLabel(counts.all)}, even those already complete. Existing results stay in history as earlier revisions.`} onClick={() => { if (window.confirm(`Re-run visual analysis for all ${batchLabel(counts.all)}, including cuts already analysed?`)) void queueVisual('redo-all') }}>Re-run all visual analysis</ActionButton>
     </section>
 
     {/* Context for the models. */}
@@ -391,26 +386,9 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
           if (!event.repeat && !settingsReason) void queueVisual('cut')
         }} />
         <span className="muted mt-1 block text-[11px]">Local models use the first 2,000 characters here and 500 per selected context item. Ctrl+Enter queues this cut.</span></label>
+      {dirty && <ActionButton compact className="mt-2" variant="primary" icon={<Save size={13} />} pending={isPending('save')} disabled={!!pending && !isPending('save')} title="Save this context for the cut" onClick={() => void saveSettings()}>Save context</ActionButton>}
     </section> : loadError ? <section className="rounded-xl border border-[#63363e] bg-[#2b191f] p-3 text-xs text-[#ffb6bc]" role="alert"><p>Could not load this cut's settings: {loadError}</p><ActionButton compact className="mt-2" icon={<RotateCcw size={13} />} onClick={loadSettings}>Try again</ActionButton></section>
       : <div className="space-y-2" aria-busy="true" aria-label="Loading settings"><Skeleton className="h-28" /><Skeleton className="h-12" /></div>}
-
-    {/* Defaults are usually right, so the canvas settings stay collapsed with their current values in view. */}
-    {config && <details open={settingsOpen} onToggle={event => setSettingsOpen(event.currentTarget.open)} className="group rounded-xl border hairline bg-[#171c25]">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm font-semibold"><SlidersHorizontal size={15} className="text-[#6aa8ff]" aria-hidden />Video analysis<span className={`min-w-0 flex-1 truncate text-[11px] font-normal ${invalid ? 'text-[#ff9fa7]' : 'muted'}`}>{videoSettingsSummary(config, cut)}</span>{dirty && <StatusChip tone="amber">Unsaved</StatusChip>}<ChevronDown size={15} className="shrink-0 text-[#8b93a3] transition-transform group-open:rotate-180" aria-hidden /></summary>
-      <div className="space-y-2 border-t hairline p-3">
-        <div className="grid grid-cols-3 gap-2">
-          <NumberField label="Width" unit="px" min={128} max={1920} step={2} value={config.video_width} error={errors.width} onChange={value => setConfig({ ...config, video_width: value })} />
-          <NumberField label="Height" unit="px" min={128} max={1080} step={2} value={config.video_height} error={errors.height} onChange={value => setConfig({ ...config, video_height: value })} />
-          <NumberField label="Frames per second" unit="fps" min={0.000001} max={30} step="any" value={config.video_fps} error={errors.fps} onChange={value => setConfig({ ...config, video_fps: value, video_frame_budget: null })} />
-        </div>
-        <p className="text-xs text-[#d5dbe5]" aria-live="polite"><span className="muted">Estimate: </span>{invalid ? 'enter valid settings' : `≈${estimatedVideoFrames(config, cut)} video frames${config.video_frame_budget ? ` (maximum ${config.video_frame_budget}, including padding)` : ' (including padding; actual count may vary)'}`}</p>
-        <div className="flex flex-wrap items-center gap-2">
-          <ActionButton compact icon={<RotateCcw size={13} />} title="Set the frame rate so the cut yields at most 60 frames" onClick={() => setConfig({ ...config, video_fps: automaticVideoFps(cut.end_time - cut.start_time), video_frame_budget: 60 })}>Limit to 60 frames</ActionButton>
-          <ActionButton compact variant={dirty ? 'primary' : 'quiet'} icon={<Save size={13} />} pending={isPending('save')} disabled={!dirty || invalid || (!!pending && !isPending('save'))} title={dirty ? 'Save these settings for this cut' : 'Nothing to save'} onClick={() => void saveSettings()}>{dirty ? 'Save settings' : 'Saved'}</ActionButton>
-        </div>
-        <p className="muted text-[11px]">The cut is scaled to fit this canvas. Applies when queuing one cut; changes are also saved when you queue.</p>
-      </div>
-    </details>}
 
     {charactersTarget && createPortal(<div className="space-y-3">
       <div role="tablist" aria-label="Cut frames" className="flex gap-1 rounded-lg border hairline p-1">

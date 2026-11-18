@@ -10,14 +10,15 @@ Your task: for ONE cut, find the few points where the supplied evidence is unsur
 ## EVIDENCE
 
 - First frame: a large vision model's description of the opening still at full resolution: composition, setting, lighting, mood, props, and for each marked character the appearance, position, pose, expression, emotion, gaze and action, plus pose_detail: state (standing, sitting ...), torso and head facing (as a view of the camera with the image side it turns toward), eyes, looking_at (a character, the camera, off screen, an object or none) and check, a list of disagreements the app calculated inside that block. It is the best source for everything static at the start of the cut.
-- Video analysis: a smaller video model's motion direction for the whole cut: a summary, the camera movement, and for each character the activity (the state during the clip), travel through the picture, body motion, gaze (where the eyes and head go and when), objects handled, whether the mouth visibly speaks, the emotion over time and how the character ends; plus timestamped events (with a kind: body, gaze, mouth, expression, object, travel, camera) in seconds from the first frame. state_correction on a character means the clip's first state differs from what the still read. It is the only source for change over time and weaker than the first frame for fine static detail.
-- End of cut: the video analysis reports each character's final position and whether they left. Older saved motion directions may also mark "in last frame: True" when a last-frame character box confirmed presence; that historical flag is positive evidence, while its absence proves nothing.
-- app_checks: leads the app calculated (pose flags, state differences, transcript lines against visible speaking). They are leads, not verdicts: ask about one only when the rules below say it matters.
+- Keyframes: the same large vision model looked at the cut's keyframes (frames picked where the picture changes, labelled F1, F2 ... with seconds from the first frame) and wrote each visible character's state at each keyframe; "changes" lists what changed between two consecutive keyframes, per character (walking, speaking and blinking when visible, then each changed part) plus other changes in the picture. Body changes marked "keypoints" were measured from body keypoints, the others ("vision model") were read from the images. The camera of each pair was measured from the background pixels and is not a guess. A change happened somewhere inside its pair: nothing between two keyframes was seen. It is the source for change over time.
+- Performance beats: a text model's timed acting plan built from the first frame, the keyframes and the transcript timing (it never saw the words): beats that tile the cut with the camera, each visible character's body, face, gaze and mouth, and the beat's intent; and each transcript line's delivery: on_screen (lip-synced), off_screen, inner_voice (visible, mouth still) or narrative. Where the beats disagree with the keyframes, the keyframes win.
+- End of cut: each character's state at the last keyframe, or "leaves the frame" in its changes. Cuts analysed before keyframes report it in their video analysis; older saved motion directions may also mark "in last frame: True" when a last-frame character box confirmed presence; that historical flag is positive evidence, while its absence proves nothing.
+- app_checks: leads the app calculated (pose flags, state differences, transcript lines against visible speaking, deliveries against the mouth, beats older than the keyframes). They are leads, not verdicts: ask about one only when the rules below say it matters.
 - series: background (synopsis, scene notes, world and object notes) for context only. It is not evidence of what is visible in this cut.
-- Character names: every marked character was labelled in the user's detection workflow. In character_detections, label_source manual is the user's own label; other labels are recognition results. Names in the first frame and the video analysis come from those boxes.
+- Character names: every marked character was labelled in the user's detection workflow. In character_detections, label_source manual is the user's own label; other labels are recognition results. Names in the first frame and the keyframes come from those boxes; "unknown person N" in the keyframes is someone nobody named.
 - Transcript segments contain supplied words, timestamps, speaker labels and optional character links. They do not by themselves establish visible speaking.
 - Subtitles are burned-in captions that a model read from the whole episode, independent of any cut. The evidence lists only the lines whose time range overlaps this cut, with episode-relative times; a line with crosses_cut true starts before or ends after the cut. Every subtitle in the episode is in the one language given as subtitles.language, so a language difference between a subtitle and the transcript is expected and never a contradiction. If subtitles.extracted is false, subtitles were not extracted for this episode: treat them as unavailable, not as absent from the video. Subtitle lines are unverified reference text and may be a translation or paraphrase of speech.
-- Cuts analyzed by an older version have no motion direction; they carry a looser video analysis (overview and events per window) and a separate "Last frame" description, and their first frame may lack pose_detail. Review them the same way.
+- Cuts analysed before 2026-11-18 have no keyframes or beats; they carry a video analysis instead: a smaller video model's motion direction for the whole clip (summary, camera, per-character activity, travel, motion, gaze, objects, speaking, emotion and end, timestamped events; state_correction means the clip's first state differs from the still). It plays the keyframes' part and is weaker than them. Even older cuts carry a looser video analysis (overview and events per window) and a separate "Last frame" description, and their first frame may lack pose_detail. Review them the same way.
 
 ## RULES
 
@@ -30,23 +31,23 @@ Your task: for ONE cut, find the few points where the supplied evidence is unsur
 ## WHAT MATTERS, IN THIS ORDER
 
 1. The opening still: each character's state, which way the torso and head face, where the eyes look and at whom or what, expression and emotion, position in the frame, who is in the picture at all, and an object a character holds or uses.
-2. The motion: the state the video reports, gaze shifts, travel, objects handled, the end state, and whether camera and events agree (travel "exits right" with an end state that remains in frame is a real problem). A character who is absent from the historical end-of-cut confirmation is not thereby gone.
-3. Speaking: each transcript turn against the speaking value of its character. A turn linked to an on-screen character with speaking yes is lip-synced dialogue. With speaking no it is probably an inner voice or narration, or the video model missed the mouth. A turn whose speaker is not in frame is an off-screen voice and not a problem. A turn with an unlinked speaker label while exactly one visible character has speaking yes is a likely link. A turn whose speaker is a named character with no box in this cut, while a person marked "identity: not a marked character" has speaking yes, probably means that person is that character and is missing a box.
+2. The motion: the states and changes the keyframes report, gaze shifts, travel, objects handled, the end state, and whether the beats follow the keyframes (a beat that has a character walk where no keyframe pair shows it, or a character who leaves the frame and is still acting in a later beat, is a real problem). A character who is absent from the historical end-of-cut confirmation is not thereby gone.
+3. Speaking: each transcript turn against its delivery in the beats and the mouth its character shows at the keyframes. on_screen with a mouth that never moves (it is probably an inner voice or narration, or the keyframes missed the mouth), or inner_voice with a moving mouth, is a lead. A turn whose speaker is not in frame is an off-screen voice and not a problem. A turn with an unlinked speaker label while exactly one visible character's mouth moves is a likely link. A turn whose speaker is a named character with no box in this cut, while an unknown or unmarked person's mouth moves, probably means that person is that character and is missing a box. For older cuts, the video analysis' speaking value plays this part.
 4. Emotion against the meaning of the dialogue, only for a real conflict (a cheerful face under an angry line).
 
 ## NOT A QUESTION
 
 - Colour shades or tones of hair, eyes or clothes, small accessories, and any difference of wording or of detail between two sources.
 - Angles that differ by less than a quarter turn, or a gaze that differs by one sector.
-- A state or gaze that the video shows changing after the first frame. The first frame decides how the cut starts, the video decides what changes afterwards, so a difference between them is movement, not a contradiction. state_correction means the still caught a mid-motion pose and read it as static: the video's activity is the character's state during the clip, decided by this rule.
-- A transcript line from someone who is not in frame; characters who speak while stationary; event timestamps being estimates.
+- A state or gaze that the keyframes show changing after the first frame. The first frame decides how the cut starts, the keyframes (for older cuts, the video analysis) decide what changes afterwards, so a difference between them is movement, not a contradiction. For older cuts, state_correction means the still caught a mid-motion pose and read it as static: the video's activity is the character's state during the clip, decided by this rule.
+- A transcript line from someone who is not in frame; characters who speak while stationary; a change dated to its pair of keyframes rather than to an exact second; a delivery that differs from the app's suggestion when the keyframes support it.
 - Anything that would not change the generated picture, motion or lip sync. When in doubt, leave it out. An empty questions list is the right answer for a cut whose evidence agrees.
 
 ## QUESTIONS
 
 - Ask at most 5, most important first: the still, then the motion, then speech. Merge points about the same decision. Fewer is better.
 - One decision per question, written as one sentence that names the character. Give 2 to 4 options. Each option is a complete statement that could be pasted into the production brief as a fact, in the same words the evidence uses, and each option is something the evidence supports or at least allows. Never offer "unknown", "other" or "not sure": the person can always type their own answer.
-- recommended is the id of the option the evidence favours (the source rule above decides ties), or null when it is really open. why is one short sentence naming the sources that disagree (first frame, video analysis, transcript, app check).
+- recommended is the id of the option the evidence favours (the source rule above decides ties), or null when it is really open. why is one short sentence naming the sources that disagree (first frame, keyframes, performance beats, video analysis, transcript, app check).
 - topic is one of: pose (torso, head, body state at the start), gaze, state (what the body does during the clip), speaking, emotion, position, identity, camera, objects, other. character is the exact name, or an empty string when the question is about the whole shot.
 
 ## OUTPUT FIELDS
@@ -55,7 +56,7 @@ Return exactly one JSON object with these fields:
 
 **summary:** What the cut shows, in at most three sentences: who is on screen and where, what happens (motion and camera), and who speaks. Use the character names.
 
-**clear:** What can be used for generation as it is. Three short parts in this order: "Still:" (the opening image), "Motion:" (camera, each character's state, travel, gaze, objects, emotion change and end state), "Speech:" (each turn's speaker, whether they are on screen and visibly speaking). Use the character names.
+**clear:** What can be used for generation as it is. Three short parts in this order: "Still:" (the opening image), "Motion:" (camera, each character's state, travel, gaze, objects, emotion change and end state, beat by beat when the beats hold), "Speech:" (each turn's speaker, whether they are on screen and its delivery). Use the character names.
 
 **confusing:** Only material contradictions or evidence gaps that would change the still, the audio or the motion, naming the sources, claims and timestamps. If none exist, return "None identified."
 
@@ -166,16 +167,27 @@ def app_checks(result_map, segments):
 
     Pose flags come from the first-frame geometry checks; a state difference is the video disagreeing with
     what the still read (already decided by the source rule); a transcript line is set against the visible
-    speaking of its character. Nothing here is a verdict.
+    speaking of its character (from the keyframes, else the video analysis); a beat line's delivery is set
+    against the mouth the keyframes show. Nothing here is a verdict.
     """
     checks = []
     frame = (result_map.get('initial_frame') or {}).get('content')
-    video = (result_map.get('video_analysis') or {}).get('content')
+    source = prompt_context.motion_source(result_map)
+    video = source['content'] if source else None
     for person in (frame.get('visible_characters') if isinstance(frame, dict) else None) or []:
         pose = person.get('pose_detail') if isinstance(person, dict) else None
         for flag in (pose.get('flags') if isinstance(pose, dict) else None) or []:
             if isinstance(flag, dict) and flag.get('text'):
                 checks.append({'kind': 'pose_' + str(flag.get('code')), 'detail': flag['text']})
+    beats = (result_map.get('performance_beats') or {}).get('content')
+    if 'keyframe_analysis' in result_map and not prompt_context.beats_current(result_map):
+        checks.append({'kind': 'beats_stale', 'detail': 'the performance beats are missing or were written from an older keyframe analysis'})
+    elif isinstance(beats, dict):
+        for line in beats.get('speech') or []:
+            checks.extend(delivery_checks(line, video))
+        for item in beats.get('checks') or []:
+            if isinstance(item, dict) and item.get('kind') in ('mouth_without_line', 'lip_sync_without_mouth', 'on_screen_speaker_not_seen'):
+                checks.append({key: value for key, value in item.items() if key in ('kind', 'beat', 'line', 'character', 'speaker')})
     if not prompt_context.is_direction(video):
         return checks[:8]
     people = [person for person in video['direction'].get('characters') or [] if isinstance(person, dict)]
@@ -198,11 +210,54 @@ def app_checks(result_map, segments):
     return checks[:8]
 
 
+def delivery_checks(line, motion):
+    """A beat line whose delivery disagrees with the mouth its speaker shows at the keyframes."""
+    if not isinstance(line, dict) or not prompt_context.is_direction(motion):
+        return []
+    speaking = {person.get('character'): person.get('speaking') for person in motion['direction'].get('characters') or [] if isinstance(person, dict)}
+    mouth = speaking.get(line.get('speaker'))
+    if (line.get('delivery') == 'on_screen' and mouth == 'no') or (line.get('delivery') == 'inner_voice' and mouth == 'yes'):
+        return [{'kind': 'delivery_against_mouth', 'character': line.get('speaker'), 'line_at': f"{line.get('start', 0):.1f}-{line.get('end', 0):.1f}s",
+                 'delivery': line.get('delivery'), 'mouth_moves': mouth}]
+    return []
+
+
+def refresh_inputs(context):
+    """What ``refresh`` needs to build the evidence again when a chained job starts: named transcript lines and the characters."""
+    names = {item['id']: item['title'] for item in context.get('context_items') or [] if item.get('kind') == 'character'}
+    segments = [{**prompt_context.slim_transcript([segment])[0], 'character_context_id': segment.get('character_context_id')}
+                for segment in context.get('transcript_segments') or [] if prompt_context.slim_transcript([segment])]
+    return {'transcript_segments': [{**segment, 'character_name': segment.get('character_name') or names.get(segment.get('character_context_id'))} for segment in segments],
+            'context_items': [{'id': key, 'title': value, 'kind': 'character'} for key, value in names.items()]}
+
+
+def refresh(payload, results):
+    """Build the evidence again from the cut's current results (a chained job: the beats were written after it was queued).
+
+    The transcript, subtitles, series notes and character boxes stay as they were queued.
+    """
+    saved, inputs = payload['evidence'], payload.get('refresh') or {}
+    fresh = build_input(results, inputs.get('transcript_segments') or [], inputs.get('context_items') or [], saved.get('subtitles'), saved.get('series'))
+    if saved.get('character_detections'):
+        fresh['character_detections'] = saved['character_detections']
+    from .summary_queue import source_ids
+    payload['evidence'], payload['source_result_ids'] = fresh, source_ids(results)
+    return payload
+
+
 def build_input(results, transcripts, context_items, subtitles=None, series=None):
     result_map = {item['type']: item for item in results}
     parts = []
     video = (result_map.get('video_analysis') or {}).get('content')
-    if prompt_context.is_direction(video):
+    keyframes = result_map.get('keyframe_analysis')
+    if keyframes and keyframes.get('content') is not None:
+        # Current analyses: the opening still, what changes between the keyframes, and the beats built from them.
+        first = result_map.get('initial_frame')
+        beats = result_map.get('performance_beats')
+        parts.append('First frame:\n' + (_as_text(_without_ids(prompt_context.frame_view(first['content']))) if first and first.get('content') is not None else 'Unavailable.'))
+        parts.append('Keyframes:\n' + _as_text(prompt_context.keyframe_view(keyframes['content'], 'review')))
+        parts.append('Performance beats:\n' + (_as_text(prompt_context.beats_view(beats['content'])) if prompt_context.beats_current(result_map) else 'Not written yet.'))
+    elif prompt_context.is_direction(video):
         # Current analyses: the opening still and one motion direction for the cut. A last-frame
         # description left over from an older analysis is not evidence about this run.
         first = result_map.get('initial_frame')

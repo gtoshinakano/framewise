@@ -4,16 +4,16 @@ The worker only calls this for jobs explicitly marked single_cut_v2. A job may
 hold one cut (the per-cut buttons) or every cut of an episode (batch queueing).
 Work always runs stage by stage across all cuts, so each model is loaded once:
 
-    1. initial_frame   - one llama-server, the first frame of every cut: the still image
-    2. video_analysis  - one video runtime, every cut: camera, motion, speaking and emotion over time
+    1. initial_frame      - one llama-server, the first frame of every cut: the still image
+    2. keyframe_analysis  - one llama-server and one DWPose load, every cut: what changes between the
+                            keyframes (keyframe_analysis.py); its commit queues the performance beats
 
 Which model runs each stage is the job's ``payload.models`` snapshot (visual_models.py): Qwen3.5-27B
-and Qwen3-VL-8B by default, or e.g. LFM3-Omni-2B for either. Results record the model that wrote them.
+by default for both, or e.g. LFM3-Omni-2B for the first frame. Results record the model that wrote them.
 
-The last frame is no longer described or character-detected. The video stage reports how each
-character ends, using first-frame character boxes and the first-frame description to follow named
-characters. Jobs queued before the last-frame analysis change may still name last_frame; it is
-ignored, and results produced earlier stay readable.
+The video stage (Qwen3-VL-8B over the whole clip) was replaced by the keyframe stage on 2026-11-18, and the
+last frame is no longer described. Jobs queued before either change may still name video_analysis or
+last_frame; they are ignored, and results produced earlier stay readable.
 
 Subtitles are not a stage here. They are extracted once for the whole episode by
 subtitle_pipeline; these stages only learn the subtitle language and where the strip
@@ -31,8 +31,8 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from . import character_detection, db, frame_model, media, pose_detail, structured_results, video_model, visual_models, worker
-from .visual_contracts import FRAME_INSTRUCTION, VIDEO_INSTRUCTION, video_roster
+from . import character_detection, db, frame_model, keyframe_analysis, media, pose_detail, structured_results, visual_models, worker
+from .visual_contracts import FRAME_INSTRUCTION
 
 log = logging.getLogger('framewise.visual_analysis')
 
@@ -56,7 +56,7 @@ def release_gpu_models():
 
 
 
-ALL_STAGES = ('initial_frame', 'video_analysis')
+ALL_STAGES = ('initial_frame', 'keyframe_analysis')
 
 
 def job_models(payload):
@@ -154,7 +154,8 @@ class CutRun:
 
     # -- checkpointed results ----------------------------------------------------
 
-    def save(self, result_type, data, model_id, prompt, extra=None):
+    def save(self, result_type, data, model_id, prompt, extra=None, after=None):
+        """Append the result revision and checkpoint it; ``after(conn, result_id)`` runs in the same transaction."""
         item = self.item
         provenance = {'cut': self.cut, 'model_context_hints': self.hints,
                       **({'subtitle_strip': self.strip} if self.strip else {}),
@@ -166,9 +167,8 @@ class CutRun:
             new_id = structured_results.save_generated(conn, self.cut_id, self.job['id'], self.owner, result_type, data, model_id, prompt,
                 {**self.config, 'provider': 'local', **(extra or {})}, provenance,
                 expected_current=self.checkpoint.get(result_type, self.base_ids.get(result_type)))
-            if result_type == 'video_analysis':
-                conn.execute('DELETE FROM analysis_video_windows WHERE job_id=? AND cut_id=? AND window_index>=?',
-                             (self.job['id'], self.cut_id, len(data.get('windows', []))))
+            if after:
+                after(conn, new_id)
             self.checkpoint[result_type] = new_id
             conn.execute('INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) VALUES (?,?,?) ON CONFLICT(job_id,cut_id) DO UPDATE SET evidence_json=excluded.evidence_json',
                          (self.job['id'], self.cut_id, json.dumps(self.checkpoint)))
@@ -194,8 +194,8 @@ def run_batch(job, owner, episode, items):
     payload = json.loads(job['payload_json'])
     job_stages = set(payload.get('stages') or ALL_STAGES)
     # A cut may list its own stages when only part of its analysis is missing. Jobs queued before
-    # subtitles became an episode-wide step or before the last frame was dropped may still name
-    # subtitle_ocr or last_frame; neither exists here any more.
+    # subtitles became an episode-wide step, before the last frame was dropped or before keyframes
+    # replaced the video stage may still name subtitle_ocr, last_frame or video_analysis; none runs here.
     runs = [CutRun(job, owner, episode, item, set(item.get('stages') or job_stages) & set(ALL_STAGES), len(items)) for item in items]
     runs = [cut_run for cut_run in runs if not cut_run.completed]
     if not runs:
@@ -208,7 +208,7 @@ def run_batch(job, owner, episode, items):
     try:
         with tempfile.TemporaryDirectory(prefix='framewise-cut-analysis-') as scratch:
             _first_frame_stage(runs, scratch, models['initial_frame'])
-            _video_stage(runs, scratch, models['video_analysis'])
+            keyframe_analysis.stage(runs, scratch, models['keyframe_analysis'])
     finally:
         release_gpu_models()
     # Finished cuts are kept even when another cut failed; a retry only redoes the failed ones.
@@ -306,31 +306,6 @@ def marked_people(cut_run, position):
     return people
 
 
-def _first_frame_result(cut_run):
-    """The first-frame result the video stage builds on, as (content, id), or (None, None).
-
-    It is the one this job just saved, else the cut's current one. It must be a full description of
-    this cut as it is now; otherwise the video stage runs without it and only gets the names and boxes.
-    """
-    result_id = cut_run.checkpoint.get('initial_frame')
-    if result_id:
-        row = db.one('SELECT id,content,context_json FROM analysis_results WHERE id=? AND cut_id=?', (result_id, cut_run.cut_id))
-    else:
-        current = next((item for item in structured_results.list_results(cut_run.cut_id) if item['type'] == 'initial_frame'), None)
-        row = db.one('SELECT id,content,context_json FROM analysis_results WHERE id=?', (current['id'],)) if current else None
-    if not row:
-        return None, None
-    try:
-        content, source = json.loads(row['content']), (json.loads(row['context_json'] or '{}').get('cut') or {})
-    except (TypeError, ValueError):
-        return None, None
-    if not isinstance(content, dict) or content.get('mode') != 'full':
-        return None, None
-    if source.get('start_time') != cut_run.cut['start_time'] or source.get('end_time') != cut_run.cut['end_time']:
-        return None, None
-    return content, row['id']
-
-
 def _frame_stage(cut_run, server, scratch, model=None):
     model = model or visual_models.MODELS[visual_models.DEFAULTS['initial_frame']]
     if not cut_run.needs('initial_frame'):
@@ -354,68 +329,3 @@ def _frame_stage(cut_run, server, scratch, model=None):
                      {'model_revision': model.revision, 'visual_model': model.key, 'image_width': 1280, 'generation_seconds': time.monotonic() - started, 'usage': usage,
                       'frame_mode': 'full', 'marked_characters': len(people), 'frame_contract': data.get('contract'),
                      'pose': pose_detail.stats(data.get('visible_characters'))})
-
-
-# -- stage 2: video analysis (the chosen video model) ---------------------------
-
-def _video_stage(runs, scratch, model=None):
-    todo = [cut_run for cut_run in runs if not cut_run.failure and cut_run.needs('video_analysis')]
-    if not todo:
-        return
-    model = model or visual_models.MODELS[visual_models.DEFAULTS['video_analysis']]
-    runtime = video_model.runtime_for(model)
-    try:
-        _for_each(todo, lambda cut_run: _video_analysis(cut_run, scratch, runtime, model))
-    finally:
-        runtime.close()
-
-
-def _video_analysis(cut_run, scratch, runtime, model=None):
-    model = model or visual_models.MODELS[visual_models.DEFAULTS['video_analysis']]
-    revision = model.revision
-    job_id, owner, cut_id = cut_run.job['id'], cut_run.owner, cut_run.cut_id
-    proxy = cut_run.original.parent / 'proxy.mp4'
-
-    def load_window(index, start, end):
-        row = db.one('SELECT * FROM analysis_video_windows WHERE job_id=? AND cut_id=? AND window_index=?', (job_id, cut_id, index))
-        if not row:
-            return None
-        if row['model_revision'] != revision or row['start_time'] != start or row['end_time'] != end:
-            return None  # saved by another model or for other boundaries: analyse the window again
-            return None
-        data = json.loads(row['content_json'])
-        if not isinstance(data, dict) or not isinstance(data.get('source'), dict) or 'analysis' not in data:
-            raise RuntimeError('A saved video window is unreadable')
-        return data
-
-    def save_window(index, window):
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            worker.require_lease(conn, job_id, owner)
-            cut_run.check_cut(conn)
-            conn.execute('''INSERT INTO analysis_video_windows(job_id,cut_id,window_index,start_time,end_time,model_revision,content_json) VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(job_id,cut_id,window_index) DO UPDATE SET start_time=excluded.start_time,end_time=excluded.end_time,model_revision=excluded.model_revision,content_json=excluded.content_json''',
-                (job_id, cut_id, index, window['source']['source_start'], window['source']['source_end'], revision, json.dumps(window, ensure_ascii=False)))
-
-    def save_invalid_response(index, start, end, error, response):
-        with db.connect() as conn:
-            worker.require_lease(conn, job_id, owner)
-            conn.execute('INSERT INTO rejected_video_responses(job_id,cut_id,window_index,start_time,end_time,error,response) VALUES (?,?,?,?,?,?,?)',
-                         (job_id, cut_id, index, start, end, error, response))
-
-    with cut_run.stage('video_analysis', 'Video analysis'):
-        started = time.monotonic()
-        initial, initial_id = _first_frame_result(cut_run)
-        roster = video_roster(marked_people(cut_run, 'first'), None, initial)
-        data = video_model.analyze_video(
-            proxy if proxy.is_file() else cut_run.original, cut_run.cut, cut_run.config,
-            model.path('model'), scratch,
-            on_window=lambda start, end: cut_run.progress(f'Analyzing video {start:.1f}–{end:.1f}s'),
-            subtitle_strip=cut_run.strip, source_size=(cut_run.episode['width'], cut_run.episode['height']), load_window=load_window, save_window=save_window,
-            context_hints=cut_run.hints, on_invalid_response=save_invalid_response, cancel_check=cut_run.cancel_check, runtime=runtime,
-            roster=roster, initial=initial, transcript=cut_run.context.get('transcript_segments'))
-        if initial_id:
-            data['based_on_initial_frame'] = initial_id
-        cut_run.save('video_analysis', data, model.model_id, VIDEO_INSTRUCTION,
-                     {'model_revision': model.revision, 'visual_model': model.key, 'generation_seconds': time.monotonic() - started, 'usage': data.get('usage', {}),
-                      'video_contract': data.get('contract'), 'followed_characters': len(roster)})

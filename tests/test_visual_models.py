@@ -1,13 +1,10 @@
-import io
 import json
 import shutil
 import subprocess
 import tempfile
 import time
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import db, frame_model, media, single_cut_pipeline, video_model, visual_models
@@ -15,17 +12,6 @@ from app.visual_contracts import AUDIO_NOTE
 import tests.test_analysis as analysis_tests
 
 LFM = visual_models.MODELS['lfm3-omni-2b']
-VIDEO_ANSWER = {'overview': 'Mia turns.', 'camera': {'movement': 'static', 'detail': 'none'},
-                'characters': [{'name': 'Mia', 'activity': 'standing', 'travel': 'none', 'motion': 'Turns.', 'speaking': 'yes', 'emotion': 'calm', 'end': 'left'}],
-                'events': [{'start_seconds': 0.0, 'end_seconds': 0.5, 'subject': 'Mia', 'visual_action': 'turns', 'camera': 'fixed', 'uncertainty': 'none'}],
-                'uncertainties': 'none'}
-
-
-def reply(content, finish='stop'):
-    return io.BytesIO(json.dumps({'choices': [{'finish_reason': finish, 'message': {'content': content}}],
-                                  'usage': {'prompt_tokens': 700, 'completion_tokens': 90, 'total_tokens': 790}}).encode())
-
-
 def report(**available):
     with db.connect() as conn:
         conn.execute('UPDATE visual_model_state SET models_json=?,updated_at=? WHERE id=1',
@@ -34,22 +20,36 @@ def report(**available):
 
 class RegistryTest(unittest.TestCase):
     def test_defaults_are_todays_models_and_every_role_has_one(self):
-        self.assertEqual(visual_models.DEFAULTS, {'initial_frame': 'qwen35-27b', 'video_analysis': 'qwen3-vl-8b', 'character_profile': 'qwen35-27b'})
+        self.assertEqual(visual_models.DEFAULTS, {'initial_frame': 'qwen35-27b', 'keyframe_analysis': 'qwen35-27b', 'character_profile': 'qwen35-27b'})
         for role, key in visual_models.DEFAULTS.items():
             self.assertTrue(visual_models.supports(key, role))
         self.assertEqual(visual_models.MODELS['qwen35-27b'].model_id, frame_model.MODEL_ID)
-        self.assertEqual(visual_models.MODELS['qwen3-vl-8b'].revision, video_model.MODEL_REVISION)
+        self.assertNotIn('qwen3-vl-8b', visual_models.MODELS)  # the video stage was replaced by keyframes
+        self.assertNotIn('video_analysis', visual_models.ROLES)
 
-    def test_lfm3_runs_every_role_and_is_pinned_in_the_manifest(self):
-        self.assertEqual(set(LFM.roles), set(visual_models.ROLES))
+    def test_lfm3_runs_stills_only_and_is_pinned_in_the_manifest(self):
+        self.assertEqual(set(LFM.roles), {'initial_frame', 'character_profile'})  # it failed at describing changes between keyframes
         entry = visual_models.MANIFEST[LFM.manifest]
         self.assertEqual(LFM.revision, entry['revision'])
         self.assertEqual({item['name'] for item in entry['files']}, {LFM.path('model').name, LFM.path('projector').name})
         self.assertTrue(all(len(item['sha256']) == 64 for item in entry['files']))
         self.assertIn('--reasoning', LFM.server_args)
-        self.assertTrue(LFM.hears_audio)
         for model in visual_models.MODELS.values():
             self.assertTrue(model.manifest is None or model.manifest in visual_models.MANIFEST)
+
+    def test_dwpose_is_a_pinned_helper_found_in_its_folder(self):
+        dwpose = visual_models.MODELS['dwpose']
+        self.assertEqual(dwpose.roles, ())
+        entry = visual_models.MANIFEST['dwpose']
+        self.assertEqual(dwpose.revision, entry['revision'])
+        self.assertEqual({item['name'] for item in entry['files']}, {dwpose.path('detector').name, dwpose.path('pose').name})
+        with tempfile.TemporaryDirectory() as folder, patch.dict('os.environ', {'DWPOSE_DIR': folder}):
+            self.assertEqual(visual_models.status('dwpose'), {'available': False, 'detail': 'Not installed'})
+            (Path(folder) / 'yolox_l.onnx.partial').write_bytes(b'x' * 1000)
+            self.assertRegex(visual_models.status('dwpose')['detail'], r'^Downloading \d+%$')
+            (Path(folder) / 'yolox_l.onnx.partial').unlink()
+            (Path(folder) / 'yolox_l.onnx').touch(); (Path(folder) / 'dw-ll_ucoco_384.onnx').touch()
+            self.assertEqual(visual_models.status('dwpose'), {'available': True, 'detail': 'Installed'})
 
     def test_video_prompt_offers_no_label_to_copy(self):
         # LFM3-Omni-2B copied the old example label "girl with red umbrella" into cuts without any umbrella.
@@ -59,10 +59,11 @@ class RegistryTest(unittest.TestCase):
 
     def test_a_job_runs_its_snapshot_else_the_default(self):
         self.assertEqual(visual_models.for_job({}, 'initial_frame').key, 'qwen35-27b')
-        self.assertEqual(visual_models.for_job({'models': {'video_analysis': 'lfm3-omni-2b'}}, 'video_analysis').key, 'lfm3-omni-2b')
-        self.assertEqual(visual_models.for_job({'models': {'initial_frame': 'qwen3-vl-8b'}}, 'initial_frame').key, 'qwen35-27b')  # cannot run that role
-        self.assertEqual(visual_models.for_job({'models': {'initial_frame': 'removed-model'}}, 'initial_frame').key, 'qwen35-27b')
-        self.assertEqual(single_cut_pipeline.job_models({'models': {'initial_frame': 'lfm3-omni-2b'}})['video_analysis'].key, 'qwen3-vl-8b')
+        self.assertEqual(visual_models.for_job({'models': {'initial_frame': 'lfm3-omni-2b'}}, 'initial_frame').key, 'lfm3-omni-2b')
+        self.assertEqual(visual_models.for_job({'models': {'keyframe_analysis': 'lfm3-omni-2b'}}, 'keyframe_analysis').key, 'qwen35-27b')  # cannot run that role
+        self.assertEqual(visual_models.for_job({'models': {'initial_frame': 'qwen3-vl-8b'}}, 'initial_frame').key, 'qwen35-27b')  # removed
+        self.assertEqual(single_cut_pipeline.job_models({'models': {'initial_frame': 'lfm3-omni-2b', 'video_analysis': 'qwen3-vl-8b'}}),
+                         {'initial_frame': LFM, 'keyframe_analysis': visual_models.MODELS['qwen35-27b']})
 
     def test_status_reports_installed_downloading_and_missing(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -124,66 +125,23 @@ class SettingsApiTest(unittest.TestCase):
 
     def test_queued_jobs_snapshot_the_choice_and_keep_it(self):
         report(**{'lfm3-omni-2b': True})
-        for role in ('initial_frame', 'video_analysis'):
-            self.assertEqual(self.client.put('/api/visual-models', json={'role': role, 'model': 'lfm3-omni-2b'}).json()['selected'][role], 'lfm3-omni-2b')
+        self.assertEqual(self.client.put('/api/visual-models', json={'role': 'initial_frame', 'model': 'lfm3-omni-2b'}).json()['selected']['initial_frame'], 'lfm3-omni-2b')
+        self.assertEqual(self.client.put('/api/visual-models', json={'role': 'keyframe_analysis', 'model': 'lfm3-omni-2b'}).status_code, 422)
         single = self.client.post('/api/cuts/c1/analyze').json()['job_id']
-        self.assertEqual(self.payload(single)['models'], {'initial_frame': 'lfm3-omni-2b', 'video_analysis': 'lfm3-omni-2b'})
-        self.client.put('/api/visual-models', json={'role': 'video_analysis', 'model': 'qwen3-vl-8b'})
+        self.assertEqual(self.payload(single)['models'], {'initial_frame': 'lfm3-omni-2b', 'keyframe_analysis': 'qwen35-27b'})
+        self.client.put('/api/visual-models', json={'role': 'initial_frame', 'model': 'qwen35-27b'})
         batch = self.client.post('/api/episodes/e/visual-analysis').json()['job_ids'][0]
-        self.assertEqual(self.payload(batch)['models'], {'initial_frame': 'lfm3-omni-2b', 'video_analysis': 'qwen3-vl-8b'})
-        self.assertEqual(self.payload(single)['models']['video_analysis'], 'lfm3-omni-2b')  # queued work keeps its model
+        self.assertEqual(self.payload(batch)['models'], {'initial_frame': 'qwen35-27b', 'keyframe_analysis': 'qwen35-27b'})
+        self.assertEqual(self.payload(single)['models']['initial_frame'], 'lfm3-omni-2b')  # queued work keeps its model
+
+    def test_a_saved_choice_for_the_removed_video_role_is_ignored(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO visual_model_settings(role,model) VALUES ('video_analysis','qwen3-vl-8b')")
+        self.assertEqual(visual_models.selected(), visual_models.DEFAULTS)
 
 
-class FakeServer:
-    def __init__(self, replies):
-        self.replies, self.bodies = list(replies), []
-
-    def __call__(self, request, timeout=None):
-        self.bodies.append(json.loads(request.data))
-        return self.replies.pop(0)
-
-
-class LlamaVideoRuntimeTest(unittest.TestCase):
-    def runtime(self):
-        runtime = video_model.LlamaVideoRuntime(LFM)
-        runtime.url = 'http://127.0.0.1:1'  # already started
-        return runtime
-
-    def test_sends_the_clip_as_video_and_validates_the_answer(self):
-        server = FakeServer([reply(json.dumps(VIDEO_ANSWER))])
-        with tempfile.TemporaryDirectory() as folder:
-            clip = Path(folder) / 'clip.mp4'
-            clip.write_bytes(b'mp4 bytes')
-            with patch('urllib.request.urlopen', side_effect=server):
-                output, usage, attempts = self.runtime().generate(clip, 5, 'Describe the motion.', 1.0, 20.0)
-        content = server.bodies[0]['messages'][0]['content']
-        self.assertEqual(content[0]['type'], 'video_url')
-        self.assertTrue(content[0]['video_url']['url'].startswith('data:video/mp4;base64,'))
-        self.assertNotIn('fps', content[0])  # llama-server ignores it: LFM3 always reads 2 fps
-        self.assertEqual(self.runtime().sample_fps, 2.0)
-        self.assertEqual(content[1], {'type': 'text', 'text': 'Describe the motion.'})
-        self.assertEqual((server.bodies[0]['temperature'], server.bodies[0]['response_format']), (0, {'type': 'json_object'}))
-        self.assertEqual((attempts, usage['completion_tokens']), (1, 90))
-        self.assertEqual(output['events'][0]['episode_start_seconds'], 20.0)
-
-    def test_an_invalid_answer_is_kept_and_asked_again_concisely(self):
-        server = FakeServer([reply('{"overview": ', 'length'), reply(json.dumps(VIDEO_ANSWER))])
-        rejected = []
-        with tempfile.TemporaryDirectory() as folder:
-            clip = Path(folder) / 'clip.mp4'
-            clip.write_bytes(b'mp4')
-            with patch('urllib.request.urlopen', side_effect=server):
-                _, usage, attempts = self.runtime().generate(clip, 4, 'Prompt', 1.0, 0.0, on_invalid_response=lambda error, raw: rejected.append((error, raw)))
-        self.assertEqual(attempts, 2)
-        self.assertIn('generation limit', rejected[0][0])
-        self.assertEqual(rejected[0][1], '{"overview": ')
-        self.assertTrue(server.bodies[1]['messages'][0]['content'][1]['text'].endswith(video_model.RETRY_INSTRUCTION))
-        self.assertEqual(server.bodies[1]['max_tokens'], video_model.VIDEO_TOKEN_LIMITS[1])
-        self.assertEqual(usage['completion_tokens'], 180)
-
-    def test_runtime_for_picks_the_backend_of_the_model(self):
-        self.assertIsInstance(video_model.runtime_for(visual_models.MODELS['qwen3-vl-8b']), video_model.VideoRuntime)
-        self.assertIsInstance(video_model.runtime_for(LFM), video_model.LlamaVideoRuntime)
+class VideoModuleTest(unittest.TestCase):
+    """``video_model`` is no longer run by the app; ``analysis_experiments`` still drives ``analyze_video``."""
 
     def test_a_listening_runtime_gets_the_soundtrack_and_the_audio_note(self):
         class Listening:
@@ -207,37 +165,6 @@ class LlamaVideoRuntimeTest(unittest.TestCase):
         self.assertIn(AUDIO_NOTE, runtime.prompts[0])
         self.assertEqual((result['model'], result['revision']), ('listener', 'rev-1'))
         self.assertEqual(result['windows'][0]['source']['model_sample_fps'], 2.0)
-
-
-class SavedWindowTest(unittest.TestCase):
-    setUp = analysis_tests.AnalysisTest.setUp
-    tearDown = analysis_tests.AnalysisTest.tearDown
-
-    def test_a_window_saved_by_another_model_is_analysed_again(self):
-        with db.connect() as conn:
-            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('j','e','analyze','{}')")
-            window = {'source': {'source_start': 0, 'source_end': 2}, 'analysis': {'events': []}}
-            conn.execute("INSERT INTO analysis_video_windows(job_id,cut_id,window_index,start_time,end_time,model_revision,content_json) VALUES ('j','c1',0,0,2,?,?)",
-                         (video_model.MODEL_REVISION, json.dumps(window)))
-
-        @contextmanager
-        def stage(*_args):
-            yield
-        cut_run = SimpleNamespace(job={'id': 'j'}, owner='o', cut_id='c1', original=Path('/missing/original.mp4'), checkpoint={}, context={}, config={}, cut={'start_time': 0, 'end_time': 2, 'cut_index': 0},
-                                  strip=None, episode={'width': 1280, 'height': 720}, hints={}, stage=stage, progress=lambda _message: None, cancel_check=lambda: None,
-                                  save=lambda *_args, **_kwargs: None)
-        seen = {}
-        def analyze(*_args, load_window=None, **_kwargs):
-            seen['lfm'] = load_window(0, 0, 2)
-            return {'windows': []}
-        with patch.object(single_cut_pipeline.video_model, 'analyze_video', side_effect=analyze), \
-             patch.object(single_cut_pipeline, 'marked_people', return_value=[]):
-            single_cut_pipeline._video_analysis(cut_run, '/scratch', None, LFM)
-        self.assertIsNone(seen['lfm'])
-        with patch.object(single_cut_pipeline.video_model, 'analyze_video', side_effect=analyze), \
-             patch.object(single_cut_pipeline, 'marked_people', return_value=[]):
-            single_cut_pipeline._video_analysis(cut_run, '/scratch', None, visual_models.MODELS['qwen3-vl-8b'])
-        self.assertEqual(seen['lfm']['source']['source_end'], 2)
 
 
 @unittest.skipUnless(shutil.which('ffmpeg'), 'needs ffmpeg')

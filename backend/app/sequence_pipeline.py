@@ -35,7 +35,7 @@ def load_state(conn, sequence, adopt_cuts=False):
     ctx = evidence.load(conn, sequence, cuts)
     missing = evidence.missing_cuts(ctx, cuts)
     if missing:
-        raise RuntimeError('These cuts need a first-frame and a video analysis first: ' + ', '.join(map(str, missing)))
+        raise RuntimeError('These cuts need a first-frame and a keyframe analysis first: ' + ', '.join(map(str, missing)))
     return {'cuts': cuts, 'changed': changed, 'ctx': ctx, 'timeline': store.timeline_for(conn, sequence, cuts)}
 
 

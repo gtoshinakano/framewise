@@ -4,7 +4,8 @@ from contextlib import nullcontext
 from unittest.mock import patch
 
 import tests.test_analysis as analysis_tests
-from app import db, inference_worker, worker
+from app import db, inference_worker, keyframe_prompts, worker
+from tests.test_keyframe_analysis import fake_models, seed_selection
 
 
 class CharacterDetectionAPITest(unittest.TestCase):
@@ -86,6 +87,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
             conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('run','c1',0,2,?,'test')", (json.dumps(frames),))
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('box','run','first','[5,4,40,60]','ctx','manual')")
             conn.execute("INSERT INTO character_image_references(id,character_context_id,detection_id) VALUES ('ref','ctx','box')")
+        seed_selection()
         job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
         _, owner = worker.claim_job(('analyze',))
         frame = {'composition':'','setting':'','lighting':'','camera':'','visible_characters':[], 'other_visual_details':'','uncertainties':''}
@@ -93,19 +95,15 @@ class CharacterDetectionAPITest(unittest.TestCase):
              patch.object(inference_worker, 'get_model', side_effect=AssertionError('subtitles are not extracted per cut')), \
              patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source,target,time,*a,**k: time), \
              patch.object(character_detection, 'crop_frame', return_value=b'reference image'), \
-             patch.object(frame_model, 'frame_server', return_value=nullcontext('server')), \
-             patch.object(frame_model, 'describe_frame', side_effect=lambda *a,**k: dict(frame)) as describe, \
-             patch.object(single_cut_pipeline.video_model, 'analyze_video', return_value={'windows': [], 'contract': 'direction-v1', 'direction': {'summary': 'x', 'camera': {'movement': 'static', 'detail': 'none'}, 'characters': []}}) as video:
+             fake_models() as calls, \
+             patch.object(frame_model, 'describe_frame', side_effect=lambda *a,**k: dict(frame)) as describe:
             inference_worker.process(job_id, owner)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         self.assertEqual([call.kwargs['frame_label'] for call in describe.call_args_list], ['first frame'])  # the last frame is not described
         self.assertNotIn('reference_images', describe.call_args_list[0].kwargs)  # the user already marked who is who
         self.assertEqual(describe.call_args_list[0].kwargs['people'], [{'ref': 'B1', 'detection_id': 'box', 'character_context_id': 'ctx', 'name': 'Hero', 'box': [50, 50, 400, 750]}])
-        hero = video.call_args.kwargs['roster'][0]  # the video model follows the same named character
-        self.assertEqual((hero['name'], hero['character_context_id'], hero['at_start'], hero['start_box']), ('Hero', 'ctx', True, [50, 50, 400, 750]))
-        self.assertIsNone(video.call_args.kwargs['initial'])  # this fake first frame is not a full description, so only names and boxes are passed on
-        self.assertEqual(video.call_args.kwargs['context_hints']['character_detections']['detections'][0]['character_name'], 'Hero')
-        self.assertTrue(video.call_args.kwargs['context_hints']['character_detections']['labels_confirmed_by_queue'])
+        # The keyframes are described with the same named character, at its first-frame box.
+        self.assertIn('- Hero: box [50, 50, 400, 750] (left)', keyframe_prompts.prompt_text(calls[0]))
         self.assertTrue(describe.call_args_list[0].args[3]['character_detections']['labels_confirmed_by_queue'])
         self.assertIsNone(db.one("SELECT id FROM jobs WHERE pipeline='consistency_summary'"))
         queued = self.client.post('/api/cuts/c1/consistency-summary')
@@ -114,41 +112,39 @@ class CharacterDetectionAPITest(unittest.TestCase):
         self.assertEqual(summary['evidence']['character_detections']['detections'][0]['label_source'], 'manual')
 
     def run_analysis(self, describe_effect, no_characters=False):
-        from app import character_detection, single_cut_pipeline, frame_model
+        from app import single_cut_pipeline, frame_model
         frames = [{'position': pos, 'time': t, 'image_size': [100, 80], 'boxes': [[5,4,40,60]], 'raw_response':'raw','prompt':'detect'} for pos,t in [('first',0),('last',1.9)]]
         with db.connect() as conn:
             conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('run','c1',0,2,?,'test')", (json.dumps(frames),))
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('box','run','first','[5,4,40,60]','ctx','manual'),('noise','run','first','[50,4,90,60]',NULL,NULL),('gone','run','last','[5,4,40,60]',NULL,NULL)")
             conn.execute('UPDATE cuts SET no_characters=? WHERE id=?', (int(no_characters), 'c1'))
+        seed_selection()
         job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
         _, owner = worker.claim_job(('analyze',))
         with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
              patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source,target,time,*a,**k: time), \
-             patch.object(frame_model, 'frame_server', return_value=nullcontext('server')), \
-             patch.object(frame_model, 'describe_frame', side_effect=describe_effect) as describe, \
-             patch.object(single_cut_pipeline.video_model, 'analyze_video', return_value={'windows': [], 'contract': 'direction-v1', 'direction': {'summary': 'x', 'camera': {'movement': 'static', 'detail': 'none'}, 'characters': []}}) as video:
+             fake_models() as calls, \
+             patch.object(frame_model, 'describe_frame', side_effect=describe_effect) as describe:
             inference_worker.process(job_id, owner)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
-        self.video = video
+        self.keyframe_prompt = keyframe_prompts.prompt_text(calls[0])
         return describe
 
-    def test_video_stage_follows_the_first_frame_and_a_missing_last_frame_box_is_not_a_departure(self):
+    def test_keyframe_stage_names_the_first_frame_characters(self):
         full = {'composition': 'MS', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'mood': 'calm', 'background_people': 'none', 'props': 'none', 'notes': 'none', 'mode': 'full',
                 'visible_characters': [{'character': 'Hero', 'character_context_id': 'ctx', 'appearance': 'coat', 'position': 'left', 'pose': 'sitting', 'expression': 'calm', 'emotion': 'content', 'gaze': 'at the book', 'action': 'sitting, reading'}]}
         describe = self.run_analysis([dict(full)])
         self.assertEqual(describe.call_count, 1)
         self.assertNotIn('previous', describe.call_args.kwargs)
-        hero, = self.video.call_args.kwargs['roster']
-        # Named in the first frame; the last frame only has an unnamed box. That does not show Hero left, so the end stays unknown.
-        self.assertEqual((hero['name'], hero['at_start'], hero['at_end'], hero['emotion']), ('Hero', True, None, 'content'))
-        self.assertNotIn('appearance', hero)  # outfits are the first frame's job; the video model is not told them
-        self.assertEqual(self.video.call_args.kwargs['initial']['mood'], 'calm')
+        # Only the named box is offered; the unnamed one and the last-frame box are not roster entries.
+        self.assertIn('- Hero: box [50, 50, 400, 750] (left)', self.keyframe_prompt)
+        self.assertNotIn('coat', self.keyframe_prompt)  # outfits and the first-frame text are not sent with the keyframes
         from app import structured_results
         saved = {row['type']: row for row in structured_results.list_results('c1')}
-        self.assertEqual(set(saved), {'initial_frame', 'video_analysis'})
-        self.assertEqual(saved['video_analysis']['content']['based_on_initial_frame'], saved['initial_frame']['id'])
+        self.assertEqual(set(saved), {'initial_frame', 'keyframe_analysis'})
+        self.assertEqual(saved['keyframe_analysis']['content']['roster'], [{'name': 'Hero', 'character_context_id': 'ctx', 'source': 'first_frame'}])
         self.assertIn('FIRST frame', db.one('SELECT prompt FROM analysis_results WHERE id=?', (saved['initial_frame']['id'],))['prompt'])
-        self.assertIn('motion directions', db.one('SELECT prompt FROM analysis_results WHERE id=?', (saved['video_analysis']['id'],))['prompt'])
+        self.assertIn('compare consecutive keyframes', db.one('SELECT prompt FROM analysis_results WHERE id=?', (saved['keyframe_analysis']['id'],))['prompt'])
 
     def test_unnamed_boxes_are_never_sent_and_no_character_cuts_send_none(self):
         frame = {'composition': '', 'setting': '', 'lighting': '', 'camera': '', 'background_people': '', 'notes': '', 'visible_characters': []}
@@ -159,7 +155,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
             conn.execute("DELETE FROM analysis_results"); conn.execute("DELETE FROM jobs"); conn.execute("DELETE FROM character_detections"); conn.execute("DELETE FROM character_detection_runs")
         describe = self.run_analysis(lambda *a, **k: dict(frame), no_characters=True)
         self.assertEqual([call.kwargs['people'] for call in describe.call_args_list], [[]])
-        self.assertEqual(self.video.call_args.kwargs['roster'], [])  # a cut marked as having no characters follows nobody
+        self.assertIn('marked this shot as having no characters', self.keyframe_prompt)  # a cut marked as having no characters names nobody
 
     def test_batch_queue_does_not_confirm_labels(self):
         frames = [{'position':'first', 'time':0, 'image_size':[100,80]}]

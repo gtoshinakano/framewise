@@ -20,7 +20,7 @@ class CompositionError(Exception):
         super().__init__(detail)
         self.status_code, self.detail = status_code, detail
 
-INCLUDES = {'initial_frame', 'last_frame', 'video_analysis', 'subtitle_ocr', 'consistency_summary', 'dialogue_segments'}
+INCLUDES = {'initial_frame', 'last_frame', 'video_analysis', 'keyframe_analysis', 'performance_beats', 'subtitle_ocr', 'consistency_summary', 'dialogue_segments'}
 FIELDS = {'id', 'cut_number', 'duration', 'start_time', 'end_time', 'ready', 'shot', 'setting', 'lighting', 'mood', 'props', 'background', 'action', 'subjects', 'beats', 'end_state', 'initial_frame_id', 'last_frame_id', 'dialogue', 'subtitles'}
 
 
@@ -780,15 +780,23 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
             cut_id = item.get('cut_id')
             checkpoint = one('SELECT completed FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job['id'], cut_id))
             if cut_id and (not checkpoint or not checkpoint['completed']): updating.add(cut_id)
+    # Performance beats being written: the cut's motion is about to change.
+    updating.update(row['cut_id'] for row in all_rows("SELECT json_extract(payload_json,'$.cut_id') AS cut_id FROM jobs WHERE episode_id=? AND pipeline='performance_beats' AND status IN ('queued','running')", (episode_id,)))
     subtitle_run = subtitle_store.current_run(episode_id, conn)
     records, pending = [], []
     for cut in cuts:
         rows = structured_results.list_results(cut['id'], conn=conn)
-        by_type = {row['type']: row for row in reversed(rows) if row['content'] is not None}
-        # A video analysis written as a motion direction says how the cut ends. Older analyses
-        # need their last-frame description for that, so those cuts still require one.
+        raw = {row['type']: row for row in reversed(rows) if row['content'] is not None}
+        # The motion: the keyframe analysis seen as a motion direction (prompt_context.with_motion), else an older video analysis.
+        by_type = prompt_context.with_motion(raw)
+        # A motion direction says how the cut ends. Older video analyses need their last-frame description for that,
+        # so those cuts still require one; a cut with keyframes needs beats written from its current keyframe analysis.
         direction = by_type['video_analysis']['content']['direction'] if prompt_context.is_direction((by_type.get('video_analysis') or {}).get('content')) else None
-        needed = {'initial_frame', 'video_analysis'} | (set() if direction is not None else {'last_frame'})
+        keyframed = 'keyframe_analysis' in raw
+        if keyframed:
+            needed = {'initial_frame', 'keyframe_analysis', 'performance_beats'}
+        else:
+            needed = {'initial_frame', 'video_analysis'} | (set() if direction is not None else {'last_frame'})
         stale = False
         for name in needed & by_type.keys():
             stored_context = one('SELECT context_json FROM analysis_results WHERE id=?', (by_type[name]['id'],))
@@ -801,7 +809,7 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
         latest_attempt = one("""SELECT j.status,a.completed FROM analysis_job_cuts a JOIN jobs j ON j.id=a.job_id
                                 WHERE a.cut_id=? AND j.pipeline='analyze' ORDER BY j.rowid DESC LIMIT 1""", (cut['id'],))
         interrupted = latest_attempt and latest_attempt['status'] != 'done' and not latest_attempt['completed']
-        ready = needed.issubset(by_type) and not stale and cut['id'] not in updating and not interrupted and source_available and (not episode['has_audio'] or audio_available)
+        ready = needed.issubset(by_type) and (not keyframed or prompt_context.beats_current(raw)) and not stale and cut['id'] not in updating and not interrupted and source_available and (not episode['has_audio'] or audio_available)
         if not ready: pending.append(cut['cut_index']+1)
         changed = cut['updated_at'] or '1970-01-01T00:00:00.000Z'
         if only_ready and not ready: continue
@@ -964,7 +972,7 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
             reference_subjects(record)
             for name in includes:
                 if name == 'dialogue_segments': record[name] = segments
-                elif name in by_type: record[name] = by_type[name]
+                elif name in raw: record[name] = raw[name]
         if selected:
             mandatory = {'id','cut_number','ready'}
             for name in ('start_time','end_time'):

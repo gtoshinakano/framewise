@@ -88,13 +88,13 @@ def transcript_lines(conn, episode_id, start, end):
 
 
 def event_starts(conn, cuts):
-    """Event start times (seconds from the cut's start) of cuts too long for one shot, from their motion direction."""
+    """Event start times (seconds from the cut's start) of cuts too long for one shot, from their motion (keyframes, else video)."""
     events = {}
     for cut in cuts:
         if cut['end_time'] - cut['start_time'] <= sequence_timeline.MAX_SHOT_SECONDS:
             continue
-        row = conn.execute("SELECT content FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL AND json_extract(settings_json,'$.structured_type')='video_analysis' ORDER BY rowid DESC LIMIT 1", (cut['id'],)).fetchone()
-        view = prompt_context.video_view(loads(row['content'], {})) if row else {}
+        motion = prompt_context.current_motion(conn, cut['id'])  # the keyframe analysis, else an older video analysis
+        view = prompt_context.video_view(motion['content']) if motion else {}
         starts = []
         for event in (view.get('events') or []) if isinstance(view, dict) else []:
             try:

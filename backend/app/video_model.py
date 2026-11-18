@@ -1,19 +1,19 @@
-"""Video motion analysis of one cut, in bounded windows, on a switchable model.
+"""Video motion analysis of one cut with Qwen3-VL-8B, in bounded windows. **The app no longer runs it.**
 
-``analyze_video`` owns everything that does not depend on the model (windows, frame budget, saved
-windows, the prompt notes, linking names and merging windows into one direction). The model is a
-*runtime* with ``load(path)``, ``generate(...)``, ``close()``, ``model_id``, ``revision`` and
-``hears_audio``: ``VideoRuntime`` runs Qwen3-VL through transformers, ``LlamaVideoRuntime`` runs any
-GGUF model that reads video through the bundled llama-server (LFM3-Omni). ``runtime_for`` picks one
-for a ``visual_models.VisualModel``.
+Keyframe analysis (``keyframe_analysis.py``) replaced this stage on 2026-11-18; the ``video_analysis`` stage, its
+visual-model role and the LFM3 video backend were removed. The module stays for ``analysis_experiments/`` (the
+pose-detail regression harness drives ``analyze_video`` directly) and documents how the stored ``video_analysis``
+results (``direction-v1``…``v3``), which every reader still accepts, were made.
+
+``analyze_video`` owns everything that does not depend on the model (windows, frame budget, saved windows, the
+prompt notes, linking names and merging windows into one direction). The model is a *runtime* with ``load(path)``,
+``generate(...)``, ``close()``, ``model_id``, ``revision`` and ``hears_audio``: ``VideoRuntime`` runs Qwen3-VL
+through transformers.
 """
-import base64
 import gc
 import json
 import math
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from . import media
@@ -133,85 +133,6 @@ def generate_window(processor, model, torch, clip, fps, prompt, duration, start,
     raise RuntimeError(f'Invalid Qwen3-VL video response for {start:.3f}–{start + duration:.3f}s after {len(VIDEO_TOKEN_LIMITS)} attempts: {last_error}')
 
 
-# One window holds at most 32 frames plus its soundtrack; a 32K slot leaves ample room for the prompt and answer.
-LLAMA_VIDEO_CONTEXT = 32768
-
-
-class LlamaVideoRuntime:
-    """A GGUF video model behind a private llama-server, started once for every cut of a stage.
-
-    Each window is sent as an mp4 data URL (with its soundtrack when the model hears audio). The server
-    resamples it to the model's own video rate (``sample_fps``; LFM3 reads 2 fps whatever the clip, the
-    request or ``--video-fps`` says, verified on build 12110), so the saved window records that rate.
-    The answer is validated and retried exactly like the Qwen3-VL runtime.
-    """
-
-    def __init__(self, model):
-        self.spec = model
-        self.model_id, self.revision, self.hears_audio = model.model_id, model.revision, model.hears_audio
-        self.sample_fps = model.video_fps
-        self.server = self.url = None
-
-    def load(self, _model_path=None):
-        if self.url is None:
-            from . import frame_model
-            self.server = frame_model.frame_server(*self.spec.server_files(), parallel=1, context_per_slot=LLAMA_VIDEO_CONTEXT,
-                                                   extra_args=self.spec.server_args)
-            self.url = self.server.__enter__()
-        return self.url
-
-    def close(self):
-        if self.server is not None:
-            server, self.server, self.url = self.server, None, None
-            server.__exit__(None, None, None)
-
-    def body(self, clip, prompt, limit):
-        video = base64.b64encode(Path(clip).read_bytes()).decode('ascii')
-        return {'messages': [{'role': 'user', 'content': [
-                    {'type': 'video_url', 'video_url': {'url': 'data:video/mp4;base64,' + video}},
-                    {'type': 'text', 'text': prompt}]}],
-                'temperature': 0, 'max_tokens': limit, 'response_format': {'type': 'json_object'},
-                'chat_template_kwargs': {'enable_thinking': False}}
-
-    def generate(self, clip, fps, prompt, duration, start, on_invalid_response=None, cancel_check=None):
-        from .inference_worker import request_json
-        url = self.load()
-        usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
-        last_error = ''
-        for attempt, limit in enumerate(VIDEO_TOKEN_LIMITS):
-            if cancel_check:
-                cancel_check()
-            request = urllib.request.Request(url + '/v1/chat/completions', data=json.dumps(self.body(clip, prompt + (RETRY_INSTRUCTION if attempt else ''), limit)).encode(),
-                                             headers={'Content-Type': 'application/json'}, method='POST')
-            try:
-                payload = request_json(request, cancel_check, timeout=600)
-                choice = payload['choices'][0]
-                raw = choice['message']['content'] or ''
-            except urllib.error.HTTPError as exc:
-                raise RuntimeError(f'{self.spec.label} rejected the video request: HTTP {exc.code} {exc.read()[:500].decode("utf-8", "replace")}') from exc
-            except (OSError, KeyError, IndexError, TypeError, ValueError) as exc:
-                raise RuntimeError(f'{self.spec.label} video request failed: {exc}') from exc
-            for key in usage:
-                if isinstance((payload.get('usage') or {}).get(key), int):
-                    usage[key] += payload['usage'][key]
-            try:
-                return validate_video(raw, duration, start), usage, attempt + 1
-            except (ValueError, json.JSONDecodeError) as exc:
-                last_error = str(exc)
-                if choice.get('finish_reason') == 'length':
-                    last_error = f'Output reached the {limit}-token generation limit; {last_error}'
-                if on_invalid_response:
-                    on_invalid_response(last_error, raw)
-        raise RuntimeError(f'Invalid {self.spec.label} video response for {start:.3f}–{start + duration:.3f}s after {len(VIDEO_TOKEN_LIMITS)} attempts: {last_error}')
-
-
-def runtime_for(model):
-    """The video runtime of a ``visual_models.VisualModel``; Qwen3-VL keeps its transformers runtime."""
-    if model is None or model.runtime == 'transformers':
-        return VideoRuntime()
-    if model.runtime == 'llama-server':
-        return LlamaVideoRuntime(model)
-    raise RuntimeError(f'No video runtime for {model.label}')
 
 
 def analyze_video(original, cut, config, model_path, scratch, on_window=None, subtitle_strip=None, source_size=None, load_window=None, save_window=None, context_hints=None, on_invalid_response=None, cancel_check=None, runtime=None,

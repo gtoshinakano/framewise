@@ -2,12 +2,12 @@
 name: correct_result
 title: Correct an analysis result
 description: Correct a saved result (character name, identity, event, wording) following the user's instruction. Creates a proposal the user applies; never edits silently.
-examples: Fix the video analysis character name
+examples: Fix the character name in the keyframe analysis
 ---
 # Correcting a saved result
 
 ## Steps
-1. Identify the target result type from the user's words (video analysis → `video_analysis`, first image → `initial_frame`, how the cut ends or what moves → `video_analysis`, brief → `production_brief`, consistency → `consistency_summary`, answers → `review_answers`, H3 → `h3_prompt`, image prompt → `image_prompt`).
+1. Identify the target result type from the user's words (keyframes or what changes → `keyframe_analysis`, beats, acting or delivery → `performance_beats`, first image → `initial_frame`, how the cut ends or what moves → `keyframe_analysis` (older cuts: `video_analysis`), brief → `production_brief`, consistency → `consistency_summary`, answers → `review_answers`, H3 → `h3_prompt`, image prompt → `image_prompt`).
 2. For a name or identity fix, call `get_characters()` and use the exact canonical name. If the user's name matches no character, say so and ask before proceeding.
 3. Find what to change:
    - `find_in_results(query="<wrong text>")` shows which results contain the text and where. Use it to find every occurrence cheaply.

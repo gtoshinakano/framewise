@@ -130,7 +130,7 @@ class SequenceExtendTest(SequenceBase):
         short = self.create(1, 2)
         with db.connect() as conn:
             conn.execute("DELETE FROM analysis_results WHERE cut_id='c3'")
-        self.assertEqual(self.extend(short, expected=409)['detail'], 'Cut 3 needs a first-frame and a video analysis first; run them from the cut, then add it')
+        self.assertEqual(self.extend(short, expected=409)['detail'], 'Cut 3 needs a first-frame and a keyframe analysis first; run them from the cut, then add it')
         self.assertFalse(self.detail(short)['next_cut']['ready'])
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET end_time=200 WHERE id='c3'")

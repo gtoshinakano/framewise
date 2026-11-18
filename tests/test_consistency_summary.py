@@ -81,15 +81,15 @@ class MotionDirectionEvidenceTest(unittest.TestCase):
         self.assertIn('Initial frame:', text)
         self.assertIn('Last frame:\ncomposition: unchanged', text)
 
-    def test_queueing_needs_a_first_frame_and_a_video_analysis_only(self):
+    def test_queueing_an_older_cut_needs_a_first_frame_and_a_video_analysis_only(self):
         from app import summary_queue
         context = {'cut': {'cut_index': 0, 'start_time': 12, 'end_time': 19}, 'transcript_segments': [], 'context_items': []}
         payload = summary_queue.payload_for('c1', {}, context, self.results({'id': 'l', 'type': 'last_frame', 'content': LAST}))
         self.assertEqual(payload['source_result_ids'], ['f', 'v'])  # the leftover last frame is not a source
-        with self.assertRaisesRegex(ValueError, 'Initial frame and video analysis'):
+        with self.assertRaisesRegex(ValueError, 'Initial frame and keyframe analysis'):
             summary_queue.payload_for('c1', {}, context, self.results()[:1])
         old = [{'id': 'f', 'type': 'initial_frame', 'content': FRAME}, {'id': 'v', 'type': 'video_analysis', 'content': {'windows': []}}]
-        with self.assertRaisesRegex(ValueError, 'run the video analysis again'):
+        with self.assertRaisesRegex(ValueError, 'without a last frame; run Keyframes'):
             summary_queue.payload_for('c1', {}, context, old)
         legacy = summary_queue.payload_for('c1', {}, context, [*old, {'id': 'l', 'type': 'last_frame', 'content': LAST}])
         self.assertEqual(legacy['source_result_ids'], ['f', 'v', 'l'])

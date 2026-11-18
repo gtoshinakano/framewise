@@ -350,7 +350,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
         <li>Pick a character for each box, or choose Add new character to create one from the box. Qwen then writes the character's look and outfit from that box into its Details.</li>
         <li>Every box you label or confirm becomes a matching example for the whole project. Tiny or unidentifiable boxes (a hand, a strand of hair) are left out of matching but keep their label for analysis.</li>
         <li>Automatic matches stay unverified until you queue this cut. Queuing treats named boxes as verified, so correct or clear them first.</li>
-        <li>Single-cut frame analysis receives up to four reference images; video analysis receives text and box hints.</li>
+        <li>Single-cut frame analysis receives up to four reference images; keyframe analysis receives the names and boxes.</li>
       </ul></details>
   </section>
 })

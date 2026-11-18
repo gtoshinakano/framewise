@@ -38,29 +38,9 @@ def is_target_job(payload):
 
 
 def current_selection(cut_id):
-    """``(cut, source path, key, result)`` of the cut's latest evaluation; key and result are None when it is missing or stale.
-
-    The cut is None when it does not exist or is not active. The key is the ``keyframe_results`` cache key,
-    which also names the evaluation a run was built for.
-    """
+    """``(cut, source path, key, result)`` of the cut's latest evaluation (``keyframes.current_selection``)."""
     from . import keyframes
-    cut = db.one('''SELECT c.*,e.project_id,e.original_ext FROM cuts c JOIN episodes e ON e.id=c.episode_id
-                    WHERE c.id=? AND c.active=1''', (cut_id,))
-    if not cut:
-        return None, None, None, None
-    source = media.episode_dir(cut['project_id'], cut['episode_id']) / f"original{cut['original_ext']}"
-    job = db.one('''SELECT j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='keyframes'
-                    AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') item WHERE json_extract(item.value,'$.id')=?)
-                    ORDER BY j.rowid DESC LIMIT 1''', (cut['episode_id'], cut_id))
-    if not job:
-        return cut, source, None, None
-    settings = json.loads(job['payload_json'])['keyframe_settings']
-    try:
-        key = keyframes.cache_key(source, cut, settings, keyframes.mask_for(cut['episode_id'], settings))
-    except OSError:
-        return cut, source, None, None
-    row = db.one('SELECT result_json FROM keyframe_results WHERE cache_key=?', (key,))
-    return (cut, source, key, json.loads(row['result_json'])) if row else (cut, source, None, None)
+    return keyframes.current_selection(cut_id)
 
 
 def pending_job(cut_id):

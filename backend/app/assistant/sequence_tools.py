@@ -8,7 +8,7 @@ model answer is. Nothing is saved until the user applies the proposal.
 """
 import json
 
-from .. import db, sequence_direction as direction, sequence_edit, sequence_evidence as evidence, sequence_prompt, sequence_store, sequence_timeline, sequence_view
+from .. import db, prompt_context, sequence_direction as direction, sequence_edit, sequence_evidence as evidence, sequence_prompt, sequence_store, sequence_timeline, sequence_view
 from . import tools
 from .tools import ToolError, tool
 
@@ -188,7 +188,7 @@ def get_shot(ctx, args):
 
 @tool('get_cut_evidence', "Read a current analysis result of one source cut of this sequence, by cut number: what the direction was written from. Times are seconds from the start of that cut.",
       {'cut': {'type': 'integer', 'description': 'Cut number as shown in the editor'},
-       'type': {'type': 'string', 'enum': ['initial_frame', 'video_analysis', 'consistency_summary', 'production_brief', 'review_answers']},
+       'type': {'type': 'string', 'enum': ['initial_frame', 'keyframe_analysis', 'performance_beats', 'video_analysis', 'consistency_summary', 'production_brief', 'review_answers']},
        'fields': {'type': 'array', 'items': {'type': 'string'}}}, ('cut', 'type'),
       summary=lambda args, value: f"Read {tools.LABELS[args['type']]} of cut {args['cut']}" + (' (missing)' if isinstance(value, dict) and value.get('missing') else ''), limit=9000, scope='sequence')
 def get_cut_evidence(ctx, args):
@@ -199,6 +199,12 @@ def get_cut_evidence(ctx, args):
     cut = tools.load_cut(span['id'])
     with db.connect() as conn:
         row = tools.find_current(conn, span['id'], args['type'])
+        motion = prompt_context.current_motion(conn, span['id']) if args['type'] == 'video_analysis' else None
+    if motion and motion['type'] == 'keyframe_analysis':
+        # The cut's motion comes from its keyframe analysis now; a video analysis kept from before it is out of date.
+        view = prompt_context.video_view(motion['content'])
+        return {'cut': args['cut'], 'plays_at_in_sequence': tools.span(span['t0'], span['t1']), 'type': args['type'], 'source': 'keyframe_analysis',
+                'content': {key: value for key, value in view.items() if key != 'kind'} if isinstance(view, dict) else view}
     if row is None:
         return {'cut': args['cut'], 'type': args['type'], 'missing': True}
     view = tools.project(args['type'], row, cut)

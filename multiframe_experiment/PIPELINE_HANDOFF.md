@@ -4,8 +4,13 @@ Written 2026-11-18 for the session that develops the next pipeline. It consolida
 round, keep it for the evidence), `analysis_experiments/FINDINGS.md` (the earlier pose-detail experiment) and the decisions taken
 along the way. Where a later round changed an earlier recommendation, this file states the later one.
 
-Nothing from these experiments is in the app: `backend/app` is untouched by `multiframe_experiment/`. Everything below is a
-finding about stand-alone code, or a proposal that is marked as one.
+**Status 2026-11-18: integrated.** The pipeline of section 2 (D hybrid, observer/roster, DWPose merge, pixel camera with people
+masked) runs in the app as the `keyframe_analysis` stage of visual analysis (`backend/app/keyframe_*.py`), replacing the video
+analysis, and a text job compiles it into performance beats (`backend/app/performance_beats.py`); see the Keyframes entry of
+`AGENTS.md`. The experiment's modules were ported, not imported: `keyframe_prompts.SYSTEM` is the observer prompt byte for byte and
+`keyframe_rules` is `pose_rules` unchanged, so a rule or prompt change measured here must be copied there (with a new
+`PROMPT_VERSION`/`RULES_VERSION`). The open problems of section 7 still apply to the app. The rest of this file is the record of the
+experiment as it was.
 
 ## 1. The question and where it stands
 

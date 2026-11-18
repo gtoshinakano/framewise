@@ -1,14 +1,18 @@
 """Which model runs each visual analysis role, and which models exist.
 
-A *role* is one step that reads pictures: the first-frame description, the video motion direction and
-the character profile of a new character. Each role can run on any model that lists it in ``roles``.
+A *role* is one step that reads pictures: the first-frame description, the keyframe analysis (what changes
+between the keyframes of a cut) and the character profile of a new character. Each role can run on any model that lists it in ``roles``.
 The user picks one per role (``visual_model_settings``); every queued job snapshots the choice in
 ``payload.models`` so changing it never affects queued or running work, and a job without the key
 (queued before the choice existed) runs on ``DEFAULTS``.
 
 To add a model: add its download to ``model_manifest.json`` (used by ``scripts/install-model.py``),
-add a ``VisualModel`` here, mount its folder in the inference compose file, and, only for a new kind
-of runtime, a video backend in ``video_model.runtime_for``. Nothing else names a model.
+add a ``VisualModel`` here and mount its folder in the inference compose file. Nothing else names a model.
+A model without roles is a *helper* (DWPose, the CPU pose model the keyframe analysis merges in): it is never
+chosen, only installed, and its status tells the keyframe stage whether it can run the hybrid.
+
+The Qwen3-VL-8B video model and its ``video_analysis`` role were removed on 2026-11-18 (keyframe analysis replaced
+them); a saved choice or a job snapshot for that role is ignored.
 
 The API container cannot see the model folders (they are mounted into the inference worker only), so
 the worker publishes ``status()`` of every model to ``visual_model_state`` and the API reads that.
@@ -19,10 +23,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import db, frame_model, video_model
+from . import db, frame_model
 
-ROLES = ('initial_frame', 'video_analysis', 'character_profile')
-ROLE_LABELS = {'initial_frame': 'First frame', 'video_analysis': 'Video motion', 'character_profile': 'Character profile'}
+ROLES = ('initial_frame', 'keyframe_analysis', 'character_profile')
+ROLE_LABELS = {'initial_frame': 'First frame', 'keyframe_analysis': 'Keyframes (motion)', 'character_profile': 'Character profile'}
 MANIFEST = json.loads((Path(__file__).with_name('model_manifest.json')).read_text())
 SERVER_ENV, SERVER_DEFAULT = 'QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'  # the one bundled llama.cpp build serves every GGUF model
 PUBLISH_SECONDS = 30
@@ -36,18 +40,17 @@ class VisualModel:
     short_name: str  # written into text the model produces, e.g. the character profile's heading
     model_id: str
     revision: str
-    runtime: str  # 'llama-server' (GGUF + projector) or 'transformers' (a safetensors folder)
+    runtime: str  # 'llama-server' (GGUF + projector) or 'onnx' (CPU helper files)
     roles: tuple
-    files: dict  # file role -> (environment variable, default path inside the worker)
+    files: dict  # file role -> (environment variable, default path inside the worker), or (folder variable, default folder, file name)
     server_args: tuple = ()
-    hears_audio: bool = False  # the video role sends the clip with its soundtrack
     manifest: str | None = None  # model_manifest.json entry the installer downloads
-    video_fps: float | None = None  # a llama-server video model's fixed sampling rate (the server resamples every clip to it)
     note: str = ''
 
     def path(self, name):
-        env, default = self.files[name]
-        return Path(os.environ.get(env) or default)
+        env, default, *file_name = self.files[name]
+        found = Path(os.environ.get(env) or default)
+        return found / file_name[0] if file_name else found
 
     def server_files(self):
         """(llama-server, model, projector) for ``frame_model.frame_server``."""
@@ -59,27 +62,28 @@ def _lfm3():
     return VisualModel(
         key='lfm3-omni-2b', label='LFM3-Omni 2B · BF16', short_name='LFM3-Omni-2B',
         model_id='LiquidAI/LFM3-Omni-2B-GGUF:BF16', revision=entry['revision'], runtime='llama-server',
-        roles=ROLES,
+        roles=('initial_frame', 'character_profile'),  # describing changes between keyframes failed in the experiment (multiframe_experiment/FINDINGS.md)
         files={'model': ('LFM3_OMNI_MODEL_PATH', '/models/lfm3-omni-2b/LFM3-Omni-2B-BF16.gguf'),
                'projector': ('LFM3_OMNI_PROJECTOR_PATH', '/models/lfm3-omni-2b/mmproj-LFM3-Omni-2B-BF16.gguf')},
-        server_args=('--reasoning', 'off'), hears_audio=True, manifest='lfm3-omni-2b', video_fps=2.0,
-        note='2.2B omni model: sees the frames and hears the clip, much faster, less detailed.')
+        server_args=('--reasoning', 'off'), manifest='lfm3-omni-2b',
+        note='2.2B omni model: much faster, less detailed.')
 
 
 MODELS = {model.key: model for model in (
     VisualModel(key='qwen35-27b', label='Qwen3.5 27B · Q4_K_M', short_name='Qwen3.5-27B',
                 model_id=frame_model.MODEL_ID, revision=frame_model.MODEL_REVISION, runtime='llama-server',
-                roles=('initial_frame', 'character_profile'),
+                roles=('initial_frame', 'keyframe_analysis', 'character_profile'),
                 files={'model': ('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
                        'projector': ('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf')},
                 note='The default still-image model.'),
-    VisualModel(key='qwen3-vl-8b', label='Qwen3-VL 8B · BF16', short_name='Qwen3-VL-8B',
-                model_id=video_model.MODEL_ID, revision=video_model.MODEL_REVISION, runtime='transformers',
-                roles=('video_analysis',), files={'model': ('QWEN3_VIDEO_MODEL_PATH', '/models/qwen3-vl-8b')},
-                note='The default video model (frames only, no sound).'),
     _lfm3(),
+    VisualModel(key='dwpose', label='DWPose · ONNX (CPU)', short_name='DWPose', model_id='yzd-v/DWPose',
+                revision=MANIFEST['dwpose']['revision'], runtime='onnx', roles=(),
+                files={'detector': ('DWPOSE_DIR', '/models/dwpose', 'yolox_l.onnx'), 'pose': ('DWPOSE_DIR', '/models/dwpose', 'dw-ll_ucoco_384.onnx')},
+                manifest='dwpose',
+                note='Body keypoints on the CPU, merged into the keyframe analysis (arms, legs, position, walking). Without it the keyframe analysis runs on Qwen3.5 alone.'),
 )}
-DEFAULTS = {'initial_frame': 'qwen35-27b', 'video_analysis': 'qwen3-vl-8b', 'character_profile': 'qwen35-27b'}
+DEFAULTS = {'initial_frame': 'qwen35-27b', 'keyframe_analysis': 'qwen35-27b', 'character_profile': 'qwen35-27b'}
 
 
 def supports(key, role):
@@ -88,22 +92,16 @@ def supports(key, role):
 
 # -- files on disk (inference worker only) ---------------------------------------------------------
 
-def _shards_complete(folder):
-    try:
-        shards = set(json.loads((folder / 'model.safetensors.index.json').read_text())['weight_map'].values())
-        return bool(shards) and all(Path(name).name == name and (folder / name).is_file() for name in shards)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return False
-
-
 def status(key):
     """{'available', 'detail'} for one model as the worker sees its files."""
     model = MODELS[key]
-    if model.runtime == 'transformers':
-        ok = _shards_complete(model.path('model'))
-        return {'available': ok, 'detail': 'Installed' if ok else 'Not installed or incomplete'}
-    server, *files = model.server_files()
+    if model.runtime == 'onnx':
+        server, files = None, [model.path(name) for name in model.files]
+    else:
+        server, *files = model.server_files()
     if all(path.is_file() for path in files):
+        if server is None:
+            return {'available': True, 'detail': 'Installed'}
         return {'available': server.is_file(), 'detail': 'Installed' if server.is_file() else 'llama-server runtime is missing'}
     entry = MANIFEST.get(model.manifest or '')
     if entry:
@@ -194,7 +192,7 @@ def overview():
     for key, model in MODELS.items():
         info = report.get(key) or {}
         models.append({'key': key, 'label': model.label, 'model_id': model.model_id, 'roles': list(model.roles), 'note': model.note,
-                       'hears_audio': model.hears_audio, 'install': f'python3 scripts/install-model.py {model.manifest}' if model.manifest else None,
+                       'helper': not model.roles, 'install': f'python3 scripts/install-model.py {model.manifest}' if model.manifest else None,
                        'available': bool(info.get('available')), 'detail': info.get('detail') or 'The inference worker has not reported it'})
     return {'roles': [{'role': role, 'label': ROLE_LABELS[role], 'default': DEFAULTS[role]} for role in ROLES],
             'models': models, 'selected': selected(), 'worker_reported': not stale}

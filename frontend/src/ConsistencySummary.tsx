@@ -97,7 +97,7 @@ function Decisions({ questions, answers }: { questions: Question[]; answers: Ans
   </section>
 }
 
-export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onStarted, extra, answers }: { cutId: string; result?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; onStarted: () => Promise<void>; extra?: ReactNode; answers?: AnswersApi }) {
+export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onStarted, lead, extra, answers }: { cutId: string; result?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; onStarted: () => Promise<void>; lead?: ReactNode; extra?: ReactNode; answers?: AnswersApi }) {
   const [working, setWorking] = useState(false)
   const [message, setMessage] = useState('')
   const view = useMemo(() => result ? parseConsistency(result.content) : null, [result?.content])
@@ -115,6 +115,7 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
   const quiet = !!view && (view.format === 'questions' ? view.questions.length === 0 : view.sections.human_review.none && view.sections.recommended_checks.none)
   const allClear = !!view && quiet && !view.conflicts
   return <StepPanel step={1} kind="consistency_summary" title="Review" subtitle="Consistency summary · read first" tag={status} actions={rerun}>
+    {lead}
     {!loaded ? <div className="space-y-3" aria-busy="true" aria-label="Loading consistency summary"><Skeleton className="h-9" /><Skeleton className="h-28" /><Skeleton className="h-28" /><Skeleton className="h-20" /></div>
       : !result || !view ? <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-10 text-center">
         <ScanSearch size={28} className="text-[#b496ff]" aria-hidden />

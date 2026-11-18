@@ -11,10 +11,10 @@ from datetime import datetime, timezone
 from . import db
 
 # Canonical order, also the order of "pending" placeholders.
-KINDS = ('created', 'character_boxes', 'character_identity', 'visual_analysis',
+KINDS = ('created', 'character_boxes', 'character_identity', 'visual_analysis', 'performance_beats',
          'consistency_summary', 'review_answers', 'answers_saved', 'cut_summary')
 LABELS = {'created': 'Cut created', 'character_boxes': 'Character boxes', 'character_identity': 'Character identity',
-          'visual_analysis': 'Visual analysis', 'consistency_summary': 'Consistency Summary',
+          'visual_analysis': 'Visual analysis', 'performance_beats': 'Performance beats', 'consistency_summary': 'Consistency Summary',
           'review_answers': 'AI answers', 'answers_saved': 'Answers saved', 'cut_summary': 'Cut summary'}
 
 
@@ -68,7 +68,7 @@ def build(cut_id):
     events = [_event('created', 'done', _epoch(cut['created_at']))]
 
     columns = 'id,pipeline,status,stage,error,created_at,started_at,finished_at'
-    jobs = db.all_rows(f"""SELECT {columns} FROM jobs WHERE pipeline IN ('character_detect','analyze','consistency_summary','review_answers','regen')
+    jobs = db.all_rows(f"""SELECT {columns} FROM jobs WHERE pipeline IN ('character_detect','analyze','performance_beats','consistency_summary','review_answers','regen')
         AND (json_extract(payload_json,'$.cut_id')=? OR EXISTS (SELECT 1 FROM json_each(payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)
              OR id IN (SELECT job_id FROM analysis_job_cuts WHERE cut_id=?)) ORDER BY created_at,rowid""", (cut_id, cut_id, cut_id))
     stage_seconds = {}
@@ -98,6 +98,8 @@ def build(cut_id):
         elif pipeline == 'analyze':
             seconds = stage_seconds.get(job['id'])
             events.append(_job_event('visual_analysis', job, now, seconds))
+        elif pipeline == 'performance_beats':
+            events.append(_job_event('performance_beats', job, now))
         elif pipeline == 'consistency_summary':
             consistency_jobs.add(job['id'])
             events.append(_job_event('consistency_summary', job, now))

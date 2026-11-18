@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2, PencilLine, ScanFace, Trash2, XCircle } from 'lucide-react'
-import { api, type ContextItem } from './api'
+import { api, type ContextItem, type KeyframeAnalysis, type KeyframeAnalysisState, type KeyframeSegment } from './api'
 import { BoxEditor, type EditorBox } from './BoxEditor'
 import { boxColor } from './boxColors'
 import { cachedCharacters, loadCharacters } from './runCache'
@@ -77,6 +77,51 @@ export function useTargetDetections(cutId: string, boundaryKey: string, revision
 }
 export type TargetDetectionState = ReturnType<typeof useTargetDetections>
 
+/** The cut's keyframe analysis (what changes between these frames); read again when the frames change or a job finishes. */
+export function useKeyframeAnalysis(cutId: string, revision: string) {
+  const [data, setData] = useState<KeyframeAnalysisState | null>(null)
+  const current = useRef(0)
+  const load = useCallback(() => {
+    const request = ++current.current
+    void api<KeyframeAnalysisState>(`/cuts/${cutId}/keyframe-analysis`).then(value => { if (request === current.current) setData(value) }).catch(() => {})
+  }, [cutId])
+  useEffect(() => { setData(null); load(); return () => { current.current++ } }, [load, revision])
+  useEffect(() => {
+    window.addEventListener('framewise:keyframes-changed', load)
+    return () => window.removeEventListener('framewise:keyframes-changed', load)
+  }, [load])
+  const active = isJobActive(data?.job)
+  useEffect(() => {
+    if (!active) return
+    const timer = setInterval(load, 5000)
+    return () => clearInterval(timer)
+  }, [active, load])
+  return data
+}
+
+const CAMERA_TEXT: Record<string, string> = { static: 'static camera', unclear: 'camera not measurable' }
+const cameraText = (move: string) => CAMERA_TEXT[move] ?? move.replace('_', ' ')
+
+/** What changed from one keyframe to the next: the measured camera, then per character the visible motions and changed parts. */
+function PairChanges({ segment, slotOf }: { segment: KeyframeSegment; slotOf: (name: string) => number | null }) {
+  const people = segment.characters.filter(person => person.changes.length || ['walking', 'speaking', 'blinking'].some(flag => person[flag as 'walking'] === 'yes'))
+  return <div className="space-y-1 rounded-lg border border-dashed hairline px-2 py-1.5 text-[11px]" aria-label={`Changes ${segment.from} to ${segment.to}`}>
+    <div className="flex flex-wrap items-center gap-1.5"><strong className="text-[#d5dbe5]">{segment.from}→{segment.to}</strong><span className="muted">{segment.start.toFixed(2)}–{segment.end.toFixed(2)}s</span>
+      <StatusChip tone={segment.camera.move === 'static' || segment.camera.move === 'unclear' ? 'grey' : 'purple'} title="Measured from the background pixels, people masked out">{cameraText(segment.camera.move)}</StatusChip></div>
+    {!people.length && !segment.other_changes.length && <p className="muted">No visible change.</p>}
+    {people.map(person => {
+      const slot = slotOf(person.name)
+      return <div key={person.name} className="pl-2" style={slot !== null ? { borderLeft: `3px solid ${boxColor(slot)}` } : undefined}>
+        <span className="font-semibold text-[#d5dbe5]">{person.name}</span>
+        {(['walking', 'speaking', 'blinking'] as const).filter(flag => person[flag] === 'yes').map(flag => <span key={flag} className="ml-1.5 rounded bg-[#2a3140] px-1 py-0.5 text-[10px]">{flag}</span>)}
+        <ul className="mt-0.5 space-y-0.5">{person.changes.map((change, index) => <li key={index}><span className="muted">{change.part.replace('_', ' ')}:</span> {change.description}
+          <span className={`ml-1 text-[10px] ${change.source === 'dwpose' ? 'text-[#7bd88f]' : 'text-[#8b93a3]'}`} title={change.source === 'dwpose' ? 'Measured from DWPose body keypoints' : 'Read from the images by Qwen3.5'}>{change.source === 'dwpose' ? 'keypoints' : 'vision model'}</span></li>)}</ul>
+      </div>
+    })}
+    {segment.other_changes.map((other, index) => <p key={index}><span className="muted">{other.kind}:</span> {other.description}</p>)}
+  </div>
+}
+
 const frameUrl = (cutId: string, ordinal: number, revision?: string | null) => `/api/cuts/${encodeURIComponent(cutId)}/keyframe-selection/frames/${ordinal}?revision=${encodeURIComponent(revision || '')}`
 
 export function TargetFrames({ cutId, selection, error, projectId, detections, episodeBusy, onChanged }: {
@@ -93,6 +138,9 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, e
   useEffect(() => { void loadCharacters(projectId).then(setCharacters).catch(() => {}) }, [projectId])
 
   const run = data?.run || null
+  const keyframes = useKeyframeAnalysis(cutId, selection?.revision || '')
+  const analysis = keyframes?.result ?? null
+  const slotOf = (name: string) => live?.slots.find(slot => slot.character_name === name)?.slot ?? null
   const active = isJobActive(data?.job)
   const evaluated = !!selection?.result
   const live = run && !run.stale ? run : null
@@ -172,19 +220,38 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, e
           </div>
         })}
       </div>}
+      {analysis && <KeyframeHeader state={keyframes!} analysis={analysis} />}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">{selection.result.selected_frames.map((frame, index) => {
         const info = live?.frames.find(item => item.ordinal === frame.source_frame_index)
-        return <FrameCard key={frame.source_frame_index} index={index} frame={frame} src={frameUrl(cutId, frame.source_frame_index, selection.revision)} info={info} run={live}
-          drawing={drawing === frame.source_frame_index} locked={locked} onDrawing={on => setDrawing(on ? frame.source_frame_index : null)}
-          onDraw={box => draw(frame.source_frame_index, box)} onMove={move} onRemove={remove} onReslot={reslot} />
+        const described = keyframes?.status === 'current' ? analysis?.frames.find(item => item.ordinal === frame.source_frame_index) : undefined
+        const after = described ? analysis?.segments.find(segment => segment.from === described.label) : undefined
+        return <div key={frame.source_frame_index} className="space-y-1.5">
+          <FrameCard index={index} frame={frame} src={frameUrl(cutId, frame.source_frame_index, selection.revision)} info={info} run={live}
+            drawing={drawing === frame.source_frame_index} locked={locked} onDrawing={on => setDrawing(on ? frame.source_frame_index : null)}
+            onDraw={box => draw(frame.source_frame_index, box)} onMove={move} onRemove={remove} onReslot={reslot} described={described} slotOf={slotOf} />
+          {after && <PairChanges segment={after} slotOf={slotOf} />}
+        </div>
       })}</div>
     </>}
   </section>
 }
 
-function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, onDraw, onMove, onRemove, onReslot }: {
+/** Which keyframe analysis this tab shows, and whether it still belongs to these frames and people. */
+function KeyframeHeader({ state, analysis }: { state: KeyframeAnalysisState; analysis: KeyframeAnalysis }) {
+  const method = analysis.method === 'hybrid' ? 'Qwen3.5 + DWPose keypoints' : 'Qwen3.5 only (DWPose not installed)'
+  return <div className="space-y-1 rounded-lg border hairline px-3 py-2 text-xs">
+    <div className="flex flex-wrap items-center gap-1.5"><strong className="text-[#d5dbe5]">Keyframe analysis</strong><StatusChip tone="grey" title="How the body changes were found">{method}</StatusChip>
+      {state.run?.roster_source && <StatusChip tone="grey" title="Where the names came from">{state.run.roster_source === 'target_slots' ? 'Names from these frames' : state.run.roster_source === 'first_frame' ? 'Names from the first frame' : 'No names'}</StatusChip>}
+      {state.status === 'stale' && <StatusChip tone="amber" title="The frames were evaluated again after this analysis; run Keyframes again">Stale</StatusChip>}</div>
+    {analysis.summary && <p className="muted">{analysis.summary}</p>}
+    {state.status === 'stale' && <p className="text-[#e6c58b]">These frames changed since the analysis; its states and changes are hidden until Keyframes runs again.</p>}
+  </div>
+}
+
+function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, onDraw, onMove, onRemove, onReslot, described, slotOf }: {
   index: number; frame: TargetFrame; src: string; info?: TargetFrameInfo; run: TargetRun | null; drawing: boolean; locked: boolean
   onDrawing: (on: boolean) => void; onDraw: (box: Box) => void; onMove: (id: string, box: Box) => void; onRemove: (id: string) => void; onReslot: (id: string, slot: number) => void
+  described?: KeyframeAnalysis['frames'][number]; slotOf: (name: string) => number | null
 }) {
   const boxes: TargetBox[] = run && info ? boxesInFrame(run, frame.source_frame_index) : []
   const editor: EditorBox[] = boxes.map(item => ({ id: item.id, box: item.box, color: boxColor(item.slot), label: `${item.slot + 1}. ${slotName(run?.slots.find(slot => slot.slot === item.slot))}` }))
@@ -204,6 +271,13 @@ function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, o
             {!mirrored && <button type="button" className="inline-flex items-center gap-1 text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked || (!room && !drawing)} title={room ? 'Draw a box for someone the detector missed' : 'A frame holds at most three boxes'} onClick={() => onDrawing(!drawing)}>{drawing ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing ? 'Cancel drawing' : 'Draw box'}</button>}
           </>}</span></div>
       {mirrored && <p className="muted text-[11px]">The first frame, as you left it in Characters in this cut. Change its boxes there, then detect again.</p>}
+      {described && described.characters.length > 0 && <ul className="space-y-0.5 text-[11px]" aria-label={`What ${described.label} shows`}>{described.characters.map(person => {
+        const slot = slotOf(person.name)
+        return <li key={person.name} className="pl-2" style={slot !== null ? { borderLeft: `3px solid ${boxColor(slot)}` } : undefined}>
+          <span className="font-semibold text-[#d5dbe5]">{described.label} · {person.name}</span>{person.state && <span>: {person.state}</span>}
+          {person.pose && <span className="muted block" title="Measured from DWPose body keypoints">Keypoints: {person.pose}</span>}
+        </li>
+      })}</ul>}
       {!mirrored && boxes.map(item => <div key={item.id} className="flex items-center gap-1.5 rounded bg-[#1e2430] p-1" style={{ borderLeft: `4px solid ${boxColor(item.slot)}` }}>
         <select aria-label={`Person for the box in frame ${index + 1}`} className="field !w-auto min-w-28 flex-1 !px-2 !py-1 !text-xs" value={item.slot} disabled={locked} title="Say this box is someone else. If they already have a box in this frame the two swap."
           onChange={event => onReslot(item.id, Number(event.target.value))}>{run!.slots.map(slot => <option key={slot.slot} value={slot.slot}>{slot.slot + 1}. {slotName(slot)}</option>)}</select>

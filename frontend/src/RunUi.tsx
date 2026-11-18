@@ -94,7 +94,9 @@ export function resultAccent(settings: Record<string, unknown> | undefined, titl
   const type = String(settings?.structured_type ?? '')
   if (type === 'initial_frame') return { color: '#6aa8ff', label: 'Initial frame' }
   if (type === 'last_frame') return { color: '#8f9bff', label: 'Last frame (earlier analysis)' }
-  if (type === 'video_analysis') return { color: '#4cc9c0', label: 'Video analysis' }
+  if (type === 'keyframe_analysis') return { color: '#4cc9c0', label: 'Keyframe analysis' }
+  if (type === 'performance_beats') return { color: '#f08a5d', label: 'Performance beats' }
+  if (type === 'video_analysis') return { color: '#5f9e98', label: 'Video analysis (earlier analysis)' }
   if (type === 'consistency_summary') return { color: '#b496ff', label: 'Consistency summary' }
   if (title === 'Cut summary') return { color: '#e5d25a', label: 'Cut summary' }
   return { color: '#8b95a7', label: title || 'Result' }

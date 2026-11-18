@@ -13,7 +13,7 @@ Goal: one answer that tells the user where the analysis stands and what the cut 
 2. Read the most consolidated evidence first, and only the fields you need:
    - `get_result(type="consistency_summary")` (summary, clear, confusing and `questions`, the multiple-choice decisions; older results have human_review and recommended_checks text instead)
    - `get_result(type="production_brief")` if present
-   - `get_result(type="video_analysis")` for timed events when no brief exists
+   - `get_result(type="performance_beats")` for the timed acting when no brief exists (older cuts: `get_result(type="video_analysis")`)
    - `get_transcript()` only if dialogue matters and the card shows segments
 3. Do not read every result. Two or three tool calls are usually enough.
 

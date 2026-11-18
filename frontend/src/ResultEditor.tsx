@@ -1,7 +1,7 @@
 import { ResultMetrics } from './ResultMetrics'
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { AlignLeft, AudioLines, BoxSelect, Captions, FileText, History, Image as ImageIcon, Layers3, LayoutTemplate, ListTree, Plus, Save, Sparkles, StickyNote, Trash2, Video, WandSparkles, X, type LucideIcon } from 'lucide-react'
+import { AlignLeft, AudioLines, BoxSelect, Captions, Drama, FileText, GalleryHorizontal, History, Image as ImageIcon, Layers3, LayoutTemplate, ListTree, Plus, Save, Sparkles, StickyNote, Trash2, Video, WandSparkles, X, type LucideIcon } from 'lucide-react'
 import { api, type AnalysisContext, type AnalysisResult, type ResultKind } from './api'
 import { resultAccent } from './RunUi'
 
@@ -28,6 +28,8 @@ function lookOf(result: Pick<AnalysisResult, 'kind' | 'title' | 'settings'>): { 
   if (type === 'consistency_summary') return { icon: Sparkles, ...accent }
   if (result.title === 'Cut summary') return { icon: FileText, ...accent }
   if (type === 'initial_frame' || type === 'last_frame') return { icon: ImageIcon, ...accent }
+  if (type === 'keyframe_analysis') return { icon: GalleryHorizontal, ...accent }
+  if (type === 'performance_beats') return { icon: Drama, ...accent }
   if (type === 'video_analysis') return { icon: Video, ...accent }
   if (type === 'subtitle_ocr' || /^Raw OCR at /.test(result.title)) return { icon: Captions, color: '#e2709c', label: 'Subtitle text' }
   if (/^Object detections at /.test(result.title)) return { icon: BoxSelect, color: '#f0a64a', label: 'Object detections' }

@@ -226,7 +226,10 @@ class CutDetail(BaseModel):
     cut_summary: str | None = Field(description="Text of the current Cut summary, or null if unavailable.")
     first_frame: dict[str, Any] | None = Field(description="Content of the current structured initial-frame analysis, or null if unavailable.")
     last_frame: dict[str, Any] | None = Field(description="Content of the structured last-frame analysis. Last frames are no longer analyzed: this is null except for cuts analyzed before that change, and it is superseded by `motion` when that is present.")
-    motion: dict[str, Any] | None = Field(description="Motion direction from the current video analysis: summary, camera, per-character activity, travel, motion, speaking, emotion and end, plus timed events (seconds from the first frame). Current runs detect characters only in the first frame; historical results may also include end_state.in_frame and in_last_frame from last-frame character boxes. Null for cuts whose video analysis predates motion directions.")
+    motion: dict[str, Any] | None = Field(description="Motion direction of the cut: summary, camera, per-character activity, travel, motion, speaking, emotion and end, plus timed events (seconds from the first frame). Since 2026-11-18 it is derived from the keyframe analysis (`motion_source: keyframe_analysis`); cuts analysed before that read their video analysis (`motion_source: video_analysis`), and historical ones may also include end_state.in_frame and in_last_frame from last-frame character boxes. Null when the cut has neither, or only a video analysis from before motion directions.")
+    motion_source: Literal['keyframe_analysis', 'video_analysis'] | None = Field(default=None, description="Which result `motion` was derived from.")
+    keyframes: dict[str, Any] | None = Field(default=None, description="The current keyframe analysis (contract keyframes-v1) as a prompt reads it: each keyframe's per-character state and what changed between consecutive keyframes (body parts marked keypoints were measured from DWPose, camera from background pixels). Null before keyframe analysis.")
+    performance_beats: dict[str, Any] | None = Field(default=None, description="The current performance beats (contract beats-v1): timed beats with camera, intent and each visible character's body, face, gaze and mouth, plus each transcript line's delivery (on_screen, off_screen, inner_voice, narrative). Never the words. Null when not written, or written from an older keyframe analysis.")
     transcript_segments: list[Transcript] = Field(description="Current non-deleted segments overlapping this cut; may extend beyond its boundaries.")
     subtitles: CutSubtitles = Field(description="Burned-in subtitle lines overlapping this cut, from the episode-wide extraction.")
     context_items: list[ContextItem] = Field(description="Project-wide and this episode's context items, including characters.")
@@ -358,10 +361,15 @@ def cut_detail(cut_id: str):
     frames = structured_results.list_results(cut_id)
     def frame_content(kind):
         return next((item['content'] for item in frames if item['type'] == kind), None)
+    by_type = {item['type']: item for item in reversed(frames)}
+    motion = prompt_context.motion_source(by_type)
+    motion = motion if motion and prompt_context.is_direction(motion['content']) else None
     return {"project": main.require_project(project_id), "cut": context["cut"],
             "cut_summary": summary['content'] if summary else None,
             "first_frame": frame_content('initial_frame'), "last_frame": frame_content('last_frame'),
-            "motion": prompt_context.video_view(frame_content('video_analysis')) if prompt_context.is_direction(frame_content('video_analysis')) else None,
+            "motion": prompt_context.video_view(motion['content']) if motion else None, "motion_source": motion['type'] if motion else None,
+            "keyframes": prompt_context.keyframe_view(frame_content('keyframe_analysis'), 'review') if frame_content('keyframe_analysis') else None,
+            "performance_beats": prompt_context.beats_view(frame_content('performance_beats')) if prompt_context.beats_current(by_type) else None,
             "transcript_segments": context["transcript_segments"], "subtitles": context["subtitles"], "context_items": context["context_items"],
             "previous_cut": context["previous_cut"], "next_cut": context["next_cut"]}
 
@@ -605,7 +613,9 @@ class CompositionCut(CompositionModel):
     subtitles: list[CompositionSubtitle] | None = None
     initial_frame: dict[str, Any] | None = None
     last_frame: dict[str, Any] | None = None
-    video_analysis: dict[str, Any] | None = None
+    keyframe_analysis: dict[str, Any] | None = None
+    performance_beats: dict[str, Any] | None = None
+    video_analysis: dict[str, Any] | None = Field(None, description='The stored video analysis; cuts analysed since 2026-11-18 have a keyframe analysis instead.')
     subtitle_ocr: dict[str, Any] | None = None
     consistency_summary: dict[str, Any] | None = None
     dialogue_segments: list[dict[str, Any]] | None = None
@@ -657,7 +667,7 @@ class BriefExportStatus(BaseModel):
 @router.get('/episodes/{episode_id}/brief', response_model=EpisodeBrief | CompositionBrief, summary='Get an agent-ready brief for a range of cuts')
 def episode_brief(episode_id: str, from_cut: int = Query(alias='from', ge=1), to: int = Query(ge=1),
                   view: Literal['composition'] | None = None,
-                  include: str = Query('', description='Composition view: comma-separated initial_frame,last_frame,video_analysis,subtitle_ocr,consistency_summary,dialogue_segments.'),
+                  include: str = Query('', description='Composition view: comma-separated initial_frame,keyframe_analysis,performance_beats,last_frame,video_analysis,subtitle_ocr,consistency_summary,dialogue_segments.'),
                   fields: str = Query('', description='Composition view: comma-separated cut-record keys; identity and readiness metadata are retained.'),
                   only_ready: bool = False, updated_since: str | None = Query(None, description='Inclusive ISO 8601 change watermark with timezone.')):
     """Return inclusive, one-based active cuts. Missing structured analysis requires a new visual analysis run."""

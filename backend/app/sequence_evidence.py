@@ -14,7 +14,9 @@ from . import pose_detail, prompt_context, sequence_compile, sequence_prompt, se
 from .assistant import compact
 from .composition_brief import shot_props, short
 
-STRUCTURED = ('initial_frame', 'video_analysis', 'consistency_summary')
+# The motion is read as ``video_analysis``: for a cut with a keyframe analysis that is its motion-direction view
+# (``prompt_context.with_motion``), so the direction readers below work for both (sequence prompts are rewritten later).
+STRUCTURED = ('initial_frame', 'video_analysis', 'keyframe_analysis', 'performance_beats', 'consistency_summary')
 SUMMARY_TITLE = 'Cut summary'
 DIALOGUE_SECTION = re.compile(r'^###[ \t]+Dialogue[ \t]*$.*?(?=^###[ \t]|\Z)', re.M | re.S)
 LEVELS = 4  # detail levels 0 (everything) to 3 (bare minimum)
@@ -47,6 +49,8 @@ def load(conn, sequence, cuts):
                 results[row['cut_id']].setdefault(kind, {'id': row['id'], 'content': content})
         elif row['title'] == SUMMARY_TITLE and not kind:
             results[row['cut_id']].setdefault('summary', {'id': row['id'], 'content': row['content']})
+    for cut_id in results:
+        results[cut_id] = prompt_context.with_motion(results[cut_id])
     for row in conn.execute(f'SELECT cut_id,content FROM cut_brief_instructions WHERE cut_id IN ({marks})', [cut['id'] for cut in cuts]):
         if row['content'].strip():
             results[row['cut_id']]['answers'] = row['content'].strip()

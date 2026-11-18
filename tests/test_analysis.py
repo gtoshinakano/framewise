@@ -454,7 +454,7 @@ class AnalysisTest(unittest.TestCase):
     def test_structured_frame_link_survives_human_revision(self):
         from app import structured_results, frame_source
         (media.episode_dir('p', 'e') / 'original.mp4').touch()
-        job = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        job = self.client.post('/api/cuts/c1/analysis-stages/run', json={'stage': 'initial_frame'}).json()['job_id']  # no keyframe selection to wait for
         _, owner = worker.claim_job(('analyze',))
         with db.connect() as conn:
             result_id = structured_results.save_generated(conn, 'c1', job, owner, 'initial_frame', {'composition': 'wide'}, 'test', 'prompt', {}, {'cut': {'start_time': 0, 'end_time': 2}, 'frame_time': .5})
@@ -498,56 +498,60 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(self.client.get(f'/api/jobs/{job_id}/cuts/c2/run-details').status_code, 404)
 
     def test_single_cut_pipeline_checkpoints_and_queues_summary(self):
-        from contextlib import nullcontext
         from app import single_cut_pipeline
+        from tests.test_keyframe_analysis import fake_models, seed_selection
+        seed_selection()
         response = self.client.post('/api/cuts/c1/analyze')
         job_id = response.json()['job_id']
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,))['payload_json'])
         self.assertEqual(payload['workflow'], 'single_cut_v2')
+        self.assertNotIn('wait_for_keyframes', payload)  # the selection is current
         frame = {'composition': 'wide', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'mood': 'calm', 'visible_characters': [], 'background_people': 'none', 'props': 'none', 'notes': 'none', 'mode': 'full'}
         with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
              patch.object(inference_worker, 'get_model', side_effect=AssertionError('subtitles are not extracted per cut')), \
              patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source, target, sample, *a, **kw: sample), \
-             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')) as server, \
-             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=lambda *a, **kw: dict(frame)) as describe, \
-             patch.object(single_cut_pipeline.video_model, 'analyze_video', return_value={'windows': [], 'contract': 'direction-v1', 'direction': {'summary': 'still', 'camera': {'movement': 'static', 'detail': 'none'}, 'characters': []}}) as video:
+             fake_models() as calls, \
+             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=lambda *a, **kw: dict(frame)) as describe:
             inference_worker.process(*worker.claim_job(('analyze',)))
-            server.assert_called_once()
             self.assertEqual(describe.call_count, 1)  # only the first frame is described
             self.assertEqual(describe.call_args.kwargs['frame_label'], 'first frame')
-            # The video stage builds on the first frame this job just saved and on the cut's transcript.
-            self.assertEqual(video.call_args.kwargs['initial']['composition'], 'wide')
-            self.assertEqual(video.call_args.kwargs['roster'], [])
-            self.assertIn('transcript', video.call_args.kwargs)
+            self.assertEqual(len(calls), 1)  # one keyframe window
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         outputs = self.client.get('/api/cuts/c1/structured-analysis').json()
-        self.assertEqual({item['type'] for item in outputs}, {'initial_frame', 'video_analysis'})
-        video_result = next(item for item in outputs if item['type'] == 'video_analysis')
-        self.assertEqual(video_result['content']['based_on_initial_frame'], next(item['id'] for item in outputs if item['type'] == 'initial_frame'))
-        summary = db.one("SELECT * FROM jobs WHERE pipeline='consistency_summary' AND episode_id='e'")
-        self.assertIsNone(summary)
+        self.assertEqual({item['type'] for item in outputs}, {'initial_frame', 'keyframe_analysis'})
+        self.assertIsNone(db.one("SELECT * FROM jobs WHERE pipeline='consistency_summary' AND episode_id='e'"))
+        beats = db.one("SELECT id,status FROM jobs WHERE pipeline='performance_beats' AND episode_id='e'")
+        self.assertEqual(beats['status'], 'queued')  # queued with the keyframe result
         queued = self.client.post('/api/cuts/c1/consistency-summary')
         self.assertEqual(queued.status_code, 200, queued.text)
         summary = db.one("SELECT * FROM jobs WHERE pipeline='consistency_summary' AND episode_id='e'")
-        self.assertEqual(summary['status'], 'queued')
-        self.assertEqual(len(json.loads(summary['payload_json'])['source_result_ids']), 2)
-        evidence = json.loads(summary['payload_json'])['evidence']['visual_evidence_text']
+        summary_payload = json.loads(summary['payload_json'])
+        self.assertEqual((summary['status'], summary_payload['wait_for'], summary_payload['refresh_evidence']), ('queued', beats['id'], True))
+        self.assertEqual(len(summary_payload['source_result_ids']), 2)
+        evidence = summary_payload['evidence']['visual_evidence_text']
         self.assertIn('First frame:', evidence)
-        self.assertIn('movement: static', evidence)
-        self.assertNotIn('Last frame', evidence)
+        self.assertIn('Keyframes:', evidence)
+        self.assertIn('Performance beats:\nNot written yet.', evidence)
+        self.assertIsNone(worker.claim_job(('consistency_summary',)))  # held until the beats are written
         stages = self.client.get('/api/cuts/c1/analysis-stages').json()
-        self.assertEqual([(stage['stage_key'], stage['status']) for stage in stages], [('initial_frame', 'done'), ('video_analysis', 'done')])
+        self.assertEqual([(stage['stage_key'], stage['status']) for stage in stages], [('initial_frame', 'done'), ('keyframe_analysis', 'done')])
 
     def test_single_cut_retry_reuses_committed_frame_checkpoint(self):
-        from contextlib import nullcontext
         from app import single_cut_pipeline
+        from tests.test_keyframe_analysis import answer_for, fake_models, seed_selection
+        seed_selection()
         job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
         frame = {'composition': 'wide', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'visible_characters': [], 'other_visual_details': '', 'uncertainties': ''}
+        failures = [RuntimeError('temporary keyframe failure')]
+
+        def ask(messages, schema):
+            if failures:
+                raise failures.pop()
+            return answer_for(schema)
         with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
              patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source, target, sample, *a, **kw: sample), \
-             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')), \
-             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=[dict(frame)]) as describe, \
-             patch.object(single_cut_pipeline.video_model, 'analyze_video', side_effect=[RuntimeError('temporary video failure'), {'windows': []}]):
+             fake_models(ask=ask), \
+             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=[dict(frame)]) as describe:
             inference_worker.process(*worker.claim_job(('analyze',)))
             self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'failed')
             retry = self.client.post(f'/api/jobs/{job_id}/retry')
@@ -559,35 +563,6 @@ class AnalysisTest(unittest.TestCase):
             self.assertEqual(describe.call_count, 1)  # the saved initial frame is not described again
         frames = [item for item in self.client.get('/api/cuts/c1/structured-analysis?history=true').json() if item['type'] == 'initial_frame']
         self.assertEqual(len(frames), 1)
-
-    def test_single_cut_retry_reuses_saved_video_windows(self):
-        from contextlib import nullcontext
-        from app import single_cut_pipeline
-        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
-        frame = {'composition': 'wide', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'visible_characters': [], 'other_visual_details': '', 'uncertainties': ''}
-        window = {'source': {'source_start': 0, 'source_end': 2}, 'analysis': ['valid JSON without the usual object structure']}
-        def video(*args, load_window, save_window, **kwargs):
-            saved = load_window(0, 0, 2)
-            if saved is None:
-                save_window(0, window)
-                raise RuntimeError('interrupted after video window')
-            self.assertEqual(saved, window)
-            return {'windows': [saved]}
-        with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
-             patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source, target, sample, *a, **kw: sample), \
-             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')) as server, \
-             patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=lambda *a, **kw: dict(frame)) as describe, \
-             patch.object(single_cut_pipeline.video_model, 'analyze_video', side_effect=video):
-            inference_worker.process(*worker.claim_job(('analyze',)))
-            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'failed')
-            self.assertEqual(self.client.get(f'/api/jobs/{job_id}/analysis-windows').json()[0]['content'], window)
-            retry = self.client.post(f'/api/jobs/{job_id}/retry')
-            self.assertEqual(retry.status_code, 200, retry.text)
-            inference_worker.process(*worker.claim_job(('analyze',)))
-            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (retry.json()['job_id'],))['status'], 'done')
-            server.assert_called_once()
-            self.assertEqual(describe.call_count, 1)
-            self.assertEqual(self.client.get(f"/api/jobs/{retry.json()['job_id']}/analysis-windows").json()[0]['content'], window)
 
     def test_openrouter_request_and_validation(self):
         fields = {key: f'{key} draft' for _, _, key in inference_worker.FIELDS}

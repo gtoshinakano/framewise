@@ -323,6 +323,40 @@ def init_db():
             source TEXT NOT NULL DEFAULT 'auto'
         );
         CREATE INDEX IF NOT EXISTS target_detections_run_idx ON target_detections(run_id, frame_ordinal);
+        -- Keyframe analysis (keyframe_analysis.py): Qwen3.5 on the keyframes plus DWPose keypoints and the camera measured
+        -- from pixels. One run per cut, keyframe selection and inputs (input_hash); its windows are the checkpoint, so a
+        -- run that is not complete is reused by the next job with the same inputs (as subtitle runs are). The merged
+        -- answer is also stored as the keyframe_analysis analysis result (result_id); the keypoints live only here.
+        -- target_run_id has no foreign key: a new keyframe selection deletes the target runs of the old one.
+        CREATE TABLE IF NOT EXISTS keyframe_analysis_runs (
+            id TEXT PRIMARY KEY, cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE,
+            selection_key TEXT NOT NULL, cut_start REAL NOT NULL, cut_end REAL NOT NULL,
+            job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL, input_hash TEXT NOT NULL,
+            phase TEXT NOT NULL DEFAULT 'prepare', method TEXT NOT NULL, roster_source TEXT NOT NULL,
+            target_run_id TEXT, roster_json TEXT NOT NULL DEFAULT '[]', provenance_json TEXT NOT NULL,
+            timings_json TEXT NOT NULL DEFAULT '{}', result_id TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS keyframe_analysis_runs_cut_idx ON keyframe_analysis_runs(cut_id, selection_key, phase);
+        CREATE TABLE IF NOT EXISTS keyframe_analysis_frames (
+            run_id TEXT NOT NULL REFERENCES keyframe_analysis_runs(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL, label TEXT NOT NULL, frame_time REAL NOT NULL, relative_time REAL NOT NULL,
+            reason TEXT, image_size_json TEXT NOT NULL, pose_json TEXT, states_json TEXT NOT NULL DEFAULT '{}', seconds REAL,
+            PRIMARY KEY(run_id, ordinal)
+        );
+        CREATE TABLE IF NOT EXISTS keyframe_analysis_pairs (
+            run_id TEXT NOT NULL REFERENCES keyframe_analysis_runs(id) ON DELETE CASCADE,
+            pair_index INTEGER NOT NULL, from_ordinal INTEGER NOT NULL, to_ordinal INTEGER NOT NULL,
+            start REAL NOT NULL, "end" REAL NOT NULL, camera_json TEXT NOT NULL, changes_json TEXT,
+            PRIMARY KEY(run_id, pair_index)
+        );
+        CREATE TABLE IF NOT EXISTS keyframe_analysis_windows (
+            run_id TEXT NOT NULL REFERENCES keyframe_analysis_runs(id) ON DELETE CASCADE,
+            window_index INTEGER NOT NULL, labels_json TEXT NOT NULL, answer_json TEXT, rules_json TEXT,
+            attempts_json TEXT NOT NULL DEFAULT '[]', prompt TEXT NOT NULL DEFAULT '', ok INTEGER NOT NULL DEFAULT 0, seconds REAL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(run_id, window_index)
+        );
         """)
         from .assistant import store as assistant_store
         assistant_store.init_schema(db)

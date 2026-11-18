@@ -77,7 +77,7 @@ def extend(conn, sequence):
     if length > sequence_timeline.MAX_SEQUENCE_SECONDS + 0.001:
         raise EditError(422, f'With cut {number} the sequence would last {length:.1f} s; a sequence may last at most {sequence_timeline.MAX_SEQUENCE_SECONDS:g} s')
     if evidence.missing_cuts(evidence.load(conn, sequence, [following]), [following]):
-        raise EditError(409, f'Cut {number} needs a first-frame and a video analysis first; run them from the cut, then add it')
+        raise EditError(409, f'Cut {number} needs a first-frame and a keyframe analysis first; run them from the cut, then add it')
     earlier = store.extension(sequence) or {}
     marker = {'cut_ids': [*(earlier.get('cut_ids') or []), following['id']], 'cuts': [*(earlier.get('cuts') or []), number],
               'from_time': earlier.get('from_time', cuts[-1]['end_time']),
@@ -174,7 +174,7 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
             raise EditError(409, f'The cuts of this sequence now last {length:.1f} s; a sequence may last at most {sequence_timeline.MAX_SEQUENCE_SECONDS:g} s')
         missing = evidence.missing_cuts(evidence.load(conn, sequence, cuts), cuts)
         if missing:
-            raise EditError(409, 'These cuts need a first-frame and a video analysis first: ' + ', '.join(map(str, missing)))
+            raise EditError(409, 'These cuts need a first-frame and a keyframe analysis first: ' + ', '.join(map(str, missing)))
         if store.cuts_changed(sequence, cuts):
             sequence = store.resnapshot(conn, sequence, cuts)
         # The direction is being redone now: an added cut no longer waits for it.
