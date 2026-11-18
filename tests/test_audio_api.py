@@ -184,6 +184,38 @@ class AudioApiTests(unittest.TestCase):
         history = self.client.get('/api/episodes/e/transcript?history=true').json()
         self.assertEqual(next(row for row in history if row['deleted'] and row['model_id'] == 'model')['model_id'], 'model')
 
+    def test_assign_voice_revises_every_unlinked_line_of_one_voice(self):
+        with db.connect() as conn:
+            conn.executemany("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,speaker_label,origin) VALUES(?, 'e',?,?,?,?,'model')",
+                             [('u1', 1, 2, 'One', 'SPEAKER_04'), ('u2', 3, 4, 'Two', 'SPEAKER_04'),
+                              ('known', 5, 6, 'Known', 'SPEAKER_04'), ('other', 7, 8, 'Other', 'SPEAKER_01'),
+                              ('plain', 9, 10, 'Plain', '')])
+            conn.execute("UPDATE transcript_segments SET character_context_id='c' WHERE id='known'")
+            conn.execute("INSERT INTO context_items(id,project_id,kind,title) VALUES('w','p','world','Planet')")
+        self.assertEqual(self.client.post('/api/episodes/e/transcript/assign-voice', json={'speaker_label': 'SPEAKER_04', 'character_context_id': 'x'}).status_code, 400)
+        self.assertEqual(self.client.post('/api/episodes/e/transcript/assign-voice', json={'speaker_label': 'SPEAKER_04', 'character_context_id': 'w'}).status_code, 400)
+        self.assertEqual(self.client.post('/api/episodes/none/transcript/assign-voice', json={'speaker_label': 'SPEAKER_04', 'character_context_id': 'c'}).status_code, 404)
+        self.assertEqual(self.client.post('/api/episodes/e/transcript/assign-voice', json={'speaker_label': 'SPEAKER_04'}).status_code, 422)
+        self.assertEqual(self.client.post('/api/episodes/e/transcript/assign-voice', json={'speaker_label': 'SPEAKER_04', 'character_context_id': 'c', 'extra': 1}).status_code, 422)
+        response = self.client.post('/api/episodes/e/transcript/assign-voice', json={'speaker_label': 'SPEAKER_04', 'character_context_id': 'c'})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['updated'], 2)
+        current = {row['text']: row for row in self.client.get('/api/episodes/e/transcript').json()}
+        self.assertEqual(current['One']['character_context_id'], 'c')
+        self.assertEqual(current['Two']['character_context_id'], 'c')
+        self.assertIsNone(current['Other']['character_context_id'])
+        self.assertEqual({row['origin'] for row in current.values() if row['text'] in ('One', 'Two')}, {'manual_edit'})
+        self.assertEqual(self.client.post('/api/episodes/e/transcript/assign-voice', json={'speaker_label': 'SPEAKER_04', 'character_context_id': 'c'}).json(), {'updated': 0})
+        history = self.client.get('/api/episodes/e/transcript?history=true').json()
+        self.assertEqual(len(history), 7)
+        for text in ('One', 'Two'):
+            new = next(row for row in history if row['text'] == text and row['origin'] == 'manual_edit')
+            old = next(row for row in history if row['id'] == new['parent_id'])
+            self.assertEqual(old['superseded_by'], new['id'])
+            self.assertIsNone(old['character_context_id'])
+        self.assertEqual(self.client.post('/api/episodes/e/transcript/assign-voice', json={'character_context_id': 'c'}).json(), {'updated': 1})
+        self.assertIsNone(next(row for row in self.client.get('/api/episodes/e/transcript').json() if row['text'] == 'Other')['character_context_id'])
+
     def test_many_generated_words_are_queued_as_analysis_context_without_approval(self):
         with db.connect() as conn:
             conn.executemany("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,origin) VALUES(?, 'e',?,?,?,'model')",

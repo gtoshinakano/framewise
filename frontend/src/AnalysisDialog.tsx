@@ -16,7 +16,7 @@ import CutAssistant from './CutAssistant'
 
 type DialogTab = 'results' | 'run' | 'assistant'
 
-type DialogProps = { cut: Cut; cuts: Cut[]; previousCut?: Cut; nextCut?: Cut; onNavigate: (cut: Cut) => void; episodeId: string; proxyReady: boolean; waveform: Waveform | null; transcript: TranscriptSegment[]; hasAudio: boolean; preparingAudio: boolean; busy: boolean; jobs: Job[]; jobsKey: string; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }
+type DialogProps = { cut: Cut; cuts: Cut[]; previousCut?: Cut; nextCut?: Cut; onNavigate: (cut: Cut) => void; episodeId: string; projectId: string; proxyReady: boolean; waveform: Waveform | null; transcript: TranscriptSegment[]; hasAudio: boolean; preparingAudio: boolean; busy: boolean; jobs: Job[]; jobsKey: string; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }
 
 export default function AnalysisDialog({ cut, cuts, previousCut, nextCut, onNavigate, onClose, ...contentProps }: DialogProps) {
   const [tab, setTab] = useState<DialogTab>(() => cut.active && cut.has_analysis_results === false ? 'run' : 'results')
@@ -88,9 +88,9 @@ function PlayheadReadout({ video, start, end }: { video: RefObject<HTMLVideoElem
   return <span className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 font-mono text-xs tabular-nums text-white" title="Playhead position in seconds, counted from the start of this cut" aria-label={`Playhead ${seconds.toFixed(3)} seconds into the cut`}>{seconds.toFixed(3)}<span className="ml-0.5 text-[#aeb5c1]">s</span></span>
 }
 
-type ContentProps = Pick<DialogProps, 'cut' | 'cuts' | 'episodeId' | 'proxyReady' | 'waveform' | 'transcript' | 'hasAudio' | 'preparingAudio' | 'busy' | 'jobs' | 'jobsKey' | 'frameVersion' | 'onStarted'> & { tab: DialogTab; previousId?: string; nextId?: string; onPrevious?: () => void; onNext?: () => void }
+type ContentProps = Pick<DialogProps, 'cut' | 'cuts' | 'episodeId' | 'projectId' | 'proxyReady' | 'waveform' | 'transcript' | 'hasAudio' | 'preparingAudio' | 'busy' | 'jobs' | 'jobsKey' | 'frameVersion' | 'onStarted'> & { tab: DialogTab; previousId?: string; nextId?: string; onPrevious?: () => void; onNext?: () => void }
 
-function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proxyReady, waveform, transcript, hasAudio, preparingAudio, busy, jobs, jobsKey, frameVersion, onStarted, tab, onPrevious, onNext }: ContentProps) {
+function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, projectId, proxyReady, waveform, transcript, hasAudio, preparingAudio, busy, jobs, jobsKey, frameVersion, onStarted, tab, onPrevious, onNext }: ContentProps) {
   const [results, setResults] = useState<AnalysisResult[]>([])
   const [resultsLoaded, setResultsLoaded] = useState(false)
   const [resultsRevision, setResultsRevision] = useState(0)
@@ -135,7 +135,7 @@ function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proxy
         <div ref={setCharactersTarget} className={tab === 'run' ? 'block' : 'hidden'} />
         {tab === 'run' && <button type="button" className="btn btn-quiet self-start" onClick={() => setRunVideoOpen(value => !value)}>{runVideoOpen ? 'Hide video preview' : 'Load video preview'}</button>}
         {(tab === 'results' || runVideoOpen) && <div className={`shrink-0 ${tab === 'run' ? 'mx-auto w-full lg:max-w-[82vh]' : 'mx-auto w-full max-w-sm lg:max-w-none'}`}>{<div className="relative aspect-video overflow-hidden rounded-xl border hairline bg-black">{proxyReady ? <video ref={video} className="h-full w-full" controls preload={tab === 'run' ? 'none' : 'metadata'} src={mediaUrl(episodeId, 'proxy')} aria-label="Play this cut" onLoadedMetadata={event => { event.currentTarget.currentTime = cut.start_time }} onSeeking={event => { const player = event.currentTarget; if (player.currentTime < cut.start_time - 0.002) player.currentTime = cut.start_time; else if (player.currentTime > cut.end_time + 0.002) player.currentTime = cut.end_time }} onPlay={event => { if (event.currentTarget.currentTime >= cut.end_time) event.currentTarget.currentTime = cut.start_time }} onTimeUpdate={event => { const player = event.currentTarget; if (player.currentTime >= cut.end_time && !player.paused) { player.pause(); if (player.currentTime > cut.end_time) player.currentTime = cut.end_time } }} /> : <div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div>}{proxyReady && <PlayheadReadout video={video} start={cut.start_time} end={cut.end_time} />}{tab === 'results' && <FrameTools cut={cut} results={results} frameVersion={frameVersion} onPreview={() => setFramesOpen(true)} />}</div>}</div>}
-        {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} onPlaySegment={playSegment} canPlay={proxyReady} />}
+        {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} onPlaySegment={playSegment} canPlay={proxyReady} projectId={projectId} episodeId={episodeId} onChanged={onStarted} />}
       </div>
     </div>
     {framesOpen && <FramesDialog cut={cut} results={results} frameVersion={frameVersion} onClose={() => setFramesOpen(false)} />}

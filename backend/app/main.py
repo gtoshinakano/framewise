@@ -239,6 +239,12 @@ class TranscriptInput(BaseModel):
     character_context_id: str | None = None
 
 
+class AssignVoiceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    speaker_label: str = Field(default="", max_length=200, description="The diarization label of the voice; empty selects lines with no label.")
+    character_context_id: str = Field(min_length=1, description="The character who speaks it.")
+
+
 class VoiceRange(BaseModel):
     start_time: float = Field(ge=0, allow_inf_nan=False)
     end_time: float = Field(gt=0, allow_inf_nan=False)
@@ -395,15 +401,21 @@ def serialize_transcript(segment: dict):
     return segment
 
 
+def require_character(episode: dict, character_context_id: str | None):
+    """Accept a transcript line that names a character of this project."""
+    if not character_context_id:
+        return
+    item = db.one("SELECT project_id,kind FROM context_items WHERE id=?", (character_context_id,))
+    if not item or item["project_id"] != episode["project_id"] or item["kind"] != "character":
+        raise HTTPException(400, "Choose a character from this project")
+
+
 def validate_transcript(episode: dict, body: TranscriptInput):
     if body.end_time <= body.start_time:
         raise HTTPException(400, "Transcript end must be after its start")
     if episode["duration"] is not None and body.end_time > episode["duration"] + 0.2:
         raise HTTPException(400, "Transcript segment ends after the video")
-    if body.character_context_id:
-        item = db.one("SELECT project_id,kind FROM context_items WHERE id=?", (body.character_context_id,))
-        if not item or item["project_id"] != episode["project_id"] or item["kind"] != "character":
-            raise HTTPException(400, "Choose a character from this project")
+    require_character(episode, body.character_context_id)
 
 
 @app.get("/api/health")
@@ -1190,6 +1202,24 @@ def delete_transcript_segment(segment_id: str):
                      (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], 1, "manual_edit", old["model_id"], old["job_id"], segment_id))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
     return {"ok": True}
+
+
+@app.post("/api/episodes/{episode_id}/transcript/assign-voice")
+def assign_voice(episode_id: str, body: AssignVoiceInput):
+    """Give one diarization voice a character on every current line that still has none."""
+    episode = require_episode(episode_id)
+    require_character(episode, body.character_context_id)
+    with db.connect() as conn:
+        lines = conn.execute("""SELECT * FROM transcript_segments
+            WHERE episode_id=? AND superseded_by IS NULL AND deleted=0
+            AND coalesce(speaker_label,'')=? AND character_context_id IS NULL
+            ORDER BY start_time,id""", (episode_id, body.speaker_label)).fetchall()
+        for line in lines:
+            new_id = str(uuid.uuid4())
+            conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                         (new_id, line["episode_id"], line["start_time"], line["end_time"], line["text"], line["speaker_label"], body.character_context_id, "manual_edit", line["model_id"], line["job_id"], line["id"]))
+            conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, line["id"]))
+    return {"updated": len(lines)}
 
 
 def subtitle_context(cut, episode_id):
