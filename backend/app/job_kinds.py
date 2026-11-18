@@ -88,6 +88,8 @@ def _analysis_label(payload):
 
 
 def _character_label(payload):
+    if payload.get('workflow') == 'target_frames_v1':
+        return 'Target frame characters'
     if payload.get('workflow') != 'anime_bulk_v1':
         return 'Character detection (older run)'
     return {'boxes': 'Character boxes', 'recognize': 'Character recognition'}.get(payload.get('phase'), 'Character detection')
@@ -126,6 +128,12 @@ def _transcribe_key(payload):
 
 def _cut_keys(prefix):
     return lambda payload, cut_ids: [f'{prefix}:{cut_id}' for cut_id in cut_ids]
+
+
+def _character_keys(payload, cut_ids):
+    # Characters on the evaluated frames are their own work: a first-frame run never deals with their failure.
+    prefix = 'target_characters' if payload.get('workflow') == 'target_frames_v1' else 'character_detect'
+    return [f'{prefix}:{cut_id}' for cut_id in cut_ids]
 
 
 def _analysis_keys(payload, cut_ids):
@@ -178,9 +186,9 @@ KINDS = {kind.pipeline: kind for kind in (
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
          cancel_running=lambda payload: payload.get('workflow') == 'single_cut_v2' or payload.get('text_only') is True,
          retry=_always),
-    Kind('character_detect', 'Character detection', True, label=_character_label, cuts=_one_cut, keys=_cut_keys('character_detect'),
+    Kind('character_detect', 'Character detection', True, label=_character_label, cuts=_one_cut, keys=_character_keys,
          # Bulk detection keeps one lease per cut and skips a cut whose lease is gone; the older workflow cannot stop midway.
-         cancel_running=lambda payload: payload.get('workflow') == 'anime_bulk_v1'),
+         cancel_running=lambda payload: payload.get('workflow') in ('anime_bulk_v1', 'target_frames_v1')),
     # Describes one labelled box of a character created from it and appends the text to its Details.
     Kind('character_profile', 'Character description', True, cuts=_one_cut, cancel_running=_always, retry=_always,
          keys=lambda payload, cut_ids: [f"character_profile:{payload.get('character_context_id')}"]),

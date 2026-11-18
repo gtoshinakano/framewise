@@ -1135,7 +1135,7 @@ def main():
                         slot_held = False
                     text_only = kind == 'analyze' and payload.get('text_only', False)
                     job_episode = db.one('SELECT episode_id FROM jobs WHERE id=?', (job_id,))['episode_id']
-                    anime_batch = kind == 'character_detect' and payload.get('workflow') == 'anime_bulk_v1'
+                    anime_batch = kind == 'character_detect' and payload.get('workflow') in ('anime_bulk_v1', 'target_frames_v1')
                     if anime_runtime and (not anime_batch or payload.get('batch_id') != anime_batch_id):
                         anime_runtime.close()
                         anime_runtime = None
@@ -1160,8 +1160,12 @@ def main():
                         if anime_runtime is None:
                             anime_runtime = anime_bulk.BulkRuntime()
                             anime_batch_id = payload.get('batch_id')
-                        anime_bulk.process_batch(db.one('SELECT * FROM jobs WHERE id=?', (job_id,)), owner, anime_runtime)
-                        remaining = db.one("SELECT id FROM jobs WHERE pipeline='character_detect' AND status IN ('queued','running') AND json_extract(payload_json,'$.workflow')='anime_bulk_v1' AND json_extract(payload_json,'$.batch_id')=? LIMIT 1", (anime_batch_id,))
+                        if payload.get('workflow') == 'target_frames_v1':
+                            from . import target_characters
+                            target_characters.process(job_id, owner, anime_runtime)
+                        else:
+                            anime_bulk.process_batch(db.one('SELECT * FROM jobs WHERE id=?', (job_id,)), owner, anime_runtime)
+                        remaining = db.one("SELECT id FROM jobs WHERE pipeline='character_detect' AND status IN ('queued','running') AND json_extract(payload_json,'$.workflow') IN ('anime_bulk_v1','target_frames_v1') AND json_extract(payload_json,'$.batch_id')=? LIMIT 1", (anime_batch_id,))
                         if not remaining:
                             anime_bulk.clear_episode_frames(db.one('SELECT project_id FROM episodes WHERE id=?', (job_episode,))['project_id'], job_episode)
                             anime_runtime.close()

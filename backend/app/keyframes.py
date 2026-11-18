@@ -286,6 +286,8 @@ def process(job, owner, episode, payload, source):
                 raise RuntimeError('Cut changed while selecting keyframes')
             if cache_key(source, cut, settings, band) != cut['cache_key']: raise RuntimeError('Original video changed during selection')
             conn.execute('INSERT OR REPLACE INTO keyframe_results(cache_key,episode_id,cut_id,result_json) VALUES (?,?,?,?)', (cut['cache_key'], episode['id'], cut['id'], json.dumps(result)))
+            # People found on the previous selection's frames belong to frames that are no longer the cut's targets.
+            conn.execute('DELETE FROM target_detection_runs WHERE cut_id=? AND selection_key!=?', (cut['id'], cut['cache_key']))
     for ordinal, timestamp, frame in decoded(source, info['width'], info['height'], settings['longest_edge']):
         if ordinal % 128 == 0:
             with db.connect() as conn: worker.require_lease(conn, job['id'], owner)

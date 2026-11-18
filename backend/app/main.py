@@ -60,6 +60,8 @@ async def composition_error_handler(_request, exc):
 app.include_router(storage.router)
 from .keyframes_api import router as keyframes_router
 app.include_router(keyframes_router)
+from .target_characters_api import router as target_characters_router
+app.include_router(target_characters_router)
 from .assistant.api import router as assistant_router
 app.include_router(assistant_router)
 from .chat_gateway import router as chat_gateway_router
@@ -303,6 +305,9 @@ def episode_response(episode_id: str):
         EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_boxes,
         EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.character_context_id IS NOT NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_characters,
         EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.character_context_id IS NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_boxes,
+        EXISTS(SELECT 1 FROM target_detections t WHERE t.run_id=(SELECT r.id FROM target_detection_runs r WHERE r.cut_id=c.id AND r.cut_start=c.start_time AND r.cut_end=c.end_time ORDER BY r.rowid DESC LIMIT 1)) AS has_target_boxes,
+        EXISTS(SELECT 1 FROM target_detections t JOIN target_slots s ON s.run_id=t.run_id AND s.slot=t.slot WHERE s.character_context_id IS NULL
+               AND t.run_id=(SELECT r.id FROM target_detection_runs r WHERE r.cut_id=c.id AND r.cut_start=c.start_time AND r.cut_end=c.end_time ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_target_boxes,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type') IN ('initial_frame','last_frame','video_analysis')) AS has_visual_results,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='consistency_summary') AS has_consistency_summary,
         COALESCE((SELECT j.status='failed' FROM analysis_job_cuts jc JOIN jobs j ON j.id=jc.job_id WHERE jc.cut_id=c.id ORDER BY j.created_at DESC, j.rowid DESC LIMIT 1),0) AS last_job_failed
@@ -364,7 +369,7 @@ def serialize_cut(cut: dict):
     cut["active"] = bool(cut["active"])
     cut["analysis_enabled"] = bool(cut["analysis_enabled"])
     cut["no_characters"] = bool(cut.get("no_characters"))
-    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters", "has_unlabeled_boxes", "has_visual_results", "has_consistency_summary", "last_job_failed"):
+    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters", "has_unlabeled_boxes", "has_target_boxes", "has_unlabeled_target_boxes", "has_visual_results", "has_consistency_summary", "last_job_failed"):
         if flag in cut:
             cut[flag] = bool(cut[flag])
     fallback_first, fallback_last = media.cut_frame_times(cut["start_time"], cut["end_time"])

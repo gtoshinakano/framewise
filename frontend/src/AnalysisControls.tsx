@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronsRight, Film, Image as ImageIcon, Layers, Play, RotateCcw, Save, SlidersHorizontal } from 'lucide-react'
 import { api, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type VisualStage } from './api'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
-import { TargetFrames, useTargetSelection } from './TargetFrames'
+import { TargetFrames, useTargetDetections, useTargetSelection } from './TargetFrames'
+import { isJobActive, targetQueueMessage, unknownSlots, type TargetQueueResult } from './targetView'
 import { FrameImage } from './FrameImage'
 import { automaticVideoFps, estimatedVideoFrames } from './analysisFrames'
 import { ANSWERS_BATCH_REASONS, CHAIN_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
@@ -59,6 +60,7 @@ type Props = {
 export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enabled, results, stages, prefetchIds, charactersTarget, onStarted, onConfigChange, onNext, jobs, children }: Props) {
   const cutId = cut.id
   const targetFrames = useTargetSelection(cutId, `${cut.start_time}:${cut.end_time}`)
+  const targetPeople = useTargetDetections(cutId, `${cut.start_time}:${cut.end_time}`, targetFrames.selection?.revision || '', () => void onStarted())
   const [config, setConfig] = useState<AnalysisConfig | null>(() => cachedConfig(cutId) ?? null)
   const [saved, setSaved] = useState(() => { const known = cachedConfig(cutId); return known ? JSON.stringify(known) : '' })
   const [loadError, setLoadError] = useState('')
@@ -140,6 +142,12 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const batchReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !config ? 'Settings are still loading' : invalid ? 'Fix the video analysis settings first' : ''
   const textReason = pending ? 'Another action is being queued' : !cut.active ? 'Only active cuts can be queued' : ''
   const consistencyReason = pending ? 'Another action is being queued' : !enabled ? 'Analysis is disabled for this cut' : ''
+  const targetBatchReason = pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : ''
+  const targetCutReason = targetBatchReason || (!cut.active ? 'Only active cuts can be queued' : !targetFrames.selection?.result ? 'Evaluate this cut first' : '')
+  const targetJob = targetPeople.data?.job
+  const targetRun = targetPeople.data?.run && !targetPeople.data.run.stale ? targetPeople.data.run : null
+  const targetState: StepState = isJobActive(targetJob) ? (targetJob!.status as StepState) : targetJob?.status === 'failed' ? 'failed' : targetRun ? 'done' : 'none'
+  const targetUnknown = unknownSlots(targetRun).length
   const allTextReason = pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : ''
   const nextReason = settingsReason || (!onNext ? 'This is the last cut' : '')
   const precedingCut = cuts.find(item => item.cut_index === cut.cut_index - 1)
@@ -275,6 +283,15 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
     return `Text processing queued for ${result.cuts_queued} cuts; ${result.skipped} not ready or already queued.`
   })
 
+  const queueTargets = (kind: 'cut' | 'from-here' | 'all') => perform(`targets-${kind}`, async () => {
+    if (kind === 'cut') {
+      await api(`/cuts/${cutId}/target-detection`, { method: 'POST' })
+      return 'Target-frame characters queued for this cut.'
+    }
+    const first = kind === 'from-here' ? cut.cut_index + 1 : 1
+    return targetQueueMessage(await api<TargetQueueResult>(`/episodes/${episodeId}/target-detection${kind === 'from-here' ? `?from_cut=${first}` : ''}`, { method: 'POST' }), first)
+  }, { afterQueued: () => void targetPeople.reload() })
+
   async function saveSettings() {
     if (!config || pending) return
     if (invalid) { setNotice({ tone: 'error', lines: ['Enter even dimensions within the listed limits and a frame rate greater than 0 and at most 30.'] }); return }
@@ -351,6 +368,10 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
             none,
             cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('summaries-from')} disabled={disabled} title={title || 'Queue a Cut summary for this cut and every later cut that has a consistency summary but no summary yet. Cuts whose decisions are still being drafted are skipped and listed.'} onClick={() => void queueTextFromHere('summaries')}>{batchLabel(counts.from)}</ActionButton>),
             cell(allTextReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('text-all')} disabled={disabled} title={title || 'All text steps: queue a consistency summary and then a Cut summary for every ready cut'} onClick={() => void queueAllText()}>All text</ActionButton>))}
+          {row('Target-frame characters', 'Needs evaluated frames', targetState,
+            cell(targetCutReason, (disabled, title) => <ActionButton compact icon={<Play size={13} />} pending={isPending('targets-cut')} disabled={disabled} title={title || 'Find and order the people on this cut’s evaluated frames. Run it again to keep your names and boxes and redo the rest.'} onClick={() => void queueTargets('cut')}>Run</ActionButton>),
+            cell(targetBatchReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('targets-from-here')} disabled={disabled} title={title || 'Queue this cut and every later cut that has evaluated frames and no detection yet. Cuts not evaluated, marked as having no characters or with analysis disabled are skipped and listed.'} onClick={() => void queueTargets('from-here')}>{batchLabel(counts.from)}</ActionButton>),
+            cell(targetBatchReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('targets-all')} disabled={disabled} title={title || 'Queue every cut with evaluated frames and no detection yet'} onClick={() => void queueTargets('all')}>All {counts.all}</ActionButton>))}
           {row('All three text steps', 'Runs in order, each waits for the last', 'none',
             none,
             cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('chain-from')} disabled={disabled} title={title || 'For this cut and every later ready cut, queue a consistency summary, then production-decision answers from it, then a Cut summary from both. Each job starts only after the one before it finishes. Cuts that already have a Cut summary keep it. Cuts without initial frame, video and last frame results, or with jobs already pending, are skipped and listed.'} onClick={() => void queueTextChain()}>{batchLabel(counts.from)}</ActionButton>),
@@ -393,12 +414,14 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
 
     {charactersTarget && createPortal(<div className="space-y-3">
       <div role="tablist" aria-label="Cut frames" className="flex gap-1 rounded-lg border hairline p-1">
-        {([['characters', 'Characters in this cut'], ['targets', 'Target frames']] as const).map(([value, label]) => <button key={value} role="tab" type="button" aria-selected={characterTab === value} onClick={() => setCharacterTab(value)} className={`rounded-md px-4 py-1.5 text-xs font-semibold ${characterTab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}{value === 'targets' && targetFrames.selection?.result && <span className="ml-1.5 rounded-full bg-[#3a4352] px-1.5 py-0.5 text-[10px] tabular-nums" aria-label={`${targetFrames.selection.result.selected_frames.length} target frames`}>{targetFrames.selection.result.selected_frames.length}</span>}</button>)}
+        {([['characters', 'Characters in this cut'], ['targets', 'Target frames']] as const).map(([value, label]) => <button key={value} role="tab" type="button" aria-selected={characterTab === value} onClick={() => setCharacterTab(value)} className={`rounded-md px-4 py-1.5 text-xs font-semibold ${characterTab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}{value === 'targets' && targetUnknown > 0 && <span className="ml-1.5 rounded-full bg-[#4a2f3b] px-1.5 py-0.5 text-[10px] tabular-nums text-[#f4a8c4]" title="People on the evaluated frames with no character assigned">{targetUnknown} unknown</span>}{value === 'targets' && targetFrames.selection?.result && <span className="ml-1.5 rounded-full bg-[#3a4352] px-1.5 py-0.5 text-[10px] tabular-nums" aria-label={`${targetFrames.selection.result.selected_frames.length} target frames`}>{targetFrames.selection.result.selected_frames.length}</span>}</button>)}
       </div>
       <div hidden={characterTab !== 'characters'}>{projectId
         ? <CharacterDetectionPanel cutId={cutId} cutStart={cut.start_time} cutEnd={cut.end_time} projectId={projectId} jobs={jobs} onStarted={onStarted} onSummary={setCharacters} noCharacters={!!cut.no_characters} boundaryKey={`${cut.start_time}:${cut.end_time}`} />
         : <div className="space-y-2 rounded-xl border hairline bg-[#171c25] p-3" aria-busy="true" aria-label="Loading characters"><Skeleton className="h-5 w-48" /><Skeleton className="aspect-video" /></div>}</div>
-      {characterTab === 'targets' && <TargetFrames cutId={cutId} selection={targetFrames.selection} error={targetFrames.error} />}
+      {characterTab === 'targets' && (projectId
+        ? <TargetFrames cutId={cutId} selection={targetFrames.selection} error={targetFrames.error} projectId={projectId} detections={targetPeople} episodeBusy={busy} onChanged={() => void onStarted()} />
+        : <div className="space-y-2 rounded-xl border hairline bg-[#171c25] p-3" aria-busy="true" aria-label="Loading target frames"><Skeleton className="h-5 w-48" /><Skeleton className="aspect-video" /></div>)}
     </div>, charactersTarget)}
     {children}
   </div>

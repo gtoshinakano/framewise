@@ -1,4 +1,4 @@
-import { BoxSelect, Circle, CircleCheck, Clock3, FileText, FileX, LoaderCircle, UserCheck, UserRound, UserX } from 'lucide-react'
+import { BoxSelect, Circle, CircleCheck, Clock3, FileText, FileX, LoaderCircle, ScanFace, UserCheck, UserRound, UserX } from 'lucide-react'
 import type { Cut } from './api'
 import type { AnalysisQueueState } from './analysisQueueStates'
 
@@ -9,6 +9,7 @@ export const CUT_STATUS_LEGEND = [
   { icon: BoxSelect, color: '#4cc9f0', label: 'Character boxes detected' },
   { icon: UserCheck, color: '#7bdcb2', label: 'Character recognized' },
   { icon: UserRound, color: '#e6c58b', label: 'Unlabeled characters' },
+  { icon: ScanFace, color: '#e2709c', label: 'Unknown people in target frames' },
   { icon: UserX, color: '#c5cad3', label: 'Marked as having no characters' },
   { icon: FileText, color: '#c3aeff', label: 'Has a Cut summary' },
   { icon: FileX, color: '#6f7787', label: 'No Cut summary' },
@@ -24,6 +25,7 @@ export function CutStatusIcons({ cut, queueState, size = 12 }: { cut: Cut; queue
     {cut.no_characters ? <UserX size={size} className="shrink-0 text-[#c5cad3]" aria-label="No characters" />
       : cut.has_characters ? <UserCheck size={size} className="shrink-0 text-[#7bdcb2]" aria-label="Character detected" />
       : cut.has_boxes ? <UserRound size={size} className="shrink-0 text-[#e6c58b]" aria-label="Unlabeled characters" /> : null}
+    {cut.has_unlabeled_target_boxes && !cut.no_characters ? <ScanFace size={size} className="shrink-0 text-[#e2709c]" aria-label="Unknown people in target frames" /> : null}
     {cut.has_summary ? <FileText size={size} className="shrink-0 text-[#c3aeff]" aria-label="Has cut summary" /> : <FileX size={size} className="shrink-0 text-[#6f7787]" aria-label="No cut summary" />}
     {queueState === 'running' ? <LoaderCircle size={size} className="shrink-0 animate-spin text-[#f5c678] motion-reduce:animate-none" aria-label="Analysis running" />
       : queueState === 'queued' ? <Clock3 size={size} className="shrink-0 text-[#86d1e1]" aria-label="Analysis queued" /> : null}

@@ -1,4 +1,4 @@
-import { BoxSelect, ClipboardCheck, Eye, EyeOff, FileText, Filter, ScanEye, Timer, TriangleAlert, UserRound, X, type LucideIcon } from 'lucide-react'
+import { BoxSelect, ClipboardCheck, Eye, EyeOff, FileText, Filter, ScanEye, ScanFace, Timer, TriangleAlert, UserRound, X, type LucideIcon } from 'lucide-react'
 import type { Cut } from './api'
 import { CUT_FILTERS, groupFilters, matchesAnyFilter, type CutFilterKey, type FilterDisplay } from './cutFilters'
 import { SegmentedControl } from './EditorUi'
@@ -6,7 +6,7 @@ import { Popover } from './Popover'
 
 /** Icons per filter. A filter added later without an entry here gets the generic filter icon. */
 const FILTER_ICONS: Partial<Record<CutFilterKey, LucideIcon>> = {
-  needs_analysis: ScanEye, no_boxes: BoxSelect, unknown_characters: UserRound, needs_consistency: ClipboardCheck,
+  needs_analysis: ScanEye, no_boxes: BoxSelect, unknown_characters: UserRound, unknown_target_characters: ScanFace, needs_consistency: ClipboardCheck,
   needs_summary: FileText, job_failed: TriangleAlert, long_cut: Timer,
 }
 export const filterIcon = (key: CutFilterKey) => FILTER_ICONS[key] || Filter

@@ -88,6 +88,11 @@ def _generate(spec):
         return output.read_bytes()
 
 
+def render(spec):
+    """One frame now, on the caller's thread: for jobs that need a full-size image. Nothing is cached or queued."""
+    return _generate(dict(spec))
+
+
 def _complete(key, future):
     with _lock:
         _inflight.pop(key, None)

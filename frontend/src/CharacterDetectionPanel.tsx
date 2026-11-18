@@ -6,13 +6,13 @@ import { ActionButton, Elapsed, Skeleton, StatusChip } from './RunUi'
 import type { CharacterSummary } from './runState'
 import { PoseDetailCard } from './PoseDetailCard'
 import { NewCharacterDialog, type NewCharacter, type NewCharacterResult } from './NewCharacterDialog'
+import { BOX_COLORS } from './boxColors'
 
 type Frame = { position: 'first' | 'last'; time: number; image_size: [number, number] }
 type Candidate = { character_id: string; character_name: string; score: number }
 type Detection = { id: string; position: 'first' | 'last'; box: [number, number, number, number]; character_context_id: string | null; character_name: string | null; label_source: string | null; match_reason: string | null; is_reference: boolean; candidates?: Candidate[]; recognition_use?: number | null; gallery_status?: string | null; gallery_note?: string | null }
 type DetectionRun = { id: string; job_id: string | null; cut_start: number; cut_end: number; stale: boolean; frames: Frame[]; detections: Detection[] }
 const NEW_CHARACTER = '__new'
-const BOX_COLORS = ['#ff6b8b', '#4cc9f0', '#ffd166', '#7bdcb2', '#c3aeff', '#ff9f5a', '#8ecae6', '#f28482']
 type Box = [number, number, number, number]
 type Resize = { id: string; handle: string; box: Box; from?: [number, number]; orig?: Box }
 const HANDLES: [string, number, number][] = [['nw', 0, 0], ['n', .5, 0], ['ne', 1, 0], ['e', 1, .5], ['se', 1, 1], ['s', .5, 1], ['sw', 0, 1], ['w', 0, .5]]

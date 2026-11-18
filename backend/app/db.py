@@ -299,6 +299,30 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, undone_at TEXT
         );
         CREATE INDEX IF NOT EXISTS cut_edits_episode_idx ON cut_edits(episode_id);
+        -- People on the evaluated (target) frames of a cut (target_characters.py). Kept apart from
+        -- character_detections on purpose: nothing here is a gallery example or a composition input.
+        -- selection_key is the keyframe_results.cache_key the run was built for; a different selection
+        -- deletes the run (keyframes.process). The label belongs to the slot, so one change covers every frame.
+        CREATE TABLE IF NOT EXISTS target_detection_runs (
+            id TEXT PRIMARY KEY, cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE,
+            selection_key TEXT NOT NULL, cut_start REAL NOT NULL, cut_end REAL NOT NULL,
+            job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL, frames_json TEXT NOT NULL,
+            model_id TEXT, model_revision TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(cut_id, selection_key)
+        );
+        CREATE TABLE IF NOT EXISTS target_slots (
+            run_id TEXT NOT NULL REFERENCES target_detection_runs(id) ON DELETE CASCADE,
+            slot INTEGER NOT NULL, origin TEXT NOT NULL,
+            character_context_id TEXT REFERENCES context_items(id) ON DELETE SET NULL,
+            label_source TEXT,
+            PRIMARY KEY(run_id, slot)
+        );
+        CREATE TABLE IF NOT EXISTS target_detections (
+            id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES target_detection_runs(id) ON DELETE CASCADE,
+            frame_ordinal INTEGER NOT NULL, slot INTEGER NOT NULL, box_json TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'auto'
+        );
+        CREATE INDEX IF NOT EXISTS target_detections_run_idx ON target_detections(run_id, frame_ordinal);
         """)
         from .assistant import store as assistant_store
         assistant_store.init_schema(db)

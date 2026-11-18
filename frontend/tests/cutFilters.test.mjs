@@ -63,7 +63,7 @@ test('every filter belongs to a group, listed in group order', () => {
   const groups = groupFilters()
   assert.deepEqual(groups.map(entry => entry.group), ['Analysis', 'Characters', 'Text steps', 'Health', 'Length'])
   assert.equal(groups.flatMap(entry => entry.filters).length, CUT_FILTERS.length)
-  assert.deepEqual(groups[1].filters.map(filter => filter.key), ['no_boxes', 'unknown_characters'])
+  assert.deepEqual(groups[1].filters.map(filter => filter.key), ['no_boxes', 'unknown_characters', 'unknown_target_characters'])
 })
 
 test('next needing action follows the filters and wraps around', () => {
@@ -72,4 +72,23 @@ test('next needing action follows the filters and wraps around', () => {
   assert.equal(nextNeedingAction(cuts, 'no-analysis', new Set()).id, 'no-boxes')
   assert.equal(nextNeedingAction(cuts, 'needs-consistency', new Set(['no_boxes'])).id, 'no-boxes')
   assert.equal(nextNeedingAction([cut('done')], null, new Set()), undefined)
+})
+
+test('unknown people on the evaluated frames have their own filter, apart from the first frame', () => {
+  const target = CUT_FILTERS.find(filter => filter.key === 'unknown_target_characters')
+  assert.equal(target.group, 'Characters')
+  const unknown = cut('unknown-target', { has_target_boxes: true, has_unlabeled_target_boxes: true })
+  assert.equal(target.matches(unknown), true)
+  assert.equal(target.matches(cut('named-target', { has_target_boxes: true, has_unlabeled_target_boxes: false })), false)
+  // The first-frame filter keeps meaning "ready for visual analysis": it ignores target frames.
+  assert.equal(CUT_FILTERS.find(filter => filter.key === 'unknown_characters').matches(unknown), false)
+  // Cuts the user marked as having no characters, or turned analysis off for, are left alone.
+  assert.equal(matchesAnyFilter(cut('quiet', { no_characters: true, has_unlabeled_target_boxes: true }), new Set(['unknown_target_characters'])), false)
+  assert.equal(matchesAnyFilter(cut('off', { analysis_enabled: false, has_unlabeled_target_boxes: true }), new Set(['unknown_target_characters'])), false)
+  assert.equal(adjacentCut([cut('a'), unknown], cut('a'), 1, new Set(['unknown_target_characters'])).id, 'unknown-target')
+})
+
+test('a filter saved before the target-frame filter existed still reads back', () => {
+  assert.deepEqual([...parseStoredFilters(JSON.stringify({ keys: ['no_boxes', 'unknown_target_characters'], display: 'hide' })).keys], ['no_boxes', 'unknown_target_characters'])
+  assert.deepEqual([...parseStoredFilters(JSON.stringify(['no_boxes'])).keys], ['no_boxes'])
 })

@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import type { Cut } from './api'
 
-export type CutFilterKey = 'needs_analysis' | 'no_boxes' | 'unknown_characters' | 'needs_consistency' | 'needs_summary' | 'job_failed' | 'long_cut'
+export type CutFilterKey = 'needs_analysis' | 'no_boxes' | 'unknown_characters' | 'unknown_target_characters' | 'needs_consistency' | 'needs_summary' | 'job_failed' | 'long_cut'
 
 export type CutFilterGroup = 'Analysis' | 'Characters' | 'Text steps' | 'Health' | 'Length'
 
@@ -27,6 +27,8 @@ export const CUT_FILTERS: CutFilter[] = [
     matches: cut => expectsCharacters(cut) && !cut.has_boxes },
   { key: 'unknown_characters', group: 'Characters', label: 'Unknown characters', color: '#4cc9f0', hint: 'A first-frame box has no character assigned',
     matches: cut => expectsCharacters(cut) && !!cut.has_boxes && !!cut.has_unlabeled_boxes },
+  { key: 'unknown_target_characters', group: 'Characters', label: 'Unknown in target frames', color: '#e2709c', hint: 'A person on the evaluated frames has no character assigned',
+    matches: cut => expectsCharacters(cut) && !!cut.has_unlabeled_target_boxes },
   { key: 'needs_consistency', group: 'Text steps', label: 'Needs consistency summary', color: '#a58ae8', hint: 'Visual analysis is done but there is no consistency summary',
     matches: cut => enabled(cut) && !!cut.has_visual_results && !cut.has_consistency_summary },
   { key: 'needs_summary', group: 'Text steps', label: 'Needs cut summary', color: '#7bdcb2', hint: 'There is a consistency summary but no final cut summary',
