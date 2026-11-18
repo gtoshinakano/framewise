@@ -7,7 +7,7 @@ It replaced the Qwen3-VL video analysis on 2026-11-18, following ``multiframe_ex
 2. CPU, before any model call: the camera between consecutive keyframes measured from pixels with every person
    masked out (``keyframe_camera``), DWPose body keypoints tracked across the keyframes (``keyframe_pose``), and
    the rules that turn them into per-frame states and per-pair body changes (``keyframe_rules``).
-3. Qwen3.5-27B, one call per window with the measured ``observer`` prompt and the character roster
+3. the vision model (Qwen3.6 by default; the prompt was measured on Qwen3.5-27B), one call per window with the measured ``observer`` prompt and the character roster
    (``keyframe_prompts``, ``keyframe_schema``): each frame's state first, then the changes per pair.
 4. The merge (``keyframe_rules.merge``): DWPose's measured body changes replace Qwen's for that part, Qwen keeps
    head, eyes, mouth, expression and everything DWPose did not measure; the camera is always the pixel estimate.
@@ -165,7 +165,7 @@ def chat(server_url, messages, schema, cancel_check=None):
 
 
 def describe_window(ask, sample, window, images):
-    """One window through Qwen3.5, validated and retried with the validator's sentences. Returns the window record."""
+    """One window through the vision model, validated and retried with the validator's sentences. Returns the window record."""
     messages = keyframe_prompts.build_messages(sample, window, images)
     prompt = keyframe_prompts.prompt_text(messages)
     grammar = keyframe_schema.json_schema(window)
@@ -271,7 +271,7 @@ def assemble(frames, windows, merged, roster, dwpose_states, method, run_id, key
 # -- pose on the CPU -------------------------------------------------------------------------------------------------
 
 def load_pose():
-    """(DWPose sessions or None, provenance): None when the weights or onnxruntime are missing; the stage then runs Qwen alone."""
+    """(DWPose sessions or None, provenance): None when the weights or onnxruntime are missing; the stage then runs the vision model alone."""
     model = visual_models.MODELS['dwpose']
     info = visual_models.status('dwpose')
     provenance = {'model_id': model.model_id, 'revision': model.revision, 'files': [model.path(name).name for name in model.files],
@@ -530,7 +530,7 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
 
 
 def stage(runs, scratch, model):
-    """The ``keyframe_analysis`` stage of a visual job: one Qwen3.5 server and one DWPose load for every cut, cuts one at a time."""
+    """The ``keyframe_analysis`` stage of a visual job: one vision-model server and one DWPose load for every cut, cuts one at a time."""
     from . import frame_model, single_cut_pipeline
     todo = [cut_run for cut_run in runs if not cut_run.failure and cut_run.needs('keyframe_analysis')]
     if not todo:
@@ -543,13 +543,22 @@ def stage(runs, scratch, model):
 
 # -- reading -----------------------------------------------------------------------------------------------------------
 
+def run_model(run):
+    """Short name of the model that described the run's windows (the tab says which one it was)."""
+    try:
+        key = json.loads(run['provenance_json'])['model']['key']
+    except (KeyError, TypeError, ValueError):
+        return None
+    return visual_models.MODELS[key].short_name if key in visual_models.MODELS else key
+
+
 def state(cut_id):
     """What the Target frames tab shows: the current keyframe analysis result, its run, and the latest job covering the cut."""
     from . import structured_results
     _, _, key, _ = keyframes.current_selection(cut_id)
     current = next((item for item in structured_results.list_results(cut_id) if item['type'] == 'keyframe_analysis'), None)
     content = (current or {}).get('content') or {}
-    run = db.one('SELECT id,phase,method,roster_source,roster_json,timings_json,selection_key,target_run_id FROM keyframe_analysis_runs WHERE id=?',
+    run = db.one('SELECT id,phase,method,roster_source,roster_json,timings_json,selection_key,target_run_id,provenance_json FROM keyframe_analysis_runs WHERE id=?',
                  (content.get('run_id'),)) if content.get('run_id') else None
     job = db.one("""SELECT j.id,j.status,j.stage,j.error FROM jobs j WHERE j.pipeline='analyze'
                     AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)
@@ -558,5 +567,5 @@ def state(cut_id):
     return {'status': status, 'selection_key': key,
             'result': {'id': current['id'], 'origin': current['origin'], 'created_at': current['created_at'], **content} if current else None,
             'run': {'id': run['id'], 'phase': run['phase'], 'method': run['method'], 'roster_source': run['roster_source'], 'target_run_id': run['target_run_id'],
-                    'roster': json.loads(run['roster_json']), 'timings': json.loads(run['timings_json'] or '{}')} if run else None,
+                    'model': run_model(run), 'roster': json.loads(run['roster_json']), 'timings': json.loads(run['timings_json'] or '{}')} if run else None,
             'job': job}

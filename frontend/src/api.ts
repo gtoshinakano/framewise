@@ -77,7 +77,7 @@ export type KeyframeAnalysis = {
 /** What the Target frames tab reads (GET /cuts/{id}/keyframe-analysis). */
 export type KeyframeAnalysisState = {
   status: 'missing' | 'current' | 'stale'; selection_key: string | null; result: KeyframeAnalysis | null
-  run: { id: string; phase: string; method: string; roster_source: string; target_run_id: string | null; roster: { name: string }[]; timings: Record<string, number> } | null
+  run: { id: string; phase: string; method: string; model?: string | null; roster_source: string; target_run_id: string | null; roster: { name: string }[]; timings: Record<string, number> } | null
   job: { id: string; status: string; stage: string; error: string | null } | null
 }
 export type BeatSpeech = { line: string; speaker: string; start: number; end: number; delivery: 'on_screen' | 'off_screen' | 'inner_voice' | 'narrative'; suggested: string | null }

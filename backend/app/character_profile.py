@@ -1,7 +1,7 @@
 """The ``character_profile`` job: describe a newly created character from the box it was created on.
 
 ``POST /api/character-detections/{id}/new-character`` creates the character, labels the box and queues this
-job. The chosen character-profile model (``visual_models``: Qwen3.5-27B by default, snapshotted in
+job. The chosen character-profile model (``visual_models``: Qwen3.6-35B-A3B by default, snapshotted in
 ``payload.models`` when queued) sees the whole frame (the box outlined) and a close crop of the box and writes a
 character sheet (what identifies the character in any outfit) and an outfit sheet (what they wear here).
 The rendered text is appended to the character's Details; the answer, prompt and model are kept on the job

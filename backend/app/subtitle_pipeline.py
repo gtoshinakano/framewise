@@ -4,7 +4,8 @@ Stages, each loading its model once for the entire episode:
 
 1. locate  - WeVisOne looks for the subtitle strip in a few frames, preferably while people speak
 2. scan    - CPU only: decode the strip once and find when its text changes (subtitle_scan)
-3. read    - the Qwen3.5 llama-server reads one image per distinct subtitle, several at a time
+3. read    - the vision model's llama-server (``visual_models.general()``, Qwen3.6 since 2026-11-18) reads one image per distinct
+             subtitle, several at a time
 
 Readings are checkpointed one by one, so a restarted or retried run reads only what is still missing. The result
 is a list of time-ranged lines on the episode; cuts see the ones that overlap them (subtitle_store).
@@ -17,7 +18,7 @@ import os
 import time
 import uuid
 
-from . import db, frame_model, media, subtitle_reader, subtitle_scan, subtitle_store, worker
+from . import db, frame_model, media, subtitle_reader, subtitle_scan, subtitle_store, visual_models, worker
 
 log = logging.getLogger('framewise.subtitles')
 
@@ -61,11 +62,13 @@ class Run:
     def open(self):
         """Continue this episode's interrupted or failed run for the same language and prompt, or start a new one."""
         prompt = subtitle_reader.system_prompt(self.language)
+        model = visual_models.general()
         with db.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
             worker.require_lease(conn, self.job['id'], self.owner)
-            reusable = conn.execute("SELECT * FROM subtitle_runs WHERE episode_id=? AND status IN ('running','failed') AND language=? AND prompt=? ORDER BY rowid DESC LIMIT 1",
-                                    (self.episode['id'], self.language['name'], prompt)).fetchone()
+            # Another model's readings are not continued: a run records one reader.
+            reusable = conn.execute("SELECT * FROM subtitle_runs WHERE episode_id=? AND status IN ('running','failed') AND language=? AND prompt=? AND model_id=? AND model_revision=? ORDER BY rowid DESC LIMIT 1",
+                                    (self.episode['id'], self.language['name'], prompt, model.model_id, model.revision)).fetchone()
             conn.execute("UPDATE subtitle_runs SET status='failed',error=COALESCE(error,'Interrupted') WHERE episode_id=? AND status='running'", (self.episode['id'],))
             conn.execute("DELETE FROM subtitle_readings WHERE run_id IN (SELECT id FROM subtitle_runs WHERE episode_id=? AND status!='complete' AND id!=?)",
                          (self.episode['id'], reusable['id'] if reusable else ''))
@@ -77,7 +80,7 @@ class Run:
                 self.id = str(uuid.uuid4())
                 conn.execute('''INSERT INTO subtitle_runs(id,episode_id,job_id,language,language_code,status,model_id,model_revision,prompt,settings_json)
                                 VALUES (?,?,?,?,?,'running',?,?,?,?)''',
-                             (self.id, self.episode['id'], self.job['id'], self.language['name'], self.language['code'], frame_model.MODEL_ID, frame_model.MODEL_REVISION, prompt,
+                             (self.id, self.episode['id'], self.job['id'], self.language['name'], self.language['code'], model.model_id, model.revision, prompt,
                               json.dumps({'detector': 'tencent/WeVisOne-VL-4B', 'read_parallel': read_parallel(), 'scan_width': subtitle_scan.SCAN_WIDTH,
                                           'language_input': self.payload.get('language')})))
 
@@ -175,8 +178,10 @@ class Run:
             finished += 1
             self.progress(f'Reading subtitles {len(done) + finished}/{len(events)}', force=finished == 1)
 
-        with frame_model.frame_server(*frame_model.default_server_files(),  # subtitle reading stays on Qwen3.5
-                                      cancel_check=self.cancel_check, parallel=workers, context_per_slot=4096) as server:
+        model = visual_models.general()
+        visual_models.require(model.key)
+        with frame_model.frame_server(*model.server_files(), cancel_check=self.cancel_check, parallel=workers, context_per_slot=4096,
+                                      extra_args=model.server_args) as server:
             subtitle_reader.read_events(server, self.original, self.band, self.language, todo, save, workers=workers, cancel_check=self.cancel_check)
         self.timings['read_seconds'] = round(time.monotonic() - started, 1)
 

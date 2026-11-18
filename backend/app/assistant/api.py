@@ -5,7 +5,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import db, sequence_edit, sequence_store
@@ -152,7 +152,7 @@ def assistant_config():
     settings = db.one('SELECT text_provider,local_thinking,openrouter_model FROM text_generation_settings WHERE id=1') or {}
     recent = [row['model'] for row in db.all_rows("SELECT model,MAX(updated_at) AS used FROM assistant_sessions WHERE provider!='local' AND model!='' GROUP BY provider,model ORDER BY used DESC LIMIT 12")]
     return {'worker_online': online, 'providers': providers,
-            'skills': [{key: skill[key] for key in ('name', 'title', 'description', 'examples', 'scope')} for skill in skills.all_skills()],
+            'skills': [{key: skill[key] for key in ('name', 'title', 'description', 'examples', 'scope', 'vision')} for skill in skills.all_skills()],
             'defaults': {'provider': default_provider(settings, providers), 'openrouter_model': settings.get('openrouter_model') or 'openrouter/free', 'thinking': True},
             'recent_models': recent}
 
@@ -315,6 +315,23 @@ def turn_snapshot(turn_id):
 
 def sse(event, data):
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+
+@router.get('/api/assistant/messages/{message_id}/images/{index}', response_class=Response,
+            responses={200: {'content': {'image/jpeg': {'schema': {'type': 'string', 'format': 'binary'}}}, 'description': 'A picture the assistant looked at with view_frames'}})
+async def message_image(message_id: str, index: int):
+    """One picture of a ``view_frames`` result, cut from the original video again (the database keeps only its reference)."""
+    from . import images
+    row = db.one("SELECT usage_json FROM assistant_messages WHERE id=? AND role='tool'", (message_id,))
+    refs = store.loads(row['usage_json'], {}).get('images') if row else None
+    if not isinstance(refs, list) or not 0 <= index < len(refs) or not isinstance(refs[index], dict):
+        raise HTTPException(404, 'No such picture')
+    ref = refs[index]
+    try:
+        data = await asyncio.to_thread(images.picture, ref['cut_id'], ref['frame'], ref.get('crop'))
+    except (images.FrameError, KeyError) as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return Response(data, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=300'})
 
 
 @router.get('/api/assistant/turns/{turn_id}/stream')

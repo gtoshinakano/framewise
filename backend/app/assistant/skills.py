@@ -7,6 +7,8 @@ Each ``skills/*.md`` file starts with a small front matter block::
     title: H3 animation prompt
     description: One line shown to the model in the skill index.
     examples: Prompt chip one | Prompt chip two
+    scope: cut | sequence | any   (optional, default cut)
+    vision: true                  (optional: listed only to a model that can look at pictures)
     ---
 
 Only the name and description are sent with every request; the body is
@@ -35,6 +37,7 @@ def parse(text):
         raise ValueError('Skill front matter requires a snake_case name and a description')
     return {'name': meta['name'], 'title': meta.get('title') or meta['name'], 'description': meta['description'],
             'scope': meta.get('scope') if meta.get('scope') in ('cut', 'sequence', 'any') else 'cut',
+            'vision': meta.get('vision', '').lower() in ('true', 'yes', '1'),
             'examples': [item.strip() for item in meta.get('examples', '').split('|') if item.strip()],
             # {{still_keywords}} becomes the dictionary's keyword suggestions (still_vocabulary.yaml), or nothing when it cannot be read.
             'body': text[match.end():].strip().replace('{{still_keywords}}', still_vocabulary.shot_block())}
@@ -61,6 +64,9 @@ def names():
     return list(_load_all())
 
 
-def index_text(scope='cut'):
-    """The skills offered to a chat: those of its scope (a cut or a sequence) and those that fit both."""
-    return '\n'.join(f"- {skill['name']}: {skill['description']}" for skill in all_skills() if skill['scope'] in (scope, 'any'))
+def index_text(scope='cut', vision=False):
+    """The skills offered to a chat: those of its scope (a cut or a sequence) and those that fit both.
+
+    A skill marked ``vision`` is about looking at pictures, so it is listed only when the model answering can.
+    """
+    return '\n'.join(f"- {skill['name']}: {skill['description']}" for skill in all_skills() if skill['scope'] in (scope, 'any') and (vision or not skill['vision']))

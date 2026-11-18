@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, ArrowDown, ArrowUp, Brain, Check, ChevronRight, Cloud, Cpu, Gauge, Layers, Loader2, MessageSquarePlus, Pencil, RefreshCw, Send, Sparkles, Square, Timer, Trash2, Wrench, X, Zap } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, Brain, Check, ChevronRight, Cloud, Cpu, Eye, Gauge, Layers, Loader2, MessageSquarePlus, Pencil, RefreshCw, Send, Sparkles, Square, Timer, Trash2, Wrench, X, Zap } from 'lucide-react'
 import type { Cut } from './api'
-import { assistantApi, streamUrl, type AssistantConfig, type AssistantScope, type AssistantProposal, type AssistantSession, type AssistantTurn, type AssistantUsage, type LocalModelStatus, type ProviderInfo, type SessionDetail, type SkillInfo } from './assistantApi'
+import { assistantApi, pictureUrl, streamUrl, type AssistantConfig, type AssistantScope, type AssistantProposal, type AssistantSession, type AssistantTurn, type AssistantUsage, type LocalModelStatus, type ProviderInfo, type SessionDetail, type SkillInfo } from './assistantApi'
 import { ACTIVE_STATUSES, activeTurn, applyStreamEvent, contextShare, formatSeconds, formatTokens, groupTurns, prettyArguments, prettyResult, reasoningTokens, starterText, turnElapsed, type Step, type ToolStep, type TurnView } from './assistantFormat'
 import { DiffText } from './DiffText'
 import { CopyButton, Markdown } from './Markdown'
@@ -112,6 +112,7 @@ export default function CutAssistant({ cut, sequence, active, onResultsChanged }
 
   const provider = config?.providers.find(item => item.id === choice?.provider)
   const openrouter = config?.providers.find(item => item.id === 'openrouter')
+  const sees = provider?.vision ?? provider?.models.find(item => item.id === choice?.model)?.vision  // a provider says it, or its model does (the remote PC)
   // The worker publishes which provider answers while the GPU is busy (remote llama.cpp or OpenRouter free).
   const fallbackTarget = provider?.gpu_fallback
   const remoteFallback = fallbackTarget?.provider === 'remote'
@@ -274,6 +275,7 @@ export default function CutAssistant({ cut, sequence, active, onResultsChanged }
           ? <select className="field !w-auto max-w-56 !py-1.5 !text-xs" aria-label="Model" value={choice?.model || ''} onChange={event => choice && setChoice({ ...choice, model: event.target.value })}>{provider.models.map(model => <option key={model.id} value={model.id}>{model.label || model.id}</option>)}</select>
           : <><input className="field !w-56 !py-1.5 !text-xs" aria-label="Model" list={`assistant-models-${owner}`} maxLength={200} value={choice?.model || ''} onChange={event => choice && setChoice({ ...choice, model: event.target.value })} placeholder="provider/model" /><datalist id={`assistant-models-${owner}`}>{[config?.defaults.openrouter_model, ...(config?.recent_models || [])].filter((value, index, list): value is string => !!value && list.indexOf(value) === index).map(value => <option key={value} value={value} />)}</datalist></>)}
         <label className="flex items-center gap-1.5 rounded-lg border border-[#303640] px-2.5 py-1.5 text-xs" title="Show the model's reasoning. Uses more tokens and time."><input type="checkbox" checked={!!choice?.thinking} disabled={!provider?.thinking} onChange={event => choice && setChoice({ ...choice, thinking: event.target.checked })} /><Brain size={13} /> Thinking</label>
+        {sees !== undefined && <span className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs ${sees ? 'border-[#2f5a49] text-[#9ff0c8]' : 'border-[#303640] text-[#8b93a3]'}`} title={sees ? 'This model can look at the video: it can open frames, keyframes and zoomed details while it works (view_frames).' : provider?.vision_detail || 'This model cannot look at pictures.'}><Eye size={13} /> {sees ? 'Vision' : 'No vision'}</span>}
         {provider?.managed && <LocalModelBadge status={localStatus} working={modelWorking} busy={!!provider.busy} onToggle={() => void toggleLocalModel()} />}
         {provider?.managed && <label className={`flex items-center gap-1.5 rounded-lg border border-[#303640] px-2.5 py-1.5 text-xs ${fallbackReady ? '' : 'opacity-60'}`} title={remoteFallback ? `When visual analysis is using the GPU, answer with ${fallbackTarget?.label} instead of waiting.` : fallbackReady ? 'When visual analysis is using the GPU, answer with OpenRouter free instead of waiting. OpenRouter then receives this cut\'s analysis.' : openrouter?.available ? 'Restart the inference worker to enable the OpenRouter fallback. Until then replies wait for the GPU.' : openrouter?.detail || 'OpenRouter is not available in the inference worker. Replies wait for the GPU. Set OPENROUTER_API_KEY and restart the worker.'}><input type="checkbox" checked={gpuFallback && fallbackReady} disabled={!fallbackReady} onChange={event => { setGpuFallback(event.target.checked); writeFallback(event.target.checked) }} /><Cloud size={13} /> {remoteFallback ? 'Remote' : 'OpenRouter'} if GPU busy</label>}
         {sessionContext && <ContextMeter used={sessionContext.used} limit={sessionContext.limit} percent={sessionContext.percent} />}
@@ -399,6 +401,7 @@ function ToolItem({ tool, preloaded }: { tool: ToolStep; preloaded: boolean }) {
   const result = tool.result
   const failed = result?.usage?.ok === false
   const args = prettyArguments(tool.call.arguments)
+  const pictures = !failed && result ? result.usage?.images || [] : []
   return <div className={`rounded-lg border text-[11px] ${failed ? 'border-[#5b3439] bg-[#21161a]' : 'border-[#2b3240] bg-[#11151d]'}`}>
     <button type="button" className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[#c9cfda] hover:text-white" aria-expanded={open} onClick={() => setOpen(!open)}>
       <ChevronRight size={13} className={`shrink-0 transition ${open ? 'rotate-90' : ''}`} />
@@ -406,6 +409,12 @@ function ToolItem({ tool, preloaded }: { tool: ToolStep; preloaded: boolean }) {
       <span className="truncate">{result?.tool_summary || `Running ${tool.call.name}…`}</span>
       <span className="muted ml-auto flex shrink-0 items-center gap-1 font-mono"><Wrench size={11} /> {tool.call.name}{result ? ` · ${formatTokens(Math.round(result.content.length / 3.6))} tok` : ''}</span>
     </button>
+    {pictures.length > 0 && result && <div className="flex flex-wrap gap-2 border-t border-[#2b3240] p-2" aria-label="Pictures the assistant looked at">
+      {pictures.map((picture, index) => <a key={index} href={pictureUrl(result.id, index)} target="_blank" rel="noreferrer" className="block" title={`${picture.label} (opens full size)`}>
+        <img src={pictureUrl(result.id, index)} alt={picture.label} loading="lazy" className="h-20 rounded border border-[#2b3240] bg-black object-contain" />
+        <span className="mt-0.5 block max-w-[9rem] truncate text-[10px] text-[#9ea6b5]">{picture.label}</span>
+      </a>)}
+    </div>}
     {open && <div className="space-y-2 border-t border-[#2b3240] px-3 py-2">
       {args && <div><p className="label !mb-1 !text-[10px]">Arguments</p><pre className="scrollbar max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-[#b8bfcc]">{args}</pre></div>}
       {result && <div><p className="label !mb-1 !text-[10px]">Result sent to the model</p><pre className="scrollbar max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-[#b8bfcc]">{prettyResult(result.content)}</pre></div>}

@@ -163,20 +163,23 @@ def probe(cfg, timeout=5):
         model_id = (item.get('id') or item.get('name') or item.get('model')) if isinstance(item, dict) else None
         if not isinstance(model_id, str) or not model_id or any(m['id'] == model_id for m in models):
             continue
-        models.append({'id': model_id, 'n_ctx': _slot_context(cfg, model_id, timeout)})
+        n_ctx, vision = _model_props(cfg, model_id, timeout)
+        models.append({'id': model_id, 'n_ctx': n_ctx, **({'vision': True} if vision else {})})  # vision only when the server says it can read images
     if not models:
         return {'state': 'error', 'detail': 'The server lists no models', 'models': []}
     return {'state': 'online', 'detail': f"{len(models)} model{'s' if len(models) != 1 else ''}", 'models': models}
 
 
-def _slot_context(cfg, model_id, timeout):
+def _model_props(cfg, model_id, timeout):
+    """``(per-slot context, can read images)`` from the server's /props; ``(None, False)`` when it cannot be read."""
     try:
         props = _get(cfg, '/props?model=' + urllib.request.quote(model_id, safe=''), timeout)
     except (OSError, ValueError):
-        return None
+        return None, False
     settings = props.get('default_generation_settings') if isinstance(props, dict) else None
     value = settings.get('n_ctx') if isinstance(settings, dict) else None
-    return value if isinstance(value, int) and value > 0 else None
+    modalities = props.get('modalities') if isinstance(props, dict) else None
+    return (value if isinstance(value, int) and value > 0 else None), bool(isinstance(modalities, dict) and modalities.get('vision'))
 
 
 def state():
@@ -201,6 +204,11 @@ def publish(result, active_jobs=None):
                          (result['state'], result.get('detail', '')[:500], json.dumps(result.get('models') or []), time.time(), active_jobs))
     except Exception:
         pass  # a locked database must not stop the monitor
+
+
+def model_vision(model):
+    """Whether the remote server reported that this model can read images."""
+    return any(isinstance(item, dict) and item.get('id') == model and item.get('vision') is True for item in state()['models'])
 
 
 def model_context(model):

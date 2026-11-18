@@ -82,6 +82,8 @@ def init_db():
             id INTEGER PRIMARY KEY CHECK(id=1), models_json TEXT NOT NULL DEFAULT '{}', updated_at REAL NOT NULL DEFAULT 0
         );
         INSERT OR IGNORE INTO visual_model_state(id) VALUES (1);
+        -- One-time data changes that must not repeat (a flag row says the change was made).
+        CREATE TABLE IF NOT EXISTS app_flags (name TEXT PRIMARY KEY, set_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         -- A llama.cpp server on another PC that takes local-provider text jobs (remote_text.py).
         CREATE TABLE IF NOT EXISTS remote_text_server (
             id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 0,
@@ -460,6 +462,12 @@ def init_db():
             # Failures from before the queue tracked them would otherwise all ask for attention at once.
             db.execute("UPDATE jobs SET dismissed_at=CURRENT_TIMESTAMP WHERE status='failed' AND COALESCE(finished_at,updated_at) < datetime('now','-1 day')")
         db.execute('CREATE INDEX IF NOT EXISTS jobs_episode_created_idx ON jobs(episode_id,created_at)')
+        # 2026-11-18: Qwen3.6 with its vision projector became the default of every visual role (visual_models.py). A saved
+        # 'qwen35-27b' was the old default being restored from the Visual engine dialog, so it would keep the new default
+        # from ever applying; drop those rows once. Choices of any other model, and later choices of Qwen3.5, stay.
+        if not db.execute("SELECT 1 FROM app_flags WHERE name='visual-default-qwen36'").fetchone():
+            db.execute("DELETE FROM visual_model_settings WHERE model='qwen35-27b'")
+            db.execute("INSERT INTO app_flags(name) VALUES ('visual-default-qwen36')")
         cut_columns = {row["name"] for row in db.execute("PRAGMA table_info(cuts)")}
         if "active" not in cut_columns:
             db.execute("ALTER TABLE cuts ADD COLUMN active INTEGER NOT NULL DEFAULT 1")

@@ -1,4 +1,5 @@
 """Worker-owned local text model lifecycle; the API controls desired state via SQLite."""
+import logging
 import os
 import json
 import shlex
@@ -26,6 +27,7 @@ VARIANTS = {
             'revision': 'unsloth:5bc3e238d916f48a861bac2f8a1990a0e9b7e98d', 'size': 22663387424},
 }
 MTP_DEFAULT_ARGS = '--spec-type draft-mtp --spec-draft-n-max 3'
+PROJECTOR_DEFAULT = '/models/qwen3.6-35b/mmproj-Qwen3.6-35B-A3B-BF16.gguf'
 
 
 def known_variant(variant):
@@ -69,6 +71,35 @@ def variant_args(variant):
     return shlex.split(os.environ.get('QWEN36_MTP_ARGS') or MTP_DEFAULT_ARGS)
 
 
+def projector_path():
+    """The vision projector that lets the text server read images (the same file ``visual_models`` gives the visual jobs)."""
+    return Path(os.environ.get('QWEN36_PROJECTOR_PATH', PROJECTOR_DEFAULT))
+
+
+def vision_enabled():
+    """Whether the text server should be started with the projector: it is installed and ``QWEN36_TEXT_VISION`` is not 0."""
+    if os.environ.get('QWEN36_TEXT_VISION', '1').strip().lower() in ('0', 'false', 'off', 'no'):
+        return False
+    return projector_path().is_file()
+
+
+def vision_status(runtime, variant):
+    """``(chat can read images, why not)`` for the text server of ``variant``: what Cut Assistance shows beside the provider."""
+    if os.environ.get('QWEN36_TEXT_VISION', '1').strip().lower() in ('0', 'false', 'off', 'no'):
+        return False, 'Turned off (QWEN36_TEXT_VISION=0)'
+    if not projector_path().is_file():
+        return False, 'The vision projector is not installed (python3 scripts/install-model.py qwen36-vision)'
+    if runtime is not None and variant in runtime.vision_failed:
+        return False, 'Qwen 3.6 would not start with the vision projector, so it runs without it'
+    if runtime is not None and runtime.process and runtime.process.poll() is None and runtime.variant == variant and not runtime.vision:
+        return False, 'The running server did not load the vision projector'
+    return True, ''
+
+
+class ServerExited(RuntimeError):
+    """The llama-server process ended while it was starting."""
+
+
 def variant_status(variant):
     variant = known_variant(variant)
     model = variant_path(variant)
@@ -110,6 +141,8 @@ class LocalTextRuntime:
         self.chat_users = 0
         self.inflight = 0  # generation requests on the wire; the model is never switched under one
         self.variant = None  # variant of the running llama-server
+        self.vision = False  # the running server loaded the projector, so chat requests may carry images
+        self.vision_failed = {}  # variant -> why a start with the projector failed; it then runs without
         self.held = threading.local()  # chat sessions held by the calling thread
         self.gpu_busy = False
         self.publish('unloaded', 'Worker ready')
@@ -190,6 +223,7 @@ class LocalTextRuntime:
             self.log.close(); self.log = None
         self.url = None
         self.variant = None
+        self.vision = False
         self.publish('unloaded', detail, '')
 
     @contextmanager
@@ -316,17 +350,32 @@ class LocalTextRuntime:
             self.failed = True
             self.publish('error', 'Local text model or llama-server is not installed')
             raise RuntimeError('Local text model or llama-server is not installed')
+        # Chat looks at pictures through the same projector the visual jobs use. A build or a GPU that cannot start with it
+        # must not take every text job down, so the server is started again without it and the reason is remembered.
+        attempts = [True, False] if vision_enabled() and variant not in self.vision_failed else [False]
+        for with_vision in attempts:
+            try:
+                return self._launch(runtime, model, variant, with_vision, cancel_check, idle_load)
+            except ServerExited as exc:
+                if not with_vision:
+                    raise
+                self.vision_failed[variant] = str(exc)[-600:]
+                logging.getLogger('framewise.text').warning('Qwen 3.6 did not start with its vision projector; starting it without: %s', str(exc)[-400:])
+
+    def _launch(self, runtime, model, variant, with_vision, cancel_check, idle_load):
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0)); port = listener.getsockname()[1]
         self.log = tempfile.TemporaryFile(mode='w+t')
         env = os.environ.copy()
         env.pop('OPENROUTER_API_KEY', None)
         env['LD_LIBRARY_PATH'] = str(runtime.parent) + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
-        loading = 'Loading Qwen 3.6 into GPU memory' + (' (MTP)' if variant == 'mtp' else '')
+        tags = [name for name, on in (('MTP', variant == 'mtp'), ('vision', with_vision)) if on]
+        loading = 'Loading Qwen 3.6 into GPU memory' + (f" ({', '.join(tags)})" if tags else '')
         self.publish('loading', loading)
         try:
             self.process = subprocess.Popen([str(runtime), '-m', str(model), '--host', '127.0.0.1', '--port', str(port),
-                '--n-gpu-layers', '99', '--ctx-size', os.environ.get('QWEN36_CONTEXT_SIZE', '65536'), '--parallel', str(text_job_concurrency()), '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048'), *variant_args(variant)],
+                '--n-gpu-layers', '99', '--ctx-size', os.environ.get('QWEN36_CONTEXT_SIZE', '65536'), '--parallel', str(text_job_concurrency()), '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048'),
+                *(['--mmproj', str(projector_path())] if with_vision else []), *variant_args(variant)],
                 stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT, env=env)
             self.url = f'http://127.0.0.1:{port}'
             deadline = time.monotonic() + 600
@@ -336,11 +385,12 @@ class LocalTextRuntime:
                 if idle_load and (not self.desired() or self.pending_nonlocal_work()):
                     self._stop('Waiting for queued work'); return None
                 if self.process.poll() is not None:
-                    self.log.seek(0); raise RuntimeError('Local model failed to start: ' + self.log.read()[-1000:])
+                    self.log.seek(0); raise ServerExited('Local model failed to start: ' + self.log.read()[-1000:])
                 try:
                     with urllib.request.urlopen(self.url + '/health', timeout=2) as response:
                         if response.status == 200:
                             self.failed = False; self.variant = variant
+                            self.vision = with_vision and self.reports_vision(self.url)
                             self.publish('loaded', 'Ready', variant); return self.url
                 except (OSError, urllib.error.URLError):
                     pass
@@ -349,7 +399,20 @@ class LocalTextRuntime:
                 self.publish('loading', loading)
                 time.sleep(1)
         except Exception as exc:
-            self._stop(); self.failed = True; self.publish('error', str(exc)); raise
+            self._stop()
+            if not (with_vision and isinstance(exc, ServerExited)):  # that one is retried without the projector by the caller
+                self.failed = True; self.publish('error', str(exc))
+            raise
+
+    @staticmethod
+    def reports_vision(url):
+        """Whether the started server says it can read images (llama-server lists its ``modalities`` in /props)."""
+        try:
+            with urllib.request.urlopen(url + '/props', timeout=5) as response:
+                modalities = json.load(response).get('modalities')
+            return bool(modalities.get('vision')) if isinstance(modalities, dict) else True
+        except (OSError, ValueError, urllib.error.URLError, AttributeError):
+            return True  # it was started with the projector; an unreadable /props is not a reason to hide the tool
 
     def reconcile(self):
         with self.lock:

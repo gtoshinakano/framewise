@@ -8,8 +8,8 @@ Work always runs stage by stage across all cuts, so each model is loaded once:
     2. keyframe_analysis  - one llama-server and one DWPose load, every cut: what changes between the
                             keyframes (keyframe_analysis.py); its commit queues the performance beats
 
-Which model runs each stage is the job's ``payload.models`` snapshot (visual_models.py): Qwen3.5-27B
-by default for both, or e.g. LFM3-Omni-2B for the first frame. Results record the model that wrote them.
+Which model runs each stage is the job's ``payload.models`` snapshot (visual_models.py): Qwen3.6-35B-A3B
+with its vision projector by default for both, or e.g. Qwen3.5-27B or LFM3-Omni-2B for the first frame. Results record the model that wrote them.
 
 The video stage (Qwen3-VL-8B over the whole clip) was replaced by the keyframe stage on 2026-11-18, and the
 last frame is no longer described. Jobs queued before either change may still name video_analysis or

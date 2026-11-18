@@ -7,11 +7,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app import db, frame_model, media, single_cut_pipeline, video_model, visual_models
+from app import db, frame_model, local_text_runtime, media, single_cut_pipeline, video_model, visual_models
 from app.visual_contracts import AUDIO_NOTE
 import tests.test_analysis as analysis_tests
 
 LFM = visual_models.MODELS['lfm3-omni-2b']
+QWEN36 = visual_models.MODELS['qwen36-35b']
+INSTALLER = Path(__file__).resolve().parent.parent / 'scripts' / 'install-model.py'
 def report(**available):
     with db.connect() as conn:
         conn.execute('UPDATE visual_model_state SET models_json=?,updated_at=? WHERE id=1',
@@ -20,10 +22,11 @@ def report(**available):
 
 class RegistryTest(unittest.TestCase):
     def test_defaults_are_todays_models_and_every_role_has_one(self):
-        self.assertEqual(visual_models.DEFAULTS, {'initial_frame': 'qwen35-27b', 'keyframe_analysis': 'qwen35-27b', 'character_profile': 'qwen35-27b'})
+        self.assertEqual(visual_models.DEFAULTS, {'initial_frame': 'qwen36-35b', 'keyframe_analysis': 'qwen36-35b', 'character_profile': 'qwen36-35b'})
         for role, key in visual_models.DEFAULTS.items():
             self.assertTrue(visual_models.supports(key, role))
-        self.assertEqual(visual_models.MODELS['qwen35-27b'].model_id, frame_model.MODEL_ID)
+        self.assertEqual(visual_models.MODELS['qwen35-27b'].model_id, frame_model.MODEL_ID)  # still selectable, the model the keyframe prompt was measured on
+        self.assertEqual(visual_models.general().key, 'qwen36-35b')  # subtitle reading and the older character matcher have no role
         self.assertNotIn('qwen3-vl-8b', visual_models.MODELS)  # the video stage was replaced by keyframes
         self.assertNotIn('video_analysis', visual_models.ROLES)
 
@@ -58,12 +61,13 @@ class RegistryTest(unittest.TestCase):
         self.assertIn('never invent a name', VIDEO_INSTRUCTION)
 
     def test_a_job_runs_its_snapshot_else_the_default(self):
-        self.assertEqual(visual_models.for_job({}, 'initial_frame').key, 'qwen35-27b')
+        self.assertEqual(visual_models.for_job({}, 'initial_frame').key, 'qwen36-35b')
         self.assertEqual(visual_models.for_job({'models': {'initial_frame': 'lfm3-omni-2b'}}, 'initial_frame').key, 'lfm3-omni-2b')
-        self.assertEqual(visual_models.for_job({'models': {'keyframe_analysis': 'lfm3-omni-2b'}}, 'keyframe_analysis').key, 'qwen35-27b')  # cannot run that role
-        self.assertEqual(visual_models.for_job({'models': {'initial_frame': 'qwen3-vl-8b'}}, 'initial_frame').key, 'qwen35-27b')  # removed
+        self.assertEqual(visual_models.for_job({'models': {'initial_frame': 'qwen35-27b'}}, 'initial_frame').key, 'qwen35-27b')  # a job queued with the old default keeps it
+        self.assertEqual(visual_models.for_job({'models': {'keyframe_analysis': 'lfm3-omni-2b'}}, 'keyframe_analysis').key, 'qwen36-35b')  # cannot run that role
+        self.assertEqual(visual_models.for_job({'models': {'initial_frame': 'qwen3-vl-8b'}}, 'initial_frame').key, 'qwen36-35b')  # removed
         self.assertEqual(single_cut_pipeline.job_models({'models': {'initial_frame': 'lfm3-omni-2b', 'video_analysis': 'qwen3-vl-8b'}}),
-                         {'initial_frame': LFM, 'keyframe_analysis': visual_models.MODELS['qwen35-27b']})
+                         {'initial_frame': LFM, 'keyframe_analysis': visual_models.MODELS['qwen36-35b']})
 
     def test_status_reports_installed_downloading_and_missing(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -97,6 +101,65 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(args[-2:], ['--reasoning', 'off'])
 
 
+class Qwen36Test(unittest.TestCase):
+    def test_it_is_the_text_model_with_its_vision_projector(self):
+        self.assertEqual(set(QWEN36.roles), set(visual_models.ROLES))
+        self.assertEqual(QWEN36.model_id, local_text_runtime.MODEL_ID)  # the same weights the chat runs on
+        self.assertEqual(QWEN36.path('model').name, 'Qwen3.6-35B-A3B-Q4_K_M.gguf')
+        entry = visual_models.MANIFEST['qwen36-vision']
+        self.assertEqual([item['name'] for item in entry['files']], [QWEN36.path('projector').name])  # the text model has its own installer
+        self.assertEqual(len(entry['files'][0]['sha256']), 64)
+        self.assertIn(entry['files'][0]['sha256'][:12], QWEN36.revision)
+        self.assertTrue(entry['gated'])
+        self.assertEqual(QWEN36.path('projector'), local_text_runtime.projector_path())  # one projector for the visual jobs and the chat
+        self.assertEqual(QWEN36.server_args, ())  # every visual request turns thinking off itself
+
+    def test_status_never_mistakes_the_text_model_for_a_download(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            server, model, projector = folder / 'llama-server', folder / 'text.gguf', folder / QWEN36.path('projector').name
+            env = {'QWEN35_SERVER_PATH': str(server), 'QWEN36_MODEL_PATH': str(model), 'QWEN36_PROJECTOR_PATH': str(projector)}
+            with patch.dict('os.environ', env):
+                self.assertEqual(visual_models.status('qwen36-35b'), {'available': False, 'detail': 'Not installed'})
+                projector.touch()
+                missing = visual_models.status('qwen36-35b')
+                self.assertFalse(missing['available'])
+                self.assertEqual(missing['detail'], 'text.gguf is missing (the text model comes from scripts/download-qwen36.sh)')  # not "Downloading 100%"
+                projector.unlink()
+                model.touch()
+                self.assertEqual(visual_models.status('qwen36-35b')['detail'], 'Not installed')
+                projector.with_name(projector.name + '.partial').write_bytes(b'x' * 1000)
+                self.assertRegex(visual_models.status('qwen36-35b')['detail'], r'^Downloading \d+%$')
+                projector.with_name(projector.name + '.partial').unlink()
+                projector.touch()
+                self.assertEqual(visual_models.status('qwen36-35b')['detail'], 'llama-server runtime is missing')
+                server.touch()
+                self.assertEqual(visual_models.status('qwen36-35b'), {'available': True, 'detail': 'Installed'})
+                with patch.dict('os.environ', {'QWEN36_PROJECTOR_PATH': str(folder / 'gone.gguf')}), self.assertRaisesRegex(RuntimeError, 'install-model.py qwen36-vision'):
+                    visual_models.require('qwen36-35b')
+
+    def test_callers_without_a_role_use_it_too(self):
+        self.assertIs(visual_models.general(), QWEN36)
+        self.assertFalse(hasattr(frame_model, 'default_server_files'))  # subtitle reading and the older matcher read the registry now
+
+    @unittest.skipUnless(INSTALLER.is_file(), 'scripts/ is not mounted next to tests/ (mount it read-only to run this)')
+    def test_the_installer_keeps_the_token_on_hugging_face(self):
+        import importlib.util
+        import urllib.request
+        spec = importlib.util.spec_from_file_location('install_model', INSTALLER)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        handler = installer.KeepTokenOnItsHost()
+        request = urllib.request.Request('https://huggingface.co/repo/resolve/main/f.gguf', headers={'Authorization': 'Bearer secret', 'Range': 'bytes=0-'})
+        away = handler.redirect_request(request, None, 302, 'Found', {}, 'https://cdn-lfs.example.net/signed?x=1')
+        self.assertNotIn('Authorization', {key.title() for key in away.headers})
+        self.assertIn('Range', {key.title() for key in away.headers})
+        same = handler.redirect_request(request, None, 302, 'Found', {}, 'https://huggingface.co/other/path')
+        self.assertEqual(same.get_header('Authorization'), 'Bearer secret')
+        installer.MANIFEST = Path(visual_models.__file__).with_name('model_manifest.json')  # the copy of the script run by the test recipe sits elsewhere
+        self.assertTrue(installer.load()['qwen36-vision']['gated'])
+
+
 class SettingsApiTest(unittest.TestCase):
     setUp = analysis_tests.AnalysisTest.setUp
     tearDown = analysis_tests.AnalysisTest.tearDown
@@ -121,23 +184,42 @@ class SettingsApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn('Not installed', response.json()['detail'])
         # The default is always allowed, so the user can switch back without the worker.
-        self.assertEqual(self.client.put('/api/visual-models', json={'role': 'initial_frame', 'model': 'qwen35-27b'}).status_code, 200)
+        self.assertEqual(self.client.put('/api/visual-models', json={'role': 'initial_frame', 'model': 'qwen36-35b'}).status_code, 200)
+        # The previous default is an ordinary choice now: it must be reported as installed first.
+        self.assertEqual(self.client.put('/api/visual-models', json={'role': 'initial_frame', 'model': 'qwen35-27b'}).status_code, 409)
 
     def test_queued_jobs_snapshot_the_choice_and_keep_it(self):
         report(**{'lfm3-omni-2b': True})
         self.assertEqual(self.client.put('/api/visual-models', json={'role': 'initial_frame', 'model': 'lfm3-omni-2b'}).json()['selected']['initial_frame'], 'lfm3-omni-2b')
         self.assertEqual(self.client.put('/api/visual-models', json={'role': 'keyframe_analysis', 'model': 'lfm3-omni-2b'}).status_code, 422)
         single = self.client.post('/api/cuts/c1/analyze').json()['job_id']
-        self.assertEqual(self.payload(single)['models'], {'initial_frame': 'lfm3-omni-2b', 'keyframe_analysis': 'qwen35-27b'})
-        self.client.put('/api/visual-models', json={'role': 'initial_frame', 'model': 'qwen35-27b'})
+        self.assertEqual(self.payload(single)['models'], {'initial_frame': 'lfm3-omni-2b', 'keyframe_analysis': 'qwen36-35b'})
+        self.client.put('/api/visual-models', json={'role': 'initial_frame', 'model': 'qwen36-35b'})
         batch = self.client.post('/api/episodes/e/visual-analysis').json()['job_ids'][0]
-        self.assertEqual(self.payload(batch)['models'], {'initial_frame': 'qwen35-27b', 'keyframe_analysis': 'qwen35-27b'})
+        self.assertEqual(self.payload(batch)['models'], {'initial_frame': 'qwen36-35b', 'keyframe_analysis': 'qwen36-35b'})
         self.assertEqual(self.payload(single)['models']['initial_frame'], 'lfm3-omni-2b')  # queued work keeps its model
 
     def test_a_saved_choice_for_the_removed_video_role_is_ignored(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO visual_model_settings(role,model) VALUES ('video_analysis','qwen3-vl-8b')")
         self.assertEqual(visual_models.selected(), visual_models.DEFAULTS)
+
+
+class DefaultMigrationTest(unittest.TestCase):
+    setUp = analysis_tests.AnalysisTest.setUp
+    tearDown = analysis_tests.AnalysisTest.tearDown
+
+    def test_a_saved_qwen35_choice_was_the_old_default_and_is_dropped_once(self):
+        with db.connect() as conn:  # a database from before the change: no flag, the old default saved by the Visual engine dialog
+            conn.execute("DELETE FROM app_flags WHERE name='visual-default-qwen36'")
+            conn.executemany('INSERT INTO visual_model_settings(role,model) VALUES (?,?)',
+                             [('initial_frame', 'qwen35-27b'), ('keyframe_analysis', 'qwen35-27b'), ('character_profile', 'lfm3-omni-2b'), ('video_analysis', 'qwen3-vl-8b')])
+        db.init_db()
+        self.assertEqual(visual_models.selected(), {'initial_frame': 'qwen36-35b', 'keyframe_analysis': 'qwen36-35b', 'character_profile': 'lfm3-omni-2b'})
+        with db.connect() as conn:  # choosing Qwen3.5 again later is the user's decision and survives a restart
+            conn.execute("INSERT INTO visual_model_settings(role,model) VALUES ('initial_frame','qwen35-27b') ON CONFLICT(role) DO UPDATE SET model=excluded.model")
+        db.init_db()
+        self.assertEqual(visual_models.selected()['initial_frame'], 'qwen35-27b')
 
 
 class VideoModuleTest(unittest.TestCase):

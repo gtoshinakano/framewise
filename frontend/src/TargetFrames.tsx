@@ -115,7 +115,7 @@ function PairChanges({ segment, slotOf }: { segment: KeyframeSegment; slotOf: (n
         <span className="font-semibold text-[#d5dbe5]">{person.name}</span>
         {(['walking', 'speaking', 'blinking'] as const).filter(flag => person[flag] === 'yes').map(flag => <span key={flag} className="ml-1.5 rounded bg-[#2a3140] px-1 py-0.5 text-[10px]">{flag}</span>)}
         <ul className="mt-0.5 space-y-0.5">{person.changes.map((change, index) => <li key={index}><span className="muted">{change.part.replace('_', ' ')}:</span> {change.description}
-          <span className={`ml-1 text-[10px] ${change.source === 'dwpose' ? 'text-[#7bd88f]' : 'text-[#8b93a3]'}`} title={change.source === 'dwpose' ? 'Measured from DWPose body keypoints' : 'Read from the images by Qwen3.5'}>{change.source === 'dwpose' ? 'keypoints' : 'vision model'}</span></li>)}</ul>
+          <span className={`ml-1 text-[10px] ${change.source === 'dwpose' ? 'text-[#7bd88f]' : 'text-[#8b93a3]'}`} title={change.source === 'dwpose' ? 'Measured from DWPose body keypoints' : 'Read from the images by the vision model'}>{change.source === 'dwpose' ? 'keypoints' : 'vision model'}</span></li>)}</ul>
       </div>
     })}
     {segment.other_changes.map((other, index) => <p key={index}><span className="muted">{other.kind}:</span> {other.description}</p>)}
@@ -238,7 +238,8 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, e
 
 /** Which keyframe analysis this tab shows, and whether it still belongs to these frames and people. */
 function KeyframeHeader({ state, analysis }: { state: KeyframeAnalysisState; analysis: KeyframeAnalysis }) {
-  const method = analysis.method === 'hybrid' ? 'Qwen3.5 + DWPose keypoints' : 'Qwen3.5 only (DWPose not installed)'
+  const model = state.run?.model || 'Vision model'
+  const method = analysis.method === 'hybrid' ? `${model} + DWPose keypoints` : `${model} only (DWPose not installed)`
   return <div className="space-y-1 rounded-lg border hairline px-3 py-2 text-xs">
     <div className="flex flex-wrap items-center gap-1.5"><strong className="text-[#d5dbe5]">Keyframe analysis</strong><StatusChip tone="grey" title="How the body changes were found">{method}</StatusChip>
       {state.run?.roster_source && <StatusChip tone="grey" title="Where the names came from">{state.run.roster_source === 'target_slots' ? 'Names from these frames' : state.run.roster_source === 'first_frame' ? 'Names from the first frame' : 'No names'}</StatusChip>}

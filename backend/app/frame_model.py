@@ -1,4 +1,6 @@
-"""Isolated llama.cpp server for the quantized Qwen3.5 frame model."""
+"""Isolated llama.cpp server for a vision model of ``visual_models`` and the still-image calls made to it.
+
+MODEL_ID/MODEL_REVISION are Qwen3.5-27B's, the previous default; the model a job really used is the registry's ``VisualModel``."""
 import base64
 import json
 import os
@@ -16,13 +18,6 @@ from .visual_contracts import FRAME_INSTRUCTION, frame_schema, person_context, r
 MODEL_ID = 'Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M'
 MODEL_REVISION = '4d92249e905871588b9c64fddb8ea6498507fa90'
 FRAME_MAX_TOKENS = 3072  # detailed outfits make answers longer; the cap only stops a runaway
-
-
-def default_server_files():
-    """(llama-server, model, projector) of the Qwen3.5 frame model, for callers that are not switchable."""
-    return (os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'),
-            os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
-            os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'))
 
 
 @contextmanager

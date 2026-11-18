@@ -37,6 +37,11 @@ services:
       # Keyframe windows described at once by the Qwen3.5 server (16384 tokens each); lower to 1 if the server fails to start.
       KEYFRAME_PARALLEL: ${KEYFRAME_PARALLEL:-2}
       QWEN36_MODEL_PATH: /models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf
+      # Vision projector of Qwen 3.6 (python3 scripts/install-model.py qwen36-vision). It makes Qwen 3.6 the default model of the
+      # visual jobs (first frame, keyframes, character profile, subtitles) and lets Cut Assistance look at frames (view_frames).
+      QWEN36_PROJECTOR_PATH: /models/qwen3.6-35b/mmproj-Qwen3.6-35B-A3B-BF16.gguf
+      # 0 starts the chat/text server without the projector (no images in Cut Assistance; saves about 1-2 GB of VRAM).
+      QWEN36_TEXT_VISION: ${QWEN36_TEXT_VISION:-1}
       # Same model with multi-token-prediction heads (speculative decoding); choose it in the text engine dialog.
       QWEN36_MTP_MODEL_PATH: /models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
       QWEN36_MTP_ARGS: ${QWEN36_MTP_ARGS:---spec-type draft-mtp --spec-draft-n-max 3}

@@ -59,7 +59,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
         self.assertTrue(self.client.get('/api/cuts/c1/character-detections').json()['stale'])
 
     def test_automatic_matches_are_unverified_and_queued_labels_are_snapshotted(self):
-        from app import character_detection, single_cut_pipeline, frame_model
+        from app import character_detection, single_cut_pipeline, frame_model, visual_models
         frames = [{'position': position, 'time': time, 'image_size': [100, 80], 'boxes': [[5, 4, 40, 60]], 'raw_response': 'raw', 'prompt': 'detect'} for position, time in [('first', 0), ('last', 1.9)]]
         with db.connect() as conn:
             conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('old','c1',0,2,?,'test')", (json.dumps(frames),))
@@ -69,7 +69,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
         job_id, owner = worker.claim_job(('character_detect',))
         with patch.object(inference_worker, 'get_model', return_value=object()), patch.object(single_cut_pipeline, 'release_gpu_models'), \
              patch.object(character_detection, 'detect_boundary_people', return_value=frames), patch.object(character_detection, 'crop_frame', return_value=b'image'), \
-             patch.object(frame_model, 'frame_server', return_value=nullcontext('server')), \
+             patch.object(frame_model, 'frame_server', return_value=nullcontext('server')), patch.object(visual_models, 'require'), \
              patch.object(frame_model, 'match_character', return_value={'character_id':'ctx','confidence':'high','reason':'same hair'}):
             inference_worker.process_character_detection(job_id, owner)
         run = self.client.get('/api/cuts/c1/character-detections').json()

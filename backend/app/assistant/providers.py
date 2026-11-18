@@ -6,7 +6,10 @@ and extra OpenAI-compatible servers (LM Studio, Ollama, vLLM, another
 llama-server) can be listed in ``ASSISTANT_ENDPOINTS`` as JSON::
 
     [{"id": "lmstudio", "label": "LM Studio", "base_url": "http://192.168.0.10:1234/v1",
-      "models": ["qwen3-14b"], "context": 32768, "api_key_env": "LMSTUDIO_KEY", "template_thinking": true}]
+      "models": ["qwen3-14b"], "context": 32768, "api_key_env": "LMSTUDIO_KEY", "template_thinking": true, "vision": false}]
+
+``"vision": true`` says the server's model can read images, which gives the chat the ``view_frames`` tool. OpenRouter's free
+router picks any model, so it never gets it; the local Qwen 3.6 has it while its vision projector is loaded.
 """
 import json
 import os
@@ -43,6 +46,7 @@ class Endpoint:
     context_limit: int | None = None
     timeout: float = 180
     fixed_model: bool = False  # Report ``model`` instead of the server's name (llama-server returns a file path).
+    vision: bool = False  # The model can read images, so the turn may use ``view_frames`` and carry pictures in its history.
 
 
 @dataclass
@@ -89,6 +93,7 @@ class LocalQwen(Provider):
         info.update(managed=True, context_limit=self.context_limit(), busy=bool(local_text_runtime.runtime and local_text_runtime.runtime.gpu_busy))
         runtime = local_text_runtime.runtime
         variant = runtime.target_variant() if runtime else local_text_runtime.DEFAULT_VARIANT
+        info['vision'], info['vision_detail'] = local_text_runtime.vision_status(runtime, variant)
         info['models'] = [{'id': local_text_runtime.MODEL_ID, 'label': local_text_runtime.VARIANTS[variant]['label'], 'context': self.context_limit()}]
         fallback = gpu_fallback({'remote': RemoteLlama(), 'openrouter': OpenRouter()})
         # What answers a turn when visual work holds the GPU and the user allowed a fallback (see ``runner.connect``).
@@ -144,6 +149,7 @@ class LocalQwen(Provider):
                                 extra={'chat_template_kwargs': {'enable_thinking': bool(thinking)}, 'cache_prompt': True, 'top_p': 0.95, 'top_k': 20})
             endpoint.extra['_load_seconds'] = 0 if loaded else round(time.monotonic() - started, 2)
             endpoint.extra['_server'] = 'local'
+            endpoint.vision = bool(runtime.vision)
             try:
                 yield endpoint
             finally:
@@ -202,7 +208,7 @@ class RemoteLlama(Provider):
     def describe(self):
         from .. import remote_text
         info = super().describe()
-        models = [{'id': item['id'], 'label': item['id'], 'context': item.get('n_ctx')} for item in remote_text.state()['models'] if isinstance(item, dict) and item.get('id')]
+        models = [{'id': item['id'], 'label': item['id'], 'context': item.get('n_ctx'), 'vision': item.get('vision') is True} for item in remote_text.state()['models'] if isinstance(item, dict) and item.get('id')]
         info.update(models=models, context_limit=models[0]['context'] if models else None)
         return info
 
@@ -222,7 +228,8 @@ class RemoteLlama(Provider):
             raise ProviderError(detail)
         cfg = remote_text.config()
         return Endpoint(cfg['base_url'] + '/v1/chat/completions', model, headers=remote_text.auth_headers(cfg), context_limit=remote_text.model_context(model), timeout=900,
-                        extra={'chat_template_kwargs': {'enable_thinking': bool(thinking)}, 'cache_prompt': True, 'top_p': 0.95, 'top_k': 20, '_server': 'remote'})
+                        extra={'chat_template_kwargs': {'enable_thinking': bool(thinking)}, 'cache_prompt': True, 'top_p': 0.95, 'top_k': 20, '_server': 'remote'},
+                        vision=remote_text.model_vision(model))
 
     @contextmanager
     def session(self, model, thinking, cancel_check, on_stage):
@@ -304,12 +311,14 @@ class OpenAICompatible(Provider):
         self.context = config.get('context') if isinstance(config.get('context'), int) else None
         self.key_env = config.get('api_key_env')
         self.template_thinking = bool(config.get('template_thinking'))
+        self.vision = bool(config.get('vision'))  # the server's model reads images ("vision": true in ASSISTANT_ENDPOINTS)
 
     def describe(self):
         info = super().describe()
         info['models'] = [{'id': model, 'label': model, 'context': self.context} for model in self.model_ids]
         info['free_model'] = not self.model_ids
         info['context_limit'] = self.context
+        info['vision'] = self.vision
         return info
 
     def endpoint(self, model, thinking):
@@ -317,7 +326,7 @@ class OpenAICompatible(Provider):
         if self.key_env and os.environ.get(self.key_env):
             headers['Authorization'] = f'Bearer {os.environ[self.key_env]}'
         extra = {'chat_template_kwargs': {'enable_thinking': bool(thinking)}} if self.template_thinking else {}
-        return Endpoint(self.base_url + '/chat/completions', model, headers=headers, extra=extra, context_limit=self.context, timeout=600)
+        return Endpoint(self.base_url + '/chat/completions', model, headers=headers, extra=extra, context_limit=self.context, timeout=600, vision=self.vision)
 
 
 def registry():

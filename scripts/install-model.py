@@ -5,6 +5,7 @@
     python3 scripts/install-model.py lfm3-omni-2b
     python3 scripts/install-model.py lfm3-omni-2b --verify
     python3 scripts/install-model.py dwpose          # DWPose keypoints for the keyframe analysis (CPU)
+    HF_TOKEN=... python3 scripts/install-model.py qwen36-vision   # the vision projector of the Qwen 3.6 text model (gated repo)
 
 Files land in the model's directory (``default_dir`` under the project, or the directory named by
 its ``dir_env`` variable) as ``<name>.partial`` while downloading, so the inference worker can show
@@ -18,6 +19,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -43,14 +45,28 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def download(url, partial, size):
+class KeepTokenOnItsHost(urllib.request.HTTPRedirectHandler):
+    """Hugging Face sends big files to a CDN with signed URLs; the access token must not follow the redirect there."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+            redirected.remove_header('Authorization')
+        return redirected
+
+
+def download(url, partial, size, token=None):
+    opener = urllib.request.build_opener(KeepTokenOnItsHost)
     for attempt in range(1, 6):
         have = partial.stat().st_size if partial.exists() else 0
         if have >= size:
             return
-        request = urllib.request.Request(url, headers={'Range': f'bytes={have}-', 'User-Agent': 'framewise-model-installer'})
+        headers = {'Range': f'bytes={have}-', 'User-Agent': 'framewise-model-installer'}
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
+        request = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with opener.open(request, timeout=60) as response:
                 if have and response.status != 206:
                     have = 0  # the server ignored the range: start over
                 with partial.open('ab' if have else 'wb') as handle:
@@ -91,8 +107,11 @@ def install(key, entry, verify_only=False):
             continue
         partial = final.with_name(final.name + '.partial')
         url = f'https://huggingface.co/{entry["repo"]}/resolve/{entry["revision"]}/{item["name"]}?download=true'
+        token = os.environ.get('HF_TOKEN') or None
+        if entry.get('gated') and not token:
+            raise SystemExit(f'{entry["repo"]} is a gated repository: set HF_TOKEN to an access token and run this again')
         print(f'Downloading {item["name"]} from {entry["repo"]}@{entry["revision"][:10]}')
-        download(url, partial, item['size'])
+        download(url, partial, item['size'], token)
         actual = sha256(partial)
         if actual != item['sha256']:
             partial.unlink()

@@ -14,6 +14,7 @@ The still recreates the **first frame of this cut**. It becomes the first frame 
 3. `get_result(type="initial_frame")`: composition, camera, setting, lighting, mood, props and visible_characters (character, appearance, position, pose, expression, emotion, gaze, action; marked characters only) and background_people (unmarked people, one line). Put each character's emotion and gaze into the image prompt: they decide the face. Each character may also carry `pose_detail` (state, torso and head facing as a view of the camera with the image side, eyes, looking_at, check): use it, in words and never as degrees, for placement and gaze, and let it beat the free-text position, pose and gaze when they disagree. Results from before emotion, gaze, mood and props existed lack those keys; even older ones may carry other_visual_details and uncertainties.
 4. `get_result(type="review_answers")`: human corrections override model output.
 5. `get_characters()` for exact character names and canonical appearance notes of the visible characters.
+6. If `view_frames` is in your tool list, look at `first` (and zoom with `crop` on a face, hands or a held prop) and check the draft against it before you finish: framing, who stands where and faces which way, gaze, what is held. For anything visible the picture beats the written results; mention a disagreement to the user. Human answers still win.
 
 Precedence: human answers > production brief Opening Frame > initial frame description > character notes > neighbouring cuts (never use them for this frame's content).
 

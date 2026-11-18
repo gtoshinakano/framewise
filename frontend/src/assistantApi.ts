@@ -5,14 +5,17 @@ export type AssistantUsage = {
   prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; reasoning_tokens?: number; reasoning_tokens_estimated?: number
   cached_tokens?: number; cost?: number; context_tokens?: number; context_limit?: number | null; steps?: number; tool_calls?: number
   seconds?: number; generation_seconds?: number; first_token_seconds?: number | null; load_seconds?: number; tokens_per_second?: number; model?: string
-  server?: 'local' | 'remote'
+  server?: 'local' | 'remote'; vision?: boolean
   fallback?: { reason: 'gpu_busy'; from: string; provider: string; model: string }
 }
 export type ToolCall = { id: string; name: string; arguments: string }
+/** A picture the assistant looked at with view_frames: only its reference is stored; the page asks for it through pictureUrl. */
+export type ToolPicture = { cut_id: string; frame: string; crop: number[] | null; label: string; t: number }
+export const pictureUrl = (messageId: string, index: number) => `/api/assistant/messages/${messageId}/images/${index}`
 export type AssistantMessage = {
   id: string; session_id: string; turn_id: string | null; seq: number; role: 'user' | 'assistant' | 'tool'; content: string; reasoning: string
   tool_calls: ToolCall[]; tool_call_id: string | null; tool_name: string | null; tool_summary: string | null; streaming: boolean
-  usage: AssistantUsage & { ok?: boolean; preloaded?: boolean; seconds?: number; finish_reason?: string | null }; created_at: string
+  usage: AssistantUsage & { ok?: boolean; preloaded?: boolean; seconds?: number; finish_reason?: string | null; images?: ToolPicture[] }; created_at: string
 }
 export type AssistantTurn = {
   id: string; session_id: string; status: TurnStatus; stage: string; provider: string; model: string; thinking: boolean; skill: string | null
@@ -30,8 +33,8 @@ export type AssistantSession = {
   message_count?: number; last_status?: TurnStatus | null; pending_proposals?: number
 }
 export type SessionDetail = { session: AssistantSession; messages: AssistantMessage[]; turns: AssistantTurn[]; proposals: AssistantProposal[] }
-export type ProviderModel = { id: string; label?: string; context?: number | null }
-export type ProviderInfo = { id: string; label: string; available: boolean; detail?: string; models: ProviderModel[]; thinking: boolean; managed: boolean; free_model: boolean; context_limit?: number | null; busy?: boolean; fallback_model?: string; gpu_fallback?: { provider: string; model: string; label: string } | null; servers?: { local: boolean; remote: boolean; prefer: string } }
+export type ProviderModel = { id: string; label?: string; context?: number | null; vision?: boolean }
+export type ProviderInfo = { id: string; label: string; available: boolean; detail?: string; models: ProviderModel[]; thinking: boolean; managed: boolean; free_model: boolean; context_limit?: number | null; busy?: boolean; vision?: boolean; vision_detail?: string; fallback_model?: string; gpu_fallback?: { provider: string; model: string; label: string } | null; servers?: { local: boolean; remote: boolean; prefer: string } }
 export type SkillInfo = { name: string; title: string; description: string; examples: string[]; scope?: 'cut' | 'sequence' | 'any' }
 /** What a chat is about: one cut, or a sequence (its bible, shot plan and shot prompts). */
 export type AssistantScope = { kind: 'cut' | 'sequence'; id: string }

@@ -4,7 +4,7 @@ from contextlib import nullcontext
 from unittest.mock import patch
 
 import tests.test_analysis as analysis_tests
-from app import character_profile, db, frame_model, inference_worker, worker
+from app import character_profile, db, frame_model, inference_worker, visual_models, worker
 
 FRAMES = [{'position': 'first', 'time': 0.0, 'image_size': [1280, 720]}]
 ANSWER = {'character_sheet': {'hair': 'long black hair, straight fringe', 'eyes': 'brown', 'face': 'oval', 'skin': 'fair',
@@ -99,7 +99,7 @@ class CharacterProfileTest(unittest.TestCase):
         job = db.one('SELECT status,stage,payload_json FROM jobs WHERE id=?', (job_id,))
         self.assertEqual((job['status'], job['stage']), ('done', 'Complete · Details updated'))
         result = json.loads(job['payload_json'])['result']
-        self.assertEqual((result['model_id'], result['profile'], result['usage']['prompt_tokens']), (frame_model.MODEL_ID, ANSWER, 900))
+        self.assertEqual((result['model_id'], result['profile'], result['usage']['prompt_tokens']), (visual_models.MODELS[visual_models.DEFAULTS['character_profile']].model_id, ANSWER, 900))
         self.assertEqual(result['prompt']['system'], character_profile.PROFILE_INSTRUCTION)
 
     def test_job_runs_the_profile_model_chosen_when_it_was_queued(self):

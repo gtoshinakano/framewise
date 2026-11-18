@@ -46,6 +46,8 @@ class ToolContext:
     provider: str = ''
     model: str = ''
     extra: dict = field(default_factory=dict)
+    vision: bool = False  # the model of this turn can look at pictures (``Endpoint.vision``); tools marked vision are offered only then
+    images: list = field(default_factory=list)  # pictures a tool call wants shown to the model; the runner stores them with the tool message and clears the list
 
 
 @dataclass
@@ -59,14 +61,15 @@ class Tool:
     raw: bool = False
     must_pass: bool = False  # The runner sends the model back if it answers while this tool's last result has ok=false.
     scope: str = 'cut'  # 'cut' tools serve the chat about one cut, 'sequence' tools the chat about a sequence, 'any' both
+    vision: bool = False  # only offered to a model that can look at pictures
 
 
 REGISTRY: dict[str, Tool] = {}
 
 
-def tool(name, description, properties=None, required=(), summary=None, limit=7000, raw=False, must_pass=False, scope='cut'):
+def tool(name, description, properties=None, required=(), summary=None, limit=7000, raw=False, must_pass=False, scope='cut', vision=False):
     def register(handler):
-        REGISTRY[name] = Tool(name, description, {'type': 'object', 'properties': properties or {}, 'required': list(required)}, handler, summary, limit, raw, must_pass, scope)
+        REGISTRY[name] = Tool(name, description, {'type': 'object', 'properties': properties or {}, 'required': list(required)}, handler, summary, limit, raw, must_pass, scope, vision)
         return handler
     return register
 
@@ -75,9 +78,9 @@ def scope_of(ctx):
     return 'sequence' if ctx.sequence_id else 'cut'
 
 
-def schemas(scope='cut'):
+def schemas(scope='cut', vision=False):
     return [{'type': 'function', 'function': {'name': item.name, 'description': item.description, 'parameters': item.parameters}}
-            for item in REGISTRY.values() if item.scope in (scope, 'any')]
+            for item in REGISTRY.values() if item.scope in (scope, 'any') and (vision or not item.vision)]
 
 
 def validate(spec, args):
@@ -107,7 +110,7 @@ def validate(spec, args):
 def execute(ctx, name, arguments):
     """Run a tool call. Returns (content for the model, UI summary, ok)."""
     spec = REGISTRY.get(name)
-    available = [item.name for item in REGISTRY.values() if item.scope in (scope_of(ctx), 'any')]
+    available = [item.name for item in REGISTRY.values() if item.scope in (scope_of(ctx), 'any') and (ctx.vision or not item.vision)]
     if spec is None or spec.name not in available:
         return compact.dumps({'error': f'Unknown tool {name}. Available: {", ".join(available)}'}), f'Unknown tool {name}', False
     try:

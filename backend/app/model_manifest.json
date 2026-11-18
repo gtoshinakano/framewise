@@ -18,5 +18,17 @@
       {"name": "yolox_l.onnx", "size": 216746733, "sha256": "7860ae79de6c89a3c1eb72ae9a2756c0ccfbe04b7791bb5880afabd97855a411"},
       {"name": "dw-ll_ucoco_384.onnx", "size": 134399116, "sha256": "724f4ff2439ed61afb86fb8a1951ec39c6220682803b4a8bd4f598cd913b1843"}
     ]
+  },
+  "qwen36-vision": {
+    "repo": "glm-ai/Qwen3.6-35B-A3B-GGUF-Q4_K_M",
+    "revision": "main",
+    "pinned_by": "sha256 (the revision is a branch name; the file checksum is what is pinned)",
+    "gated": true,
+    "note": "Only the vision projector. The Qwen3.6 text GGUF it belongs to comes from scripts/download-qwen36.sh.",
+    "dir_env": "TEXT_MODEL_DIR",
+    "default_dir": ".models/qwen3.6-35b",
+    "files": [
+      {"name": "mmproj-Qwen3.6-35B-A3B-BF16.gguf", "size": 902822144, "sha256": "360c746ddf38fb67c06f83a0a88742492aa231e59e335cd980e6302f59ea6089"}
+    ]
   }
 }

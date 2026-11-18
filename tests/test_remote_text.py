@@ -42,7 +42,9 @@ class FakeLlama(BaseHTTPRequestHandler):
         elif self.path == '/v1/models':
             self.reply(200, {'data': [{'id': 'qwen3.6-mtp'}, {'id': 'bonsai2'}]})
         elif self.path.startswith('/props?model=qwen3.6-mtp'):
-            self.reply(200, {'default_generation_settings': {'n_ctx': 49152}})
+            self.reply(200, {'default_generation_settings': {'n_ctx': 49152}, 'modalities': {'vision': False, 'audio': False}})
+        elif self.path.startswith('/props?model=bonsai2'):
+            self.reply(200, {'modalities': {'vision': True}})  # no context size reported, but it can read images
         else:
             self.reply(404, {})
 
@@ -297,7 +299,9 @@ class RemoteTextTest(unittest.TestCase):
         cfg = self.configure(self.start_server())
         result = remote_text.probe(cfg)
         self.assertEqual(result['state'], 'online')
-        self.assertEqual(result['models'], [{'id': 'qwen3.6-mtp', 'n_ctx': 49152}, {'id': 'bonsai2', 'n_ctx': None}])
+        self.assertEqual(result['models'], [{'id': 'qwen3.6-mtp', 'n_ctx': 49152}, {'id': 'bonsai2', 'n_ctx': None, 'vision': True}])  # vision is listed only when the server says it
+        remote_text.publish(result)
+        self.assertEqual((remote_text.model_vision('bonsai2'), remote_text.model_vision('qwen3.6-mtp'), remote_text.model_vision('unknown')), (True, False, False))
         self.assertEqual(remote_text.probe({**cfg, 'token': 'wrong'})['state'], 'auth_failed')
         self.assertEqual(remote_text.probe({**cfg, 'base_url': f'http://127.0.0.1:{free_port()}'})['state'], 'offline')
 
@@ -354,7 +358,7 @@ class RemoteTextTest(unittest.TestCase):
         self.assertEqual(providers.gpu_fallback(available), (remote, 'qwen3.6-mtp'))
         info = remote.describe()
         self.assertTrue(info['available'])
-        self.assertEqual(info['models'], [{'id': 'qwen3.6-mtp', 'label': 'qwen3.6-mtp', 'context': 49152}])
+        self.assertEqual(info['models'], [{'id': 'qwen3.6-mtp', 'label': 'qwen3.6-mtp', 'context': 49152, 'vision': False}])
         endpoint = remote.endpoint('qwen3.6-mtp', True)
         self.assertEqual(endpoint.headers['Authorization'], AUTH)
         self.assertEqual(endpoint.url, 'http://127.0.0.1:9/v1/chat/completions')

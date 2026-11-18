@@ -12,6 +12,7 @@ examples: Fix the character name in the keyframe analysis
 3. Find what to change:
    - `find_in_results(query="<wrong text>")` shows which results contain the text and where. Use it to find every occurrence cheaply.
    - Read the target result with `get_result` (use `fields` to limit it) when you need the exact wording.
+   - If `view_frames` is in your tool list and the correction is about something visible (position, pose, gaze, expression, props, clothing, camera), look at the frame the result describes before you propose (`look_at_frames` explains how). Say what the picture shows. If it contradicts the user's correction, tell them before proposing; their decision still stands if they insist. Names and identities come from the user and `get_characters`, never from the picture.
 4. Call `propose_result_edit` with the smallest edit that does the job:
    - `replacements: [{"find": "a person", "replace": "Tomoe Koga"}]`. `find` must be exact text from the result. A replacement applies to every occurrence unless you set `"count": 1`. Add surrounding words to `find` when a short word would also match places that must not change.
    - `set: [{"path": "windows.0.analysis.events.0.subject", "value": "Tomoe Koga"}]` replaces one JSON field of a structured result. Paths use dot notation with list indexes.

@@ -900,7 +900,7 @@ def process_character_detection(job_id, owner):
         run = db.one('SELECT * FROM character_detection_runs WHERE job_id=?', (job_id,))
         pending = db.all_rows('SELECT * FROM character_detections WHERE run_id=? AND label_source IS NULL ORDER BY rowid', (run['id'],))
         if references and pending:
-            from . import frame_model
+            from . import frame_model, visual_models
             frames = json.loads(run['frames_json'])
             with tempfile.TemporaryDirectory(prefix='framewise-character-match-') as scratch:
                 prepared = []
@@ -909,10 +909,9 @@ def process_character_detection(job_id, owner):
                     image = character_detection.crop_frame(source, ref['frame'], ref['cut_start'], ref['cut_end'], ref['box'], scratch, f'ref-{index}')
                     prepared.append({**ref, 'image': image})
                 character_ids = list(dict.fromkeys(ref['character_context_id'] for ref in prepared))
-                with frame_model.frame_server(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'),
-                    os.environ.get('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
-                    os.environ.get('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf'),
-                    cancel_check=lambda: check_summary_lease(job_id, owner)) as server:
+                matcher = visual_models.general()
+                visual_models.require(matcher.key)
+                with frame_model.frame_server(*matcher.server_files(), cancel_check=lambda: check_summary_lease(job_id, owner), extra_args=matcher.server_args) as server:
                     for index, detection in enumerate(pending):
                         worker.stage(job_id, owner, episode['id'], f'Comparing character {index + 1}/{len(pending)}')
                         frame = next(frame for frame in frames if frame['position'] == detection['position'])
@@ -929,7 +928,7 @@ def process_character_detection(job_id, owner):
                                 worker.require_lease(conn, job_id, owner)
                                 # A deleted character cannot be assigned by a stale queued snapshot.
                                 if conn.execute("SELECT 1 FROM context_items WHERE id=? AND project_id=? AND kind='character'", (matches[0]['character_id'], episode['project_id'])).fetchone():
-                                    conn.execute("UPDATE character_detections SET character_context_id=?,label_source='auto',match_reason=?,match_model_id=?,match_model_revision=? WHERE id=? AND label_source IS NULL", (matches[0]['character_id'], matches[0]['reason'][:2000], frame_model.MODEL_ID, frame_model.MODEL_REVISION, detection['id']))
+                                    conn.execute("UPDATE character_detections SET character_context_id=?,label_source='auto',match_reason=?,match_model_id=?,match_model_revision=? WHERE id=? AND label_source IS NULL", (matches[0]['character_id'], matches[0]['reason'][:2000], matcher.model_id, matcher.revision, detection['id']))
         with db.connect() as conn:
             worker.require_lease(conn, job_id, owner)
             conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))

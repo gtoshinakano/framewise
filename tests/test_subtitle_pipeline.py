@@ -7,7 +7,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app import db, inference_worker, media, single_cut_pipeline, subtitle_pipeline, subtitle_reader, subtitle_scan, worker
+from app import db, inference_worker, media, single_cut_pipeline, subtitle_pipeline, subtitle_reader, subtitle_scan, visual_models, worker
 from app.assistant import tools
 import tests.test_analysis as analysis_tests
 
@@ -93,8 +93,9 @@ class SubtitleJobTest(unittest.TestCase):
              patch.object(single_cut_pipeline, 'release_gpu_models'), patch.object(single_cut_pipeline, 'ensure_models_available'), \
              patch.object(subtitle_reader, 'extract_frame', return_value=b'jpeg'), patch.object(subtitle_scan, 'choose_probe_times', side_effect=capture_probes), \
              patch.object(subtitle_scan, 'scan_video', side_effect=scan_video), patch.object(subtitle_scan, 'outline_share_of', return_value=share), patch.object(subtitle_pipeline.media, 'probe', return_value={'width': 960, 'height': 540}), \
-             patch.object(subtitle_pipeline.frame_model, 'frame_server', return_value=nullcontext('http://fake')), \
+             patch.object(subtitle_pipeline.frame_model, 'frame_server', return_value=nullcontext('http://fake')) as frame_server, patch.object(subtitle_pipeline.visual_models, 'require') as require, \
              patch.object(subtitle_reader, 'read_events', side_effect=reader or self.read_script()):
+            self.frame_server, self.require = frame_server, require
             subtitle_pipeline.process(*claimed)
         return claimed[0], calls
 
@@ -237,6 +238,29 @@ class SubtitleJobTest(unittest.TestCase):
         self.assertEqual(calls['locate'], 0)                    # the detected strip was kept
         self.assertEqual(db.one('SELECT COUNT(*) AS n FROM subtitle_runs')['n'], 1)
         self.assertEqual([line['text'] for line in self.client.get('/api/episodes/e/subtitles').json()['lines']], ['Olá, tudo bem?', 'Até logo.'])
+
+    def test_the_general_vision_model_reads_the_images_and_is_recorded_with_the_run(self):
+        self.prepare()
+        self.queue()
+        self.run_job()
+        model = visual_models.general()
+        self.assertEqual(self.frame_server.call_args.args, model.server_files())
+        self.assertEqual(self.frame_server.call_args.kwargs['extra_args'], model.server_args)
+        self.require.assert_called_with(model.key)
+        run = db.one('SELECT model_id,model_revision FROM subtitle_runs')
+        self.assertEqual((run['model_id'], run['model_revision']), (model.model_id, model.revision))
+
+    def test_a_failed_run_of_another_model_is_not_continued(self):
+        self.prepare()
+        self.queue()
+        self.run_job(reader=self.read_script(fail_after=2))
+        with db.connect() as conn:  # the failed run was read by Qwen3.5, as every run was before the switch
+            conn.execute("UPDATE subtitle_runs SET model_id='Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M',model_revision='old'")
+        self.queue()
+        seen = []
+        self.run_job(reader=self.read_script(seen=seen))
+        self.assertEqual(seen[0][0], [0, 1, 2, 3])  # every image is read again by the model that now owns the run
+        self.assertEqual(db.one("SELECT COUNT(*) AS n FROM subtitle_runs WHERE status='complete'")['n'], 1)
 
     def test_unreadable_images_fail_the_job_but_keep_everything_else_for_the_retry(self):
         self.prepare()

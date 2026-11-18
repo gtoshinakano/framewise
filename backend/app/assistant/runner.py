@@ -14,7 +14,7 @@ import time
 import uuid
 
 from .. import db, local_text_runtime
-from . import compact, providers, sequence_tools, skills, store, tools
+from . import compact, images, providers, sequence_tools, skills, store, tools, vision_tools  # noqa: F401  (the two tool modules register their tools)
 
 log = logging.getLogger(__name__)
 LEASE_SECONDS = 60
@@ -32,7 +32,7 @@ Ground rules
 - Subtitles and OCR text are reference only. Never put them into image or animation prompts.
 - Human review answers and instructions override model output.
 - You cannot change stored data directly. Use `propose_result_edit` for results and `propose_transcript_edit` for the audio transcript; the user applies the proposal. Never claim something is saved.
-- Before specialised work, load the matching skill with `load_skill` (once per conversation unless it was already loaded):
+{vision}- Before specialised work, load the matching skill with `load_skill` (once per conversation unless it was already loaded):
 {skills}
 - Reply in the user's language, in concise Markdown. Put prompts meant for copying in a fenced ```text block.
 
@@ -49,12 +49,17 @@ Ground rules
 - A shot's final prompt is rendered by the app from the shot's direction (a JSON object). You change the direction, never the prompt text: the app writes reference labels, timecodes, spoken words and audio lines.
 - You cannot change stored data directly. Use `propose_shot_edit`, `propose_plan_edit` and `propose_bible_edit`; the user applies each proposal. Never claim something is saved.
 - A change to the plan or the bible makes the affected shots stale; tell the user which shots must be written again.
-- Before proposing a change, load the matching skill with `load_skill` (once per conversation unless it was already loaded):
+{vision}- Before proposing a change, load the matching skill with `load_skill` (once per conversation unless it was already loaded):
 {skills}
 - Reply in the user's language, in concise Markdown.
 
 ## Sequence card
 {card}"""
+VISION_CUT = ("- You can look at the video with `view_frames`: this cut's first and last frame, its keyframes F1…Fn, or any second of it (zoom with `crop`). Look when the user asks what is on screen "
+              "or whether a result or prompt is right, and before you propose a correction to something visible. A picture shows one instant only, and who someone is still comes from the character boxes, "
+              "the saved results and the user.\n")
+VISION_SEQUENCE = ("- You can look at the video with `view_frames` (give the cut number): a cut's first and last frame, its keyframes F1…Fn, or any second of it (zoom with `crop`). Look before you judge "
+                   "a shot's opening frame, where a character stands or whether a prompt matches the picture. A picture shows one instant only, and who someone is still comes from the bible, the results and the user.\n")
 KEPT_TOOL_RESULTS = ('propose_result_edit', 'propose_transcript_edit', 'propose_shot_edit', 'propose_plan_edit', 'propose_bible_edit')
 
 
@@ -62,11 +67,14 @@ class Aborted(Exception):
     """The turn was deleted or its lease moved to another worker."""
 
 
-def system_prompt(session):
-    """The standing instructions of a chat: about its sequence when it has one, otherwise about its cut."""
+def system_prompt(session, vision=False):
+    """The standing instructions of a chat: about its sequence when it has one, otherwise about its cut.
+
+    The sentence about looking at frames is only there when the model can see (``Endpoint.vision``).
+    """
     if session.get('sequence_id'):
-        return SEQUENCE_PROMPT.format(skills=skills.index_text('sequence'), card=sequence_tools.sequence_card(session['sequence_id']))
-    return SYSTEM_PROMPT.format(skills=skills.index_text(), card=tools.cut_card(session['cut_id']))
+        return SEQUENCE_PROMPT.format(skills=skills.index_text('sequence', vision), card=sequence_tools.sequence_card(session['sequence_id']), vision=VISION_SEQUENCE if vision else '')
+    return SYSTEM_PROMPT.format(skills=skills.index_text(vision=vision), card=tools.cut_card(session['cut_id']), vision=VISION_CUT if vision else '')
 
 
 # ------------------------------------------------------------------ claiming
@@ -94,11 +102,63 @@ def claim_turn():
 
 # ------------------------------------------------------------------- history
 
-def history_messages(session_id, current_turn_id, budget_tokens):
-    """Rebuild OpenAI-style history; compact older turns only when over budget."""
+def tool_pictures(row):
+    """The picture references a tool message stored (``images.reference``), oldest first."""
+    pictures = store.loads(row.get('usage_json'), {}).get('images')
+    return [item for item in pictures if isinstance(item, dict) and item.get('cut_id') and item.get('frame')] if isinstance(pictures, list) else []
+
+
+def picture_message(pending):
+    """One user message that carries the pictures of the tool results just before it (an image cannot sit inside a tool result for every provider)."""
+    parts = [{'type': 'text', 'text': 'Pictures from your view_frames call, in the order of its result:\n' + '\n'.join(f'{number}. {ref["label"]}' for number, ref in enumerate(pending, 1))}]
+    parts += [{'type': 'image_url', 'image_url': {'url': None}, '_ref': ref} for ref in pending]
+    return {'role': 'user', 'content': parts}
+
+
+def block_tokens(block):
+    """Estimated tokens of one message; an attached picture counts for what the model's vision encoder makes of it, not for its bytes."""
+    content = block.get('content')
+    if not isinstance(content, list):
+        return compact.estimate_tokens(json.dumps(block, ensure_ascii=False))
+    extra = {key: value for key, value in block.items() if key != 'content'}
+    total = compact.estimate_tokens(json.dumps(extra, ensure_ascii=False))
+    for part in content:
+        total += images.TOKENS_PER_PICTURE if part.get('type') == 'image_url' else compact.estimate_tokens(part.get('text') or '')
+    return total
+
+
+def attach_pictures(messages):
+    """Cut the pictures out of the video now that the history is final; one that cannot be made becomes a line of text."""
+    for message in messages:
+        if isinstance(message.get('content'), list):
+            parts = []
+            for part in message['content']:
+                if part.get('type') == 'image_url' and '_ref' in part:
+                    try:
+                        parts.append({'type': 'image_url', 'image_url': {'url': images.data_url(part['_ref'])}})
+                    except images.FrameError as exc:
+                        parts.append({'type': 'text', 'text': f'[{part["_ref"]["label"]}: the picture is not available now ({exc})]'})
+                else:
+                    parts.append(part)
+            message['content'] = parts
+    return messages
+
+
+PICTURES_DROPPED = '\n[The pictures of this result are no longer attached to save context. Call view_frames again to see them.]'
+PICTURES_UNSEEN = '\n[Pictures were attached to this result, but the model answering now cannot see images.]'
+
+
+def history_messages(session_id, current_turn_id, budget_tokens, vision=False):
+    """Rebuild OpenAI-style history; compact older turns only when over budget.
+
+    With ``vision`` the latest ``images.MAX_ATTACHED`` pictures of ``view_frames`` results are attached again (read from the video, never stored);
+    older ones, and all of them for a model that cannot see, stay only as the text the tool returned.
+    """
     with db.connect() as conn:
         rows = [dict(row) for row in conn.execute('SELECT * FROM assistant_messages WHERE session_id=? ORDER BY seq', (session_id,))]
     answered = {row['tool_call_id'] for row in rows if row['role'] == 'tool'}
+    shown = [(row['id'], index) for row in rows if row['role'] == 'tool' for index in range(len(tool_pictures(row)))]
+    keep = set(shown[-images.MAX_ATTACHED:]) if vision else set()
     turns, order = {}, []
     for row in rows:
         turn_id = row['turn_id'] or row['id']
@@ -108,8 +168,11 @@ def history_messages(session_id, current_turn_id, budget_tokens):
         turns[turn_id].append(row)
 
     def render(turn_rows, elide_tools):
-        out, has_answer = [], False
+        out, has_answer, pending = [], False, []
         for row in turn_rows:
+            if pending and row['role'] != 'tool':
+                out.append(picture_message(pending))
+                pending = []
             if row['role'] == 'user':
                 out.append({'role': 'user', 'content': row['content']})
             elif row['role'] == 'assistant':
@@ -122,15 +185,25 @@ def history_messages(session_id, current_turn_id, budget_tokens):
                     has_answer = True
             elif row['role'] == 'tool':
                 content = row['content']
+                pictures = tool_pictures(row)
                 if elide_tools and row['tool_name'] not in KEPT_TOOL_RESULTS:
                     content = compact.dumps({'elided': True, 'summary': row['tool_summary'] or row['tool_name'], 'note': 'Call the tool again if you need this data.'})
+                    pictures = []
+                else:
+                    attached = [ref for index, ref in enumerate(pictures) if (row['id'], index) in keep]
+                    if pictures and len(attached) < len(pictures):
+                        content += PICTURES_DROPPED if vision else PICTURES_UNSEEN
+                    pictures = attached
                 out.append({'role': 'tool', 'tool_call_id': row['tool_call_id'], 'name': row['tool_name'], 'content': content})
+                pending.extend(pictures)
+        if pending:
+            out.append(picture_message(pending))
         if turn_rows and turn_rows[0]['turn_id'] != current_turn_id and not has_answer:
             out.append({'role': 'assistant', 'content': '[No answer: this turn was cancelled or failed.]'})
         return out
 
     def size(blocks):
-        return sum(compact.estimate_tokens(json.dumps(block, ensure_ascii=False)) for turn in blocks for block in turn)
+        return sum(block_tokens(block) for turn in blocks for block in turn)
 
     rendered = [render(turns[turn_id], False) for turn_id in order]
     if size(rendered) > budget_tokens:
@@ -143,7 +216,7 @@ def history_messages(session_id, current_turn_id, budget_tokens):
     if omitted:
         messages.insert(0, {'role': 'user', 'content': f'[{omitted} earlier exchange(s) omitted to fit the context window.]'})
         messages.insert(1, {'role': 'assistant', 'content': 'Understood.'})
-    return messages
+    return messages  # pictures are still references here; ``attach_pictures`` reads them when the request is made
 
 
 # ---------------------------------------------------------------- execution
@@ -309,7 +382,9 @@ def run_turn(turn_id, owner):
                     store.bump(conn, turn_id, usage_json=json.dumps(usage))
             usage['context_limit'] = endpoint.context_limit
             usage['load_seconds'] = endpoint.extra.get('_load_seconds', 0)
-            schemas = tools.schemas(tools.scope_of(ctx))
+            ctx.vision = bool(endpoint.vision)
+            usage['vision'] = ctx.vision
+            schemas = tools.schemas(tools.scope_of(ctx), vision=ctx.vision)
             budget = int((endpoint.context_limit or 32768) * 0.5)
             nudged = False
             failing = None  # A must_pass tool whose latest result failed.
@@ -317,7 +392,7 @@ def run_turn(turn_id, owner):
             step = 0
             while step < MAX_STEPS:
                 last = step == MAX_STEPS - 1
-                messages = [{'role': 'system', 'content': system_prompt(session)}, *history_messages(session['id'], turn_id, budget)]
+                messages = [{'role': 'system', 'content': system_prompt(session, ctx.vision)}, *history_messages(session['id'], turn_id, budget, ctx.vision)]
                 if last:
                     messages.append({'role': 'user', 'content': '[Tool budget reached. Answer now with the information you have.]'})
                 elif failing and reminders:
@@ -326,7 +401,7 @@ def run_turn(turn_id, owner):
                     messages.append({'role': 'user', 'content': '[Your previous reply was empty. Give your answer now.]'})
                 run.stage('Waiting for first token')
                 run.start_stream()
-                result = providers.stream_chat(endpoint, messages, None if last else schemas, max_tokens=8192 if turn['thinking'] else 4096,
+                result = providers.stream_chat(endpoint, attach_pictures(messages), None if last else schemas, max_tokens=8192 if turn['thinking'] else 4096,
                                                temperature=0.6 if turn['thinking'] else 0.5, on_delta=run.on_delta, checkpoint=run.checkpoint,
                                                on_tool=lambda name: run.stage(f'Preparing {name}'))
                 if result.finish_reason == 'length' and not result.tool_calls:
@@ -347,7 +422,9 @@ def run_turn(turn_id, owner):
                         except Exception as exc:  # A tool bug must not end the conversation.
                             log.exception('Assistant tool %s failed', call['name'])
                             content, label, ok = compact.dumps({'error': f'Tool failed: {exc}'}), f"{call['name']} failed", False
-                        run.add_message('tool', content=content, tool_call_id=call['id'], tool_name=call['name'], tool_summary=label[:300], usage={'ok': ok, 'chars': len(content)})
+                        shown, ctx.images = list(ctx.images), []
+                        run.add_message('tool', content=content, tool_call_id=call['id'], tool_name=call['name'], tool_summary=label[:300],
+                                        usage={'ok': ok, 'chars': len(content), **({'images': shown} if shown and ok else {})})
                         usage['tool_calls'] += 1
                         spec = tools.REGISTRY.get(call['name'])
                         if spec and spec.must_pass:

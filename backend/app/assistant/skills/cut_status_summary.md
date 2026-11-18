@@ -16,6 +16,7 @@ Goal: one answer that tells the user where the analysis stands and what the cut 
    - `get_result(type="performance_beats")` for the timed acting when no brief exists (older cuts: `get_result(type="video_analysis")`)
    - `get_transcript()` only if dialogue matters and the card shows segments
 3. Do not read every result. Two or three tool calls are usually enough.
+4. If `view_frames` is in your tool list and the user wants to know what happens in the cut, look at `first` and one or two keyframes (`F2`, the last `F…`) so the summary rests on the picture and not only on text; say so when the picture differs from a result.
 
 ## Answer format
 ### Status

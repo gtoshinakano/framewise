@@ -22,7 +22,7 @@ export function ResultMetrics({ result }: { result: AnalysisResult }) {
     {typeof usage.request_seconds === 'number' && <span>Request: {(usage.request_seconds as number).toFixed(1)}s</span>}
     {typeof usage.reasoning_tokens === 'number' && <span>Thinking tokens: {value('reasoning_tokens')}</span>}
     {typeof usage.load_seconds === 'number' && <span>Model preparation: {(usage.load_seconds as number).toFixed(1)}s</span>}
-    {settings.structured_type === 'keyframe_analysis' && <span>Method: <strong className="text-[#e8ebf1]">{settings.method === 'hybrid' ? 'Qwen3.5 + DWPose keypoints' : 'Qwen3.5 only (DWPose not installed)'}</strong> · {String(settings.keyframes ?? '?')} keyframes in {String(settings.windows ?? '?')} windows{Number(settings.retries) ? ` · ${String(settings.retries)} retries` : ''}</span>}
+    {settings.structured_type === 'keyframe_analysis' && <span>Method: <strong className="text-[#e8ebf1]">{settings.method === 'hybrid' ? 'vision model + DWPose keypoints' : 'vision model only (DWPose not installed)'}</strong> · {String(settings.keyframes ?? '?')} keyframes in {String(settings.windows ?? '?')} windows{Number(settings.retries) ? ` · ${String(settings.retries)} retries` : ''}</span>}
     {settings.provider === 'local' && <span>Thinking: {settings.thinking ? 'On' : 'Off'}{settings.thinking && typeof settings.thinking_budget_tokens === 'number' ? ` (budget ${settings.thinking_budget_tokens})` : ''}</span>}
   </div>
 }

@@ -14,6 +14,12 @@ chosen, only installed, and its status tells the keyframe stage whether it can r
 The Qwen3-VL-8B video model and its ``video_analysis`` role were removed on 2026-11-18 (keyframe analysis replaced
 them); a saved choice or a job snapshot for that role is ignored.
 
+**Qwen3.6-35B-A3B with its vision projector is the default of every role since 2026-11-18** (``qwen_experiment/``: the same first
+frames took a median 6.7 s against 17.5 s on Qwen3.5-27B). It is the text model's own GGUF plus a projector, so it needs nothing
+else on disk, and the same projector lets the chat model of Cut Assistance look at frames (``local_text_runtime``). Qwen3.5-27B stays
+selectable. The keyframe prompt was measured on Qwen3.5 only: re-run ``multiframe_experiment/`` before trusting a change in quality.
+Callers that are not a role (subtitle reading, the older character matcher) use ``general()``.
+
 The API container cannot see the model folders (they are mounted into the inference worker only), so
 the worker publishes ``status()`` of every model to ``visual_model_state`` and the API reads that.
 """
@@ -23,7 +29,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import db, frame_model
+from . import db, frame_model, local_text_runtime
 
 ROLES = ('initial_frame', 'keyframe_analysis', 'character_profile')
 ROLE_LABELS = {'initial_frame': 'First frame', 'keyframe_analysis': 'Keyframes (motion)', 'character_profile': 'Character profile'}
@@ -46,6 +52,7 @@ class VisualModel:
     server_args: tuple = ()
     manifest: str | None = None  # model_manifest.json entry the installer downloads
     note: str = ''
+    external: str = ''  # how to install the files the manifest does not list (another installer owns them)
 
     def path(self, name):
         env, default, *file_name = self.files[name]
@@ -69,21 +76,40 @@ def _lfm3():
         note='2.2B omni model: much faster, less detailed.')
 
 
+def _qwen36():
+    projector = MANIFEST['qwen36-vision']['files'][0]
+    return VisualModel(
+        key='qwen36-35b', label='Qwen3.6 35B-A3B · Q4_K_M + vision', short_name='Qwen3.6-35B-A3B',
+        model_id=local_text_runtime.MODEL_ID, revision=f"{local_text_runtime.MODEL_REVISION}+mmproj-sha256:{projector['sha256'][:12]}", runtime='llama-server',
+        roles=('initial_frame', 'keyframe_analysis', 'character_profile'),
+        files={'model': ('QWEN36_MODEL_PATH', '/models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf'),
+               'projector': ('QWEN36_PROJECTOR_PATH', '/models/qwen3.6-35b/' + projector['name'])},
+        manifest='qwen36-vision', external='the text model comes from scripts/download-qwen36.sh',
+        note='The text model of Cut Assistance with its vision projector: about 2.5 times faster than Qwen3.5-27B on first frames.')
+
+
 MODELS = {model.key: model for model in (
+    _qwen36(),
     VisualModel(key='qwen35-27b', label='Qwen3.5 27B · Q4_K_M', short_name='Qwen3.5-27B',
                 model_id=frame_model.MODEL_ID, revision=frame_model.MODEL_REVISION, runtime='llama-server',
                 roles=('initial_frame', 'keyframe_analysis', 'character_profile'),
                 files={'model': ('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
                        'projector': ('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf')},
-                note='The default still-image model.'),
+                note='The previous default: slower, the model the keyframe prompt was measured on.'),
     _lfm3(),
     VisualModel(key='dwpose', label='DWPose · ONNX (CPU)', short_name='DWPose', model_id='yzd-v/DWPose',
                 revision=MANIFEST['dwpose']['revision'], runtime='onnx', roles=(),
                 files={'detector': ('DWPOSE_DIR', '/models/dwpose', 'yolox_l.onnx'), 'pose': ('DWPOSE_DIR', '/models/dwpose', 'dw-ll_ucoco_384.onnx')},
                 manifest='dwpose',
-                note='Body keypoints on the CPU, merged into the keyframe analysis (arms, legs, position, walking). Without it the keyframe analysis runs on Qwen3.5 alone.'),
+                note='Body keypoints on the CPU, merged into the keyframe analysis (arms, legs, position, walking). Without it the keyframe analysis runs on the vision model alone.'),
 )}
-DEFAULTS = {'initial_frame': 'qwen35-27b', 'keyframe_analysis': 'qwen35-27b', 'character_profile': 'qwen35-27b'}
+DEFAULTS = {'initial_frame': 'qwen36-35b', 'keyframe_analysis': 'qwen36-35b', 'character_profile': 'qwen36-35b'}
+GENERAL = 'qwen36-35b'  # for the callers that are not a role: subtitle reading and the older character matcher
+
+
+def general():
+    """The image model of everything that has no role of its own."""
+    return MODELS[GENERAL]
 
 
 def supports(key, role):
@@ -106,16 +132,23 @@ def status(key):
     entry = MANIFEST.get(model.manifest or '')
     if entry:
         sizes = {item['name']: item['size'] for item in entry['files']}
+        # A file the manifest does not list belongs to another installer; it is never download progress.
         done = 0
         partial = False
         for path in files:
+            if path.name not in sizes:
+                continue
             if path.is_file():
-                done += sizes.get(path.name, path.stat().st_size)
+                done += sizes[path.name]
             elif path.with_name(path.name + '.partial').is_file():
                 partial = True
                 done += path.with_name(path.name + '.partial').stat().st_size
-        if partial or done:
-            return {'available': False, 'detail': f'Downloading {min(100.0, 100 * done / max(1, sum(sizes.values()))):.0f}%'}
+        total = sum(sizes.values())
+        if partial or 0 < done < total:
+            return {'available': False, 'detail': f'Downloading {min(100.0, 100 * done / max(1, total)):.0f}%'}
+        missing = [path.name for path in files if path.name not in sizes and not path.is_file()]
+        if missing and done == total:  # everything this installer owns is here; what is left comes from another installer
+            return {'available': False, 'detail': f"{', '.join(missing)} is missing" + (f' ({model.external})' if model.external else '')}
     return {'available': False, 'detail': 'Not installed'}
 
 
