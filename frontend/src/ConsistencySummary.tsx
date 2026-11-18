@@ -1,10 +1,10 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react'
-import { Check, CircleCheck, FileText, ListChecks, RefreshCw, ScanSearch, ShieldCheck, TriangleAlert, UserRoundCheck, X } from 'lucide-react'
+import { Check, CircleCheck, Eye, EyeOff, FileText, ListChecks, RefreshCw, ScanSearch, ShieldCheck, TriangleAlert, UserRoundCheck, X } from 'lucide-react'
 import { api, type AnalysisResult, type Job } from './api'
 import { ResultMetrics } from './ResultMetrics'
 import { ActionButton, Skeleton, StatusChip, WarningLine } from './RunUi'
 import { Disclosure, StepPanel } from './ReviewUi'
-import { answerLabel, parseConsistency, selection, setAnswer, timeParts, topicLabel, type ConsistencyKey, type ConsistencySection, type Question } from './consistencyView'
+import { answerLabel, parseConsistency, selection, setAnswer, timeParts, topicLabel, type ConsistencyKey, type ConsistencySection, type Question, type VisualCheck } from './consistencyView'
 
 // What the user works from comes first. Each field keeps its stored name's wording and gets its own colour and icon,
 // matching the tones used on the Run settings tab; the label and icon always carry the meaning, never colour alone.
@@ -86,6 +86,34 @@ function QuestionCard({ number, question, all, answers }: { number: number; ques
   </li>
 }
 
+const VERDICT: Record<VisualCheck['verdict'], { label: string; tone: 'red' | 'amber' | 'green' }> = {
+  contradicts: { label: 'Picture disagrees', tone: 'red' },
+  unclear: { label: 'Picture unclear', tone: 'amber' },
+  agrees: { label: 'Picture agrees', tone: 'green' },
+}
+
+/** What the reviewer saw when it compared the stored readings with pictures of the cut; agreements stay folded away. */
+function VisualChecks({ checks }: { checks: VisualCheck[] }) {
+  const flagged = checks.filter(check => check.verdict !== 'agrees')
+  const agreed = checks.length - flagged.length
+  const row = (check: VisualCheck, index: number) => <li key={index} className="space-y-1">
+    <div className="flex flex-wrap items-center gap-1.5">
+      <StatusChip tone={VERDICT[check.verdict].tone}>{VERDICT[check.verdict].label}</StatusChip>
+      <span className="rounded bg-white/[.06] px-1 font-mono text-[11.5px] text-[#b4d2ff]">{check.picture}</span>
+      {check.character && <StatusChip tone="blue">{check.character}</StatusChip>}
+    </div>
+    {check.claim && <p className="break-words text-[12.5px] leading-5 text-[#aeb5c1]"><span className="font-semibold text-[#929aa9]">Stored: </span>{check.claim}</p>}
+    {check.seen && <p className="break-words text-[12.5px] leading-5 text-[#e8ebf1]"><span className="font-semibold text-[#b4d2ff]">Seen: </span>{check.seen}</p>}
+  </li>
+  return <section aria-label="Checked against the pictures" className="rounded-lg border-l-[3px] border-l-[#6aa8ff] bg-[#141f33] px-3.5 py-3">
+    <h4 className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[.1em] text-[#b4d2ff]"><Eye size={14} aria-hidden />Checked against the pictures
+      <StatusChip tone={flagged.some(check => check.verdict === 'contradicts') ? 'red' : 'green'} className="ml-auto normal-case tracking-normal">{flagged.length ? `${flagged.length} flagged` : 'All agree'}</StatusChip></h4>
+    {checks.length === 0 ? <p className="muted text-[12px]">No picture showed a face, pose or mouth the evidence describes.</p>
+      : <>{flagged.length > 0 && <ol className="space-y-3">{flagged.map(row)}</ol>}
+        {agreed > 0 && <Disclosure label={`${agreed} reading${agreed === 1 ? '' : 's'} the pictures confirm`}><ol className="space-y-3">{checks.filter(check => check.verdict === 'agrees').map(row)}</ol></Disclosure>}</>}
+  </section>
+}
+
 function Decisions({ questions, answers }: { questions: Question[]; answers: AnswersApi }) {
   const look = LOOK.human_review
   const answered = questions.filter(question => selection(answers.text, question, questions)).length
@@ -110,7 +138,12 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
     } catch (error) { setMessage((error as Error).message) } finally { setWorking(false) }
   }
   const rerun = <ActionButton compact icon={<RefreshCw size={13} aria-hidden />} pending={working} disabled={disabled || !!activeJob} onClick={() => void queue()} title="Queue a new consistency summary for this cut">{result ? 'Re-run' : 'Queue'}</ActionButton>
-  const status = activeJob ? <StatusChip tone="purple" title="A consistency summary for this cut is being written; this text is the previous version.">{activeJob.status === 'queued' ? 'Queued' : 'Updating…'}</StatusChip> : null
+  const pictures = typeof result?.settings?.pictures === 'number' ? result.settings.pictures : 0
+  // Only reviews written since pictures were offered record `vision`; older ones say nothing about it.
+  const sight = !result || typeof result.settings?.vision !== 'boolean' ? null
+    : result.settings.vision ? <StatusChip tone="blue" icon={<Eye size={11} aria-hidden />} title="The reviewer looked at pictures of this cut">{pictures} pictures</StatusChip>
+      : <StatusChip tone="amber" icon={<EyeOff size={11} aria-hidden />} title="The text model that wrote this review could not read images, so it judged from the text evidence alone">Checked without pictures</StatusChip>
+  const status = activeJob ? <StatusChip tone="purple" title="A consistency summary for this cut is being written; this text is the previous version.">{activeJob.status === 'queued' ? 'Queued' : 'Updating…'}</StatusChip> : sight
   // "All clear" is only said when the model explicitly found nothing to decide or check, never because a field is missing.
   const quiet = !!view && (view.format === 'questions' ? view.questions.length === 0 : view.sections.human_review.none && view.sections.recommended_checks.none)
   const allClear = !!view && quiet && !view.conflicts
@@ -136,6 +169,7 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
             {view.conflicts && <StatusChip tone="red" icon={<TriangleAlert size={11} aria-hidden />}>Conflicts found</StatusChip>}
             {quiet && <StatusChip tone="green" icon={<CircleCheck size={11} aria-hidden />}>No decisions needed</StatusChip>}
           </div>}
+        {view.visualChecks && <VisualChecks checks={view.visualChecks} />}
         {view.format === 'questions' && view.questions.length > 0 && <Decisions questions={view.questions} answers={answers ?? { text: '', onChange: () => {}, ready: false }} />}
         {(view.format === 'questions' ? QUESTION_ORDER : ORDER).map(key => <Field key={key} section={view.sections[key]} />)}
         <Disclosure label="Generation details"><ResultMetrics result={result} /></Disclosure>

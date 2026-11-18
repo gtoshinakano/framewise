@@ -69,8 +69,8 @@ def slim_neighbors(context):
                 except ValueError:
                     pass
                 source[label] = content
-    # A neighbour's open questions are not facts about it.
-    return {label: ({key: value for key, value in content.items() if key != 'questions'} if isinstance(content, dict) else content) for label, content in source.items()}
+    # A neighbour's open questions and picture checks are not facts about it.
+    return {label: ({key: value for key, value in content.items() if key not in ('questions', 'visual_check')} if isinstance(content, dict) else content) for label, content in source.items()}
 
 
 def slim_context(context, dialogue=True):

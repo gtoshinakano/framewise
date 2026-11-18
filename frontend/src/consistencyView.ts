@@ -32,6 +32,17 @@ export type Question = {
   why: string
 }
 
+/** One comparison of a stored reading with a picture of the cut (results written by a reviewer that could see). */
+export type VisualCheck = {
+  character: string
+  /** The picture's label as the reviewer saw it: "First frame", "F3", "Line 12.30-13.50s". */
+  picture: string
+  source: string
+  claim: string
+  seen: string
+  verdict: 'contradicts' | 'unclear' | 'agrees'
+}
+
 export type ConsistencyView = {
   /** False when the stored content is not a JSON object (older results that the Analysis fields editor can repair). */
   valid: boolean
@@ -43,6 +54,8 @@ export type ConsistencyView = {
   /** Results written with questions keep no Human review or Suggested checks text; older ones have no questions. */
   format: 'questions' | 'text'
   questions: Question[]
+  /** Null when the review did not look at pictures (text only, or written before 2026-11-19). Contradictions first. */
+  visualChecks: VisualCheck[] | null
 }
 
 const NONE_PREFIX = /^(?:none required|none identified|none needed|not required)\b[\s.!:;,-]*/i
@@ -156,6 +169,23 @@ export function parseQuestions(value: unknown): Question[] {
   return found
 }
 
+const VERDICTS = ['contradicts', 'unclear', 'agrees'] as const
+
+/** The visual checks as stored, read leniently and ordered contradictions first; null when the field is missing. */
+export function parseVisualChecks(value: unknown): VisualCheck[] | null {
+  if (!Array.isArray(value)) return null
+  const found: VisualCheck[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const item = entry as Record<string, unknown>
+    const verdict = text(item.verdict).toLowerCase() as VisualCheck['verdict']
+    const picture = text(item.picture)
+    if (!picture || !VERDICTS.includes(verdict) || !(text(item.claim) || text(item.seen))) continue
+    found.push({ character: text(item.character), picture, source: text(item.source), claim: text(item.claim), seen: text(item.seen), verdict })
+  }
+  return found.sort((a, b) => VERDICTS.indexOf(a.verdict) - VERDICTS.indexOf(b.verdict))
+}
+
 // -- the answers text ---------------------------------------------------------------------------------------------
 // A chosen option is one line of "Your answers": "- Gaze (Mai): At Rio". Nothing else is stored, so a selection is
 // found again by reading the line; text the user wrote or edited shows as a custom answer.
@@ -234,7 +264,7 @@ export function parseConsistency(content: string): ConsistencyView {
   const format = data && Array.isArray(data.questions) ? 'questions' : 'text'
   const questions = format === 'questions' ? parseQuestions(data?.questions) : []
   return {
-    valid: data !== null, sections, format, questions,
+    valid: data !== null, sections, format, questions, visualChecks: parseVisualChecks(data?.visual_check),
     decisions: format === 'questions' ? questions.length : sections.human_review.items.length,
     checks: sections.recommended_checks.items.length,
     conflicts: sections.confusing.present && !sections.confusing.none,

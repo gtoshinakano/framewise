@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { answerLine, answerLabel, noneNote, parseConsistency, parseQuestions, selection, setAnswer, splitItems, splitSentences, timeParts, topicLabel, unwrapList } from '../src/consistencyView.ts'
+import { answerLine, answerLabel, noneNote, parseConsistency, parseQuestions, parseVisualChecks, selection, setAnswer, splitItems, splitSentences, timeParts, topicLabel, unwrapList } from '../src/consistencyView.ts'
 
 test('a JSON array written inside a string becomes one line per entry, even when it is not valid JSON', () => {
   assert.equal(unwrapList('[\n  "Determine if A and B merge.",\n  "Confirm the spelling (\\"Mai-san\\")."\n]'), 'Determine if A and B merge.\nConfirm the spelling ("Mai-san").')
@@ -113,6 +113,19 @@ test('questions are read leniently and a result with them has no text sections t
   assert.equal(old.format, 'text')
   assert.equal(old.decisions, 1)
   assert.equal(parseConsistency(JSON.stringify({ summary: 's', questions: [] })).decisions, 0)
+})
+
+test('visual checks are read leniently, contradictions first, and missing on reviews that did not look', () => {
+  const checks = parseVisualChecks([
+    { character: 'Mai', picture: 'F2', source: 'keyframes', claim: 'smiles', seen: 'brows raised, eyes wide, mouth open: surprise', verdict: 'agrees' },
+    { character: 'Mai', picture: 'First frame', source: 'first_frame', claim: 'big smile', seen: 'raised brows, wide eyes, open mouth: surprised', verdict: 'Contradicts' },
+    { picture: 'Line 1.00-2.00s', claim: 'on_screen', seen: 'face hidden', verdict: 'unclear' },
+    { picture: '', claim: 'x', verdict: 'agrees' }, { picture: 'F1', verdict: 'maybe', claim: 'x' }, { picture: 'F1', verdict: 'agrees' }, 'junk', null,
+  ])
+  assert.deepEqual(checks.map(check => [check.picture, check.verdict]), [['First frame', 'contradicts'], ['Line 1.00-2.00s', 'unclear'], ['F2', 'agrees']])
+  assert.equal(parseVisualChecks(undefined), null)
+  assert.equal(parseConsistency(JSON.stringify({ summary: 's', questions: [] })).visualChecks, null)
+  assert.deepEqual(parseConsistency(JSON.stringify({ visual_check: [], summary: 's', questions: [] })).visualChecks, [])
 })
 
 test('an answer is one bullet line named by topic and character', () => {

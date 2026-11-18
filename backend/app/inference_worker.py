@@ -1,4 +1,5 @@
 """Separate leased worker for per-cut visual analysis and prompt synthesis."""
+import base64
 import json
 import logging
 import math
@@ -242,14 +243,42 @@ def retry_delay(seconds, cancel_check):
         time.sleep(min(0.5, remaining))
 
 
+def endpoint_vision(provider, cancel_check=None):
+    """True when the server a text request of ``provider`` goes to can read images.
+
+    Local: the running Qwen 3.6 loaded its vision projector (it is started first, so the answer is known);
+    a remote lane: the other PC reports vision for the bound model; OpenRouter: never.
+    """
+    if provider != 'local':
+        return False
+    remote = remote_text.bound()
+    if remote is not None:
+        return remote_text.model_vision(remote.model)
+    if local_text_runtime.runtime is None:
+        return False
+    local_text_runtime.runtime.ensure(cancel_check=cancel_check)
+    return bool(local_text_runtime.runtime.vision)
+
+
+def user_content(evidence, images):
+    """The user message: the evidence alone, or the evidence followed by each picture after a line naming it."""
+    if not images:
+        return evidence
+    parts = [{'type': 'text', 'text': evidence}]
+    for label, data in images:
+        parts += [{'type': 'text', 'text': f'Picture {label}'}, {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(data).decode('ascii')}}]
+    return parts
+
+
 def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=False, progress=None, cancel_check=None, plain_text=False, provider='openrouter', thinking=False, usage_out=None, text_validator=None,
-              response_format=None, validator=None, temperature=0.2):
+              response_format=None, validator=None, temperature=0.2, images=None):
     """Ask the text model for a JSON object (or plain text) and return ``(output, model)``.
 
     ``validator`` takes the parsed object and returns the value to hand back; a ``ValueError`` it raises
     is sent to the model together with its previous answer, so it corrects that answer instead of
     starting over. ``response_format`` replaces the plain ``json_object`` format, usually with a
-    ``json_schema``; a server that cannot build the grammar is asked again in plain JSON.
+    ``json_schema``; a server that cannot build the grammar is asked again in plain JSON. ``images`` are
+    ``(caption, jpeg bytes)`` pairs attached after the evidence; the caller checks ``endpoint_vision`` first.
     """
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if provider == 'openrouter' and not key:
@@ -274,7 +303,9 @@ def chat_json(model, system, evidence, fields, max_tokens=6144, summary_topics=F
     else:
         url = 'https://openrouter.ai/api/v1/chat/completions'
     served_variant = None
-    payload = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": evidence}], "temperature": temperature, "max_tokens": max_tokens}
+    payload = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user_content(evidence, images)}], "temperature": temperature, "max_tokens": max_tokens}
+    if images and usage_out is not None:
+        usage_out['pictures'] = len(images)
     if provider == 'local':
         payload['chat_template_kwargs'] = {'enable_thinking': thinking}
     if not plain_text:
@@ -662,6 +693,29 @@ def process_regen(job_id, owner):
         log.exception("Prompt regeneration failed for job %s", job_id)
 
 
+def consistency_inputs(job_id, owner, episode_id, cut_id, payload, cancel_check):
+    """``(evidence, rendered pictures, stored picture references)`` of a consistency review, read when the job starts.
+
+    The queued evidence gets the episode around the cut. When the server can see, the cut's pictures are planned,
+    fitted into one slot with that evidence and cut from the original video; otherwise the review is text only.
+    """
+    from . import consistency_evidence, consistency_summary, sequence_evidence, structured_results
+    with db.connect() as conn:
+        cut = conn.execute('SELECT * FROM cuts WHERE id=?', (cut_id,)).fetchone()
+        episode = consistency_evidence.episode_context(conn, cut) if cut else {}
+    evidence = {**payload['evidence'], **({'episode': episode} if episode else {})}
+    provider = payload['config'].get('text_provider', 'openrouter')
+    if not endpoint_vision(provider, cancel_check):
+        return evidence, [], None
+    worker.stage(job_id, owner, episode_id, 'Consistency summary · cutting pictures')
+    by_type = {item['type']: item for item in structured_results.list_results(cut_id)}
+    planned, keyframes, aspect = consistency_evidence.gather(cut_id, by_type)
+    planned, evidence, level = consistency_evidence.fit(planned, evidence, consistency_summary.system(True), sequence_evidence.slot_tokens(provider), keyframes, aspect)
+    rendered, missing = consistency_evidence.render(planned, cancel_check)
+    sent = {'level': level, 'sent': [consistency_evidence.reference(picture) for picture, _ in rendered], **({'missing': missing} if missing else {})}
+    return evidence, rendered, sent
+
+
 def process_consistency_summary(job_id, owner):
     from . import structured_results, consistency_summary
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
@@ -692,14 +746,18 @@ def process_consistency_summary(job_id, owner):
                 consistency_summary.refresh(payload, results)
             telemetry = {}
             started = time.monotonic()
-            output, actual_model = consistency_summary.generate(payload['config'], payload['evidence'],
+            cancel = lambda: check_summary_lease(job_id, owner)
+            evidence, rendered, sent = consistency_inputs(job_id, owner, job['episode_id'], cut_id, payload, cancel)
+            output, actual_model = consistency_summary.generate(payload['config'], evidence,
                 progress=lambda attempt, total: worker.stage(job_id, owner, job['episode_id'], f'Consistency summary · attempt {attempt}/{total}'),
-                cancel_check=lambda: check_summary_lease(job_id, owner), usage_out=telemetry)
+                cancel_check=cancel, usage_out=telemetry, pictures=rendered)
             elapsed = time.monotonic() - started
+            vision = bool(rendered) and 'visual_check' in output
             with db.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 structured_results.save_generated(conn, cut_id, job_id, owner, 'consistency_summary', output, actual_model,
-                    consistency_summary.SYSTEM, {'source_result_ids': payload['source_result_ids'], 'provider': payload['config'].get('text_provider', 'openrouter'), 'model_revision': local_text_runtime.revision_for(telemetry.get('model_variant')) if payload['config'].get('text_provider') == 'local' else None, 'thinking': payload['config'].get('local_thinking', False) if payload['config'].get('text_provider') == 'local' else None, 'thinking_budget_tokens': int(os.environ.get('QWEN36_THINKING_BUDGET', '2048')) if payload['config'].get('text_provider') == 'local' and payload['config'].get('local_thinking') else None, 'summary_generation_seconds': elapsed, 'usage': telemetry}, payload['evidence'], expected_current=payload['base_id'])
+                    consistency_summary.system(vision), {'source_result_ids': payload['source_result_ids'], 'provider': payload['config'].get('text_provider', 'openrouter'), 'model_revision': local_text_runtime.revision_for(telemetry.get('model_variant')) if payload['config'].get('text_provider') == 'local' else None, 'thinking': payload['config'].get('local_thinking', False) if payload['config'].get('text_provider') == 'local' else None, 'thinking_budget_tokens': int(os.environ.get('QWEN36_THINKING_BUDGET', '2048')) if payload['config'].get('text_provider') == 'local' and payload['config'].get('local_thinking') else None, 'summary_generation_seconds': elapsed, 'usage': telemetry,
+                    'vision': vision, 'pictures': len(rendered) if vision else 0}, {**evidence, **({'pictures': sent} if vision else {})}, expected_current=payload['base_id'])
         with db.connect() as conn:
             worker.require_lease(conn, job_id, owner)
             conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
