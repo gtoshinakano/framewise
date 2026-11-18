@@ -1,0 +1,93 @@
+{
+  "sample": "c166",
+  "cut_number": 166,
+  "frames": [
+    "frames/c166/F1.jpg",
+    "frames/c166/F2.jpg",
+    "frames/c166/F3.jpg",
+    "frames/c166/F4.jpg",
+    "frames/c166/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 0.167,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta runs in from the left foreground past the people at the ticket machine."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.167,
+      "end": 0.251,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta runs toward screen-right, twisting, one arm stretched out."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 0.251,
+      "end": 0.334,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta runs on in front of the standing couple, stride changed, arms swinging."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 0.334,
+      "end": 3.087,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": true,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta has run to the gates in the far background (small, legs apart); the couple and the woman at the machine stay."
+    }
+  ]
+}

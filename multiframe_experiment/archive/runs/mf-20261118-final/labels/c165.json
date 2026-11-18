@@ -1,0 +1,93 @@
+{
+  "sample": "c165",
+  "cut_number": 165,
+  "frames": [
+    "frames/c165/F1.jpg",
+    "frames/c165/F2.jpg",
+    "frames/c165/F3.jpg",
+    "frames/c165/F4.jpg",
+    "frames/c165/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 0.418,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": false,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta runs into the frame from the right foreground (back to the camera), one arm bent at his head; the people in the background stand still."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.418,
+      "end": 0.501,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta runs toward screen-left, arm thrown out behind him, leg visible at the bottom."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 0.501,
+      "end": 0.584,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta turns from side-on to a back view and runs away from the camera, smaller, a foot raised."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 0.584,
+      "end": 0.751,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta keeps running away from the camera, the other foot forward, arms swinging."
+    }
+  ]
+}

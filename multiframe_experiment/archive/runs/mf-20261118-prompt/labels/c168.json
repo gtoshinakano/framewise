@@ -1,0 +1,93 @@
+{
+  "sample": "c168",
+  "cut_number": 168,
+  "frames": [
+    "frames/c168/F1.jpg",
+    "frames/c168/F2.jpg",
+    "frames/c168/F3.jpg",
+    "frames/c168/F4.jpg",
+    "frames/c168/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 0.876,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": true,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": true
+      },
+      "note": "Sakuta's head turns from facing screen-left to slightly toward the camera, eyes drop, neutral face becomes downcast."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.876,
+      "end": 1.001,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": true,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta's eyes close and his head tilts down."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 1.001,
+      "end": 1.127,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "No clear change: eyes stay closed, head at the same angle."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 1.127,
+      "end": 3.212,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "No clear change: eyes stay closed, head still, mouth closed."
+    }
+  ]
+}

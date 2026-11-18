@@ -1,0 +1,94 @@
+{
+  "sample": "c144",
+  "cut_number": 144,
+  "frames": [
+    "frames/c144/F1.jpg",
+    "frames/c144/F2.jpg",
+    "frames/c144/F3.jpg",
+    "frames/c144/F4.jpg",
+    "frames/c144/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 0.251,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": false,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "Empty ground in F1; Sakuta (seen from behind) dives in from the top right, arm reaching for the ground."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.251,
+      "end": 0.334,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta lands face down and slides toward screen-left/away; both arms spread, head now visible, legs splayed with one shoe sole toward the camera."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 0.334,
+      "end": 0.501,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Slides further away (smaller); hands planted flat beside the head, the far foot lifts."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 0.501,
+      "end": 0.668,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Slides further up-left; both hands raised beside the head, one leg kicks up high behind him."
+    }
+  ],
+  "labelled_by": "Claude (Opus 5.5), from frames/<cut>/F<n>.jpg before any model answer existed, 2026-11-17"
+}

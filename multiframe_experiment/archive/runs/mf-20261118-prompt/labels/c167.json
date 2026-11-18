@@ -1,0 +1,51 @@
+{
+  "sample": "c167",
+  "cut_number": 167,
+  "frames": [
+    "frames/c167/F1.jpg",
+    "frames/c167/F2.jpg",
+    "frames/c167/F3.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 2.002,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": true,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta, small at the right turnstile, straightens up from leaning over the gate and lifts his head."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 2.002,
+      "end": 2.253,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "No clear change: Sakuta stands at the turnstile, tiny difference."
+    }
+  ]
+}

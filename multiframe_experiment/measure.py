@@ -111,3 +111,29 @@ def measure_sample(sample, run_dir):
                       'camera': camera_estimate(a, b, mask), 'global': round(g, 3), 'regional': round(r, 3), 'coverage': round(coverage, 3),
                       'still': max(g, r) < STILL_CHANGE, 'boxes': boxes})
     return pairs
+
+
+def camera_without_people(sample, pose_sample, run_dir, pad=0.05):
+    """Camera estimate per pair with every detected person masked out (their boxes from the DWPose stage, both frames of the pair).
+
+    The dominant transform of a talking-heads cut follows the moving faces (cut 160: "zoom" and "pan" in a static shot); the backdrop
+    alone does not. Where the masked picture has too few features the answer is ``unclear``: no estimate beats a wrong one.
+    """
+    frames = sample['frames']
+    images = [_load(f"{run_dir}/{frame['path']}") for frame in frames]
+    people = {frame['label']: frame['persons'] for frame in (pose_sample or {}).get('frames', [])}
+    sizes = {frame['label']: frame['size'] for frame in (pose_sample or {}).get('frames', [])}
+    out = []
+    for i in range(len(frames) - 1):
+        a, b = images[i], images[i + 1]
+        mask = _mask(a.shape, sample.get('subtitle_band'))
+        for frame in (frames[i], frames[i + 1]):
+            if frame['label'] not in sizes:
+                continue
+            sx, sy = a.shape[1] / sizes[frame['label']][0], a.shape[0] / sizes[frame['label']][1]
+            for person in people[frame['label']]:
+                x0, y0, x1, y1 = person['box']
+                px, py = (x1 - x0) * pad, (y1 - y0) * pad
+                mask[max(0, int((y0 - py) * sy)):int((y1 + py) * sy) + 1, max(0, int((x0 - px) * sx)):int((x1 + px) * sx) + 1] = False
+        out.append(camera_estimate(a, b, mask))
+    return out

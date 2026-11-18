@@ -1,0 +1,94 @@
+{
+  "sample": "c139",
+  "cut_number": 139,
+  "frames": [
+    "frames/c139/F1.jpg",
+    "frames/c139/F2.jpg",
+    "frames/c139/F3.jpg",
+    "frames/c139/F4.jpg",
+    "frames/c139/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 0.376,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": true,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta (background) steps toward screen-left, head turns further left; the crying child closes her wailing mouth. Child eyes stay shut, fists stay at eyes."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.376,
+      "end": 1.669,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": true,
+        "arms_hands": false,
+        "legs": true,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta walks down-left and stops facing the camera (torso and head turn to the camera); the child opens her mouth again."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 1.669,
+      "end": 2.128,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta stands still; only the child's mouth closes."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 2.128,
+      "end": 2.378,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta still; the child's mouth opens again (wail)."
+    }
+  ],
+  "labelled_by": "Claude (Opus 5.5), from frames/<cut>/F<n>.jpg before any model answer existed, 2026-11-17"
+}

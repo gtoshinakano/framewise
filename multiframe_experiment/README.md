@@ -1,5 +1,7 @@
 # Multi-frame change experiment
 
+**Next session: read `PIPELINE_HANDOFF.md` first** (decisions, evidence, open problems, next steps); `FINDINGS.md` is the chronological log, `archive/` the archived labels and GPU answers, `tools/` the replay helpers.
+
 Question: instead of sending whole clips to the video model, can the still-image models we already run
 (**Qwen3.5-27B** and **LFM3-Omni-2B**) describe the motion between the keyframe selector's target frames well
 enough to prompt MiniMax H3? Which prompt and which context do that best, without hallucinating, and at what cost?
@@ -89,7 +91,22 @@ follow boxes through the pixel camera transform (zoom, pan) and take a box's nam
 per-frame states with the wording of `still_vocabulary.yaml`/`pose_detail` (arm elevation and elbow, hand region,
 knee angles, sitting/crouching/lying/leaning, rough head and torso yaw, place in the frame) and compares consecutive
 frames into the shared segment JSON. Limbs are named by their side of the screen. Blinking, speaking, mouth and
-expression stay `unclear`; the camera is the pixel estimate. Overlays: `frames/<cut>/pose/F<n>.jpg`. The per-character
+expression stay `unclear`; the camera is the pixel estimate. **Walking (rule of 2026-11-18, `pose_rules.walking_call`)**: a person
+walks only when they travel through the world and their ankles alternate. Travel is their own shift with the pair's camera
+transform removed (a pan that follows the walker leaves them still in the picture and still counts; without a camera estimate
+the shift must be larger, and a person who steps without travelling is `unclear` because the camera may follow them). Alternating
+ankles are the anatomical left and right ankles trading the lead, sideways or in height, both leads at least 0.12 torso lengths
+apart and the same hip still on the same side of the picture (a turned body or a DWPose left/right swap is no alternation); a foot
+swinging 0.25 torso lengths counts only beside such a flip within 1 s in the same window. Sitting, crouching or lying in either
+frame, or a foot above the hips, is `no`; keypoints that cannot decide (travel with similar legs, one ankle) are `unclear`, and
+the hybrid then takes Qwen's answer. A hip, knee or ankle outside the picture was never seen, so a bust shot is never sitting or
+lying. In the hybrid, Qwen's frame text saying sitting, riding, kneeling, crouching or lying (`pose_rules.SEATED`) forces `no`.
+Size and position (2026-11-18): a person's place is their torso (hips, else shoulders), a size change needs the same body in view
+in both frames, a box not cut by the top or bottom edge and a camera that is not tilting (the torso length is the measure where
+both frames have one), and a person enters or leaves only through the picture's border. In the hybrid DWPose replaces Qwen's claim
+about a body part it measured as changed; where it measured nothing Qwen's claim stays. `experiment.py camera` re-estimates every
+pair's camera with the detected people masked out (`measure.camera_without_people`, the old estimate is kept as `camera_all`) and
+`experiment.py rules` re-derives C and D from the stored keypoints; both run on the CPU. Overlays: `frames/<cut>/pose/F<n>.jpg`. The per-character
 usability (share of keyframes with ≥ 6 of 17 body points over 0.3, mean confidence, suspected left/right swaps,
 close-ups) is in the report.
 
@@ -106,8 +123,8 @@ One JSON per window: one segment per consecutive frame pair with `camera.move`, 
 objects, background, effects). The app adds each pair's times. Styles differ only in framing: `animator` asks how to
 animate from frame to frame, `observer` asks what visibly changed (and allows "no change"), `inspector` (2026-11-17) is observer
 with fixed state fields per frame (place; pose; head; eyes; mouth; arms; hands; legs) compared field by field, mouth changes as speaking,
-whole-body moves as position/walking, and small background characters and entries/exits named explicitly. Contexts add the roster
-and subtitle band (`roster`), then the first-frame description, the window's transcript and the previous window's
+whole-body moves as position/walking, and small background characters and entries/exits named explicitly. `walker` (2026-11-18) is observer plus a definition of walking. Contexts add the roster
+and subtitle band (`roster`), `roster_cam` adds the camera measured from the background alone (one line per window),, then the first-frame description, the window's transcript and the previous window's
 answer (`full`).
 
 ## Score (0–100)

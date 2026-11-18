@@ -1,0 +1,93 @@
+{
+  "sample": "c163",
+  "cut_number": 163,
+  "frames": [
+    "frames/c163/F1.jpg",
+    "frames/c163/F2.jpg",
+    "frames/c163/F3.jpg",
+    "frames/c163/F4.jpg",
+    "frames/c163/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 3.254,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta's head turns from profile toward Tomoe to three-quarter toward the camera; Tomoe stays still."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 3.254,
+      "end": 3.504,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": true,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta's eyes close and his head tilts down."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 3.504,
+      "end": 3.629,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "No clear change: Sakuta's eyes stay closed, only tiny drift."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 3.629,
+      "end": 3.879,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta's mouth opens (speaking) with eyes closed; head tilts a little."
+    }
+  ]
+}

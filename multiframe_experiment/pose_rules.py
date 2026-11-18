@@ -47,6 +47,7 @@ def hybrid_config(merge_with):
     """D's config key for the Qwen config it merges into: hybrid|<style>|<context>."""
     _, style, context = merge_with.split('|')
     return f'hybrid|{style}|{context}'
+PART_GROUP = {'arms': 'arms_hands', 'hands': 'arms_hands'}  # DWPose's arm and hand changes are one group: one claim about it is enough
 BODY_PARTS = ('arms', 'hands', 'legs', 'body_pose', 'position')  # D takes these (and walking) from DWPose where usable
 
 NOSE, LEYE, REYE, LEAR, REAR = 0, 1, 2, 3, 4
@@ -57,6 +58,12 @@ POSITION_STEP, DEPTH_STEP, HAND_MOVE = 0.06, 0.25, 0.6          # share of width
 
 # Walking (2026-11-18): the person travels through the world (camera removed) AND the ankles alternate.
 LOWER_BODY = (LHIP, RHIP, LKN, RKN, LAN, RAN)
+HIP_FLOOR = 0.92                      # share of the picture height below which a hip point is not trusted (bust shots end at the waist)
+ARM_FLOOR = 0.97                      # the same for elbows and wrists (a close-up ends above the hands; the points land on the picture's lower edge)
+EDGE = 0.04                           # a person enters or leaves the picture only through its border: a box this close to an edge (share of the size)
+CLIP = 0.015                          # a box top or bottom this close to the picture's edge is cut by it
+VISIBLE_STEP = 4                      # more or fewer body points seen than this between two frames: the body was revealed or hidden, not resized
+TILT_STEP = 0.01                      # camera dy (share of the width) from which a tilt changes box heights
 NOT_ON_FEET = ('sitting', 'crouching', 'lying')   # the sitting state: nobody walks while seated, crouched or lying
 TRAVEL_KNOWN, TRAVEL_UNKNOWN = POSITION_STEP * 0.6, POSITION_STEP * 1.5   # share of width; a pair without a camera estimate needs more
 SIZE_TRAVEL = 0.15                    # relative box height change that counts as walking toward or away from the camera (estimate known)
@@ -155,13 +162,25 @@ def _yaw(points):
     return None
 
 
+def _seen(i, pt, w, h):
+    """False for a body point DWPose placed where the picture cannot show that body part: shoulders and the lower body outside the
+    picture, hips in its bottom strip (a bust shot ends at the waist), elbows and wrists in that strip too (a close-up ends above
+    the hands and the points land on the lower edge). A raised hand may leave the picture at the top or the sides, so those stay."""
+    if not pt or i < LSH:
+        return bool(pt)
+    if i in (LEL, REL, LWR, RWR):
+        return pt[1] <= ARM_FLOOR * h
+    floor = HIP_FLOOR if i in (LHIP, RHIP) else 1.01
+    return -0.01 * w <= pt[0] <= 1.01 * w and -0.01 * h <= pt[1] <= floor * h
+
+
 def person_state(person, size):
     """Measured state of one person in one keyframe: numbers for comparing, phrases for the text."""
     w, h = size
-    # A hip, knee or ankle placed outside the picture was never seen (a bust shot): DWPose still invents the lower body there,
-    # so a person cannot sit, lie or walk on those points.
-    p = [None if (i in LOWER_BODY and pt and not (-0.01 * w <= pt[0] <= 1.01 * w and -0.01 * h <= pt[1] <= 1.01 * h)) else pt
-         for i, pt in enumerate(person['points'])]
+    # A hip, knee or ankle placed outside the picture was never seen (a bust shot): DWPose still invents the lower body there, and so
+    # it does for hips in the bottom strip of the picture (the shot ends at the waist; knees above the hips, a "sitting" bust). A
+    # person cannot sit, lie or walk on those points, and the torso is only judged from hips that were seen.
+    p = [pt if _seen(i, pt, w, h) else None for i, pt in enumerate(person['points'])]
     box = person['box']
     state = {'name': person['name'], 'box': box, 'cx': (box[0] + box[2]) / 2 / w, 'cy': (box[1] + box[3]) / 2 / h,
              'height': (box[3] - box[1]) / h, 'usable': bool(person.get('usable')), 'parts': {'position': True}}
@@ -175,6 +194,16 @@ def person_state(person, size):
         lean = _from_down(hip, sh)  # 180 = upright
         state['torso_tilt'] = None if lean is None else 180 - lean
     state['torso_len'] = torso_len or (box[3] - box[1]) * 0.3
+    state['torso_real'] = torso_len is not None and min(p[LSH][1], p[RSH][1]) > CLIP * 2 * h  # shoulders on the picture's top edge: the torso is cut
+    # Where the body is, from the torso (hips, else shoulders) instead of the box: raising an arm or revealing the legs moves the box centre.
+    state['tx'], state['tx_kind'] = None, None
+    if _ok(p, LHIP, RHIP):
+        state['tx'], state['tx_kind'] = (p[LHIP][0] + p[RHIP][0]) / 2 / w, 'hips'
+    elif shoulders:
+        state['tx'], state['tx_kind'] = (p[LSH][0] + p[RSH][0]) / 2 / w, 'shoulders'
+    state['n_seen'] = sum(1 for i in range(LSH, RAN + 1) if _ok(p, i))
+    state['clipped'] = box[1] <= CLIP * h or box[3] >= (1 - CLIP) * h
+    state['at_edge'] = box[0] <= EDGE * w or box[2] >= (1 - EDGE) * w or box[1] <= EDGE * h or box[3] >= (1 - EDGE) * h
     # Hands and feet are compared relative to the body, so a whole-body move is not reported as a hand or foot move.
     anchor = _mid(p[LSH], p[RSH]) if shoulders else centre_of(box)
     hip_anchor = _mid(p[hips[0]], p[hips[-1]]) if hips else centre_of(box)
@@ -322,7 +351,7 @@ def camera_known(camera):
 
 
 def _own_shift(a, b, camera):
-    """The person's own move between two frames: centre shift and size ratio with the camera's transform removed.
+    """The person's own move between two frames: sideways shift and size ratio (None when it cannot be told) with the camera removed.
 
     A pan that follows the walker leaves them still in the picture and moves the background, so their own shift is
     the opposite of the camera's: the walker still travels through the world.
@@ -330,8 +359,28 @@ def _own_shift(a, b, camera):
     dx, scale = 0.0, 1.0
     if camera_known(camera):
         dx, scale = camera.get('dx') or 0.0, camera.get('scale') or 1.0
-    expected = (a['cx'] - 0.5) * scale + 0.5 + dx
-    return b['cx'] - expected, (b['height'] / (a['height'] * scale)) if a['height'] else 1.0
+    ax, bx = a['cx'], b['cx']
+    if a.get('tx_kind') and a.get('tx_kind') == b.get('tx_kind'):
+        ax, bx = a['tx'], b['tx']  # the same part of the body in both frames
+    expected = (ax - 0.5) * scale + 0.5 + dx
+    return bx - expected, _size_ratio(a, b, scale, camera)
+
+
+def _size_ratio(a, b, scale, camera):
+    """How much bigger the person got (1 = same) after the camera's zoom, or None where the picture cannot say.
+
+    A box cut by the top or bottom edge, a different amount of body in view (a tilt reveals or hides legs, a person stands up
+    from behind a gate) or a tilting camera all change a box's height without anyone moving, so they give no size claim. The
+    torso (shoulders to hips) is used where both frames have one.
+    """
+    if abs(a['n_seen'] - b['n_seen']) >= VISIBLE_STEP:
+        return None
+    if a.get('torso_real') and b.get('torso_real') and a['torso_len'] > 0:
+        return (b['torso_len'] / a['torso_len']) / scale
+    tilting = camera_known(camera) and (camera.get('move') in ('tilt_up', 'tilt_down') or abs(camera.get('dy') or 0.0) >= TILT_STEP)
+    if a['clipped'] or b['clipped'] or tilting or not a['height']:
+        return None
+    return b['height'] / (a['height'] * scale)
 
 
 def alternation(a, b):
@@ -373,7 +422,7 @@ def walking_call(a, b, shift, size, known, near_flip=False):
     alt = alternation(a, b)
     if alt is None:
         return 'unclear'
-    travel = abs(shift) >= (TRAVEL_KNOWN if known else TRAVEL_UNKNOWN) or (known and abs(size - 1) >= SIZE_TRAVEL)
+    travel = abs(shift) >= (TRAVEL_KNOWN if known else TRAVEL_UNKNOWN) or (known and size is not None and abs(size - 1) >= SIZE_TRAVEL)
     if not travel:
         followed = not known or min(a['height'], b['height']) >= TRACKED_HEIGHT
         return 'unclear' if alt['flip'] and followed else 'no'
@@ -390,9 +439,9 @@ def compare(a, b, camera=None, near_flip=False):
         way = 'screen-right' if shift > 0 else 'screen-left'
         where = f"from {horizontal(a['cx'])} to {horizontal(b['cx'])}" if horizontal(a['cx']) != horizontal(b['cx']) else f"staying {horizontal(b['cx'])}"
         changes.append(('position', f'moves toward {way} ({where})'))
-    if size >= 1 + DEPTH_STEP:
+    if size is not None and size >= 1 + DEPTH_STEP:
         changes.append(('position', 'comes closer to the camera (appears larger)'))
-    elif size <= 1 / (1 + DEPTH_STEP):
+    elif size is not None and size <= 1 / (1 + DEPTH_STEP):
         changes.append(('position', 'moves away from the camera (appears smaller)'))
     walking = 'unclear'
     if a['usable'] and b['usable']:
@@ -439,6 +488,9 @@ def compare(a, b, camera=None, near_flip=False):
                 changes.append(('legs', f"{label} swings {'forward or up' if y['thigh'] > x['thigh'] else 'down'}"))
     if walking == 'yes':
         changes = [c for c in changes if not c[1].startswith('moves toward')]  # the walk says it
+        if not any(part == 'legs' for part, _ in changes):
+            # The ankles alternating or swinging is itself a leg change; say it once, as the walk's step.
+            changes.append(('legs', 'steps: the other foot takes the lead' if (alternation(a, b) or {}).get('flip') else 'steps: the feet swing past each other'))
     return walking, [{'part': part, 'description': text} for part, text in changes]
 
 
@@ -496,9 +548,10 @@ def answer_for_window(states, window, pairs):
             if name in first and name in second:
                 walking, changes = compare(first[name], second[name], camera, near_flip=_near_flip(flips.get(name) or {}, index, times, labels))
             elif name in second:
-                walking, changes = 'unclear', [{'part': 'position', 'description': f"enters the frame ({horizontal(second[name]['cx'])})"}]
+                # Someone enters through the picture's border; a person who shows up mid-picture was missed by the detector before.
+                walking, changes = 'unclear', ([{'part': 'position', 'description': f"enters the frame ({horizontal(second[name]['cx'])})"}] if second[name]['at_edge'] else [])
             else:
-                walking, changes = 'unclear', [{'part': 'position', 'description': 'leaves the frame'}]
+                walking, changes = 'unclear', ([{'part': 'position', 'description': 'leaves the frame'}] if first[name]['at_edge'] else [])
             total += len(changes)
             people.append({'name': name, 'walking': walking, 'speaking': 'unclear', 'blinking': 'unclear', 'changes': changes})
         segments.append({'from': a, 'to': b, 'start': times[a], 'end': times[b], 'camera': {'move': camera.get('move') or 'unclear', 'detail': 'pixel estimate'},
@@ -610,9 +663,12 @@ def merge(a_answer, c_answer, states, pairs_measured):
             usable = usable_parts(states, segment['from'], c_name) & usable_parts(states, segment['to'], c_name)
             if c_name not in states.get(segment['from'], {}) or c_name not in states.get(segment['to'], {}):
                 usable = {'position'}  # enters or leaves: DWPose knows only that
-            changes = [ch for ch in a['changes'] if not (ch['part'] in BODY_PARTS and ch['part'] in usable)]
-            notes['from_qwen'] += len(changes)
             body = [ch for ch in c['changes'] if ch['part'] in usable]
+            said = {PART_GROUP.get(ch['part'], ch['part']) for ch in body}
+            # DWPose replaces Qwen's claim about a body part it measured as changed; where it measured nothing (below its coarse
+            # thresholds, or a person it cannot read) Qwen's claim stays, so the two never describe the same part twice.
+            changes = [ch for ch in a['changes'] if not (ch['part'] in BODY_PARTS and ch['part'] in usable and PART_GROUP.get(ch['part'], ch['part']) in said)]
+            notes['from_qwen'] += len(changes)
             notes['from_dwpose'] += len(body)
             walking = c['walking'] if 'walking' in usable and c['walking'] != 'unclear' else a['walking']
             if seated_by_text(texts.get(name)):

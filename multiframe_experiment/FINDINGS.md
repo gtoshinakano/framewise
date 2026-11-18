@@ -1,3 +1,8 @@
+> **Reading order for a new session:** start with `PIPELINE_HANDOFF.md` (consolidated decisions, evidence, open problems, next steps). This file is the
+> chronological log of every round and keeps the evidence; **where a later section changes an earlier recommendation, the later one wins** (for example
+> the "Worth trying next" list below was done in the pose and walking rounds). Archived data and replay tools: `archive/README.md`, `tools/`.
+> The number of hand-labelled pairs is 60 (14 cuts); earlier sections quote the labelled pairs of their own run.
+
 # Findings: multi-frame change experiment (2026-11-17)
 
 Runs:
@@ -230,3 +235,119 @@ Episode 2, cuts 139–158 (20 cuts, 30 windows, about 2 h of GPU time). Qwen3.5-
 - **Candidate to replace video analysis for motion: D observer / roster** (Qwen3.5 observer with roster names, plus DWPose merged by the app). Best GT F1 (55), no invented names, and the judge's low precision on its body claims is unconfirmed rather than proven.
 - **Not before:** (a) the walk rule is fixed, (b) the labelled set covers at least the cuts with real walking, sitting down and standing up, a pan or zoom (about 15 more cuts, roughly 15 minutes per 16 pairs), and (c) A against D is re-run on those only. If D still has the best F1 there, wire it into `single_cut_pipeline` as a new `video_analysis` model kind under the registry in `visual_models.py`.
 - **Dropped:** inspector style, frames-only context for production, LFM3 for any of this.
+
+# Walking rule round (run `mf-20261118-c160-170`, 2026-11-18)
+
+**What changed in `pose_rules.py`** (tuned on the cuts 139–158 keypoints in `mf-20261117-ep2pose`, never on 160–170):
+- **Alternating ankles.** A walk needs the anatomical left and right ankles to trade the lead between the two keyframes, sideways or in height, both leads at least 0.12 torso lengths apart, with the same hip still on the same side of the picture (a turned body or a DWPose left/right swap is no alternation). A foot swinging 0.25 torso lengths counts only beside such a flip within 1 s in the same window.
+- **Camera movement.** Travel is the person's own shift with the pair's camera transform removed, so a pan that follows a walker (the person stays still in the picture, the background slides) still counts as travel. With no camera estimate the shift must be 2.5 times larger, and a person who steps without travelling is `unclear` instead of `no`, because the camera may be following them (the same goes for anyone who fills the picture).
+- **Sitting state.** Sitting, crouching or lying in either frame, or a foot above the hips (a kick), is `no`. A hip in the bottom 8% of the picture, or a knee or ankle outside it, was never seen (a bust shot), so it can no longer be sitting or lying. In the hybrid, Qwen's frame text saying sitting, riding, kneeling, crouching or lying (`SEATED`) forces `no` (the officer on the bicycle in cut 158 is "riding" for Qwen and "standing" for DWPose).
+- The rule says `no` only for what it can see is not a walk, and `unclear` where the keypoints cannot decide (travel with similar legs, one ankle missing, a body cut at the waist). The hybrid then takes Qwen's answer.
+- New stage `experiment.py rules --run-id <id> --merge-with ...` re-derives C and D from the stored `pose.json` after a rule change (CPU, no model). The report no longer crowns "Best overall" when a run has no judge.
+
+**On the old keypoints (139–158)** the rule removes the false walks that made walking precision 17–44%: Tomoe's kick and the bicycle no longer say `yes`, Sakuta being flung in cut 143 is `unclear`, and Sakuta walking in (cut 140, close-up, 0.125 s apart) stays `yes`. The price is the far walker of cut 139 (70 px tall, legs hardly change): `unclear`, so one hand-labelled walk is lost (D F1 55 → 54). The hip guard removes five of six false `sitting`/`lying` states of close-ups (cuts 147, 149 and 153); one false `lying` (cut 149) and the true ones (the dive in cut 144, Sakuta sitting in cut 158) stay.
+
+## Held-out run: Episode 2, cuts 160 and 162–170
+
+10 cuts, 51 keyframes, 44 pairs, 13 windows. Only the best approach was run: A `qwen35|observer|roster`, C (DWPose rules) and D `hybrid|observer|roster` (C merged into A, no extra call), plus the stored Qwen3-VL analysis as the baseline. No judge (it cannot rank keypoint claims; the labels are the ranking). I labelled all 44 pairs from the keyframes before any answer existed (`labels/<cut>.json`): 13 walking pairs (Sakuta running through two station cuts and out of frame, Tomoe walking out), a real camera tilt (cut 169), a talking-heads cut with the pixel estimate calling zooms, a police desk with a bending officer. The only seated characters (Sakuta and Tomoe at the desk, cut 162) are cut at the waist, so DWPose has no legs for them. Report: `frontend/public/multiframe-experiment/runs/mf-20261118-c160-170/report.html` (on this host `http://192.168.0.6:8080/multiframe-experiment/runs/mf-20261118-c160-170/report.html`). The run took 16 minutes (prepare 26 s, DWPose 24 s of CPU, Qwen 13 calls at about 50 s).
+
+| Setup | GT F1 | GT precision / recall | Body F1 (P / R) | Walking P / R | s per footage s |
+|---|---|---|---|---|---|
+| A Qwen observer / roster | **55** | 66% / 47% | 55 (86% / 41%) | 100% / 62% | 18.5 |
+| D hybrid observer / roster | **55** | 56% / 54% | **56** (66% / 49%) | 100% / 62% | 19.2 |
+| C DWPose rules | 36 | 57% / 27% | 43 (61% / 34%) | 100% / 23% | **0.69** |
+| Stored Qwen3-VL analysis | 35 | 39% / 32% | 33 (56% / 24%) | 83% / 77% | 4.7 |
+
+The first pass of this run (before the hip guard, which I added after seeing the old sitting states) gave C 37 and D 55 (57% / 53%, body 57), so the guard moved nothing that matters here.
+
+## What the run shows
+
+1. **The walking rule is precise and, on its own, still modest.** No walking claim of C, D or A is false in 44 pairs (on the 4 labelled old cuts D had 3–5 false walks per setup before the rule and 2–4 after, all of them Qwen's own). DWPose says `yes` three times (the runner in cut 166), `no` for the standing background people, and `unclear` elsewhere. D's walking recall is 62%, the same as Qwen's: it did not add a walk, and the `no` gate removed no true walk.
+2. **Five of 13 walks are missed by every setup, all for the same reason: the legs are not in the picture.** Tomoe and Sakuta walking out of cut 164 are upper-body crops; the foreground runner of cut 165 is cut by the frame edge. With no ankles DWPose says `unclear`, and Qwen did not call these walks either. The stored video analysis finds more walks (77% recall) because it sees the whole clip, but it is wrong on most other categories.
+3. **The hybrid no longer beats Qwen alone on F1 (55 against 55); it trades precision for recall.** On the old cuts D was ahead (57 against 48). Here D gains arms & hands (recall 27% → 64%) and loses precision on position (100% → 61%) and arms (100% → 58%). Treat the earlier "D is best" as plausible but not settled: it depends on the cuts.
+4. **The new position false positives are a camera movement problem, in the position rule and not the walking rule.** D has 7 pairs with a false position claim. Four are cut 169, where the camera tilts up and DWPose reads the changing box height as "comes closer / moves away" for Mai and the two people behind her (the boxes are clipped by the frame edge, so their height changes with the tilt). Two are "leaves the frame" where the tracker lost a person (cut 160 Tomoe, cut 170 Mai at the edge), and one is a "comes closer" on a tiny figure in cut 167. A box that touches the frame edge should not feed the size rule, and a tilt (`dy`) should be removed from the box position the way `dx` and `scale` already are. Not done: it would be tuned on the same 44 pairs.
+5. **The pixel camera estimate is right where it matters and wrong where faces move.** It matches the labels on 35 of the 40 pairs it decided, including the true tilt (5 of 5 in cut 169). The misses are four "zoom/pan" calls in the static talking-heads cut 160 and one "pan" in cut 164, where moving faces dominate the transform. None of them touched a walking call (those pairs have no travel and no ankles).
+6. **The sitting state is untested on real sitting here.** The seated characters of cut 162 have no legs in the picture, so the gate never fired. On the old cuts it only removes false sitting/lying of close-ups; the bicycle case is handled by Qwen's text, which I checked on the stored answers, not on a new run.
+7. **Qwen still has no invented names, and 0 of 13 calls failed** (reliability 100%).
+
+## Next
+
+- Fix the position rule for camera tilt and clipped boxes, then re-run `experiment.py rules` on both runs (CPU, minutes) and check position precision.
+- Label and run cuts with a seated character and a camera pan that follows a walker (none in cuts 139–170 so far); those two are the cases the new rule was written for and could not be measured on.
+- Decide D against A on the combined 8 labelled cuts + these 10; today it is a tie on F1 with a different mix of errors.
+
+# Final pass over every tested cut (run `mf-20261118-final`, 2026-11-18)
+
+All 30 cuts tested so far: Episode 2, cuts 139–158 and 160, 162–170 (43 windows). Nothing was run on the GPU: the Qwen3.5 observer/roster answers of the two earlier runs were kept as they were, and DWPose rules (C) and the hybrid (D) were derived again from the stored keypoints with the improved rules. Hand labels cover 14 cuts (60 pairs). Report: `frontend/public/multiframe-experiment/runs/mf-20261118-final/report.html` (on this host `http://192.168.0.6:8080/multiframe-experiment/runs/mf-20261118-final/report.html`). "Before" is the committed state `0f26fc3`; "after" is the working tree.
+
+**Read it as in-sample for the rule changes.** I chose them after reading the error lists of both sets (the held-out cuts included), so the "after" numbers are no longer a clean held-out test. The Qwen column did not change, which is the control.
+
+## What changed
+
+- **Camera tilt and clipped boxes (the cut 169 false positives).** A size claim ("comes closer / moves away") needs the same amount of body in view in both frames (a tilt or a gate reveals or hides body points), a box not cut by the picture's top or bottom edge, and a camera that is not tilting; the torso (shoulders to hips, not cut by the top edge) is the size measure where both frames have one.
+- **Position follows the torso, not the box.** The hips (else the shoulders) are the body's place, so raising an arm or revealing the legs no longer moves a person across the picture.
+- **Enter / leave only through the border.** A person who shows up or vanishes mid-picture is a detector miss, not an entry.
+- **Arms.** Elbows and wrists in the bottom 3% of the picture (a close-up ends above the hands, the points land on the lower edge) are not seen.
+- **Merge policy.** DWPose still replaces Qwen's claim about a body part it measured as changed, but where it measured nothing (below its coarse thresholds, or a person it cannot read) Qwen's claim stays. Before, DWPose's silence deleted Qwen's correct claims (arms, legs, position).
+- **A walk is also a leg change.** An alternating-ankle walk now adds one `legs` change ("the other foot takes the lead").
+- **Camera estimate without people** (`measure.camera_without_people`, stage `experiment.py camera`). Every detected person is masked out before the ORB/RANSAC estimate. Against the 60 labelled pairs, wrong calls fall from 5 (four invented zooms/pans in the static talking-heads cut 160, one pan in cut 164) to 1 (a zoom-out in cut 143), the real tilt of cut 169 is still found in 5 of 5 pairs and two of the three labelled zoom-outs of cut 158 too, and `unclear` rises from 21 to 26 of 148 pairs (one of those is a zoom-out that was found before), because a close-up leaves no backdrop to measure. The old estimate stays in `pairs[].camera_all`.
+
+## Results (hand labels, 60 pairs)
+
+| Setup | Cuts | GT F1 (precision / recall) | Body F1 | After vs before |
+|---|---|---|---|---|
+| **D hybrid** | all 14 labelled | **61** (66% / 56%) | **64** | 54 → 61 (body 53 → 64) |
+| A Qwen observer/roster | all 14 | 54 (70% / 44%) | 51 | unchanged |
+| C DWPose rules | all 14 | 39 (70% / 28%) | 50 | 37 → 39 (body 46 → 50) |
+| Stored Qwen3-VL analysis | all 14 | 31 (40% / 25%) | 28 | unchanged |
+| D hybrid | 139–158 (4 labelled) | 63 (79% / 52%) | 62 | 54 → 63 |
+| D hybrid | 160–170 (10 labelled) | 59 (60% / 59%) | 65 | 55 → 59 |
+
+By category, D against A on all 14 labelled cuts (precision / recall): arms & hands 88% / 75% against 100% / 40%, legs 70% / 39% against 75% / 17%, position 77% / 67% against 100% / 43%, body pose 60% / 30% against 60% / 30%, walking 80% / 53% for both (the hybrid takes Qwen's call wherever the legs are not in view). D's speaking, blinking and head claims are Qwen's own. Cost: D 21.4 s of compute per footage second against 20.8 s for Qwen alone (DWPose adds 1.6 s per window of CPU); no judge was run.
+
+## What the run shows
+
+1. **The hybrid now beats plain Qwen on both subsets, and the gain is recall.** D gains 7 F1 points on the 14 labelled cuts (61 against 54) for 4 points of precision (66% against 70%): arms & hands recall 40% → 75%, legs 17% → 39%, position 43% → 67%. The earlier tie on the held-out cuts (55 against 55) was mostly the merge dropping Qwen's claims where DWPose was silent plus the tilt and clipping artefacts; both are fixed, but see the caveat above.
+2. **Walking did not improve and cannot with these inputs.** 8 of 15 walking pairs are found by every setup, 2 false walks remain (Qwen's own, cut 143, Sakuta flung by the kick) and 7 are missed because the legs are not in the picture (upper-body crops of cut 164, the partly visible foreground runner of cut 165, the 70 px walker of cut 139). Better recall needs another signal, not another rule on the same keypoints.
+3. **Remaining D false positives (17 of 73 body claims):** 4 are Qwen's own body-pose calls, 2 are Qwen's walking claims (cut 143), 3 are legs where my labels are strict (cut 158 officer and Sakuta, cut 169 Mai), 2 are arms (cuts 162 and 169) and 6 are position pairs: three in cut 160 (Sakuta's slow drift of 6–9% of the picture width, now measured because the camera is read as static, which I labelled as too small to count; in one of them Tomoe also "leaves the frame"), one in cut 167 (a tiny figure straightening up behind a gate), one in cut 169 (Mai "moves toward screen-left" while her arms cross) and one in cut 170 (Mai "leaves the frame" at the picture's edge). I did not change the labels to suit the rules.
+4. **The camera is now right where it was wrong, at a price.** 1 wrong call in 60 labelled pairs against 5, but 5 more pairs say `unclear`, and in those the walking rule needs a larger shift and gives no size claim.
+5. **Still unmeasured:** a seated character (the two seated characters of cut 162 have no legs in view) and a camera pan that follows a walker. The code for both is tested on synthetic keypoints only.
+
+## Not done
+
+- A fix for the 70 px far walker (cut 139) and for upper-body walkers needs a source of leg motion other than DWPose: Qwen's own `walking` reading, or optical flow of the box, neither tried.
+- The judge was not run, so no judged precision exists for this pass.
+- 16 of the 30 cuts have no hand labels (140–142 and 145–157 of the old set); their D claims were not scored.
+
+# Targeted prompt test (run `mf-20261118-prompt`, 2026-11-18)
+
+Question: can a prompt change fix the walking misses that the DWPose rules cannot reach (upper-body crops, a runner cut by the frame edge)? Two variants of the observer prompt, on the 14 hand-labelled cuts only (17 windows, 60 pairs), everything else fixed (same frames, roster context, new DWPose rules and merge):
+- **`walker`** (style): observer + a definition of walking. "Walking" is yes when a character travels over the ground on foot (walking, running, stepping to another place, entering or leaving the picture, small or distant), judged from how the whole body moves, so also with the legs cropped out; no for turning, leaning, gesturing or shifting in place, being carried, pushed or falling, sitting or riding a vehicle.
+- **`walker` + `roster_cam`** (context): the same, plus one line giving the camera measured from the background alone (people masked) for each pair of the window, "not measurable" where the estimate says `unclear`, and the instruction that a person who only seems to move because the camera moved has not changed place.
+
+**Validation before the GPU run:** the 17 stored baseline prompts (observer/roster) are reproduced byte for byte by the current code, so the stored baseline answers are a valid control; the new prompts differ from the baseline only in the walking sentence and one camera line (diffed on a real window); 6 new tests (67 pass); an end-to-end dry run on the exact subset with the fake backend (34 calls, hybrids, report) passed. The real run made 34 calls, all valid on the first attempt, with no invented names.
+
+**Agreed before the run:** adopt a variant only if F1 gains clearly more than the noise (about 10 points on this much data) or walking recall rises clearly. Neither happened.
+
+| Setup (labelled cuts) | F1 (P / R) | Body F1 | Walking P / R | Speaking P / R | s per footage s |
+|---|---|---|---|---|---|
+| Qwen observer/roster (baseline) | 54 (70 / 44) | 51 | 80 / 53 (8 of 15) | 67 / 100 | 19.9 |
+| Qwen walker/roster | 52 (68 / 42) | 54 | 82 / 60 (9) | 59 / 71 | 21.2 |
+| Qwen walker/roster_cam | 56 (73 / 46) | 57 | 83 / 67 (10) | 57 / 86 | 20.6 |
+| Hybrid observer/roster | 61 (66 / 56) | 64 | 80 / 53 | 67 / 100 | 20.6 |
+| Hybrid walker/roster | 59 (65 / 55) | 66 | 82 / 60 | 59 / 71 | 21.9 |
+| Hybrid walker/roster_cam | 62 (67 / 57) | 67 | 83 / 67 | 57 / 86 | 21.3 |
+
+## What the test shows
+
+1. **The definition does what it was written for, in a few pairs.** Walker recovers the two pairs of the runner cut by the frame edge in cut 165 (F1→F2, F2→F3). Walker + camera line also finds one more upper-body exit in cut 164 (F7→F8). Two of the three cropped exits of cut 164 and the far walker of cut 139 stay missed.
+2. **It does not stop the false walks.** Cut 143 (Sakuta flung by the kick) is still called walking in both pairs by every variant, in spite of "pushed or falling" in the definition.
+3. **The prompt change moves a lot of other claims, with no net direction.** Against the baseline, walker gains 9 true claims, loses 14, adds 9 false ones and drops 8; walker + camera gains 11, loses 9, adds 8 and drops 12. Speaking is the visible side effect: recall falls from 100% to 71% (walker) and 86% (walker + camera), mostly in the kick of cut 143, and expression claims vanish in walker. A rule about walking should not touch speaking, yet it does.
+4. **So the F1 differences are inside the noise** (Qwen alone −2 and +2, hybrid −2 and +1). Walking recall rises by 1 and 2 pairs out of 15, which is not "clearly". The test does not support changing the production prompt; walker + camera is the only variant with a small positive sign everywhere (F1, body F1, walking, legs), and it costs 3% more compute per footage second.
+5. **The camera column is circular for the camera line.** Qwen's camera agrees 100% with the pixel estimate once it is given that estimate; it was 86% before. The line also carries the one wrong measurement of the labelled set (a zoom-out in cut 143 labelled static).
+
+## What this does not settle
+
+- **The noise floor of an identical prompt is not measured.** The baseline answers are single runs from earlier sessions, and there is no replicate. The 9–14 claims that flip per variant say that any wording change shakes about a fifth of the claims; whether temperature 0 makes a re-run identical was not checked. A replicate of the baseline (about 15 minutes) would turn "inside the noise" into a number.
+- **The labels and the prompt both come from me.** The walking definition was written after reading the misses on these same cuts, so even the small walking gain is in-sample. A batch of new, labelled cuts with walkers is the fair test; it is also the missing test for a seated character and a following pan.
+- **Not tried:** an instruction on eyes/gaze precision (9%), a head/torso comparison step, few-shot images.

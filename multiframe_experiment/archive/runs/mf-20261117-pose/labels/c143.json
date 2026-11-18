@@ -1,0 +1,94 @@
+{
+  "sample": "c143",
+  "cut_number": 143,
+  "frames": [
+    "frames/c143/F1.jpg",
+    "frames/c143/F2.jpg",
+    "frames/c143/F3.jpg",
+    "frames/c143/F4.jpg",
+    "frames/c143/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.036,
+      "end": 0.078,
+      "camera": "unclear",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": true,
+        "position": false,
+        "expression": false
+      },
+      "note": "Motion-blurred kick: Tomoe's kicking leg extends into Sakuta's side, her arm swings out behind her, body leans into the kick."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.078,
+      "end": 0.703,
+      "camera": "zoom_out",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": true,
+        "position": true,
+        "expression": true
+      },
+      "note": "Reframed wider: Sakuta is flung toward screen-left with arms out and one leg kicked back; Tomoe pulls her leg back with knee raised, raises a fist, shouts (mouth open, angry face). The lost child is now visible between them."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 0.703,
+      "end": 1.329,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta flies further left, reaching hand opens toward camera, head turns toward camera; Tomoe extends the kicking leg straight out, mouth shape changes."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 1.329,
+      "end": 1.704,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": true,
+        "body_pose": true,
+        "position": true,
+        "expression": true
+      },
+      "note": "Sakuta falls further to screen-left, head turned more toward the viewer, clenched teeth open into a shout, hand reaches further; Tomoe leans back, her fist arm swings out to the side, leg stays high."
+    }
+  ],
+  "labelled_by": "Claude (Opus 5.5), from frames/<cut>/F<n>.jpg before any model answer existed, 2026-11-17"
+}

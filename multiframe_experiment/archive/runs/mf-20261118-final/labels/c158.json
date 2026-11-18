@@ -1,0 +1,94 @@
+{
+  "sample": "c158",
+  "cut_number": 158,
+  "frames": [
+    "frames/c158/F1.jpg",
+    "frames/c158/F2.jpg",
+    "frames/c158/F3.jpg",
+    "frames/c158/F4.jpg",
+    "frames/c158/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 0.793,
+      "camera": "unclear",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": true,
+        "body_pose": false,
+        "position": true,
+        "expression": true
+      },
+      "note": "Police Officer on a bicycle rides toward screen-left (tree enters at the left edge); his frown opens into a shout, pedalling leg changes position. Hands stay on the handlebar."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.793,
+      "end": 0.96,
+      "camera": "zoom_out",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": true,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Wider framing: the officer is smaller and further left, pedalling leg down; mouth stays open. Edges of Sakuta (grey shirt) appear in the bottom corners."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 0.96,
+      "end": 1.585,
+      "camera": "zoom_out",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Much wider: Tomoe (wincing, arm stretched to screen-left), the lost child and Sakuta (leg raised) now fill the foreground; the officer is small in the middle ground."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 1.585,
+      "end": 4.171,
+      "camera": "zoom_out",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": false,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "Wider still and everyone further left: Sakuta turns his head to profile facing screen-left and puts his hand on his hip; the child turns her head toward screen-left; Tomoe leans further while pulling with outstretched arm; the officer rides on."
+    }
+  ],
+  "labelled_by": "Claude (Opus 5.5), from frames/<cut>/F<n>.jpg before any model answer existed, 2026-11-17"
+}

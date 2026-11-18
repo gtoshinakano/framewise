@@ -366,6 +366,12 @@ def findings(rows, complete):
         if agree:
             out.append('Judge verdicts that agree with the hand labels: ' + ', '.join(
                 f"{r['config']} {r['judge_vs_labels']['rate'] * 100:.0f}% of {r['judge_vs_labels']['judged']}" for r in agree) + '.')
+    if not any(r['components']['precision'] is not None for r in candidates):
+        # Run without the judge: the score is only cost and reliability, so it would crown the cheapest setup. Cost lines only.
+        cheap = min(candidates, key=lambda r: r['cost']['per_footage_second'] if r['cost'].get('per_footage_second') is not None else 1e9)
+        out.append(f"Run without the judge: no score and no judged precision. Compute per footage second: " + ', '.join(
+            f"{r['config']} {r['cost']['per_footage_second']} s" for r in sorted(candidates, key=lambda r: r['config'])) + f" (cheapest {cheap['config']}).")
+        return out
     best = max(candidates, key=lambda r: r['score'])
     out.append(f"Best overall: {best['config']} with {best['score']} (basis: {', '.join(best['score_basis'])}).")
     for model in sorted({r['model'] for r in candidates}):

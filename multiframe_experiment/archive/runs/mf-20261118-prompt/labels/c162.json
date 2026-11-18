@@ -1,0 +1,93 @@
+{
+  "sample": "c162",
+  "cut_number": 162,
+  "frames": [
+    "frames/c162/F1.jpg",
+    "frames/c162/F2.jpg",
+    "frames/c162/F3.jpg",
+    "frames/c162/F4.jpg",
+    "frames/c162/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 0.459,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "The officer leans forward over the desk toward Sakuta, larger in the picture, head lowered."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.459,
+      "end": 0.584,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "The officer leans further in and comes closer to the camera; head turns down toward Sakuta."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 0.584,
+      "end": 1.46,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": true,
+        "position": false,
+        "expression": false
+      },
+      "note": "The officer bends over the desk speaking (mouth open), head lowered and turned left; Tomoe keeps typing."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 1.46,
+      "end": 2.461,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": false,
+        "body_pose": true,
+        "position": false,
+        "expression": false
+      },
+      "note": "The officer straightens, mouth closes, and reaches his arm across to Sakuta's shoulder; Tomoe turns her head toward them and lifts a hand."
+    }
+  ]
+}

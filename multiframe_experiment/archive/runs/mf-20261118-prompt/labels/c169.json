@@ -1,0 +1,114 @@
+{
+  "sample": "c169",
+  "cut_number": 169,
+  "frames": [
+    "frames/c169/F1.jpg",
+    "frames/c169/F2.jpg",
+    "frames/c169/F3.jpg",
+    "frames/c169/F4.jpg",
+    "frames/c169/F5.jpg",
+    "frames/c169/F6.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 1.252,
+      "camera": "tilt_up",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "The camera tilts up the standing woman (Mai): her hands at her sides come up and cross over her chest; the couple behind her stay put."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 1.252,
+      "end": 1.377,
+      "camera": "tilt_up",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Only the camera tilts up; Mai's arms stay crossed."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 1.377,
+      "end": 1.544,
+      "camera": "tilt_up",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Only the camera tilts up; Mai stays still."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 1.544,
+      "end": 1.71,
+      "camera": "tilt_up",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Only the camera tilts up and her face comes into view; Mai stays still."
+    },
+    {
+      "from": "F5",
+      "to": "F6",
+      "start": 1.71,
+      "end": 5.005,
+      "camera": "tilt_up",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "The camera tilts up a little more; Mai's mouth opens (she speaks)."
+    }
+  ]
+}

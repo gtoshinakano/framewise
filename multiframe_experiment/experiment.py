@@ -4,6 +4,7 @@ keyframes best, and at what cost?
 
     python experiment.py all --run-id mf-test --episode "Episode 2" --cuts 139-158      # everything
     python experiment.py prepare|infer|judge|report --run-id mf-test [--model lfm3]       # one stage
+    python experiment.py rules --run-id mf-test --merge-with 'qwen35|observer|roster'     # C and D again from the stored keypoints (CPU)
     python experiment.py all --dry --run-id dry-run                                       # fake models, no GPU
     python experiment.py labels-template --run-id mf-test                                 # ground-truth skeletons
 
@@ -228,9 +229,19 @@ def stage_pose(args, run, progress):
     progress.set('pose', 'running', 0, len(samples), 'Loading DWPose (CPU)')
     data = pose.run(samples, run.dir, lambda done, total, message: progress.set('pose', 'running', done, total, message))
     pose.save(run.dir, data)
+    records = _rule_records(samples, data)
+    _write_records(run, 'answers-dwpose', records)
+    progress.set('pose', 'done', len(samples), len(samples), f'{len(records)} windows')
+    rebuild(run)
+
+
+def _rule_records(samples, data):
+    """C's answers from the stored keypoints (pose.json) with the current rules in pose_rules.py."""
+    import pose
+    import pose_rules
     records = []
     for sample in samples:
-        result = data['samples'].get(sample['id'])
+        result = (data.get('samples') or {}).get(sample['id'])
         if not result or len(sample['frames']) < 2:
             continue
         states = pose_rules.frame_states(result)
@@ -244,9 +255,33 @@ def stage_pose(args, run, progress):
             if not records:
                 record['prompt'] = POSE_PROMPT.format(kp=pose.KP_THRESHOLD, n=pose.USABLE_BODY_POINTS)
             records.append(record)
-    _write_records(run, 'answers-dwpose', records)
-    progress.set('pose', 'done', len(samples), len(samples), f'{len(records)} windows')
+    return records
+
+
+def stage_camera(args, run, progress):
+    """Re-estimate every pair's camera with the people masked out (CPU, cv2). The old estimate stays in ``camera_all``."""
+    import measure
+    samples = run.read('samples.json', [])
+    data = (run.read('pose.json') or {}).get('samples') or {}
+    for number, sample in enumerate(samples, 1):
+        if len(sample['frames']) < 2:
+            continue
+        fresh = measure.camera_without_people(sample, data.get(sample['id']), run.dir)
+        for pair, camera in zip(sample['pairs'], fresh):
+            pair.setdefault('camera_all', pair['camera'])
+            pair['camera'] = camera
+        progress.set('camera', 'running', number, len(samples), f"Cut {sample['cut_number']}")
+    run.write('samples.json', samples)
+    progress.set('camera', 'done', len(samples), len(samples))
     rebuild(run)
+
+
+def stage_rules(args, run, progress):
+    """Re-derive C and D from the stored keypoints after a change to pose_rules.py: no model, no DWPose run, no GPU."""
+    samples = run.read('samples.json', [])
+    data = run.read('pose.json') or {}
+    _write_records(run, 'answers-dwpose', _rule_records(samples, data))
+    stage_merge(args, run, progress)
 
 
 def stage_merge(args, run, progress):
@@ -307,7 +342,7 @@ def stage_labels(args, run, progress):
     print(folder)
 
 
-STAGES = {'prepare': stage_prepare, 'pose': stage_pose, 'infer': stage_infer, 'merge': stage_merge, 'judge': stage_judge, 'report': stage_report,
+STAGES = {'prepare': stage_prepare, 'pose': stage_pose, 'rules': stage_rules, 'camera': stage_camera, 'infer': stage_infer, 'merge': stage_merge, 'judge': stage_judge, 'report': stage_report,
           'labels-template': stage_labels}
 
 

@@ -1,0 +1,93 @@
+{
+  "sample": "c160",
+  "cut_number": 160,
+  "frames": [
+    "frames/c160/F1.jpg",
+    "frames/c160/F2.jpg",
+    "frames/c160/F3.jpg",
+    "frames/c160/F4.jpg",
+    "frames/c160/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 0.084,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Tomoe's face turns from three-quarter left toward the camera; Sakuta's head tilts a little. Both stay put; talking-heads shot."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.084,
+      "end": 0.334,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Tomoe's face turns back to three-quarter left with eyes down-left; Sakuta lifts his head toward the camera."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 0.334,
+      "end": 0.584,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Both heads turn further toward screen-left (Sakuta three-quarter left, Tomoe near profile). Mouths closed."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 0.584,
+      "end": 1.919,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta's mouth opens (he speaks) and his head turns a little; Tomoe stays in profile looking left."
+    }
+  ]
+}

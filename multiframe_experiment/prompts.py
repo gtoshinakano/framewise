@@ -56,6 +56,22 @@ When a field is "not visible" in either frame, report nothing for it. A field th
 }
 
 
+# Walker (2026-11-18): observer plus a definition of "walking". The misses of the observer prompt were upper-body crops of a person leaving the
+# picture and a runner cut by the frame edge; the labels (and the judge) count running and stepping to another place as walking.
+WALK_OLD = '"walking", "speaking" and "blinking" say whether that motion is visible between the two frames.'
+WALK_NEW = ('"walking" is "yes" when a character travels over the ground on foot between the two frames: walking, running or stepping from one place '
+            'to another, including a character who moves into or out of the picture and a small or distant one. Judge it from how the whole body moves '
+            'along the ground, so it is "yes" also when the legs are cropped out of the picture. It is "no" when the character only turns, leans, gestures '
+            'or shifts in place, is carried, pushed or falling, or sits or rides a vehicle. "speaking" and "blinking" say whether that motion is visible '
+            'between the two frames.')
+STYLES['walker'] = {
+    'label': 'Walker: observer + a definition of walking (running, leaving the picture, cropped legs)',
+    'system': STYLES['observer']['system'].replace(WALK_OLD, WALK_NEW),
+    'retry_hint': STYLES['observer']['retry_hint'],
+}
+assert STYLES['walker']['system'] != STYLES['observer']['system']
+
+
 def _roster_lines(sample):
     if sample.get('no_characters'):
         return ['The user marked this shot as having no characters.']
@@ -110,11 +126,26 @@ def _previous_lines(previous):
     return ['Your answer for the frames just before these (the first frame here is the last frame there):', json.dumps(note, ensure_ascii=False)]
 
 
+def _camera_lines(sample, window, previous=None):
+    """The camera measured from the background alone (people masked out), per pair of the window, as one line."""
+    measured = {(p['from'], p['to']): (p.get('camera') or {}).get('move') for p in sample.get('pairs') or []}
+    names = [frame['label'] for frame in window['frames']]
+    parts = []
+    for a, b in zip(names, names[1:]):
+        move = measured.get((a, b))
+        parts.append(f"{a}→{b} {move if move and move != 'unclear' else 'not measurable'}")
+    return ['Camera movement measured from the background alone, people masked out (an automatic measurement): ' + '; '.join(parts) + '. '
+            'Use a measured move as the pair\'s camera.move; where it says not measurable, judge the camera yourself. A person who only seems to move '
+            'because the camera moved has not changed place.']
+
+
 CONTEXTS = {
     'frames': {'label': 'Frames + timestamps only', 'tells_speech': False, 'chained': False,
                'build': lambda sample, window, previous: []},
     'roster': {'label': 'Frames + character roster (names, boxes) + subtitle band', 'tells_speech': False, 'chained': False,
                'build': lambda sample, window, previous: [*_roster_lines(sample), *_subtitle_line(sample)]},
+    'roster_cam': {'label': 'Roster + subtitle band + the camera measured from the background', 'tells_speech': False, 'chained': False,
+                   'build': lambda sample, window, previous: [*_roster_lines(sample), *_subtitle_line(sample), *_camera_lines(sample, window)]},
     'full': {'label': 'Roster + first-frame description + transcript + previous window', 'tells_speech': True, 'chained': True,
              'build': lambda sample, window, previous: [*_roster_lines(sample), *_subtitle_line(sample), *_first_frame_lines(sample),
                                                         *_transcript_lines(sample, window), *_previous_lines(previous)]},

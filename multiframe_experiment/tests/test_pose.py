@@ -168,6 +168,86 @@ class Phrases(unittest.TestCase):
         self.assertFalse(bust['parts']['walking'])
         self.assertEqual(rules.compare(bust, rules.person_state(person(dx=100), (1000, 120)), STATIC)[0], 'unclear')
 
+    def test_hips_at_the_bottom_of_the_picture_are_not_a_seen_body(self):
+        # Cut 153: a close-up whose hips lie in the bottom strip, knees "above" them. DWPose invented the legs; it is no sitting or lying body.
+        bust = person(box=[0, 0, 1000, 500], moves={5: (700, 250), 6: (300, 250), 11: (640, 470), 12: (360, 475), 13: (700, 200), 14: (300, 210), 15: (700, 150), 16: (300, 160)})
+        s = state(bust)
+        self.assertIsNone(s['pose'])
+        self.assertEqual(s['legs'], {})
+        self.assertIsNone(s.get('torso_tilt'))
+        seen = state(person(moves={11: (112, 380), 12: (88, 380), 13: (150, 380), 14: (50, 380), 15: (150, 420), 16: (50, 420)}))  # hips at 76%: a real body
+        self.assertIsNotNone(seen['pose'])
+
+    def test_a_box_cut_by_the_picture_or_a_tilt_says_nothing_about_size(self):
+        a = state(person())
+        bigger = person(box=[40, 0, 160, 330])
+        self.assertTrue(any('comes closer' in c['description'] for c in rules.compare(a, state(bigger), STATIC)[1]) is False)  # top edge cuts the box
+        # not cut, same body in view, box 40% taller: a real approach
+        no_torso = {5: (None, None), 6: (None, None)}  # no shoulders: the box is all there is to compare
+        free_a, free_b = state(person(box=[60, 40, 140, 260], moves=no_torso)), state(person(box=[40, 20, 160, 340], moves=no_torso))
+        self.assertTrue(any('comes closer' in c['description'] for c in rules.compare(free_a, free_b, STATIC)[1]))
+        tilt = {'move': 'tilt_up', 'dx': 0.0, 'dy': 0.04, 'scale': 1.0}
+        self.assertFalse(any('comes closer' in c['description'] for c in rules.compare(free_a, free_b, tilt)[1]))  # the camera moved the crop
+
+    def test_size_comes_from_the_torso_when_both_frames_have_one(self):
+        a = state(person())
+        far = state(person(moves={5: (115, 90), 6: (85, 90), 11: (108, 130), 12: (92, 130), 7: (115, 110), 8: (85, 110), 9: (115, 128), 10: (85, 128)}))  # torso 40 instead of 80
+        self.assertTrue(a['torso_real'] and far['torso_real'])
+        self.assertTrue(any('moves away' in c['description'] for c in rules.compare(a, far, STATIC)[1]))
+
+    def test_a_body_that_was_revealed_or_hidden_gives_no_size_claim(self):
+        few = state(person(box=[60, 40, 140, 260], moves={i: (None, None) for i in range(11, 17)}))
+        many = state(person(box=[40, 20, 160, 340]))
+        self.assertGreaterEqual(many['n_seen'] - few['n_seen'], rules.VISIBLE_STEP)
+        self.assertFalse(any('comes closer' in c['description'] for c in rules.compare(few, many, STATIC)[1]))
+
+    def test_position_follows_the_torso_not_the_box(self):
+        a = state(person())
+        wide = state(person(box=[-200, 20, 140, 280]))  # an arm thrown out widens the box; the torso stays where it was
+        self.assertFalse(any(c['part'] == 'position' for c in rules.compare(a, wide, STATIC)[1]))
+        moved = state(person(dx=120))
+        self.assertTrue(any('moves toward screen-right' in c['description'] for c in rules.compare(a, moved, STATIC)[1]))
+
+    def test_people_enter_and_leave_only_through_the_border(self):
+        sample3 = sample(3)
+        states = rules.frame_states(pose_sample([[person()], [person()], [person(), person('unknown person 1', dx=400, box=[460, 100, 540, 400])]]))  # appears mid-picture: a detector miss
+        answer = rules.answer_for_window(states, sample3['windows'][0], sample3['pairs'])
+        self.assertEqual([c['changes'] for c in answer['segments'][1]['characters'] if c['name'] == 'unknown person 1'], [[]])
+        edge = rules.frame_states(pose_sample([[person()], [person()], [person(), person('unknown person 1', dx=900, box=[960, 100, 1040, 400])]]))
+        answer = rules.answer_for_window(edge, sample3['windows'][0], sample3['pairs'])
+        self.assertTrue(any(c['description'].startswith('enters') for p in answer['segments'][1]['characters'] for c in p['changes']))
+
+    def test_arms_on_the_lower_edge_of_a_close_up_are_not_seen(self):
+        low = rules.person_state(person(moves={7: (135, 495), 8: (65, 495), 9: (137, 498), 10: (63, 498)}), SIZE)  # elbows and wrists on the bottom edge
+        self.assertEqual((low['arms'], low['hands']), ({}, {}))
+        raised = state(person(moves={7: (135, 30), 9: (137, -10)}))  # above the picture: a raised hand, kept
+        self.assertIn('screen-right', raised['hands'])
+
+    def test_alternating_steps_are_also_a_leg_change(self):
+        a = state(person())
+        b = state(person(dx=70, moves={15: (95, 255), 16: (105, 270)}))
+        walking, changes = rules.compare(a, b, STATIC)
+        self.assertEqual(walking, 'yes')
+        self.assertIn({'part': 'legs', 'description': 'steps: the other foot takes the lead'}, changes)
+        parts = [c['part'] for c in rules.answer_for_window(
+            rules.frame_states(pose_sample([[person()], [person(dx=70, moves={15: (95, 255), 16: (105, 270)})]])), sample(2)['windows'][0],
+            [{'from': 'F1', 'to': 'F2', 'camera': STATIC}])['segments'][0]['characters'][0]['changes']]
+        self.assertIn('legs', parts)
+
+    def test_qwen_keeps_a_body_claim_where_dwpose_reports_nothing(self):
+        states = rules.frame_states(pose_sample([[person()], [person(moves={7: (170, 70), 9: (210, 70)})]]))  # DWPose sees an arm rise, no leg change
+        window = sample(2)['windows'][0]
+        pairs = [{'from': 'F1', 'to': 'F2', 'camera': STATIC}]
+        c_answer = rules.answer_for_window(states, window, pairs)
+        a_answer = {'frames': [], 'summary': '', 'segments': [{'from': 'F1', 'to': 'F2', 'start': 0, 'end': 0.4, 'camera': {'move': 'static', 'detail': ''},
+                                                               'characters': [{'name': 'Tomoe Koga', 'walking': 'no', 'speaking': 'no', 'blinking': 'no',
+                                                                               'changes': [{'part': 'arms', 'description': 'raises her left arm'}, {'part': 'legs', 'description': 'shifts her weight'}]}],
+                                                               'other_changes': []}]}
+        [tomoe] = rules.merge(a_answer, c_answer, states, pairs)['segments'][0]['characters']
+        descriptions = [c['description'] for c in tomoe['changes']]
+        self.assertNotIn('raises her left arm', descriptions)          # DWPose measured the arm: its claim replaces Qwen's
+        self.assertIn('shifts her weight', descriptions)               # DWPose measured no leg change: Qwen's claim stays
+
     def test_a_turned_body_is_not_an_alternation(self):
         a = state(person())
         turned = state(person(dx=70, moves={11: (88, 150), 12: (112, 150), 15: (87, 270), 16: (113, 270)}))  # sides traded: a turn or a DWPose swap
@@ -238,7 +318,7 @@ class Answers(unittest.TestCase):
     def setUp(self):
         self.sample = sample(3)
         self.window = self.sample['windows'][0]
-        self.states = rules.frame_states(pose_sample([[person()], [person(moves={7: (170, 70), 9: (210, 70)})], [person(), person('unknown person 1', dx=500)]]))
+        self.states = rules.frame_states(pose_sample([[person()], [person(moves={7: (170, 70), 9: (210, 70)})], [person(), person('unknown person 1', dx=900)]]))
 
     def test_window_answer_has_the_shared_shape(self):
         answer = rules.answer_for_window(self.states, self.window, self.sample['pairs'])

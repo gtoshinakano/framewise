@@ -1,0 +1,93 @@
+{
+  "sample": "c170",
+  "cut_number": 170,
+  "frames": [
+    "frames/c170/F1.jpg",
+    "frames/c170/F2.jpg",
+    "frames/c170/F3.jpg",
+    "frames/c170/F4.jpg",
+    "frames/c170/F5.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 0.501,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": true,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta, looking back over his shoulder, closes his eyes and moves his head a little; Mai (back to camera) stays."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 0.501,
+      "end": 0.751,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": true,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": true,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta turns his body to face the camera and opens his eyes; Mai stays."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 0.751,
+      "end": 1.252,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta moves lower and to screen-left in the picture (steps toward the camera; legs not visible), face calm."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 1.252,
+      "end": 2.128,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": true,
+        "position": false,
+        "expression": false
+      },
+      "note": "Mai turns her shoulders slightly toward screen-left; Sakuta stays in place."
+    }
+  ]
+}

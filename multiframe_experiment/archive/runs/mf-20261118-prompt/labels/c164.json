@@ -1,0 +1,198 @@
+{
+  "sample": "c164",
+  "cut_number": 164,
+  "frames": [
+    "frames/c164/F1.jpg",
+    "frames/c164/F2.jpg",
+    "frames/c164/F3.jpg",
+    "frames/c164/F4.jpg",
+    "frames/c164/F5.jpg",
+    "frames/c164/F6.jpg",
+    "frames/c164/F7.jpg",
+    "frames/c164/F8.jpg",
+    "frames/c164/F9.jpg",
+    "frames/c164/F10.jpg"
+  ],
+  "pairs": [
+    {
+      "from": "F1",
+      "to": "F2",
+      "start": 0.0,
+      "end": 1.21,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": true,
+        "head": true,
+        "eyes_gaze": true,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta's eyes open from closed and his head comes up; Tomoe turns from profile to face the camera."
+    },
+    {
+      "from": "F2",
+      "to": "F3",
+      "start": 1.21,
+      "end": 3.212,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": true,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": false,
+        "body_pose": true,
+        "position": false,
+        "expression": false
+      },
+      "note": "Sakuta speaks (mouth open) and straightens up; Tomoe raises a pink phone into view."
+    },
+    {
+      "from": "F3",
+      "to": "F4",
+      "start": 3.212,
+      "end": 4.463,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": true,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": false,
+        "expression": true
+      },
+      "note": "Sakuta's face turns toward screen-left, surprise becomes annoyance; Tomoe turns to profile looking left."
+    },
+    {
+      "from": "F4",
+      "to": "F5",
+      "start": 4.463,
+      "end": 4.964,
+      "camera": "static",
+      "flags": {
+        "walking": false,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": true,
+        "legs": false,
+        "body_pose": true,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta turns his body away and leans into a run toward screen-left, arm swinging back; Tomoe stays."
+    },
+    {
+      "from": "F5",
+      "to": "F6",
+      "start": 4.964,
+      "end": 5.089,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta runs off toward screen-left and is half out of frame; Tomoe turns her head to the camera."
+    },
+    {
+      "from": "F6",
+      "to": "F7",
+      "start": 5.089,
+      "end": 5.256,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta leaves frame at the left (only his back at the edge); Tomoe faces the camera."
+    },
+    {
+      "from": "F7",
+      "to": "F8",
+      "start": 5.256,
+      "end": 5.589,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": true,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Sakuta is gone; Tomoe starts moving toward screen-right and turns her head down-left."
+    },
+    {
+      "from": "F8",
+      "to": "F9",
+      "start": 5.589,
+      "end": 5.673,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Tomoe keeps moving toward screen-right, mostly out of frame."
+    },
+    {
+      "from": "F9",
+      "to": "F10",
+      "start": 5.673,
+      "end": 5.756,
+      "camera": "static",
+      "flags": {
+        "walking": true,
+        "speaking": false,
+        "blink": false,
+        "head": false,
+        "eyes_gaze": false,
+        "arms_hands": false,
+        "legs": false,
+        "body_pose": false,
+        "position": true,
+        "expression": false
+      },
+      "note": "Tomoe leaves the frame at the right edge."
+    }
+  ]
+}
