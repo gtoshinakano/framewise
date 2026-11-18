@@ -310,7 +310,7 @@ def _target_boxes(conn, cut_id):
 
 def _references(conn, ids, cut_id):
     """One crop per character: a saved gallery reference (largest box) else their largest manual box in this cut."""
-    from . import sequence_export, sequence_package
+    from . import sequence_package  # never sequence_export: it imports the API (FastAPI), which the inference worker does not have
     found = sequence_package.character_candidates(conn, list(ids), [cut_id])
     names = {row['id']: row['title'] for row in conn.execute(f"SELECT id,title FROM context_items WHERE id IN ({','.join('?' * len(ids))})", list(ids))} if ids else {}
     out = []
@@ -318,7 +318,7 @@ def _references(conn, ids, cut_id):
         for candidate in found.get(cid) or []:
             row = conn.execute('SELECT d.position,run.cut_id FROM character_detections d JOIN character_detection_runs run ON run.id=d.run_id WHERE d.id=?', (candidate['detection_id'],)).fetchone()
             if row and row['position'] in ('first', 'last') and cid in names:
-                x1, y1, x2, y2 = sequence_export.crop_fractions(candidate)
+                x1, y1, x2, y2 = sequence_package.crop_fractions(candidate)
                 out.append({'name': names[cid], 'cut_id': row['cut_id'], 'at': row['position'],
                             'crop': [round(max(0.0, x1), 4), round(max(0.0, y1), 4), round(min(1.0, x2), 4), round(min(1.0, y2), 4)]})
                 break

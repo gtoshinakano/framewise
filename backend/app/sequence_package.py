@@ -255,6 +255,17 @@ def _box_area(box, size):
         return 0.0
 
 
+CROP_MARGIN = 0.15
+
+
+def crop_fractions(candidate):
+    """The detection box with a margin, as fractions of the frame the detector saw."""
+    width, height = candidate['image_size']
+    x1, y1, x2, y2 = candidate['box']
+    margin_x, margin_y = (x2 - x1) * CROP_MARGIN, (y2 - y1) * CROP_MARGIN
+    return ((x1 - margin_x) / width, (y1 - margin_y) / height, (x2 + margin_x) / width, (y2 + margin_y) / height)
+
+
 def _detection_candidate(row, source):
     frames = store.loads(row['frames_json'], [])
     frame = next((item for item in frames if item.get('position') == row['position']), None)

@@ -28,6 +28,7 @@ from pathlib import Path
 
 from . import db, media, sequence_package as packages
 from .brief import export_path, write_audio
+from .sequence_package import CROP_MARGIN, crop_fractions  # noqa: F401  (kept here for the export's readers)
 
 FRAME_WORKERS = 4
 STRIP_TILE = (320, 180)
@@ -35,7 +36,6 @@ STRIP_COLUMNS = 5
 CONTACT_TILE = (384, 216)
 CONTACT_COLUMNS = 5
 PREVIEW_WIDTH = 640
-CROP_MARGIN = 0.15
 AUDIO_ERRORS = (OSError, ValueError, wave.Error, EOFError)
 
 
@@ -78,14 +78,6 @@ def strip_times(picture):
     count = max(1, math.ceil(end - start - 1e-6))
     step = (end - start) / count
     return [start + (number + 0.5) * step for number in range(count)]
-
-
-def crop_fractions(candidate):
-    """The detection box with a margin, as fractions of the frame the detector saw."""
-    width, height = candidate['image_size']
-    x1, y1, x2, y2 = candidate['box']
-    margin_x, margin_y = (x2 - x1) * CROP_MARGIN, (y2 - y1) * CROP_MARGIN
-    return ((x1 - margin_x) / width, (y1 - margin_y) / height, (x2 + margin_x) / width, (y2 + margin_y) / height)
 
 
 class Archive:

@@ -209,5 +209,29 @@ class EpisodeContextTest(unittest.TestCase):
         self.assertEqual((pictures[3]['cut_id'], pictures[3]['at']), ('c1', ['first']))
 
 
+class WorkerImportsTest(unittest.TestCase):
+    def test_the_picture_path_never_needs_the_api_packages(self):
+        # The inference worker image has no FastAPI: every module the review reaches, including lazy imports, must work without it.
+        import subprocess
+        import sys
+        script = '''
+import sys
+class Block:
+    def find_spec(self, name, path=None, target=None):
+        if name.split('.')[0] in ('fastapi', 'starlette'):
+            raise ModuleNotFoundError(name)
+sys.meta_path.insert(0, Block())
+import unittest
+from tests import test_consistency_pictures as t
+suite = unittest.TestSuite([t.EpisodeContextTest('test_gather_offers_the_cut_pictures_with_a_reference_of_the_speaker'),
+                            t.EpisodeContextTest('test_neighbours_dialogue_and_voice_links')])
+sys.exit(0 if unittest.TextTestRunner(verbosity=0).run(suite).wasSuccessful() else 1)
+'''
+        root = Path(__file__).resolve().parents[1]
+        done = subprocess.run([sys.executable, '-c', script], cwd=root, env={**__import__('os').environ, 'PYTHONPATH': str(root / 'backend') + ':' + str(root)},
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+
+
 if __name__ == '__main__':
     unittest.main()
