@@ -141,13 +141,30 @@ def timeline_for(conn, sequence, cuts, points=None):
     Once the user has confirmed a dialogue compilation its lines replace the raw transcript everywhere.
     The boundaries the user placed (``points``, else the sequence's saved ones) are marked ``fixed``.
     """
+    compiled = reviewed_compilation(conn, sequence)
+    return build_timeline(conn, sequence, cuts, compiled, points)
+
+
+def build_timeline(conn, sequence, cuts, compilation, points=None):
     episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (sequence['episode_id'],)).fetchone()
     start, end = cuts[0]['start_time'], cuts[-1]['end_time']
     audio = media.episode_dir(episode['project_id'], sequence['episode_id']) / 'audio.wav'
     envelope = sequence_timeline.audio_envelope(audio, start, end) if audio.is_file() else []
-    compiled = reviewed_compilation(conn, sequence)
-    lines = sequence_compile.merged_lines(compiled, start) if compiled is not None else transcript_lines(conn, sequence['episode_id'], start, end)
-    return sequence_timeline.build(cuts, lines, envelope, event_starts(conn, cuts), shot_points(sequence) if points is None else points)
+    lines = sequence_compile.merged_lines(compilation, start) if compilation is not None else transcript_lines(conn, sequence['episode_id'], start, end)
+    timeline = sequence_timeline.build(cuts, lines, envelope, event_starts(conn, cuts), shot_points(sequence) if points is None else points)
+    timing = {item['after_cut_id']: item for item in (compilation or {}).get('timing', [])}
+    accepted = {}
+    for boundary in timeline['boundaries']:
+        item = timing.get(boundary['after_cut_id'])
+        if not item or boundary['fixed'] or not boundary['speech'] or item['choice'] not in boundary['options']:
+            continue
+        key = boundary['id']
+        trial = {**accepted, key: {**item, 'id': key}}
+        spans = sequence_timeline.decide(timeline, {key: item['choice'] for key, item in trial.items()})
+        if not sequence_timeline.check_spans(spans, timeline):
+            accepted = trial
+    timeline['dialogue_timing'] = accepted
+    return timeline
 
 
 def speech_past_end(conn, sequence, cuts, following):
@@ -166,10 +183,13 @@ def speech_past_end(conn, sequence, cuts, following):
     return None
 
 
-def raw_timeline_for(conn, sequence, cuts):
+def raw_timeline_for(conn, sequence, cuts, utterances=False):
     """The same timeline built from the raw transcript, which is what the dialogue compilation starts from."""
     start, end = cuts[0]['start_time'], cuts[-1]['end_time']
-    return sequence_timeline.build(cuts, transcript_lines(conn, sequence['episode_id'], start, end))
+    lines = transcript_lines(conn, sequence['episode_id'], start, end)
+    if utterances:
+        lines = sequence_compile.source_utterances(lines, [cut['start_time'] for cut in cuts[1:]])
+    return sequence_timeline.build(cuts, lines)
 
 
 # -------------------------------------------------------------------- results

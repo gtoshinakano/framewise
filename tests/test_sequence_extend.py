@@ -79,11 +79,11 @@ class SequenceExtendTest(SequenceBase):
         self.assertEqual([job['step'] for job in confirmed['jobs'] if job['status'] == 'queued'], ['bible'])
         self.work()
         after = self.detail(sequence_id)
-        self.assertEqual(self.steps(sequence_id)[-6:], ['bible', 'plan', 'shot', 'shot', 'shot', 'review'])
+        self.assertEqual(self.steps(sequence_id)[-5:], ['bible', 'plan', 'shot', 'shot', 'shot'])
         self.assertEqual([shot['cut'] for shot in after['shots']], [1, 2, 3])
         self.assertTrue(after['ready'])
         self.assertTrue(all(shot['result'] and not shot['stale'] for shot in after['shots']))
-        self.assertIsNotNone(after['review'])
+        self.assertIsNone(after['review'])
         self.assertFalse([job for job in after['jobs'] if job['status'] in ('failed', 'cancelled')])
         boundary = after['timeline']['boundaries'][-1]
         self.assertEqual(boundary['after_cut'], 2)

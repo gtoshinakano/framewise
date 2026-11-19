@@ -1,6 +1,6 @@
 // Pure helpers of the Dialogue tab's vertical timeline: no React and no fetch, so the node tests can import them.
 // Times are seconds from the start of the sequence unless a name says episode time.
-import type { CompiledLine, Decider, SequenceBoundary, SequenceCut, SequenceShot, ShotPoint } from './sequenceApi'
+import type { CompiledLine, Decider, DialogueView, SequenceBoundary, SequenceCut, SequenceShot, ShotPoint } from './sequenceApi'
 
 /** A shot keeps at least this much of its own cut's picture (the whole cut when it is shorter); `sequence_timeline.MIN_OWN_SECONDS`. */
 export const MIN_OWN_SECONDS = 0.2
@@ -18,7 +18,7 @@ export function lineColour(index: number) {
 }
 
 /** Where a shot boundary sits: placed by you, where the current plan has it, or on the hard cut until the director decides. */
-export type MarkerSource = 'you' | 'plan' | 'cut'
+export type MarkerSource = 'you' | 'dialogue' | 'plan' | 'cut'
 export type Marker = {
   /** The hard cut's id (K1…), the cut before it and the cut after it. */
   id: string; after_cut_id: string; before_cut_id: string; index: number
@@ -27,17 +27,19 @@ export type Marker = {
   source: MarkerSource; by: Decider | null
   /** The number of the shot that starts here: the plan's, else the cut's place in the sequence. */
   shot: number
-  speech: boolean
+  speech: boolean; reason?: string
 }
 
 /** One marker per hard cut, in order, for the draft `points` (episode seconds). */
-export function boundaryMarkers(boundaries: SequenceBoundary[], shots: SequenceShot[], points: ShotPoint[], origin: number): Marker[] {
+export function boundaryMarkers(boundaries: SequenceBoundary[], shots: SequenceShot[], points: ShotPoint[], origin: number, suggestions: DialogueView['shot_starts'] = []): Marker[] {
   return boundaries.map((boundary, index) => {
     const point = points.find(item => item.after_cut_id === boundary.after_cut_id)
+    const suggested = suggestions.find(item => item.after_cut_id === boundary.after_cut_id)
     const planned = shots.find(shot => shot.cut_id === boundary.before_cut_id && (!shot.part || shot.part[0] === 1))
     const base = { id: boundary.id, after_cut_id: boundary.after_cut_id, before_cut_id: boundary.before_cut_id, index, hard: boundary.t, shot: planned?.index ?? index + 2, speech: !!boundary.speech }
     if (point) return { ...base, t: round(point.time - origin), source: 'you', by: 'user' }
     // Handed back in the draft: the plan still has the old placement until it is saved, so show the hard cut instead.
+    if (suggested) return { ...base, t: round(suggested.time - origin), source: 'dialogue', by: suggested.by, speech: suggested.speech, reason: suggested.reason }
     if (planned && !boundary.fixed) return { ...base, t: planned.t0, source: 'plan', by: boundary.by }
     return { ...base, t: boundary.t, source: 'cut', by: null }
   })

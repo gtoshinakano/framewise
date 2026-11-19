@@ -15,10 +15,11 @@ from .assistant import compact
 from .composition_brief import shot_props, short
 
 # The motion is read as ``video_analysis``: for a cut with a keyframe analysis that is its motion-direction view
-# (``prompt_context.with_motion``), so the direction readers below work for both (sequence prompts are rewritten later).
-STRUCTURED = ('initial_frame', 'video_analysis', 'keyframe_analysis', 'performance_beats', 'consistency_summary')
+# (``prompt_context.with_motion``), so readers of motion directions work for both.
+STRUCTURED = ('initial_frame', 'video_analysis', 'keyframe_analysis', 'performance_beats', 'consistency_summary', 'last_frame')
 SUMMARY_TITLE = 'Cut summary'
-DIALOGUE_SECTION = re.compile(r'^###[ \t]+Dialogue[ \t]*$.*?(?=^###[ \t]|\Z)', re.M | re.S)
+NON_VIDEO_SUMMARY_SECTIONS = re.compile(r'^###[ \t]+(?:Dialogue|Cinematic Camera)[ \t]*$.*?(?=^###[ \t]|\Z)', re.M | re.S)
+CAMERA_SECTION = re.compile(r'^###[ \t]+Cinematic Camera[ \t]*$([\s\S]*?)(?=^###[ \t]|\Z)', re.M)
 LEVELS = 4  # detail levels 0 (everything) to 3 (bare minimum)
 
 
@@ -63,8 +64,13 @@ def load(conn, sequence, cuts):
 
 
 def is_ready(results):
-    """A cut can be directed once it has a first-frame description and a motion direction."""
-    return isinstance((results.get('initial_frame') or {}).get('content'), dict) and prompt_context.is_direction((results.get('video_analysis') or {}).get('content'))
+    """Keyframed cuts need current performance beats; legacy cuts keep their original motion evidence."""
+    if not isinstance((results.get('initial_frame') or {}).get('content'), dict):
+        return False
+    if 'keyframe_analysis' in results:
+        return prompt_context.beats_current(results)
+    video = (results.get('video_analysis') or {}).get('content')
+    return prompt_context.is_direction(video) or bool(video and 'last_frame' in results)
 
 
 def missing_cuts(ctx, cuts):
@@ -89,6 +95,14 @@ def speaking_in(results):
             if isinstance(person, dict) and person.get('speaking') == 'yes' and _text(person.get('character')) and person.get('character_context_id')]
 
 
+def mouth_activity(results, offset, start, end):
+    content = (results.get('keyframe_analysis') or {}).get('content') or {}
+    return [{'t': [round(a, 3), round(b, 3)], 'speaking': people}
+            for segment in content.get('segments') or []
+            if (a := offset + segment['start']) < end and (b := offset + segment['end']) > start
+            if (people := [person['name'] for person in segment['characters'] if person.get('speaking') == 'yes'])]
+
+
 # -------------------------------------------------------------------- digests
 
 def cut_digest(span, results, level=0):
@@ -107,6 +121,9 @@ def cut_digest(span, results, level=0):
              'unnamed_people': bool(_text(frame.get('background_people'))) or None,
              'speaking': speaking_in(results),
              'action': short(action, 32 if level < 2 else 14)}
+    beats = performance_view(results, 0, span['t1'] - span['t0'])
+    if beats and level < 2:
+        entry['performance'] = [{'t': beat['t'], 'intent': short(beat.get('intent') or '', 14)} for beat in beats[:6] if beat.get('intent')]
     if level < 1:
         entry.update(lighting=short(_text(frame.get('lighting')), 10), mood=short(_text(frame.get('mood')), 8), props=short(_text(frame.get('props')), 14))
     if not is_ready(results):
@@ -224,11 +241,11 @@ def reviewed(timeline):
 
 
 def without_dialogue(summary):
-    """A cut summary without the Dialogue section that summaries written before dialogue moved to the sequence step still have.
+    """A cut summary for video direction; the still writer receives its dedicated camera section separately.
 
     The words and times of speech are the user's dialogue, never a summary's, so a shot is not shown a second version of them.
     """
-    return DIALOGUE_SECTION.sub('', summary).strip() if isinstance(summary, str) else ''
+    return NON_VIDEO_SUMMARY_SECTIONS.sub('', summary).strip() if isinstance(summary, str) else ''
 
 
 def bible_brief(bible, level=0):
@@ -239,6 +256,11 @@ def bible_brief(bible, level=0):
     return brief
 
 
+def window_subtitles(lines, subtitles):
+    low, high = lines[0]['t0'] - 1.0, max(line['t1'] for line in lines) + 1.0
+    return [sub for sub in subtitles if sub['t1'] > low and sub['t0'] < high]
+
+
 def compile_input(ctx, timeline, window, subtitles, previous, decided, level=0):
     """One window of the dialogue compilation: the recognised lines, the subtitles beside them and the evidence for who speaks.
 
@@ -246,8 +268,8 @@ def compile_input(ctx, timeline, window, subtitles, previous, decided, level=0):
     on the sequence clock. ``previous`` are the last compiled lines of the window before and ``decided`` its voices.
     """
     lines = window['lines']
-    low, high = lines[0]['t0'] - 1.0, lines[-1]['t1'] + 1.0
-    nearby = [sub for sub in subtitles if sub['t1'] > low and sub['t0'] < high]
+    low, high = lines[0]['t0'] - 1.0, max(line['t1'] for line in lines) + 1.0
+    nearby = window_subtitles(lines, subtitles)
     pairs = sequence_compile.pair_subtitles(lines, nearby)
     cuts = [cut for cut in timeline['cuts'] if cut['t1'] > low and cut['t0'] < high]
     hints = sequence_compile.continuity_hints(lines, nearby, [cut for cut in cuts if cut['t0'] > 0])
@@ -255,16 +277,21 @@ def compile_input(ctx, timeline, window, subtitles, previous, decided, level=0):
     digest = []
     for cut in cuts:
         results = ctx['results'].get(cut['id'], {})
-        entry = {'cut': cut['number'], 't': [cut['t0'], cut['t1']], 'on_screen': list(people_in(results)), 'speaking': speaking_in(results)}
+        entry = cut_digest(cut, results, level)
+        visible_speech = mouth_activity(results, cut['t0'], low, high)
+        if visible_speech and level < 2:
+            entry['mouth_activity'] = visible_speech
         digest.append({key: value for key, value in entry.items() if value not in (None, [], '')})
     table = '\n'.join(f"{line['id']} {line['t0']:.2f}-{line['t1']:.2f} {line['speaker_label'] or 'Unknown speaker'}"
                       + (f" / {line['character_name']}" if line.get('character_name') else '') + f": {line['text']}" for line in lines)
-    payload = {'window': {'part': window['index'], 'of': window['of'], 'spoken_language': ctx.get('spoken_language') or 'the language of the recognised lines (not the subtitles)', 'subtitle_language': ctx['subtitle_language'] or None},
+    payload = {'next_window': [f"{line['speaker_label']} / {line.get('character_name') or '?'}: {line['text']}" for line in window.get('next', [])],
+               'scene_context': _notes(ctx, max(level, 1)) if level < 2 else None,
+               'window': {'part': window['index'], 'of': window['of'], 'spoken_language': ctx.get('spoken_language') or 'the language of the recognised lines (not the subtitles)', 'subtitle_language': ctx['subtitle_language'] or None},
                'lines': table,
                'subtitles': '\n'.join(f"{sub['id']} {sub['t0']:.2f}-{sub['t1']:.2f}: {sub['text']}" for sub in nearby) or 'No subtitle lines were read for this part.',
                'pairs': {line_id: [f"{item['subtitle']} overlap {item['overlap']}s similarity {item['similarity']}" for item in found] for line_id, found in pairs.items() if found} if level < 3 else None,
                'hints': [f"{hint['a']}+{hint['b']}: {'; '.join(hint['reasons'])}" for hint in hints],
-               'cuts': digest if level < 2 else None,
+               'cuts': digest,
                'characters': [person['name'] for person in ctx['characters']],
                'voices': voices if level < 2 else None,
                'previous': [f"{line['t0']:.2f}-{line['t1']:.2f} {line['speaker_label']} / {line['character'] or '?'}: {line['text']}" for line in previous[-(4, 3, 2, 1)[level]:]] or None,
@@ -364,6 +391,15 @@ def parts_of(timeline, cut):
         return None
 
 
+def timing_input(ctx, timeline, level):
+    boundaries = timeline['boundaries']
+    decisions = [decision_view(ctx, timeline, item, {}, level) for item in boundaries if item['speech'] and not item['fixed']]
+    cut_numbers = {number for item in decisions for number in item['cuts']}
+    return {'decisions': decisions,
+            'fixed_by_user': [{'id': item['id'], 't': item['fixed']['t']} for item in boundaries if item['fixed']],
+            'cuts': [cut_digest(cut, ctx['results'].get(cut['id'], {}), level) for cut in timeline['cuts'] if cut['number'] in cut_numbers]}
+
+
 def plan_input(ctx, sequence, timeline, bible, level=0):
     cuts = []
     for cut in timeline['cuts']:
@@ -372,13 +408,14 @@ def plan_input(ctx, sequence, timeline, bible, level=0):
         if parts and parts > 1:
             entry['parts'] = parts
         cuts.append(entry)
+    timing = timeline.get('dialogue_timing', {})
     decisions = [{key: value for key, value in decision_view(ctx, timeline, boundary, bible, level).items() if value is not None}
-                 for boundary in timeline['boundaries'] if boundary['speech'] and not boundary.get('fixed')]
+                 for boundary in timeline['boundaries'] if boundary['speech'] and not boundary.get('fixed') and boundary['id'] not in timing]
     fixed = [fixed_view(ctx, timeline, boundary, bible, level) for boundary in timeline['boundaries'] if boundary.get('fixed')]
     if decisions:
         open_text = decisions
     elif any(boundary['speech'] for boundary in timeline['boundaries']):
-        open_text = 'Nothing to decide: the user placed the boundary at every hard cut inside speech.'
+        open_text = 'Dialogue timing or user placements already cover every boundary inside speech.' if timing else 'Nothing to decide: the user placed the boundary at every hard cut inside speech.'
     else:
         open_text = 'No hard cut falls inside speech: every boundary stays on its hard cut.'
     return {'director_instruction': sequence['instruction'].strip() or None,
@@ -388,6 +425,9 @@ def plan_input(ctx, sequence, timeline, bible, level=0):
             'cuts': cuts,
             'transcript': transcript_text(timeline['lines'], bible, clip=(None, 120, 60, 40)[level]),
             'decisions': open_text,
+            **({'dialogue_timing': [{'cuts': [item['after_cut'], item['before_cut']], 'hard_cut': item['t'],
+                                    'start': item['options'][timing[item['id']]['choice']]['t'],
+                                    'reason': timing[item['id']]['reason']} for item in timeline['boundaries'] if item['id'] in timing]} if timing else {}),
             **({'fixed_by_user': fixed} if fixed else {})}
 
 
@@ -405,6 +445,47 @@ def _shift_events(view, offset, duration):
         if end > 0 and start < duration:
             events.append({**event, 'seconds': f'{max(0.0, start):.1f}-{min(duration, end):.1f}'})
     return {key: value for key, value in {**view, 'events': events, 'kind': None}.items() if value not in (None, [], '')}
+
+
+def shifted_range(value, offset, duration):
+    try:
+        start, end = (float(part) + offset for part in value.rstrip('s').split('-'))
+    except (AttributeError, ValueError):
+        return None
+    if end > 0 and start < duration:
+        return [round(max(0.0, start), 3), round(min(duration, end), 3)]
+    return None
+
+
+def performance_view(results, offset, duration):
+    if not prompt_context.beats_current(results):
+        return []
+    view = prompt_context.beats_view(results['performance_beats']['content'])
+    return [{**{key: val for key, val in beat.items() if key not in ('at', 'speech')}, 't': times,
+             **({'delivery_hints': [{k: line[k] for k in ('speaker', 'delivery') if k in line} for line in beat['speech']]} if beat.get('speech') else {})}
+            for beat in (view or {}).get('beats', []) if (times := shifted_range(beat.get('at'), offset, duration))]
+
+
+def shot_keyframes(results, offset, duration, level):
+    view = prompt_context.keyframe_view((results.get('keyframe_analysis') or {}).get('content'), 'review' if level < 2 else 'brief') or {}
+    changes = [{**{key: val for key, val in item.items() if key not in ('pair', 'at')}, 't': times}
+               for item in view.get('changes', []) if (times := shifted_range(item.get('at'), offset, duration))]
+    if level >= 3:
+        return None
+    frames = [{**frame, 't': round(frame['t'] + offset, 3)} for frame in view.get('frames', []) if isinstance(frame.get('t'), (int, float))]
+    preceding = [frame for frame in frames if frame['t'] < 0]
+    following = [frame for frame in frames if frame['t'] > duration]
+    states = [*preceding[-1:], *(frame for frame in frames if 0 <= frame['t'] <= duration), *following[:1]]
+    return {key: value for key, value in {'states': states, 'changes': changes}.items() if value}
+
+
+def still_camera(results):
+    """The camera and look chosen for this cut's opening frame, copied from its Cut summary."""
+    summary = (results.get('summary') or {}).get('content') or ''
+    section = CAMERA_SECTION.search(summary)
+    if not section:
+        return ''
+    return '\n'.join(line.strip().lstrip('-* ').replace('**', '') for line in section.group(1).splitlines() if line.strip())
 
 
 def _without_ids(frame, level=0):
@@ -565,8 +646,13 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
         entry = {'cut': span['number'], 'plays_at': plays_at,
                  'first_frame': _without_ids(prompt_context.frame_view((results.get('initial_frame') or {}).get('content')), level),
                  'motion': _shift_events(prompt_context.video_view((results.get('video_analysis') or {}).get('content')), offset, duration),
+                 'keyframes': shot_keyframes(results, offset, duration, level),
+                 'performance_beats': performance_view(results, offset, duration),
+                 'legacy_last_frame': _without_ids(prompt_context.frame_view((results.get('last_frame') or {}).get('content')), level)
+                                      if not prompt_context.is_direction((results.get('video_analysis') or {}).get('content')) and level < 2 else None,
+                 'still_camera': still_camera(results),
                  'user_decisions': results.get('answers'),
-                 'cut_summary': summary[:(4200, 2400, 1200, 0)[level]] if summary and level < 3 else None,
+                 'cut_summary': summary[:(6200, 3000, 1200, 0)[level]] if summary and level < 3 else None,
                  'review': {key: consistency.get(key) for key in ('clear', 'confusing')} if level < 1 and not summary and consistency else None}
         cuts.append({key: value for key, value in entry.items() if value not in (None, '', {}, [])})
     scene = scene_for(bible, shot['cut'])

@@ -3,7 +3,7 @@
 ``payload.step`` is ``bible``, ``plan``, ``shot`` or ``review``. A job reads the current cuts, results
 and transcript when it starts (never a snapshot taken at queue time), asks the text model, and saves
 one revision under its lease. Follow-up jobs are inserted in the same transaction as the result that
-makes them possible: the bible queues the plan, and the last shot of a batch queues the review. A
+makes them possible: the bible queues the plan. Continuity review runs on request. A
 job whose result was already committed before a crash only marks itself done.
 """
 import json
@@ -35,7 +35,7 @@ def load_state(conn, sequence, adopt_cuts=False):
     ctx = evidence.load(conn, sequence, cuts)
     missing = evidence.missing_cuts(ctx, cuts)
     if missing:
-        raise RuntimeError('These cuts need a first-frame and a keyframe analysis first: ' + ', '.join(map(str, missing)))
+        raise RuntimeError('Complete first-frame analysis, keyframes and performance beats for cuts: ' + ', '.join(map(str, missing)))
     return {'cuts': cuts, 'changed': changed, 'ctx': ctx, 'timeline': store.timeline_for(conn, sequence, cuts)}
 
 
@@ -98,7 +98,8 @@ def windows_of(lines):
         run.append(line)
     if run:
         runs.append(run)
-    return [{'index': number, 'of': len(runs), 'lines': items} for number, items in enumerate(runs, 1)]
+    return [{'index': index + 1, 'of': len(runs), 'lines': items, 'next': runs[index + 1][:2] if index + 1 < len(runs) else []}
+            for index, items in enumerate(runs)]
 
 
 def compile_windows(job, owner, payload, ctx, timeline, source_lines, subtitles, previous=(), decided=()):
@@ -108,20 +109,21 @@ def compile_windows(job, owner, payload, ctx, timeline, source_lines, subtitles,
     the model continues from. Returns the compiled lines, the voices it newly decided, its open questions and
     the provenance of the last call.
     """
-    by_subtitle = {item['id']: item for item in subtitles}
     roster = {person['name']: person['id'] for person in ctx['characters']}
     names = list(roster)
-    sub_ids = [item['id'] for item in subtitles]
     lines, found, questions = [], [], []
     out = {'model': None, 'settings': {}, 'input': {}, 'seconds': 0.0, 'windows': 0}
     for window in windows_of(source_lines):
         ids = [line['id'] for line in window['lines']]
+        nearby = evidence.window_subtitles(window['lines'], subtitles)
+        by_subtitle = {item['id']: item for item in nearby}
+        sub_ids = list(by_subtitle)
         label = f"Aligning dialogue · part {window['index']}/{window['of']}"
         worker.stage(job['id'], owner, job['episode_id'], label)
         answer, out['model'], out['settings'], out['input'] = ask(
             job, owner, payload, 'compile',
             lambda level, window=window: evidence.compile_input(ctx, timeline, window, subtitles, [*previous, *lines], [*decided, *found], level),
-            direction.compile_format(ids, sub_ids, names), lambda output, ids=ids: direction.validate_compile(output, ids, set(sub_ids), names),
+            direction.compile_format(ids, sub_ids, names), lambda output: direction.validate_compile(output, ids, set(sub_ids), names, window['lines']),
             label, fallback=lambda window=window: sequence_compile.deterministic_groups(window['lines']))
         out['seconds'] += out['settings'].get('summary_generation_seconds') or 0.0
         out['windows'] += 1
@@ -130,6 +132,36 @@ def compile_windows(job, owner, payload, ctx, timeline, source_lines, subtitles,
         found.extend(voice for voice in answer['voices'] if voice['speaker_label'] not in known)
         questions.extend(answer['open_questions'])
     return {**out, 'lines': lines, 'decided': found, 'questions': questions}
+
+
+def compile_timing(job, owner, payload, sequence, cuts, ctx, content):
+    """Select the shot starts on the finished dialogue so the reviewer can preview them immediately."""
+    with db.connect() as conn:
+        timeline = store.build_timeline(conn, sequence, cuts, content)
+    boundaries = direction.open_boundaries(timeline)
+    if not boundaries:
+        return {}, {}
+    settings, user_input = {}, {}
+    if any(len(boundary['options']) > 1 for boundary in boundaries):
+        seen = None
+
+        def validate(answer):
+            nonlocal seen
+            seen = answer
+            return direction.validate_decisions(answer, timeline, timing=True)
+
+        worker.stage(job['id'], owner, job['episode_id'], 'Aligning shot starts to phrases')
+        answer, model, settings, user_input = ask(
+            job, owner, payload, 'timing', lambda level: evidence.timing_input(ctx, timeline, level),
+            direction.timing_format(timeline), validate, 'Aligning shot starts to phrases',
+            fallback=lambda: direction.complete_plan(seen, timeline, {}, ctx, timing=True))
+        settings = {**settings, 'model_id': model}
+    else:
+        answer = direction.complete_plan(None, timeline, {}, ctx, timing=True)
+    by_id = {boundary['id']: boundary for boundary in boundaries}
+    content['timing'] = [{'after_cut_id': by_id[item['id']]['after_cut_id'], **{key: item[key] for key in ('choice', 'reason', 'by')}}
+                         for item in answer['decisions']]
+    return settings, user_input
 
 
 def run_compile(job, owner, payload, sequence):
@@ -146,9 +178,11 @@ def run_compile(job, owner, payload, sequence):
             raise RuntimeError('The cuts of this sequence now last more than three minutes; create a shorter sequence')
         changed = store.cuts_changed(sequence, cuts)
         ctx = evidence.load(conn, sequence, cuts)
-        timeline = store.raw_timeline_for(conn, sequence, cuts)
+        timeline = store.raw_timeline_for(conn, sequence, cuts, utterances=payload.get('extend_from') is None)
         source, fragments, subtitle_source = store.source_fingerprint(conn, sequence, cuts)
         run = subtitle_store.current_run(sequence['episode_id'], conn)
+        if run and not ctx['subtitle_language']:
+            ctx['subtitle_language'] = run['language']
         base = store.current(conn, sequence['id'], 'compilation')
         extend_from, was_current = payload.get('extend_from'), False
         if extend_from is not None and base is not None and cuts[0]['start_time'] < extend_from < cuts[-1]['end_time']:
@@ -171,13 +205,15 @@ def run_compile(job, owner, payload, sequence):
     voices = sequence_compile.settle_voices(lines, found['decided'], timeline['lines'])
     content = sequence_compile.validate({'lines': lines, 'voices': voices, 'open_questions': found['questions'][:12]}, duration, roster)
     settings = {**found['settings'], 'summary_generation_seconds': found['seconds'], 'windows': found['windows'], 'subtitle_lines': len(subtitle_source), 'source_hash': source}
+    timing, timing_input = compile_timing(job, owner, payload, sequence, cuts, ctx, content)
+    settings['timing'] = timing
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         worker.require_lease(conn, job['id'], owner)
         if changed:
             store.resnapshot(conn, sequence, cuts)
         result_id = store.save(conn, sequence['id'], 'compilation', content, model_id=found['model'], job_id=job['id'], prompt=direction.COMPILE_SYSTEM, settings=settings,
-                               context=found['input'], expected_current=base_of(payload))
+                               context={'dialogue': found['input'], 'timing': timing_input}, expected_current=base_of(payload))
         store.record_sources(conn, sequence['id'], result_id, source, run['id'] if run else None, len(fragments), len(subtitle_source))
         if not content['lines']:
             conn.execute('UPDATE sequences SET reviewed_compilation_id=? WHERE id=?', (result_id, sequence['id']))  # nothing is spoken: there is nothing to review
@@ -208,6 +244,9 @@ def extend_compile(job, owner, payload, sequence, cuts, changed, ctx, timeline, 
     voices = sequence_compile.settle_voices(added, found['decided'], tail)
     settings = {**found['settings'], 'summary_generation_seconds': found['seconds'], 'windows': found['windows'], 'subtitle_lines': len(subtitle_source), 'source_hash': source,
                 'extended_with_cut': payload.get('extend_cut'), 'extended_from': round(old_duration, 3)}
+    timing_content = sequence_compile.validate(sequence_compile.append_lines(existing, added, voices, found['questions'], crossed), duration, roster)
+    timing, timing_input = compile_timing(job, owner, payload, sequence, cuts, ctx, timing_content) if added else ({}, {})
+    settings['timing'] = timing
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         worker.require_lease(conn, job['id'], owner)
@@ -216,8 +255,10 @@ def extend_compile(job, owner, payload, sequence, cuts, changed, ctx, timeline, 
         latest = store.current(conn, sequence['id'], 'compilation')
         if added:
             content = sequence_compile.validate(sequence_compile.append_lines(store.loads(latest['content'], {}), added, voices, found['questions'], crossed), duration, roster)
+            if latest['id'] == base['id'] and timing_content.get('timing'):
+                content['timing'] = timing_content['timing']
             result_id = store.save(conn, sequence['id'], 'compilation', content, model_id=found['model'], job_id=job['id'], prompt=direction.COMPILE_SYSTEM, settings=settings,
-                                   context=found['input'], expected_current=latest['id'])
+                                   context={'dialogue': found['input'], 'timing': timing_input}, expected_current=latest['id'])
             # The added lines have not been reviewed yet.
             conn.execute('UPDATE sequences SET reviewed_compilation_id=NULL WHERE id=?', (sequence['id'],))
         else:
@@ -275,6 +316,8 @@ def run_plan(job, owner, payload, sequence):
                                               # The model could not produce a valid answer: keep its usable choices and let the app decide the rest.
                                               fallback=lambda: direction.complete_plan(seen.get('answer'), timeline, bible, ctx))
     content = direction.plan_content(output, timeline, bible)
+    if sequence.get('reviewed_compilation_id'):
+        content['compilation_id'] = sequence['reviewed_compilation_id']
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         worker.require_lease(conn, job['id'], owner)
@@ -288,7 +331,7 @@ def run_plan(job, owner, payload, sequence):
                    expected_current=base_of(payload))
         finish(conn, job)
         if payload.get('then_shots'):
-            # A cut was added to a sequence whose shots were written: they are written again on the new plan, then reviewed.
+            # A cut was added to a sequence whose shots were written: they are written again on the new plan.
             try:
                 sequence_edit.queue(conn, store.get(conn, sequence['id']), 'shots')
             except sequence_edit.EditError as exc:
@@ -328,6 +371,9 @@ def run_shot(job, owner, payload, sequence):
     worker.stage(job['id'], owner, job['episode_id'], f"Writing shot {shot['index']} of {len(shots)}")
     output, model, settings, user_input = ask(job, owner, payload, 'shot', inputs.__getitem__, direction.shot_format(shot, roster, dialogue),
                                               lambda answer: direction.validate_shot(answer, shot, bible, roster, scenario, dialogue, generated=True), f"Shot {shot['index']}")
+    camera = evidence.still_camera(ctx['results'].get(shot['cut_id'], {}))
+    if camera:
+        output['still']['camera_look'] = camera
     prompt, verdict, derived = sequence_prompt.build(shot, output, bible, roster, scenario, dialogue)
     settings.update(check=verdict, derived=derived, hashes=evidence.shot_hashes(ctx, bible, shot), instruction=instruction or None,
                     instruction_source=('review' if from_review else 'user') if instruction else None, earlier_instructions=len(earlier) or None,
@@ -337,22 +383,7 @@ def run_shot(job, owner, payload, sequence):
         worker.require_lease(conn, job['id'], owner)
         store.save(conn, sequence['id'], 'shot', output, shot_key=shot['key'], rendered=prompt, model_id=model, job_id=job['id'], prompt=direction.SHOT_SYSTEM,
                    settings=settings, context=user_input, expected_current=base_of(payload))
-        queue_review_after(conn, job, payload, sequence)
         finish(conn, job)
-
-
-def queue_review_after(conn, job, payload, sequence):
-    """Queue the review when this was the last shot of its batch and none of its shots failed."""
-    batch = payload.get('batch_id')
-    if not batch or not payload.get('then_review'):
-        return
-    others = [row['status'] for row in conn.execute("SELECT status FROM jobs WHERE pipeline='sequence' AND id!=? AND json_extract(payload_json,'$.batch_id')=?", (job['id'], batch))]
-    if any(status in ('queued', 'running', 'failed', 'cancelled') for status in others):
-        return
-    if conn.execute("SELECT 1 FROM jobs WHERE pipeline='sequence' AND status IN ('queued','running') AND json_extract(payload_json,'$.sequence_id')=? AND json_extract(payload_json,'$.step')='review'", (sequence['id'],)).fetchone():
-        return
-    review = store.current(conn, sequence['id'], 'review')
-    store.insert_job(conn, sequence, {'step': 'review', 'config': payload.get('config') or {}, 'base_id': review['id'] if review else None})
 
 
 def run_review(job, owner, payload, sequence):

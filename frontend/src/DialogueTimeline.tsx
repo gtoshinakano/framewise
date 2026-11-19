@@ -139,8 +139,8 @@ export default function DialogueTimeline({ duration, origin, cuts, lines, marker
             {offset && <div aria-hidden className="pointer-events-none absolute w-px" style={{ left: SHOTS + 2, top: y(Math.min(t, marker.hard)), height: Math.abs(t - marker.hard) * pps, background: tone, opacity: 0.6 }} />}
             {offset && <div aria-hidden className="pointer-events-none absolute h-px w-2" style={{ left: SHOTS - 3, top: y(marker.hard), background: '#8b93a3' }} />}
             <button type="button" aria-label={`Shot ${marker.shot} starts at ${clock(t)}${marker.source === 'you' ? ', placed by you' : ''}. Drag or use the arrow keys to move it.`}
-              title={`${marker.source === 'you' ? 'Placed by you' : marker.source === 'plan' ? `Where the plan has it${marker.by === 'director' ? ' (director)' : marker.by === 'app' ? ' (app)' : ''}` : marker.speech ? 'On the hard cut until the director decides' : 'On the hard cut'} · ${clock(t)}\nDrag to place it (Alt: no snapping), ↑/↓ nudge, Delete hands it back to the director`}
-              className={`absolute z-10 flex touch-none items-center gap-1 rounded-full border px-1.5 text-[10px] font-semibold leading-4 ${disabled ? 'cursor-default' : 'cursor-ns-resize'} ${mine ? 'border-[#e0a96d] bg-[#e0a96d] text-[#1b1206]' : 'border-[#5b6372] bg-[#161b24] text-[#c9cfda]'} ${selected ? 'ring-2 ring-white/70' : ''}`}
+              title={`${marker.source === 'you' ? 'Placed by you' : marker.source === 'dialogue' ? marker.reason || 'Aligned to the compiled dialogue' : marker.source === 'plan' ? `Where the plan has it${marker.by === 'director' ? ' (director)' : marker.by === 'app' ? ' (app)' : ''}` : marker.speech ? 'On the hard cut until the director decides' : 'On the hard cut'} · ${clock(t)}\nDrag to place it (Alt: no snapping), ↑/↓ nudge, Delete hands it back to the director`}
+              className={`absolute z-10 flex touch-none items-center gap-1 rounded-full border px-1.5 text-[10px] font-semibold leading-4 ${disabled ? 'cursor-default' : 'cursor-ns-resize'} ${mine ? 'border-[#e0a96d] bg-[#e0a96d] text-[#1b1206]' : marker.source === 'dialogue' && Math.abs(marker.t - marker.hard) > 0.002 ? 'border-[#7d6ba9] bg-[#2b2442] text-[#d6c8ff]' : 'border-[#5b6372] bg-[#161b24] text-[#c9cfda]'} ${selected ? 'ring-2 ring-white/70' : ''}`}
               style={{ left: SHOTS + 6, top: y(t) - 9, height: 18 }}
               onPointerDown={event => down(event, marker)} onPointerMove={event => move(event, marker)} onPointerUp={() => up(marker)} onPointerCancel={() => { drag.current = null; setDragging(null) }}
               onClick={event => event.stopPropagation()} onKeyDown={event => keys(event, marker)}>
@@ -155,7 +155,7 @@ export default function DialogueTimeline({ duration, origin, cuts, lines, marker
     <footer className="shrink-0 border-t hairline px-3 py-1.5 text-[10px] leading-4 text-[#8b93a3]">
       <span className="mr-2 inline-flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-full bg-[#e0a96d]" /> placed by you</span>
       <span className="inline-flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-full border border-[#5b6372]" /> director</span>
-      <p>Drag a shot to place it; Alt turns off snapping.</p>
+      <p>Drag a shot to place it. Hold Alt to move it without snapping.</p>
     </footer>
   </section>
 }

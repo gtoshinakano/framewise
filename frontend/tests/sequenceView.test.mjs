@@ -56,6 +56,8 @@ test('review issues attach to shots by key and become a rewrite instruction', ()
   assert.equal(issuesFor(issues, shot(1)).length, 0)
   assert.equal(issueInstruction(issuesFor(issues, shot(2))), 'Keep the green coat. Hand position unclear.')
   assert.deepEqual(issuesFor(undefined, shot(1)), [])
+  assert.equal(issuesFor([{ ...issues[0], dismissed: true }, issues[1]], shot(2)).length, 1)
+  assert.equal(stage(detail({ jobs: [{ status: 'running', step: 'review' }] })).key, 'ready')
 })
 
 test('an H3 prompt is split into its sections', () => {

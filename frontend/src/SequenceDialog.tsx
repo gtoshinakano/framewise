@@ -51,6 +51,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
   }, [sequenceId])
   useEffect(() => { void load() }, [load])
   const active = !!detail?.jobs.some(job => job.status === 'queued' || job.status === 'running')
+  const reviewing = !!detail?.jobs.some(job => job.step === 'review' && (job.status === 'queued' || job.status === 'running'))
   // While its jobs run the workspace follows them; the episode editor polls on its own schedule.
   useEffect(() => {
     if (!active) return
@@ -100,7 +101,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
   const selected = shots.find(shot => shot.key === selectedKey) || shots[0]
   const where = detail ? stage(detail) : null
   const counts = detail ? progress(detail) : null
-  const flagged = useMemo(() => (detail?.review?.content.issues || []).filter(issue => issue.severity === 'fix' && shots.some(shot => shot.key === issue.shot_key)), [detail?.review, shots])
+  const flagged = useMemo(() => (detail?.review?.content.issues || []).filter(issue => !issue.dismissed && issue.severity === 'fix' && shots.some(shot => shot.key === issue.shot_key)), [detail?.review, shots])
   const info = detail?.sequence
   const label = info ? `Sequence · cuts ${info.first_cut ?? '?'}–${info.last_cut ?? '?'} · ${clock(info.duration)}` : 'Sequence'
 
@@ -133,14 +134,14 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
         <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${TONES[where.key === 'ready' ? 'good' : where.key === 'directing' || where.key === 'writing' || where.key === 'compiling' ? 'busy' : where.key === 'review' ? 'warn' : where.key === 'direct' || where.key === 'write' ? 'idle' : 'warn']}`}>
           {where.key === 'directing' || where.key === 'writing' || where.key === 'compiling' ? <LoaderCircle size={12} className="animate-spin" /> : where.key === 'ready' ? <Check size={12} /> : where.key === 'direct' || where.key === 'write' ? <Clapperboard size={12} /> : <AlertTriangle size={12} />}
           {where.hint}</span>
-        <span className="muted text-[11px]">{detail.bible ? 'Bible ✓' : 'Bible —'} · {detail.plan ? `Plan ${counts.shots} shots ✓` : 'Plan —'} · Prompts {counts.written}/{counts.shots}{detail.review ? ` · Review ${detail.review.content.issues.length} issue${detail.review.content.issues.length === 1 ? '' : 's'}` : ''}</span>
+        <span className="muted text-[11px]">{detail.bible ? 'Bible ✓' : 'Bible —'} · {detail.plan ? `Plan ${counts.shots} shots ✓` : 'Plan —'} · Prompts {counts.written}/{counts.shots}{detail.review ? ` · Review ${detail.review.content.issues.filter(issue => !issue.dismissed).length} issue${detail.review.content.issues.filter(issue => !issue.dismissed).length === 1 ? '' : 's'}` : ''}</span>
         <span className="ml-auto flex flex-wrap items-center gap-2">
           {(where.key === 'directing' || where.key === 'writing' || where.key === 'compiling') && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void act('cancel', () => sequenceApi.cancel(sequenceId))}><Square size={12} /> Stop</button>}
           {where.key === 'review' && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" onClick={() => setTab('dialogue')}><Check size={13} /> Review dialogue</button>}
           {(where.key === 'direct' || where.key === 'redirect') && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('direct')} title="The director writes the sequence bible and the shot plan, then waits for your review"><WandSparkles size={13} /> Direct sequence</button>}
-          {where.key === 'write' && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('shots')} title="Writes every shot that is missing, stale or failing its format check, two at a time, then reviews continuity"><Sparkles size={13} /> Write shot prompts ({counts.needWriting})</button>}
-          {(where.key === 'write' || where.key === 'ready') && counts.written > 0 && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('review')} title="One pass over all written shots for continuity, speech and timing problems"><RefreshCw size={12} /> Review continuity</button>}
-          {(where.key === 'write' || where.key === 'ready') && flagged.length > 0 && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void reviseFlagged()} title="Rewrites each shot the review marked as wrong, with the review's suggestion as the instruction">Revise flagged shots ({new Set(flagged.map(issue => issue.shot_key)).size})</button>}
+          {where.key === 'write' && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('shots')} title="Writes every shot that is missing, stale or failing its format check, two at a time"><Sparkles size={13} /> Write shot prompts ({counts.needWriting})</button>}
+          {(where.key === 'write' || where.key === 'ready') && counts.written > 0 && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working || reviewing} onClick={() => void run('review')} title="Get optional suggestions on continuity, speech and timing"><RefreshCw size={12} /> {reviewing ? 'Reviewing continuity…' : 'Review continuity'}</button>}
+          {(where.key === 'write' || where.key === 'ready') && flagged.length > 0 && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void reviseFlagged()} title="Rewrite shots using the review’s suggestions">Revise flagged shots ({new Set(flagged.map(issue => issue.shot_key)).size})</button>}
         </span>
       </div>}
       {error && <div role="alert" className="flex items-start gap-3 border-b border-[#63363e] bg-[#2b191f] px-5 py-2 text-xs text-[#ffb6bc]"><span className="flex-1 whitespace-pre-wrap">{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><X size={14} /></button></div>}
@@ -212,7 +213,7 @@ function DirectionTab({ detail, working, act, run, onOpenShot, onOpenDialogue }:
         actions={dirty && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={working || !title.trim()} onClick={() => void act('brief', () => sequenceApi.update(sequence.id, { title: title.trim(), instruction: instruction.trim() }))}><Save size={13} /> Save</button>}>
         <label className="block"><span className="label">Title</span><input className="field" maxLength={200} value={title} onChange={event => setTitle(event.target.value)} /></label>
         <label className="mt-3 block"><span className="label">Direction</span><textarea className="field min-h-20 resize-y" maxLength={8000} value={instruction} onChange={event => setInstruction(event.target.value)} placeholder="What this short video should achieve, its tone, what to emphasise…" /></label>
-        {detail.missing.length > 0 && <p className="mt-3 text-[11px] leading-5 text-[#ffd59a]">Cuts without a first-frame and keyframe analysis: {detail.missing.join(', ')}. Analyse them before directing.</p>}
+        {detail.missing.length > 0 && <p className="mt-3 text-[11px] leading-5 text-[#ffd59a]">Complete first-frame analysis, keyframes and performance beats for cuts {detail.missing.join(', ')} before directing.</p>}
       </Panel>
       <Panel title="Sequence bible" subtitle={bible ? provenance(bible) : 'What the sequence is, who is in it, and the rules every shot follows'} className="flex-1"
         actions={bible && !editingBible && <><button type="button" className="btn btn-quiet !px-2.5 !py-1.5 !text-xs" disabled={working} onClick={() => void run('bible')} title="Write the bible again from the current analysis; the plan and the shots stay until you redo them"><RefreshCw size={12} /> Rewrite</button><button type="button" className="btn btn-quiet !px-2.5 !py-1.5 !text-xs" onClick={() => setEditingBible(true)}><Pencil size={12} /> Edit</button></>}>
@@ -333,7 +334,7 @@ function ShotsTab({ detail, selected, onSelect, proxyReady, working, act, run, o
         return <button key={shot.key} id={`shot-nav-${shot.key}`} type="button" onClick={() => onSelect(shot.key)} aria-current={selected?.key === shot.key} className={`flex w-full items-center gap-2.5 rounded-lg border p-2 text-left ${selected?.key === shot.key ? 'border-[#e0a96d] bg-[#2a2319]' : 'border-[#2f3643] bg-[#161b24] hover:border-[#5a4a35]'}`}>
           <img src={shotFrameUrl(detail.sequence.id, shot.key)} alt="" loading="lazy" className="h-12 w-20 shrink-0 rounded bg-black object-cover" />
           <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-1.5"><span className="text-xs font-semibold">Shot {shot.index}</span><Tag tone={status.tone}>{status.label}</Tag>{issues.length > 0 && <Tag tone={issues.some(issue => issue.severity === 'fix') ? 'bad' : 'warn'}>{issues.length} issue{issues.length > 1 ? 's' : ''}</Tag>}</span>
+            <span className="flex items-center gap-1.5"><span className="text-xs font-semibold">Shot {shot.index}</span><Tag tone={status.tone}>{status.label}</Tag>{issues.length > 0 && <Tag tone="warn">{issues.length} suggestion{issues.length > 1 ? 's' : ''}</Tag>}</span>
             <span className="muted block truncate font-mono text-[10px]">{clock(shot.t0)}–{clock(shot.t1)} · {shot.duration.toFixed(1)} s{shot.result?.generation_seconds ? ` · written in ${took(shot.result.generation_seconds)}` : ''}</span>
             <span className="muted block truncate text-[10px]">{shot.intent}</span>
           </span>
@@ -409,9 +410,15 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
 
     {shot.speakers.length > 0 && <VoicesPanel detail={detail} shot={shot} working={working} act={act} />}
     {shot.stale.length > 0 && <p className="shrink-0 rounded-lg bg-[#4a3a17] p-2.5 text-xs leading-5 text-[#ffd59a]">{staleText(shot.stale)}</p>}
-    {issues.length > 0 && <div className="shrink-0 rounded-lg border border-[#5b4a2a] bg-[#241d12] p-3">
+    {issues.length > 0 && detail.review && <div className="shrink-0 rounded-lg border border-[#5b4a2a] bg-[#241d12] p-3">
       <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-[#ffd59a]"><MessageSquare size={13} /> Review</p>
-      <ul className="space-y-1.5">{issues.map((issue, index) => <li key={index} className="text-xs leading-5"><Tag tone={issue.severity === 'fix' ? 'bad' : 'warn'}>{issue.severity}</Tag> {issue.problem}{issue.suggestion && <span className="muted"> → {issue.suggestion}</span>}</li>)}</ul>
+      <ul className="space-y-2">{issues.map(issue => {
+        const review = detail.review!
+        const index = review.content.issues.indexOf(issue)
+        return <li key={index} className="text-xs leading-5"><Tag tone="warn">{issue.severity === 'fix' ? 'Suggestion' : 'Check'}</Tag> {issue.problem}{issue.suggestion && <span className="muted"> → {issue.suggestion}</span>}
+          <button type="button" className="ml-2 text-[#e0a96d] underline disabled:opacity-50" disabled={working} onClick={() => void act('dismiss-review', () => sequenceApi.dismissReviewIssue(review.id, index))}>No action needed</button>
+        </li>
+      })}</ul>
       <button type="button" className="mt-2 !text-[11px] text-[#e0a96d] underline" onClick={() => { setInstruction(issueInstruction(issues)); instructionField.current?.focus() }}>Use as the instruction below</button>
     </div>}
 
@@ -435,7 +442,7 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
           </> : view === 'raw' ? <pre className="scrollbar max-h-[36rem] overflow-auto whitespace-pre-wrap rounded-lg border border-[#2b3240] bg-[#0f131a] p-3 font-mono text-[11px] leading-5 text-[#c9cfda]">{(result.prompt || '').split('\n').map((line, index) => <Fragment key={index}>{index > 0 && '\n'}<PromptLine line={line} shot={shot} disabled={!proxyReady} onPlay={playAt} /></Fragment>)}</pre>
             : <div className="space-y-4">{sections.map(section => <div key={section.name}><p className="label !mb-1">{section.title}</p><div className="space-y-1.5 text-[13px] leading-6 text-[#e8ebf1]">{section.lines.map((line, index) => <p key={index} className={/^\d{2}:\d{2}/.test(line) ? 'border-l-2 border-[#5a4a35] pl-2.5' : ''}><PromptLine line={line} shot={shot} disabled={!proxyReady} onPlay={playAt} /></p>)}</div></div>)}</div>}
           {result.derived.references && <p className="muted mt-4 text-[11px] leading-5">References to attach, in this order: {result.derived.references.map(reference => `${reference.label} ${reference.role === 'initial_frame' ? 'initial frame' : reference.role === 'character_sheet' ? `sheet of ${reference.name}` : reference.role === 'scenario' ? `scenario “${reference.name}”` : `audio ${result.derived.audio_file || ''}`}`).join(' · ')}</p>}
-          {result.derived.still_prompt && <details className="mt-3 rounded-lg border hairline bg-[#171c25] text-xs"><summary className="cursor-pointer px-3 py-2 font-semibold text-[#aeb5c1] hover:text-white">Still image prompt for the initial frame</summary><div className="border-t hairline p-3"><pre className="whitespace-pre-wrap font-mono text-[11px] leading-5 text-[#c9cfda]">{result.derived.still_prompt}</pre><div className="mt-2"><CopyButton text={result.derived.still_prompt} label="Copy still prompt" /></div></div></details>}
+          {result.derived.still_prompt && <section className="mt-3 rounded-lg border hairline bg-[#171c25] text-xs"><h4 className="px-3 py-2 font-semibold text-[#aeb5c1]">Still image prompt for the initial frame</h4><div className="border-t hairline p-3"><pre className="whitespace-pre-wrap font-mono text-[11px] leading-5 text-[#c9cfda]">{result.derived.still_prompt}</pre><div className="mt-2"><CopyButton text={result.derived.still_prompt} label="Copy still prompt" /></div></div></section>}
           {result.content.open_questions.length > 0 && <div className="mt-3"><p className="label !mb-1">Open questions</p><ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-[#ffd59a]">{result.content.open_questions.map((question, index) => <li key={index}>{question}</li>)}</ul></div>}
           <PromptHistory sequenceId={detail.sequence.id} shot={shot} open={historyOpen} onToggle={setHistoryOpen} onOpenAssistant={onOpenAssistant} />
         </>}

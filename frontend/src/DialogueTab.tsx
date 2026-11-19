@@ -97,7 +97,7 @@ function BoundaryCard({ marker, markers, cuts, lines, origin, duration, disabled
   const warnings = pointWarnings(marker, cuts, lines)
   const shift = marker.t - marker.hard
   const where = Math.abs(shift) <= 0.002 ? 'on the hard cut' : `${Math.abs(shift).toFixed(2)} s ${shift < 0 ? 'before' : 'after'} the hard cut (${clock(marker.hard)})`
-  const who = marker.source === 'you' ? 'Placed by you: the director keeps it.' : marker.source === 'plan'
+  const who = marker.source === 'you' ? 'Placed by you: the director keeps it.' : marker.source === 'dialogue' ? marker.reason || 'Aligned to the compiled dialogue.' : marker.source === 'plan'
     ? `Where the plan has it${marker.by === 'director' ? ', chosen by the director' : marker.by === 'app' ? ', chosen by the app' : ''}. Drag it, or place it here, to make it yours.`
     : marker.speech ? 'Speech crosses this hard cut: the director decides where the boundary sits unless you place it.' : 'No speech crosses this hard cut, so the boundary stays on it unless you place it.'
   const small = 'btn btn-quiet !px-2.5 !py-1.5 !text-[11px]'
@@ -169,7 +169,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const shown = useMemo(() => visibleLines(lines, filter, newFrom), [lines, filter, newFrom])
   const activeId = usePlayerValue(time => lineAt(lines, time - info.start_time)?.id ?? null)
   const cuts = detail.cuts
-  const markers = useMemo(() => boundaryMarkers(detail.timeline?.boundaries ?? [], detail.shots, points, info.start_time), [detail.timeline, detail.shots, points, info.start_time])
+  const markers = useMemo(() => boundaryMarkers(detail.timeline?.boundaries ?? [], detail.shots, points, info.start_time, view.shot_starts), [detail.timeline, detail.shots, points, info.start_time, view.shot_starts])
   const marker = markers.find(item => item.id === selectedMarker) ?? null
   const colours = useMemo(() => new Map(lines.map((line, index) => [line.id, lineColour(index)])), [lines])
   // Shot boundaries that fall inside a line divide its words between two shots.
@@ -235,8 +235,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
     const ok = await act('confirm-dialogue', async () => {
       let id = result.id
       if (dialogueDirty) id = (await sequenceApi.revise(id, payload(draft))).compilation.result?.id || id
-      const confirmed = await sequenceApi.confirmDialogue(info.id, id)
-      return pointsDirty ? sequenceApi.setShotPoints(info.id, points) : confirmed
+      return sequenceApi.confirmDialogue(info.id, id, pointsDirty ? points : undefined)
     })
     if (!ok) return
     onContinue()
@@ -244,7 +243,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
     if (!detail.bible && !info.extension) void run('direct')
   }
   function rerun() {
-    const warning = dirty ? 'Qwen will compile the dialogue again and your unsaved edits will be lost. Continue?' : 'Qwen will compile the dialogue again from the transcript and the subtitles. The current version stays in the history, but must be saved again. Continue?'
+    const warning = dirty ? 'The director will compile the dialogue again and your unsaved edits will be lost. Continue?' : 'The director will compile the dialogue again from the transcript and the subtitles. The current version stays in the history, but must be saved again. Continue?'
     if (window.confirm(warning)) void run('compile')
   }
   function useOriginal() {
@@ -263,7 +262,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
     : !nextCut.ready ? `Cut ${nextCut.number} needs a first-frame and a keyframe analysis first` : dirty ? 'Save your changes first' : busy ? 'Wait for the running jobs to finish' : ''
   function addCut() {
     if (!nextCut || addBlocked) return
-    const then = directed ? ` Once the new lines are saved (at once if nobody speaks in it), the bible and the shot plan are written again${rewrite ? ', then every shot prompt is rewritten and reviewed' : ''}.` : ''
+    const then = directed ? ` Once the new lines are saved (at once if nobody speaks in it), the bible and the shot plan are written again${rewrite ? ', then every shot prompt is rewritten' : ''}.` : ''
     if (window.confirm(`Add cut ${nextCut.number} (${nextCut.seconds.toFixed(1)} s) to the end of this sequence? Qwen compiles its lines and adds them to your dialogue; your edits stay.${then}`))
       void act('extend', () => sequenceApi.extend(info.id))
   }
@@ -301,8 +300,8 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b hairline px-4 py-3">
         <div className="mr-auto min-w-0">
           <h3 className="text-sm font-semibold">Dialogue</h3>
-          <p className="muted text-[11px]">{state === 'confirmed' ? 'Saved: Direction uses this dialogue' : state === 'review' ? 'Compiled by Qwen: review it, then save' : state === 'running' ? 'Qwen is aligning the transcript with the subtitles' : 'Not compiled yet'}
-            {result ? ` · ${result.origin === 'model' ? 'Qwen' : result.origin === 'source' ? 'original transcript' : 'edited by you'}${result.generation_seconds ? ` · ${Math.round(result.generation_seconds)} s` : ''}` : ''}</p>
+          <p className="muted text-[11px]">{state === 'confirmed' ? 'Saved: Direction uses this dialogue' : state === 'review' ? 'Dialogue and shot starts are ready to review' : state === 'running' ? 'Compiling dialogue and aligning shot starts' : 'Not compiled yet'}
+            {result ? ` · ${result.origin === 'model' ? 'compiled with AI' : result.origin === 'source' ? 'original transcript' : 'edited by you'}${result.generation_seconds ? ` · ${Math.round(result.generation_seconds)} s` : ''}` : ''}</p>
         </div>
         {draft && <>
           <Chip tone={stats.review ? 'warn' : 'good'} title="Lines that are unsure, have no speaker, or continue in the next line">{stats.review} to review</Chip>
@@ -315,7 +314,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
       {banner && <p role="status" className="flex shrink-0 items-start gap-2 bg-[#4a3a17] px-4 py-2 text-xs leading-5 text-[#ffd59a]"><AlertTriangle size={14} className="mt-0.5 shrink-0" /> {banner}</p>}
       {info.extension && state !== 'running' && <p role="status" className="flex shrink-0 items-start gap-2 bg-[#173a2b] px-4 py-2 text-xs leading-5 text-[#9ff0c8]"><Plus size={14} className="mt-0.5 shrink-0" />
         <span>{added} added. {stats.added ? `Its ${stats.added} line${stats.added > 1 ? 's are' : ' is'} marked new; review ${stats.added > 1 ? 'them' : 'it'}, then Save & continue: ` : 'Save & continue: '}
-          {directed ? `the bible and the shot plan are written again${rewrite ? ', then every shot prompt is rewritten and reviewed' : ''}.` : 'the director starts from this dialogue.'}</span></p>}
+          {directed ? `the bible and the shot plan are written again${rewrite ? ', then every shot prompt is rewritten' : ''}.` : 'the director starts from this dialogue.'}</span></p>}
       {speechHint && nextCut && <p role="status" className="flex shrink-0 flex-wrap items-center gap-2 bg-[#2b2442] px-4 py-2 text-xs leading-5 text-[#d6c8ff]"><AlertTriangle size={14} className="shrink-0" />
         <span className="min-w-0 flex-1">Speech runs on past the end of the sequence into cut {nextCut.number}: “{speechHint.text_before}” <strong className="text-white">“{speechHint.words_after}”</strong></span>{addButton}</p>}
 
@@ -333,7 +332,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
                 onSelect={setSelected} onPlay={play} onEdit={edit} onMerge={merge} onSplit={split} onDelete={remove} playhead={playhead} />)}
               {!shown.length && <li className="muted p-6 text-center text-sm">{lines.length ? 'No line matches this filter.' : 'Nobody speaks in this range.'}</li>}
             </ol>
-            {draft.open_questions.length > 0 && <div className="shrink-0 border-t hairline px-4 py-2"><p className="label !mb-1">Open questions from Qwen</p><ul className="list-disc space-y-0.5 pl-5 text-xs leading-5 text-[#ffd59a]">{draft.open_questions.map((question, index) => <li key={index}>{question}</li>)}</ul></div>}
+            {draft.open_questions.length > 0 && <div className="shrink-0 border-t hairline px-4 py-2"><p className="label !mb-1">Dialogue questions</p><ul className="list-disc space-y-0.5 pl-5 text-xs leading-5 text-[#ffd59a]">{draft.open_questions.map((question, index) => <li key={index}>{question}</li>)}</ul></div>}
             <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t hairline p-3">
               <span className="mr-auto text-[11px] text-[#aeb5c1]">{dirty ? 'Unsaved changes' : state === 'confirmed' ? <span className="inline-flex items-center gap-1 text-[#9ff0c8]"><Check size={12} /> Saved</span> : 'No changes'}{Object.keys(problems).length ? ` · ${Object.keys(problems).length} line${Object.keys(problems).length > 1 ? 's' : ''} need fixing` : ''}
                 {points.length > 0 && ` · ${points.length} shot boundar${points.length > 1 ? 'ies' : 'y'} placed by you`}{pointsDirty && detail.plan ? ' · saving moves the planned shots, which must then be written again' : ''}</span>

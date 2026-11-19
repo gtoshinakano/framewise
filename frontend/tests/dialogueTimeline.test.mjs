@@ -29,6 +29,14 @@ test('markers come from your points, else the plan, else the hard cut', () => {
   assert.deepEqual(boundaryMarkers(boundaries, [], [], 100).map(item => [item.t, item.source, item.shot]), [[4, 'cut', 2], [10, 'cut', 3]])
 })
 
+test('compiled starts appear before Direction and user points override them', () => {
+  const starts = [{ after_cut_id: 'a', time: 104.65, by: 'director', reason: 'Keep the phrase whole.', speech: true }]
+  const [suggested] = boundaryMarkers(boundaries, [], [], 100, starts)
+  assert.deepEqual([suggested.t, suggested.source, suggested.reason], [4.65, 'dialogue', 'Keep the phrase whole.'])
+  const [placed] = boundaryMarkers(boundaries, [], [{ after_cut_id: 'a', time: 104 }], 100, starts)
+  assert.deepEqual([placed.t, placed.source], [4, 'you'])
+})
+
 test('a boundary may move anywhere the hard rules allow', () => {
   const markers = boundaryMarkers(boundaries, [], [], 100)
   // K1: shot 1 keeps 0.2 s of cut 5; shot 2 keeps 0.2 s of cut 6, which ends at K2's hard cut.

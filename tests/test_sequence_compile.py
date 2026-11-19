@@ -95,6 +95,47 @@ class CompileFlowTest(SequenceBase):
                         'confidence': 'high', 'note': '', 'continues_next': False})
         return {'lines': out, 'voices': [{'speaker_label': 'SPEAKER_02', 'character': 'Hero', 'kind': 'character', 'confidence': 'medium', 'reason': 'visibly speaks'}], 'open_questions': []}
 
+
+    def test_compiled_phrase_aligns_shot_start_and_replan_honors_an_override(self):
+        with db.connect() as conn:
+            conn.execute("DELETE FROM transcript_segments WHERE episode_id='e'")
+            conn.execute("""INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,speaker_label,origin) VALUES
+                ('l1','e',1.4,1.94,'最終電気だと','SPEAKER_01','model'),
+                ('l2','e',2.08,2.65,'思った。','SPEAKER_01','model')""")
+            conn.execute("INSERT INTO subtitle_runs(id,episode_id,status,language) VALUES ('r','e','complete','English')")
+            conn.execute("""INSERT INTO subtitle_lines(id,run_id,episode_id,line_index,start_time,end_time,text,confidence)
+                VALUES ('s1','r','e',0,1.4,2.65,'I thought it was the last train.','high')""")
+        self.answers['compile'] = {'lines': [{'ids': ['L1', 'L2'], 'text': '最終電車だと思った。', 'speaker': 'Hero',
+                                             'subtitle_ids': ['U1'], 'confidence': 'high', 'note': 'Corrected the train reference.', 'continues_next': False}],
+                                   'voices': [], 'open_questions': []}
+        sequence_id = self.create(review=None)
+        self.assertEqual(self.work(), 1)
+        compilation = self.detail(sequence_id)['compilation']
+        row, = compilation['result']['content']['lines']
+        self.assertEqual((row['text'], row['character'], row['subtitle_text']), ('最終電車だと思った。', 'Hero', 'I thought it was the last train.'))
+        start, = compilation['shot_starts']
+        self.assertEqual(start['after_cut_id'], 'c1')
+        self.assertGreater(start['time'], 2.65)
+        confirm = f'/api/sequences/{sequence_id}/compilation/confirm'
+        self.assertEqual(self.client.post(confirm, json={'result_id': compilation['result']['id']}).status_code, 200)
+        self.run_step(sequence_id, 'direct')
+        self.assertEqual(self.work(), 2)
+        shots = self.detail(sequence_id)['shots']
+        self.assertEqual([shot['cut_id'] for shot in shots], ['c1', 'c2', 'c3'])
+        self.assertEqual(shots[1]['start_time'], start['time'])
+        self.assertFalse(shots[1]['lines'])
+        response = self.client.post(confirm, json={'result_id': compilation['result']['id'], 'points': [{'after_cut_id': 'c1', 'time': 2.0}]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.run_step(sequence_id, 'plan')
+        self.assertEqual(self.work(), 1)
+        self.assertEqual(self.detail(sequence_id)['shots'][1]['start_time'], 2.0)
+
+    def test_compile_refuses_a_translation_written_instead_of_the_audio_language(self):
+        transcript = [line(1, 1, 2, '最終電車だった。')]
+        answer = {'lines': [{'ids': ['L1'], 'text': 'It was the last train.', 'subtitle_ids': ['U1']}], 'voices': []}
+        with self.assertRaisesRegex(ValueError, 'script of the original spoken words'):
+            direction.validate_compile(answer, ['L1'], {'U1'}, [], transcript)
+
     def test_creating_a_sequence_compiles_the_dialogue_and_direction_waits_for_the_review(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO subtitle_runs(id,episode_id,status,language) VALUES ('r','e','complete','Japanese')")

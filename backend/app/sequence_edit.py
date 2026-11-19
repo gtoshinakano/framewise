@@ -7,7 +7,6 @@ proposal is previewed or applied; it does not import FastAPI.
 import json
 import logging
 import math
-import uuid
 
 from . import sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, worker
 
@@ -60,7 +59,7 @@ def extend(conn, sequence):
     The range and its snapshot move in this transaction, together with the job that compiles only the added
     cut's dialogue (the user's edits stay). ``extension_json`` remembers what was added until the direction
     is queued again: once the dialogue is confirmed, ``continue_extension`` directs the sequence again and,
-    when it had shot prompts, writes them again and reviews them.
+    when it had shot prompts, writes them again.
     """
     if conn.execute(BUSY_EPISODE, (sequence['episode_id'],)).fetchone():
         raise EditError(409, 'Wait for media preparation or detection to finish')
@@ -108,13 +107,17 @@ def continue_extension(conn, sequence):
         return []
 
 
-def confirm_compilation(conn, sequence, result_id):
+def confirm_compilation(conn, sequence, result_id, points=None):
     """Mark the current compilation as the dialogue the user reviewed; Direction and every shot use it from now on."""
     row = store.current(conn, sequence['id'], 'compilation')
     if not row or row['id'] != result_id:
         raise EditError(409, 'The dialogue changed; reload it and save again')
     conn.execute('UPDATE sequences SET reviewed_compilation_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (result_id, sequence['id']))
-    continue_extension(conn, {**sequence, 'reviewed_compilation_id': result_id})
+    sequence = {**sequence, 'reviewed_compilation_id': result_id}
+    if points is not None:
+        set_points(conn, sequence, points)
+        sequence = store.get(conn, sequence['id'])
+    continue_extension(conn, sequence)
     return result_id
 
 
@@ -145,8 +148,7 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
     """Queue a step of the direction and return the new job ids.
 
     ``direct`` writes the bible and then the plan and stops there; ``shots`` writes every shot that is
-    missing, stale or failing its check (or exactly ``shot_keys``) and reviews the sequence after a whole
-    batch; ``bible``, ``plan`` and ``review`` run that one step again. ``trigger`` says why shots are
+    missing, stale or failing its check (or exactly ``shot_keys``); ``bible``, ``plan`` and ``review`` run that one step again. ``trigger`` says why shots are
     rewritten when the user did not write an instruction (``voices``), for the shot's history. With
     ``then_shots``, ``direct`` goes on after the plan and writes every shot that needs it (a cut was added).
     ``instruction_source`` is ``user`` for what the user wrote (every later rewrite of the shot keeps following it) or ``review``
@@ -174,7 +176,7 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
             raise EditError(409, f'The cuts of this sequence now last {length:.1f} s; a sequence may last at most {sequence_timeline.MAX_SEQUENCE_SECONDS:g} s')
         missing = evidence.missing_cuts(evidence.load(conn, sequence, cuts), cuts)
         if missing:
-            raise EditError(409, 'These cuts need a first-frame and a keyframe analysis first: ' + ', '.join(map(str, missing)))
+            raise EditError(409, 'Complete first-frame analysis, keyframes and performance beats for cuts: ' + ', '.join(map(str, missing)))
         if store.cuts_changed(sequence, cuts):
             sequence = store.resnapshot(conn, sequence, cuts)
         # The direction is being redone now: an added cut no longer waits for it.
@@ -189,6 +191,7 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
             job_ids.append(store.insert_job(conn, sequence, {'step': 'bible', 'config': config, 'base_id': base['id'] if base else None, 'then_plan': step == 'direct',
                                                             **({'then_shots': True} if then_shots and step == 'direct' else {})}))
     elif step == 'shots':
+        require_reviewed(conn, sequence, cuts)
         if any(job['step'] in ('bible', 'plan') for job in pending):
             raise EditError(409, 'Wait for the bible and the shot plan to finish')
         current = sequence_view.state(conn, sequence)
@@ -208,10 +211,9 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
         targets = [view for view in targets if view['key'] not in busy]
         if not targets:
             raise EditError(409, 'That shot is already queued' if shot_keys is not None else 'Every shot is already written and current')
-        batch = str(uuid.uuid4())
         for view in targets:
             job_ids.append(store.insert_job(conn, sequence, {'step': 'shot', 'shot_key': view['key'], 'config': config, 'base_id': view['result']['id'] if view['result'] else None,
-                                                            'instruction': instruction.strip(), 'batch_id': batch, 'then_review': shot_keys is None,
+                                                            'instruction': instruction.strip(),
                                                             **({'instruction_source': 'review' if instruction_source == 'review' else 'user'} if instruction.strip() else {}),
                                                             **({'trigger': trigger} if trigger else {})}))
     elif step == 'review':
@@ -360,7 +362,8 @@ def points_plan(plan, before, timeline, ctx, bible):
     for boundary in released:
         if not boundary['speech']:
             continue
-        choice = direction.default_choice(boundary, ctx, timeline, bible or {})
+        timing = timeline.get('dialogue_timing', {}).get(boundary['id']) or {}
+        choice = timing.get('choice') or direction.default_choice(boundary, ctx, timeline, bible or {})
         if choice == 'keep_cut':
             continue
         option = boundary['options'][choice]
@@ -475,6 +478,9 @@ def preview_shot(current, shot, content):
     """
     roster, scenario, dialogue = evidence.shot_parts(current['ctx'], current['bible'], shot)
     normal = direction.validate_shot(content, shot, current['bible'], roster, scenario, dialogue)
+    camera = evidence.still_camera(current['ctx']['results'].get(shot['cut_id'], {}))
+    if camera:
+        normal['still']['camera_look'] = camera
     prompt, verdict, derived = sequence_prompt.build(shot, normal, current['bible'], roster, scenario, dialogue)
     return normal, prompt, verdict, derived, evidence.shot_hashes(current['ctx'], current['bible'], shot)
 
@@ -491,6 +497,9 @@ def revise(conn, sequence, row, content, origin='manual_edit', provenance=None, 
         if row['type'] == 'compilation':
             roster = {person['name']: person['id'] for person in current['ctx']['characters']}
             normal = sequence_compile.validate(content, current['timeline']['duration'], roster)
+            timing = store.loads(row['content'], {}).get('timing')
+            if timing:
+                normal['timing'] = timing
             new_id = store.save(conn, sequence['id'], 'compilation', normal, origin=origin, settings=settings, expected_current=row['id'])
             # A new revision has not been reviewed yet: Direction waits for it to be confirmed again.
             conn.execute('UPDATE sequences SET reviewed_compilation_id=NULL WHERE id=?', (sequence['id'],))
@@ -506,6 +515,8 @@ def revise(conn, sequence, row, content, origin='manual_edit', provenance=None, 
             voices = normal_plan_voices(content['voices'], current['timeline']) if 'voices' in content else (earlier.get('voices') or [])
             decisions = normal_decisions(content['boundaries'] if 'boundaries' in content else earlier.get('boundaries'), current['timeline'])
             saved = {'shots': spans, 'boundaries': decisions, 'notes': notes, **({'voices': voices} if voices else {})}
+            if earlier.get('compilation_id'):
+                saved['compilation_id'] = earlier['compilation_id']
             return store.save(conn, sequence['id'], 'plan', saved, origin=origin, settings=settings, expected_current=row['id'])
         if row['type'] == 'shot':
             if not current['bible']:

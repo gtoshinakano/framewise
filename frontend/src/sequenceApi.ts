@@ -118,7 +118,7 @@ export type Plan = {
   /** The user's voice ranges, in episode seconds. */
   voices?: { speaker: string; from: number; to: number; delivery: Delivery }[]
 }
-export type ReviewIssue = { shot: number; shot_key: string; severity: 'fix' | 'check'; problem: string; suggestion: string }
+export type ReviewIssue = { shot: number; shot_key: string; severity: 'fix' | 'check'; problem: string; suggestion: string; dismissed?: boolean }
 export type Review = { verdict: string; issues: ReviewIssue[] }
 export type SequenceStep = 'compile' | 'bible' | 'plan' | 'shot' | 'review'
 export type SequenceJob = { id: string; status: string; stage: string; error: string | null; created_at: string; started_at: string | null; finished_at: string | null; step: SequenceStep; shot_key: string | null }
@@ -136,6 +136,7 @@ export type DialogueView = {
   source: { id: string; t0: number; t1: number; text: string; speaker_label: string }[]
   subtitles: { id: string; t0: number; t1: number; text: string }[]
   characters?: { id: string; name: string }[]
+  shot_starts?: (ShotPoint & { reason: string; by: Decider; speech: boolean })[]
 }
 export type SequenceDetail = {
   sequence: SequenceInfo; compilation: DialogueView; cuts: SequenceCut[]; missing: number[]
@@ -153,6 +154,7 @@ export const sequenceApi = {
   get: (id: string) => api<SequenceDetail>(`/sequences/${id}`),
   update: (id: string, body: { title?: string; instruction?: string }) => api<SequenceDetail>(`/sequences/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   remove: (id: string) => api<{ ok: boolean }>(`/sequences/${id}`, { method: 'DELETE' }),
+  dismissReviewIssue: (resultId: string, index: number) => api<SequenceDetail>(`/sequence-results/${resultId}/review-issues/${index}/dismiss`, { method: 'POST' }),
   run: (id: string, body: { step: RunStep; shot_keys?: string[]; only_missing?: boolean; instruction?: string; instruction_source?: 'user' | 'review' }) => api<{ queued: number; job_ids: string[] }>(`/sequences/${id}/run`, jsonBody(body)),
   cancel: (id: string) => api<{ cancelled: number }>(`/sequences/${id}/cancel`, { method: 'POST' }),
   /** Add the episode's next cut to the end; its dialogue is compiled and appended, then the whole direction follows. */
@@ -160,7 +162,7 @@ export const sequenceApi = {
   /** Every version of a shot's prompt, newest first, with the rewrite in progress and the Assistant's unapplied proposals. */
   shotHistory: (id: string, shotKey: string) => api<ShotHistory>(`/sequences/${id}/shots/${encodeURIComponent(shotKey)}/history`),
   revise: (resultId: string, content: unknown) => api<SequenceDetail>(`/sequence-results/${resultId}`, { method: 'PUT', body: JSON.stringify({ content }) }),
-  confirmDialogue: (id: string, resultId: string) => api<SequenceDetail>(`/sequences/${id}/compilation/confirm`, jsonBody({ result_id: resultId })),
+  confirmDialogue: (id: string, resultId: string, points?: ShotPoint[]) => api<SequenceDetail>(`/sequences/${id}/compilation/confirm`, jsonBody({ result_id: resultId, points })),
   useSourceDialogue: (id: string) => api<SequenceDetail>(`/sequences/${id}/compilation/use-source`, { method: 'POST' }),
   /** Choose where the shot boundary sits at the hard cut after a cut; the two shots beside it must be written again. */
   setBoundary: (id: string, afterCutId: string, choice: BoundaryChoice) =>

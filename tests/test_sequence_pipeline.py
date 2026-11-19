@@ -84,7 +84,7 @@ class SequenceBase(unittest.TestCase):
 
     def answer(self, system, data):
         """What the director 'writes' for a step; tests replace single steps through ``self.answers``."""
-        step = {direction.COMPILE_SYSTEM: 'compile', direction.BIBLE_SYSTEM: 'bible', direction.PLAN_SYSTEM: 'plan', direction.SHOT_SYSTEM: 'shot', direction.REVIEW_SYSTEM: 'review'}[system]
+        step = {direction.COMPILE_SYSTEM: 'compile', direction.TIMING_SYSTEM: 'timing', direction.BIBLE_SYSTEM: 'bible', direction.PLAN_SYSTEM: 'plan', direction.SHOT_SYSTEM: 'shot', direction.REVIEW_SYSTEM: 'review'}[system]
         self.calls.append((step, data))
         if step in self.answers:
             custom = self.answers[step]
@@ -93,6 +93,9 @@ class SequenceBase(unittest.TestCase):
             rows = re.findall(r'^(L\d+) [\d.]+-[\d.]+ (\S+)(?: / (.+?))?: (.*)$', data['lines'], re.M)
             return {'lines': [{'ids': [line], 'text': text, 'speaker': name or None, 'subtitle_ids': [], 'confidence': 'high', 'note': '', 'continues_next': False}
                               for line, _, name, text in rows], 'voices': [], 'open_questions': []}
+        if step == 'timing':
+            return {'decisions': [{'id': item['id'], 'choice': next((choice for choice in ('after_line', 'before_line') if choice in item['options']), 'keep_cut'),
+                                   'reason': 'The phrase stays with the speaking character.'} for item in data['decisions']]}
         if step == 'bible':
             return BIBLE
         if step == 'plan':
@@ -162,6 +165,8 @@ class SequenceBase(unittest.TestCase):
         sequence_id = self.directed()
         self.run_step(sequence_id, 'shots')
         self.work()
+        self.run_step(sequence_id, 'review')
+        self.work()
         return sequence_id
 
     def jobs(self, sequence_id=None):
@@ -215,8 +220,8 @@ class SequenceFlowTest(SequenceBase):
     def test_shots_are_written_reviewed_and_ready_for_download(self):
         sequence_id = self.directed()
         self.assertEqual(self.run_step(sequence_id, 'shots')['queued'], 3)
-        self.assertEqual(self.work(), 4)  # three shots, then the review queued by the last one
-        self.assertEqual([job['step'] for job in self.jobs()][-4:], ['shot', 'shot', 'shot', 'review'])
+        self.assertEqual(self.work(), 3)
+        self.assertEqual([job['step'] for job in self.jobs()][-3:], ['shot', 'shot', 'shot'])
         detail = self.detail(sequence_id)
         self.assertTrue(detail['ready'])
         first = detail['shots'][0]
@@ -229,6 +234,11 @@ class SequenceFlowTest(SequenceBase):
         self.assertIn('<Subject 1> speaks the words of <Audio 1> in its voice, lips in sync, from 00:00.400 to 00:01.200.', prompt)
         self.assertNotIn('Hero stands with both arms', prompt.split('detailed_description:')[1])  # names became labels
         self.assertEqual([item['label'] for item in first['result']['derived']['references']], ['<Picture 1>', '<Picture 2>', '<Audio 1>'])
+        self.assertIsNone(detail['review'])
+        self.run_step(sequence_id, 'review')
+        self.assertEqual(self.work(), 1)
+        detail = self.detail(sequence_id)
+        self.assertTrue(detail['ready'])
         self.assertEqual(detail['review']['content']['issues'], [{'shot': 1, 'severity': 'check', 'problem': 'The hand ends lower than shot 2 starts.',
                                                                   'suggestion': 'End with the hand at shoulder height.', 'shot_key': first['key']}])
         # Each shot was written from its own cuts, on its own clock.
@@ -242,6 +252,53 @@ class SequenceFlowTest(SequenceBase):
         self.assertEqual(second['next_shot']['opens_with'], [{'name': 'Hero', 'position': 'center', 'pose': 'standing'}])
         self.assertNotIn('next_shot', third)
         self.run_step(sequence_id, 'shots', expected=409)  # nothing left to write
+
+
+    def test_shot_writer_uses_current_keyframes_beats_and_summary_camera(self):
+        keyframes = {'contract': 'keyframes-v1', 'cut': {'start_time': 2, 'end_time': 4}, 'summary': 'Hero looks sideways.',
+                     'frames': [{'label': 'F1', 't': 0, 'characters': [{'name': 'Hero', 'state': {'gaze': 'straight ahead'}}]},
+                                {'label': 'F2', 't': 2, 'characters': [{'name': 'Hero', 'state': {'gaze': 'screen-right'}}]}],
+                     'segments': [{'from': 'F1', 'to': 'F2', 'start': 0, 'end': 2, 'camera': {'move': 'static'},
+                                   'characters': [{'name': 'Hero', 'changes': [{'part': 'eyes', 'description': 'Eyes flick screen-right', 'source': 'qwen'}]}]}]}
+        beats = {'contract': 'beats-v1', 'based_on': {'keyframe_analysis': 'keyframes'},
+                 'beats': [{'start': 0, 'end': 1.3, 'intent': 'Suppresses a laugh.', 'characters': [
+                     {'character': 'Hero', 'body': 'Shoulders tighten.', 'face': 'Cheeks lift.', 'gaze': 'Eyes flick right.', 'mouth': 'Lips press together.'}]}]}
+        with db.connect() as conn:
+            for identifier, kind, content in [('keyframes', 'keyframe_analysis', keyframes), ('performance', 'performance_beats', beats)]:
+                conn.execute("""INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,settings_json)
+                    VALUES (?,'c2','cut_description',?,?,'model',?)""", (identifier, kind, json.dumps(content), json.dumps({'structured_type': kind})))
+            conn.execute("""INSERT INTO analysis_results(id,cut_id,kind,title,content,origin)
+                VALUES ('summary','c2','cut_description','Cut summary',?,'model')""", (analysis_tests.PRODUCTION_TEXT,))
+        sequence_id = self.directed()
+        plan = next(data for step, data in self.calls if step == 'plan')
+        self.assertEqual(plan['cuts'][1]['performance'][0]['intent'], 'Suppresses a laugh.')
+        points_url = f'/api/sequences/{sequence_id}/shot-points'
+        response = self.client.put(points_url, json={'points': [{'after_cut_id': 'c1', 'time': 2.5}]})
+        self.assertEqual(response.status_code, 200, response.text)
+        shot_key = response.json()['shots'][1]['key']
+        self.run_step(sequence_id, 'shots', shot_keys=[shot_key])
+        self.assertEqual(self.work(), 1)
+        shot_input = next(data for step, data in self.calls if step == 'shot')
+        own = next(cut for cut in shot_input['cuts'] if cut['cut'] == 2)
+        self.assertEqual(own['performance_beats'][0]['t'], [0, .8])
+        self.assertEqual(own['performance_beats'][0]['characters'][0]['face'], 'Cheeks lift.')
+        self.assertEqual(own['keyframes']['states'][0]['t'], -.5)
+        self.assertNotIn('Cinematic Camera', own['cut_summary'])
+        shot = self.detail(sequence_id)['shots'][1]['result']
+        self.assertIn('ARRI Alexa 35', shot['derived']['still_prompt'])
+        self.assertIn('Cooke S4/i', shot['derived']['still_prompt'])
+        self.assertNotIn('ARRI Alexa 35', shot['prompt'])
+
+    def test_review_suggestions_can_be_dismissed_without_affecting_readiness(self):
+        sequence_id = self.written()
+        detail = self.detail(sequence_id)
+        review = detail['review']
+        self.assertTrue(detail['ready'])
+        dismissed = self.client.post(f"/api/sequence-results/{review['id']}/review-issues/0/dismiss")
+        self.assertEqual(dismissed.status_code, 200, dismissed.text)
+        self.assertTrue(dismissed.json()['ready'])
+        self.assertTrue(dismissed.json()['review']['content']['issues'][0]['dismissed'])
+
 
     def test_an_invalid_plan_is_completed_by_the_app(self):
         self.interrupt()
@@ -285,7 +342,7 @@ class SequenceFlowTest(SequenceBase):
             conn.execute("DELETE FROM analysis_results WHERE id='c2-video_analysis'")
         sequence_id = self.create()
         self.assertEqual(self.detail(sequence_id)['missing'], [2])
-        self.assertIn('first-frame and a keyframe analysis first: 2', self.run_step(sequence_id, 'direct', expected=409)['detail'])
+        self.assertIn('first-frame analysis, keyframes and performance beats for cuts: 2', self.run_step(sequence_id, 'direct', expected=409)['detail'])
         self.run_step(sequence_id, 'shots', expected=409)
         self.run_step(sequence_id, 'review', expected=409)
 
@@ -431,11 +488,11 @@ class SequenceFlowTest(SequenceBase):
         sequence_id = self.written()
         shot = self.detail(sequence_id)['shots'][0]
         content = shot['result']['content']
-        self.assertIn('Placement and gaze: Hero stands in the centre midground', shot['result']['derived']['still_prompt'])
+        self.assertIn('Hero stands in the centre midground', shot['result']['derived']['still_prompt'])
         legacy = {**content, 'still': {key: value for key, value in content['still'].items() if key != 'placement'}}
         saved = self.client.put(f"/api/sequence-results/{shot['result']['id']}", json={'content': legacy})
         self.assertEqual(saved.status_code, 200, saved.text)  # the editor of an older shot is not asked to invent a placement
-        self.assertNotIn('Placement and gaze', saved.json()['shots'][0]['result']['derived']['still_prompt'])
+        self.assertNotIn('Hero stands in the centre midground', saved.json()['shots'][0]['result']['derived']['still_prompt'])
         from app import sequence_direction as direction
         for generated, expected in ((True, True), (False, False)):
             try:

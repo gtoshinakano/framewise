@@ -27,6 +27,13 @@ def state(conn, sequence):
     current['timeline'] = store.timeline_for(conn, sequence, cuts)
     if current['plan'] and current['plan'].get('shots'):
         current['plan_problems'] = sequence_timeline.check_spans(current['plan']['shots'], current['timeline'])
+        if not current['plan_problems'] and current['plan'].get('compilation_id') != sequence.get('reviewed_compilation_id'):
+            timing = current['timeline'].get('dialogue_timing', {})
+            starts = {cut['id']: spans[0]['start_time'] for cut, spans in sequence_timeline.groups(current['plan']['shots'], current['timeline'])}
+            if any(abs(starts[boundary['before_cut_id']] - boundary['options'][timing[boundary['id']]['choice']]['time']) >= 0.002
+                   for boundary in current['timeline']['boundaries'] if boundary['id'] in timing):
+                current['plan_problems'] = ['The compiled dialogue has new shot starts. Replan to apply them.']
+
         if not current['plan_problems']:
             current['shots'] = sequence_timeline.expand(current['plan']['shots'], current['timeline'], current['plan'].get('voices'), current['plan'].get('boundaries'))
     return current
@@ -68,6 +75,15 @@ def compilation_view(conn, sequence, current, pending):
     view['subtitles'] = [{'id': item['id'], 't0': round(item['start_time'] - origin, 3), 't1': round(item['end_time'] - origin, 3), 'text': item['text']} for item in subtitle_source]
     view['source'] = [{'id': line['id'], 't0': round(line['start_time'] - origin, 3), 't1': round(line['end_time'] - origin, 3), 'text': line['text'], 'speaker_label': line['speaker_label'] or ''}
                       for line in store.transcript_lines(conn, sequence['episode_id'], cuts[0]['start_time'], cuts[-1]['end_time'])]
+    if row and not current['changed'] and not (current['shots'] and current['plan'].get('compilation_id') == row['id']):
+        compilation = store.loads(row['content'], {})
+        draft = None
+        if compilation.get('timing'):
+            draft = current['timeline'] if sequence.get('reviewed_compilation_id') == row['id'] else store.build_timeline(conn, sequence, cuts, compilation)
+        if draft:
+            view['shot_starts'] = [{'after_cut_id': item['after_cut_id'], 'reason': item['reason'], 'by': item['by'],
+                                    'time': boundary['options'][item['choice']]['time'], 'speech': bool(boundary['speech'])}
+                                   for boundary in draft['boundaries'] if (item := draft['dialogue_timing'].get(boundary['id']))]
     view['characters'] = [{'id': person['id'], 'name': person['name']} for person in current['ctx']['characters']]
     return view
 

@@ -18,10 +18,10 @@ class SequencePosesTest(unittest.TestCase):
     def test_the_still_prompt_places_and_aims_the_characters_when_the_shot_says_where(self):
         content = {'still': {'shot': 'Medium shot', 'placement': 'Mai left foreground, torso in three-quarter view toward the image right, eyes on Rio.', 'subjects': 'Mai: calm', 'setting': 'A room', 'lighting': 'Soft'}}
         text = sequence_prompt.still_prompt(content, {})
-        self.assertIn('Placement and gaze: Mai left foreground, torso in three-quarter view toward the image right, eyes on Rio.', text)
-        self.assertLess(text.index('Placement and gaze'), text.index('Subjects'))
+        self.assertIn('Mai left foreground, torso in three-quarter view toward the image right, eyes on Rio.', text)
+        self.assertLess(text.index('Mai: calm'), text.index('A room'))
         older = sequence_prompt.still_prompt({'still': {key: value for key, value in content['still'].items() if key != 'placement'}}, {})
-        self.assertNotIn('Placement', older)  # a shot written before the key still renders
+        self.assertNotIn('eyes on Rio', older)  # a shot written before the key still renders
 
     def test_the_shot_writer_is_told_to_use_the_facts_and_to_build_beats_on_the_clock(self):
         for needed in ('pose_detail', 'state_correction', 'placement:', 'never as degrees', 'Anchor every beat to the seconds', 'Position precisely', 'Name every object'):

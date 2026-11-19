@@ -74,7 +74,7 @@ export type Progress = { shots: number; written: number; ready: number; needWrit
 
 export function progress(detail: SequenceDetail): Progress {
   const statuses = detail.shots.map(shotStatus)
-  const active = detail.jobs.filter(job => job.status === 'queued' || job.status === 'running')
+  const active = detail.jobs.filter(job => job.step !== 'review' && (job.status === 'queued' || job.status === 'running'))
   const current = active.find(job => job.status === 'running') || active[0]
   return {
     shots: detail.shots.length, written: detail.shots.filter(shot => shot.result).length, ready: statuses.filter(status => status.key === 'ready').length,
@@ -90,14 +90,14 @@ export type Stage = 'recreate' | 'compiling' | 'review' | 'analyse' | 'direct' |
 export function stage(detail: SequenceDetail): { key: Stage; hint: string } {
   const counts = progress(detail)
   if (detail.sequence.cuts_missing) return { key: 'recreate', hint: 'The first or last cut of this sequence was archived. Create the sequence again.' }
-  if (counts.step === 'compile') return { key: 'compiling', hint: 'Qwen is compiling the dialogue…' }
+  if (counts.step === 'compile') return { key: 'compiling', hint: 'Compiling dialogue and aligning shot starts…' }
   const dialogue = detail.compilation
   const added = detail.sequence.extension
-  if ((!detail.bible || added) && dialogue?.has_speech && dialogue.state !== 'confirmed' && dialogue.state !== 'running') return { key: 'review', hint: dialogue.state === 'none' ? 'Compile the dialogue first: Qwen matches the transcript with the subtitles.' : added ? `${added.cuts.length > 1 ? `Cuts ${added.cuts.join(', ')} were` : `Cut ${added.cuts[0]} was`} added: review the new lines and save the dialogue. The direction is then redone.` : 'Review the dialogue, then save it. The director starts from it.' }
+  if (dialogue?.has_speech && dialogue.state !== 'confirmed' && dialogue.state !== 'running') return { key: 'review', hint: dialogue.state === 'none' ? 'Compile the dialogue to reconcile the transcript and align shot starts.' : added ? `${added.cuts.length > 1 ? `Cuts ${added.cuts.join(', ')} were` : `Cut ${added.cuts[0]} was`} added: review the new lines and save the dialogue. The direction is then redone.` : 'Review the dialogue, then save it. The director starts from it.' }
   if (counts.step === 'bible' || counts.step === 'plan') return { key: 'directing', hint: counts.step === 'bible' ? 'Writing the sequence bible…' : 'Planning the shots…' }
-  if (counts.running + counts.queued) return { key: 'writing', hint: counts.step === 'review' ? 'Reviewing continuity…' : `Writing shot prompts: ${counts.ready}/${counts.shots} ready.` }
-  if (detail.missing.length) return { key: 'analyse', hint: `Cut${detail.missing.length > 1 ? 's' : ''} ${detail.missing.join(', ')} need a first-frame and a keyframe analysis before the sequence can be directed.` }
-  if (detail.sequence.cuts_changed || detail.plan_problems.length) return { key: 'redirect', hint: 'The cuts changed since this sequence was directed. Direct it again.' }
+  if (counts.running + counts.queued) return { key: 'writing', hint: `Writing shot prompts: ${counts.ready}/${counts.shots} ready.` }
+  if (detail.missing.length) return { key: 'analyse', hint: `Cut${detail.missing.length > 1 ? 's' : ''} ${detail.missing.join(', ')} need complete first-frame analysis, keyframes and performance beats before directing.` }
+  if (detail.sequence.cuts_changed || detail.plan_problems.length) return { key: 'redirect', hint: detail.plan_problems[0] || 'The cuts changed since this sequence was directed. Direct it again.' }
   if (!detail.bible || !detail.plan) return { key: 'direct', hint: 'Direct the sequence: the director writes the bible and the shot plan, then waits for you.' }
   if (counts.needWriting) return { key: 'write', hint: counts.written ? `${counts.needWriting} shot${counts.needWriting > 1 ? 's' : ''} need writing.` : 'Review the bible and the plan, then write the shot prompts.' }
   return { key: 'ready', hint: 'Every shot has a current prompt. The sequence is ready to download.' }
@@ -205,7 +205,7 @@ export function hasOwnVoices(shot: SequenceShot, speaker: string) {
 
 /** Whether a shot and the next one fit one take. */
 export function issuesFor(issues: ReviewIssue[] | undefined, shot: SequenceShot) {
-  return (issues || []).filter(issue => issue.shot_key === shot.key)
+  return (issues || []).filter(issue => issue.shot_key === shot.key && !issue.dismissed)
 }
 
 /** The review's suggestions for one shot as the instruction of a rewrite. */

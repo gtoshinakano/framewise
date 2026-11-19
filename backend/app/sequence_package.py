@@ -530,6 +530,8 @@ def sequence_issues(full, current, bible, review, references, built):
         issues.append({'severity': 'warning', 'kind': 'open_question', 'text': question})
     shots = {shot['index'] for shot in full['shots']}
     for item in (review or {}).get('issues') or []:
+        if item.get('dismissed'):
+            continue
         text = f"Review ({item.get('severity') or 'check'}): {item.get('problem') or ''}" + (f" Suggestion: {item['suggestion']}" if item.get('suggestion') else '')
         issues.append(pack({'shot': item.get('shot') if item.get('shot') in shots else None, 'severity': 'warning', 'kind': 'review', 'text': text}))
     sheets = {}

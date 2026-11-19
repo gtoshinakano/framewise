@@ -18,6 +18,7 @@ import difflib
 import hashlib
 import json
 import re
+import unicodedata
 
 from .sequence_timeline import EPSILON, PARTICLES, SENTENCE_END, join_text
 
@@ -41,6 +42,37 @@ def similarity(left, right):
     if not left or not right:
         return 0.0
     return round(difflib.SequenceMatcher(None, left, right, autojunk=False).ratio(), 3)
+
+
+def scripts(text):
+    """Scripts present in the spoken words, independent of punctuation and digits."""
+    result = set()
+    for char in text:
+        if char.isalpha():
+            name = unicodedata.name(char, '').split(' ', 1)[0]
+            result.add('CJK' if name in ('HIRAGANA', 'KATAKANA', 'CJK', 'IDEOGRAPHIC') else name)
+    return result
+
+
+def source_utterances(lines, hard_cuts):
+    """Expose transcript word edges at punctuation and at hard cuts so the model can split or rejoin phrases."""
+    fragments = []
+    for line in lines:
+        parts = line['parts']
+        group = []
+        for index, part in enumerate(parts):
+            group.append(part)
+            if index + 1 < len(parts):
+                right = parts[index + 1]
+                midpoint = (part['start_time'] + part['end_time']) / 2
+                next_midpoint = (right['start_time'] + right['end_time']) / 2
+                if SENTENCE_END.search(part['text'].strip()) or any(midpoint < cut <= next_midpoint for cut in hard_cuts):
+                    fragments.append(group)
+                    group = []
+        if group:
+            fragments.append(group)
+    return [{**parts[0], 'start_time': parts[0]['start_time'], 'end_time': max(part['end_time'] for part in parts), 'text': parts_text(parts),
+             'parts': parts} for parts in fragments]
 
 
 def overlap(a0, a1, b0, b1):
@@ -390,9 +422,8 @@ def assemble(answer, window_lines, subtitles, roster):
         context_id = linked['character_context_id'] if linked else roster.get(name)
         confidence = group.get('confidence') or 'medium'
         used = [subtitles[item] for item in group.get('subtitle_ids') or [] if item in subtitles]
-        if normalize(text) == normalize(base['text']):
+        if text == base['text']:
             parts = base['parts']
-            text = base['text']
         else:
             parts = retime_parts(text, base['t0'], base['t1'])
         out.append({**base, 'text': text, 'parts': parts, 'character': name, 'character_context_id': context_id,

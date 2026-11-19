@@ -37,10 +37,6 @@ class SequenceResultUpdate(BaseModel):
     content: dict[str, Any]
 
 
-class CompilationConfirmInput(BaseModel):
-    result_id: str = Field(description='The current dialogue revision the user reviewed.')
-
-
 class ShotBoundaryInput(BaseModel):
     after_cut_id: str = Field(description='The cut before the hard cut whose shot boundary moves.')
     choice: Literal['keep_cut', 'before_line', 'after_line'] = Field(
@@ -50,6 +46,11 @@ class ShotBoundaryInput(BaseModel):
 class ShotPointInput(BaseModel):
     after_cut_id: str = Field(description='The cut before the hard cut whose shot boundary the user placed.')
     time: float = Field(description='Where the shot boundary sits, in episode seconds; anywhere inside the two cuts beside the hard cut, even inside speech.')
+
+
+class CompilationConfirmInput(BaseModel):
+    result_id: str = Field(description='The current dialogue revision the user reviewed.')
+    points: list[ShotPointInput] | None = Field(default=None, max_length=500)
 
 
 class ShotPointsInput(BaseModel):
@@ -168,7 +169,7 @@ def extend_sequence(sequence_id: str):
 
     Only the added cut's dialogue is compiled and appended; the reviewed dialogue keeps its edits. Once the
     dialogue is saved again (at once when nobody speaks in the added cut), the sequence is directed again and,
-    if it had shot prompts, every shot is written again and reviewed.
+    if it had shot prompts, every shot is written again.
     """
     edit(lambda conn: sequence_edit.extend(conn, require(conn, sequence_id)))
     return detail_or_404(sequence_id)
@@ -204,10 +205,31 @@ def sequence_result_history(result_id: str):
         return store.history(conn, row['sequence_id'], row['type'], row['shot_key'])
 
 
+@router.post('/sequence-results/{result_id}/review-issues/{index}/dismiss')
+def dismiss_review_issue(result_id: str, index: int):
+    """Mark a continuity suggestion as requiring no action."""
+    def action(conn):
+        row = result_row(conn, result_id)
+        if row['type'] != 'review' or row['superseded_by']:
+            raise sequence_edit.EditError(409, 'The continuity review has changed')
+        content = store.loads(row['content'], {})
+        issues = content.get('issues', [])
+        if not 0 <= index < len(issues):
+            raise sequence_edit.EditError(404, 'Review issue not found')
+        if not issues[index].get('dismissed'):
+            issues[index]['dismissed'] = True
+            store.save(conn, row['sequence_id'], 'review', content, origin='manual_edit', model_id=row['model_id'],
+                       settings=store.loads(row['settings_json'], {}), expected_current=result_id)
+        return row['sequence_id']
+
+    return detail_or_404(edit(action))
+
+
 @router.post('/sequences/{sequence_id}/compilation/confirm', responses={409: {'description': 'The dialogue has a newer revision than the one confirmed.'}})
 def confirm_compilation(sequence_id: str, body: CompilationConfirmInput):
     """Confirm the reviewed dialogue. Direction and the shots use it instead of the raw transcript from now on."""
-    edit(lambda conn: sequence_edit.confirm_compilation(conn, require(conn, sequence_id), body.result_id))
+    edit(lambda conn: sequence_edit.confirm_compilation(conn, require(conn, sequence_id), body.result_id,
+                                                       [point.model_dump() for point in body.points] if body.points is not None else None))
     return detail_or_404(sequence_id)
 
 

@@ -89,8 +89,8 @@ class RenderTest(unittest.TestCase):
         self.assertEqual([(item['line'], item['delivery'], item['subject']) for item in derived['dialogue']], [('L4', 'on_screen', 1), ('L5', 'off_screen', None), ('L6', 'inner_voice', 2)])
         self.assertEqual([(item['speaker'], item['from'], item['to'], item['delivery'], item['subject']) for item in normal['voices']],
                          [('Mai Sakurajima', 0.0, 8.0, 'on_screen', 'Mai Sakurajima'), ('SPEAKER_01', 0.0, 8.0, 'off_screen', None), ('Sakuta Azusagawa', 0.0, 8.0, 'inner_voice', 'Sakuta Azusagawa')])
-        self.assertEqual(derived['still_prompt'].splitlines()[-2:], ['Lighting and colour: Low warm sun from the left, long soft shadows.',
-                                                                     'Constraints: one frozen moment; no text, subtitles, captions, logos or watermarks; no additional characters.'])
+        self.assertIn('Low warm sun from the left, long soft shadows.', derived['still_prompt'])
+        self.assertIn('A single frozen frame with no text, subtitles, captions, logos, overlays or watermarks.', derived['still_prompt'])
 
     def test_a_speaker_can_change_delivery_inside_a_shot_and_the_user_ranges_win(self):
         content = answer()

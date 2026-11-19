@@ -418,12 +418,13 @@ def template(shot, content, bible, subjects, dialogue, prompt):
 
 
 def still_prompt(content, bible):
-    """A generator-agnostic prompt for the opening still: one frozen moment, no motion, no text."""
+    """The opening still, described for Qwen-Image-2.1."""
     still = content.get('still') or {}
-    rows = [('Shot', still.get('shot')), ('Placement and gaze', still.get('placement')), ('Subjects', still.get('subjects')), ('Objects and layout', still.get('layout')), ('Setting', still.get('setting')),
-            ('Lighting and colour', still.get('lighting')),
-            ('Constraints', 'one frozen moment; no text, subtitles, captions, logos or watermarks; no additional characters')]
-    return '\n'.join(f'{title}: {sentence(value)}' for title, value in rows if clause(value))
+    visuals = ' '.join(sentence(still[key]) for key in ('subjects', 'placement', 'setting', 'layout', 'shot', 'lighting') if clause(still.get(key)))
+    look = still.get('camera_look') or ''
+    camera = ' '.join(sentence(line) for line in look.splitlines() if clause(line))
+    return '\n\n'.join(part for part in (visuals, f'Cinematic camera and finish. {camera}' if camera else '',
+                                          'A single frozen frame with no text, subtitles, captions, logos, overlays or watermarks. Include only the described people.') if part)
 
 
 def check(prompt):

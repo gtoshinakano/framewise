@@ -225,7 +225,10 @@ def sentence_continues(left, right):
 
 def joined(left, right):
     """True when ``right`` goes on with the sentence ``left`` began, without a real pause between them."""
-    return bool(left.get('continues_next')) and right['t0'] - left['t1'] < CONTINUE_GAP
+    left_name, right_name = left.get('character_name'), right.get('character_name')
+    left_label, right_label = left.get('speaker_label'), right.get('speaker_label')
+    same_voice = left_name == right_name if left_name and right_name else not (left_label and right_label and left_label != right_label)
+    return same_voice and bool(left.get('continues_next')) and right['t0'] - left['t1'] < CONTINUE_GAP
 
 
 def line_at(lines, t):
