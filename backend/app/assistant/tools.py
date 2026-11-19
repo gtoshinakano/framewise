@@ -8,13 +8,15 @@ the inference worker process.
 """
 import json
 import re
+import tempfile
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from .. import db, prompt_context, subtitle_store
 from ..text_diff import diff_segments  # noqa: F401  (re-exported for the proposal cards and tests)
-from . import compact, h3_prompt, skills, store, transcript_edit
+from . import audio_transcription, compact, h3_prompt, skills, store, transcript_edit
 from .transcript_edit import join_text, merged_transcript, transcript_rows  # noqa: F401  (re-exported for callers and tests)
 
 STRUCTURED = ('initial_frame', 'keyframe_analysis', 'performance_beats', 'last_frame', 'video_analysis', 'subtitle_ocr', 'consistency_summary')
@@ -384,6 +386,58 @@ def get_subtitles(ctx, args):
     return {'extracted': True, 'language': context['language'], 'cut_duration': round(cut['end_time'] - cut['start_time'], 3),
             'lines': [{'t': span(clip(line['start_time'], cut), clip(line['end_time'], cut)), 'text': line['text'], 'confidence': line['confidence'],
                        'crosses_cut': line['crosses_cut'] or None} for line in context['lines']] or 'no subtitle overlaps this cut'}
+
+
+LISTEN_NOTE = ('The words here come from a model that heard only this clip, so they can be wrong; its times are estimates. '
+               'get_transcript has the exact timings, get_subtitles has the text burned into the picture. Compare all three, '
+               'keep the app\'s timings, and put what you settle on into one propose_transcript_edit call.')
+
+
+@tool('transcribe_cut_audio',
+      "Hear this cut's audio again with a separate OpenRouter model that accepts sound: the words verbatim in the spoken "
+      "language, split by voice (S1, S2…). Use it when the transcript looks wrong, when the user says someone else speaks "
+      "or says more than one line, or when the subtitles and the transcript disagree. Its times are estimates: never copy "
+      "them into a proposal unless nothing else gives the time. start/end are clip-relative seconds, for one part of a long cut.",
+      {'start': {'type': 'number', 'description': 'Clip-relative second to start from (default: the whole cut)'},
+       'end': {'type': 'number', 'description': 'Clip-relative second to stop at'}},
+      summary=lambda args, value: f"Re-listened to the audio ({len(value.get('segments') or [])} segments)"
+      if isinstance(value, dict) and isinstance(value.get('segments'), list) else 'Re-listened to the audio',
+      limit=12000)
+def transcribe_cut_audio(ctx, args):
+    cut = load_cut(ctx.cut_id)
+    duration = cut['end_time'] - cut['start_time']
+    start, end = 0.0, round(duration, 3)
+    for name, value in (('start', args.get('start')), ('end', args.get('end'))):
+        if value is None:
+            continue
+        if not is_number(value):
+            raise ToolError(f'{name} must be a number of clip-relative seconds')
+        if name == 'start':
+            start = max(0.0, min(duration, float(value)))
+        else:
+            end = min(duration, max(0.0, float(value)))
+    seconds = end - start
+    if seconds < audio_transcription.MIN_SECONDS:
+        raise ToolError('That window is too short to transcribe')
+    if seconds > audio_transcription.MAX_SECONDS:
+        raise ToolError(f'This cut is {duration:.1f}s and only {audio_transcription.MAX_SECONDS:.0f}s can be sent at a time; '
+                        f'call it again with start and end for the part the user is asking about')
+    episode = db.one('SELECT original_ext FROM episodes WHERE id=?', (cut['episode_id'],))
+    source = audio_transcription.audio_source(cut['project_id'], cut['episode_id'], (episode or {}).get('original_ext'))
+    if source is None:
+        raise ToolError('This episode has no audio file yet; the user must prepare its media first')
+    model = audio_transcription.settings_model()
+    try:
+        with tempfile.TemporaryDirectory(prefix='framewise-transcribe-') as scratch:
+            clip = audio_transcription.clip(source, Path(scratch) / 'cut.wav', cut['start_time'] + start, cut['start_time'] + end)
+            segments, speakers = audio_transcription.transcribe(model, clip, seconds)
+    except audio_transcription.TranscriptionError as exc:
+        raise ToolError(str(exc)) from exc
+    return {'model': model, 'window': span(start, end), 'seconds': round(seconds, 2),
+            'voices': speakers or 'no distinct voice heard',
+            'segments': [{'i': number, 't': span(item['start'], item['end']) if item['start'] is not None and item['end'] is not None else 'unknown',
+                          'speaker': item['speaker'] or 'unlabeled', 'text': item['text']} for number, item in enumerate(segments, 1)]
+            or 'the model heard no speech', 'note': LISTEN_NOTE}
 
 
 @tool('get_characters', 'Characters of this project (exact names, short notes) and, in a cut chat, the character boxes detected in this cut.',

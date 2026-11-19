@@ -66,6 +66,7 @@ app.include_router(keyframes_router)
 from .target_characters_api import router as target_characters_router
 app.include_router(target_characters_router)
 from .assistant.api import router as assistant_router
+from .assistant.audio_transcription import DEFAULT_AUDIO_MODEL
 app.include_router(assistant_router)
 from .chat_gateway import router as chat_gateway_router
 app.include_router(chat_gateway_router)
@@ -2278,12 +2279,13 @@ class TextGenerationSettings(BaseModel):
     local_thinking: bool = False
     openrouter_model: str = Field(default='openrouter/free', min_length=1, max_length=200, pattern=r'^[a-zA-Z0-9_./:-]+$')
     local_model: Literal['standard', 'mtp'] | None = None  # omitted keeps the current choice
+    openrouter_audio_model: Annotated[str | None, Field(min_length=1, max_length=200, pattern=r'^[a-zA-Z0-9_./:-]+$')] = None  # omitted keeps the current choice; the audio a cut is re-transcribed with
 
 
 def text_generation_settings(conn=None):
-    row = db.one('SELECT text_provider,local_thinking,openrouter_model,local_model FROM text_generation_settings WHERE id=1', conn=conn)
+    row = db.one('SELECT text_provider,local_thinking,openrouter_model,local_model,openrouter_audio_model FROM text_generation_settings WHERE id=1', conn=conn)
     if not row:
-        return {**TextGenerationSettings().model_dump(), 'local_model': 'standard'}
+        return {**TextGenerationSettings().model_dump(), 'local_model': 'standard', 'openrouter_audio_model': DEFAULT_AUDIO_MODEL}
     row['local_thinking'] = bool(row['local_thinking'])
     return row
 
@@ -2297,14 +2299,15 @@ def get_text_generation_settings():
 def put_text_generation_settings(body: TextGenerationSettings):
     current = text_generation_settings()
     local_model = body.local_model or current['local_model']
+    audio_model = body.openrouter_audio_model or current['openrouter_audio_model']
     if local_model != current['local_model'] and local_model != 'standard':
         # The worker reports which model files exist; selecting one that is missing would fail every local text job.
         info = local_model_variants().get(local_model) or {}
         if not info.get('available'):
             raise HTTPException(409, f"That text model is not available yet ({info.get('detail') or 'the inference worker has not reported it'})")
     with db.connect() as conn:
-        conn.execute('UPDATE text_generation_settings SET text_provider=?,local_thinking=?,openrouter_model=?,local_model=? WHERE id=1',
-                     (body.text_provider, int(body.local_thinking), body.openrouter_model, local_model))
+        conn.execute('UPDATE text_generation_settings SET text_provider=?,local_thinking=?,openrouter_model=?,local_model=?,openrouter_audio_model=? WHERE id=1',
+                     (body.text_provider, int(body.local_thinking), body.openrouter_model, local_model, audio_model))
     return text_generation_settings()
 
 
