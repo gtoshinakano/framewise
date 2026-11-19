@@ -1,3 +1,4 @@
+import { useEpisodeEvents } from './episodeEvents'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Ban, CheckCircle2, ChevronDown, ChevronRight, Circle, Clock, Cpu, ExternalLink, History, ListChecks, Loader2, MessageSquare, MoreHorizontal, PlayCircle, RotateCcw, Trash2, X, XCircle } from 'lucide-react'
 import { queueApi } from './queueApi'
@@ -10,7 +11,6 @@ import { Section, SegmentedControl } from './EditorUi'
 import { Menu, type MenuEntry } from './Popover'
 import { useToast } from './Toasts'
 
-const POLL_MS = 2000
 const STATUS_ICON: Record<RunStatus, ReactNode> = {
   queued: <Clock size={11} aria-hidden />, running: <Loader2 size={11} className="animate-spin motion-reduce:animate-none" aria-hidden />,
   stopping: <Loader2 size={11} className="animate-spin motion-reduce:animate-none" aria-hidden />, done: <CheckCircle2 size={11} aria-hidden />,
@@ -62,7 +62,8 @@ export function QueueDrawer({ episodeId, focus, onClose, onOpenCut, onOpenSequen
       setState(value); summaryRef.current(value.summary); setLoadError('')
     } catch (err) { setLoadError((err as Error).message) }
   }, [episodeId])
-  useEffect(() => { void reload(); const timer = setInterval(() => void reload(), POLL_MS); return () => clearInterval(timer) }, [reload])
+  useEffect(() => { void reload() }, [reload])
+  useEpisodeEvents(change => { if (change.jobs || change.queue) void reload() }, episodeId)
 
   // Scroll to Needs attention once it has loaded, when the drawer was opened from the failure chip.
   const focused = useRef(false)

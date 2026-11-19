@@ -44,6 +44,8 @@ curl -o voice.wav "$BASE/api/voice-samples/VOICE_SAMPLE_UUID/audio"
 
 Replace placeholders with returned IDs. Quote URLs containing `&`. JSON errors use `detail`; HTTP 404 means the requested object or media is absent, 409 indicates a state conflict, and 422 indicates invalid parameters. Available data and URLs can change after edits, deletion, or reruns. Media downloads can be large. Polling and caching clients should retry according to their own needs and respect failed job states. The `/api/v1` integration endpoints are read-only; the existing `/api` also contains mutating endpoints. Do not invoke mutations unless explicitly requested.
 
+Clients using the episode editor API can subscribe to `GET /api/episodes/{episode_id}/events` for changes. This SSE stream sends a `changed` event containing a revision ID and the `queue`, `jobs`, `data`, and `stale` revisions. Compare revisions for equality and reload the relevant endpoints after a change. Reconnect with `Last-Event-ID` to resume from the last seen revision. Multiple writes may arrive as one notification.
+
 ## Agent-ready briefs and downloads
 
 `GET /api/cuts/{cut_id}/structured-analysis` returns structured single-cut outputs as JSON objects, including their type, source and revision links. Pass `?history=true` for all revisions. The brief's `initial_frame` includes the current structured initial-frame result when available. A missing result means it has not yet been generated; do not infer one from a legacy summary. Editing an existing structured result through `PUT /api/analysis-results/{id}` requires `content` to be a JSON object encoded as a string, and creates a new revision.

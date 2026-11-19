@@ -1,3 +1,4 @@
+import { useEpisodeRevision } from './episodeEvents'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CheckCircle2, Loader2, Save, UserPlus, X, XCircle } from 'lucide-react'
@@ -40,14 +41,13 @@ export function NewCharacterDialog({ projectId, box, frameUrl, imageSize, boxNum
   }, [])
   const jobId = created?.result.job_id
   const finished = status?.status === 'done' || status?.status === 'failed' || status?.status === 'cancelled'
+  const revision = useEpisodeRevision(['jobs'], !!jobId && !finished)
   useEffect(() => {
     if (!jobId || finished) return
     let alive = true
-    const poll = () => void api<ProfileStatus>(`/jobs/${jobId}/character-profile-status`).then(value => { if (alive) setStatus(value) }).catch(() => {})
-    poll()
-    const timer = setInterval(poll, 3000)
-    return () => { alive = false; clearInterval(timer) }
-  }, [jobId, finished])
+    void api<ProfileStatus>(`/jobs/${jobId}/character-profile-status`).then(value => { if (alive) setStatus(value) }).catch(() => {})
+    return () => { alive = false }
+  }, [jobId, finished, revision])
   // The finished job wrote the sheets into Details; read the character again to show them.
   useEffect(() => {
     if (status?.status !== 'done' || !created) return
@@ -91,7 +91,7 @@ export function NewCharacterDialog({ projectId, box, frameUrl, imageSize, boxNum
           <div className="flex justify-end gap-2"><button type="button" className="btn btn-quiet" onClick={onClose}>Cancel</button><button type="submit" className="btn btn-primary !px-3 !py-2 !text-xs" disabled={creating || !input.title.trim()} aria-busy={creating || undefined}>{creating ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <UserPlus size={14} />}Create and describe</button></div>
         </form> : <div className="space-y-3 text-xs">
           <p className="flex items-center gap-2 text-[#7bdcb2]"><CheckCircle2 size={14} aria-hidden />Created {name} and labelled box {boxNumber}.</p>
-          {!finished && <p role="status" className="flex items-center gap-2 rounded-lg border border-[#4a4363] bg-[#221c33] px-3 py-2 text-[#c3aeff]"><Loader2 size={14} className="animate-spin" aria-hidden />{status?.status === 'running' ? `${status.stage}…` : 'Queued · starts when the episode’s current job finishes'}<span className="ml-auto"><Elapsed since={created.since} /></span></p>}
+          {!finished && <p role="status" className="flex items-center gap-2 rounded-lg border border-[#4a4363] bg-[#221c33] px-3 py-2 text-[#c3aeff]"><Loader2 size={14} className="animate-spin" aria-hidden />{status?.status === 'running' ? `${status.stage}…` : 'Queued for the inference worker'}<span className="ml-auto"><Elapsed since={created.since} /></span></p>}
           {!finished && <p className="muted">You can close this dialog: the description continues in the queue and is added to the character's Details.</p>}
           {(status?.status === 'failed' || status?.status === 'cancelled') && <p role="alert" className="flex items-start gap-2 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-[#ffb6bc]"><XCircle size={14} className="mt-0.5 shrink-0" aria-hidden />{status.status === 'cancelled' ? 'The description was cancelled.' : status.error || 'The description failed.'} The character and label are kept; retry it from the queue.</p>}
           {status?.status === 'done' && !details && !error && <p className="muted flex items-center gap-2"><Loader2 size={14} className="animate-spin" aria-hidden />Loading Details…</p>}

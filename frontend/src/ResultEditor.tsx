@@ -1,3 +1,4 @@
+import { useEpisodeRevision } from './episodeEvents'
 import { ResultMetrics } from './ResultMetrics'
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -58,7 +59,8 @@ export default function ResultEditor({ cutId, refreshKey, onLoaded, onChanged, e
     catch (err) { setError((err as Error).message) }
   }, [cutId])
   useEffect(() => { setDraft(null); setHistory(false); setContextOpen(false); setContext(null); void load(false) }, [cutId, load])
-  useEffect(() => { void load(history) }, [refreshKey])
+  const revision = useEpisodeRevision(['data', 'stale'])
+  useEffect(() => { void load(history) }, [refreshKey, revision])
   useEffect(() => {
     // Stacked layout: the editor opens below the lists, so scroll to it. From lg up it is already in view.
     if (draft && editorTarget && window.matchMedia('(max-width: 1023.98px)').matches) editorTarget.scrollIntoView({ block: 'nearest', behavior: 'smooth' })

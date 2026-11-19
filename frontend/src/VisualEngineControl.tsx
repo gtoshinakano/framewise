@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Eye, X } from 'lucide-react'
 import { api } from './api'
+import { useEpisodeEvents } from './episodeEvents'
 import { engineBadge, installHints, roleOptions, type VisualModels } from './visualEngine'
 
 /** The visual engine button and dialog: which model runs each visual analysis role. */
@@ -14,15 +15,15 @@ export function VisualEngineControl({ compact = false }: { compact?: boolean } =
     try { setData(await api<VisualModels>('/visual-models')) } catch (err) { setError((err as Error).message) }
   }
   useEffect(() => { void refresh() }, [])
+  useEpisodeEvents(change => { if (change.queue) void refresh() })
   useEffect(() => {
     if (!open) return
     const opener = document.activeElement as HTMLElement | null
     panel.current?.focus()
     void refresh()
-    const timer = setInterval(() => void refresh(), 5000)  // shows download progress while open
     const key = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
     window.addEventListener('keydown', key)
-    return () => { clearInterval(timer); window.removeEventListener('keydown', key); opener?.focus() }
+    return () => { window.removeEventListener('keydown', key); opener?.focus() }
   }, [open])
   async function choose(role: string, model: string) {
     setSaving(role); setError('')

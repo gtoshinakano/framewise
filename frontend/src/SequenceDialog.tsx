@@ -1,3 +1,4 @@
+import { useEpisodeEvents } from './episodeEvents'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Check, ChevronDown, Clapperboard, Copy, Download, History as HistoryIcon, LoaderCircle, MessageSquare, Pencil, Play, RefreshCw, Save, Sparkles, Square, WandSparkles, X } from 'lucide-react'
 import { mediaUrl } from './api'
@@ -52,12 +53,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
   useEffect(() => { void load() }, [load])
   const active = !!detail?.jobs.some(job => job.status === 'queued' || job.status === 'running')
   const reviewing = !!detail?.jobs.some(job => job.step === 'review' && (job.status === 'queued' || job.status === 'running'))
-  // While its jobs run the workspace follows them; the episode editor polls on its own schedule.
-  useEffect(() => {
-    if (!active) return
-    const timer = setInterval(() => { void load() }, 2500)
-    return () => clearInterval(timer)
-  }, [active, load])
+  useEpisodeEvents(change => { if (change.jobs || change.data || change.stale) void load() }, episodeId)
   // When the last job finishes, tell the editor so its sequence list and timeline lane catch up.
   const wasActive = useRef(false)
   useEffect(() => { if (wasActive.current && !active) onChanged(); wasActive.current = active }, [active, onChanged])
@@ -92,7 +88,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
   async function download() {
     setExporting('Queued'); setError('')
     try {
-      const url = await sequenceApi.exportZip(sequenceId, setExporting)
+      const url = await sequenceApi.exportZip(sequenceId, episodeId, setExporting)
       window.location.assign(url)
     } catch (err) { setError((err as Error).message) } finally { setExporting('') }
   }

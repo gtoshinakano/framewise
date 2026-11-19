@@ -1,3 +1,4 @@
+import { useEpisodeEvents, useEpisodeRevision } from './episodeEvents'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, ArrowDown, ArrowUp, Brain, Check, ChevronRight, Cloud, Cpu, Eye, Gauge, Layers, Loader2, MessageSquarePlus, Pencil, RefreshCw, Send, Sparkles, Square, Timer, Trash2, Wrench, X, Zap } from 'lucide-react'
 import type { Cut } from './api'
@@ -81,12 +82,7 @@ export default function CutAssistant({ cut, sequence, active, onResultsChanged }
     return () => { alive = false }
   }, [scope, owner])
 
-  // Keep provider availability and worker state fresh while the tab is open.
-  useEffect(() => {
-    if (!active) return
-    const timer = setInterval(() => { void assistantApi.config().then(setConfig).catch(() => {}) }, 10000)
-    return () => clearInterval(timer)
-  }, [active])
+  useEpisodeEvents(change => { if (active && change.queue) void assistantApi.config().then(setConfig).catch(() => {}) })
 
   useEffect(() => {
     writeStored(owner, sessionId)
@@ -143,15 +139,15 @@ export default function CutAssistant({ cut, sequence, active, onResultsChanged }
   }, [runningId])
 
   // Local model state for the managed provider.
-  const pollLocal = active && !!provider?.managed
+  const showLocal = active && !!provider?.managed
+  const localRevision = useEpisodeRevision(['queue'], showLocal)
   useEffect(() => {
-    if (!pollLocal) return
+    if (!showLocal) return
     let alive = true
     const load = () => assistantApi.localModel().then(value => alive && setLocalStatus(value)).catch(() => {})
     void load()
-    const timer = setInterval(load, 3000)
-    return () => { alive = false; clearInterval(timer) }
-  }, [pollLocal])
+    return () => { alive = false }
+  }, [showLocal, localRevision])
 
   useEffect(() => {
     const element = scroller.current

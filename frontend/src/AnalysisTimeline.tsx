@@ -1,3 +1,4 @@
+import { useEpisodeRevision } from './episodeEvents'
 import { useEffect, useState } from 'react'
 import { Ban, Check, CircleDashed, Clapperboard, Drama, FileText, Loader2, MessageSquareText, PenLine, ScanSearch, Sparkles, Square, UserRoundCheck, X } from 'lucide-react'
 import { api } from './api'
@@ -36,14 +37,13 @@ export default function AnalysisTimeline({ cutId, refreshKey }: { cutId: string;
   const [error, setError] = useState('')
   const [bump, setBump] = useState(0)
   useEffect(() => { const on = () => setBump(value => value + 1); window.addEventListener('framewise:cut-timeline-changed', on); return () => window.removeEventListener('framewise:cut-timeline-changed', on) }, [])
-  const active = !!data?.events.some(event => event.status === 'running' || event.status === 'queued')
+  const revision = useEpisodeRevision(['jobs', 'data', 'stale'])
   useEffect(() => {
     let cancelled = false
     const load = () => api<TimelineData>(`/cuts/${cutId}/timeline`).then(value => { if (!cancelled) { setData(value); setError('') } }).catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : 'Timeline unavailable') })
     void load()
-    const timer = active ? setInterval(load, 5000) : undefined
-    return () => { cancelled = true; if (timer) clearInterval(timer) }
-  }, [cutId, refreshKey, active, bump])
+    return () => { cancelled = true }
+  }, [cutId, refreshKey, revision, bump])
   if (error && !data) return <nav aria-label="Analysis timeline" className="border-b hairline px-5 py-2 text-xs text-[#ffb6bc]">Analysis timeline unavailable: {error}</nav>
   if (!data) return <nav aria-label="Analysis timeline" className="border-b hairline px-5 py-2 text-xs muted">Loading analysis timeline…</nav>
   const total = Math.max(data.total_seconds, 1)

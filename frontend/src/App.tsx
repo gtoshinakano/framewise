@@ -1,3 +1,4 @@
+import { EpisodeEventsContext, useEpisodeEvents } from './episodeEvents'
 import { LocalModelControl } from './LocalModelControl'
 import { VisualEngineControl } from './VisualEngineControl'
 import Storage from './Storage'
@@ -110,7 +111,8 @@ function Home() {
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
   const refresh = useCallback(async () => { try { setProjects(await api<Project[]>('/projects')); setError('') } catch (err) { setError((err as Error).message) } finally { setLoading(false) } }, [])
-  useEffect(() => { refresh(); const timer = setInterval(refresh, 5000); return () => clearInterval(timer) }, [refresh])
+  useEffect(() => { refresh() }, [refresh])
+  useEpisodeEvents(change => { if (change.queue) refresh() }, null)
   return <div className="min-h-screen"><header className="border-b hairline bg-[#10131a]"><div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4"><Brand /><div className="flex items-center gap-3"><VisualEngineControl /><LocalModelControl /><button onClick={() => go('/storage')} className="btn btn-quiet">Storage &amp; cleanup</button></div></div></header>
     <main className="mx-auto max-w-7xl px-6 py-12"><div className="mb-10 flex flex-wrap items-end justify-between gap-5"><div><p className="mb-3 text-xs font-semibold uppercase tracking-[.18em] text-[#b49cf1]">Workspace</p><h1 className="text-4xl font-semibold tracking-tight text-white">Your projects</h1><p className="muted mt-3 text-sm">Organize reference videos, explore cuts, and build a reusable analysis record.</p></div><button onClick={() => setUploading(true)} className="btn btn-primary"><Plus size={17} /> New project</button></div>
       {error && <ErrorBanner message={error} clear={() => setError('')} />}
@@ -126,7 +128,8 @@ function ProjectView({ id }: { id: string }) {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const refresh = useCallback(async () => { try { const value = await api<Project>(`/projects/${id}`); setProject(value); setError('') } catch (err) { setError((err as Error).message) } }, [id])
-  useEffect(() => { refresh(); const timer = setInterval(refresh, 5000); return () => clearInterval(timer) }, [refresh])
+  useEffect(() => { refresh() }, [refresh])
+  useEpisodeEvents(change => { if (change.queue) refresh() }, null)
   useEffect(() => { if (project) { setTitle(project.title); setSynopsis(project.synopsis) } }, [project?.id])
   async function save() { setSaving(true); try { const result = await api<Project>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify({ title, synopsis }) }); setProject({ ...result, episodes: project?.episodes || [] }); setError('') } catch (err) { setError((err as Error).message) } finally { setSaving(false) } }
   async function remove() { if (!project || !window.confirm(`Delete “${project.title}” and all its episodes and media? This cannot be undone.`)) return; try { await api(`/projects/${id}`, { method: 'DELETE' }); go('/') } catch (err) { setError((err as Error).message) } }
@@ -207,7 +210,6 @@ function Editor({ id }: { id: string }) {
   const video = useRef<HTMLVideoElement>(null)
   const playbackEnd = useRef<number | null>(null)
   const latestEpisode = useRef<Episode | null>(null)
-  const lastFullRefresh = useRef(0)
   const waveformVersion = useRef<string | null>(null)
   const showEpisode = useCallback((value: Episode) => {
     latestEpisode.current = value
@@ -232,27 +234,22 @@ function Editor({ id }: { id: string }) {
       }
       setTranscript(await api<TranscriptSegment[]>(`/episodes/${id}/transcript`))
       setSequences(await sequenceApi.list(id))
-      lastFullRefresh.current = Date.now()
       setLoadError('')
     } catch (err) { setLoadError((err as Error).message) }
   }, [id, showEpisode])
-  useEffect(() => {
-    let active = true
-    setQueueSummary(null)
-    const tick = async () => {
-      try {
-        const status = await api<EpisodeStatus>(`/episodes/${id}/status`)
-        if (!active) return
-        setQueueSummary(status.queue)
-        const current = latestEpisode.current
-        const changed = !current || current.id !== id || status.status !== current.status || status.stage !== current.stage || status.job_id !== (current.jobs[0]?.id || null)
-        if (changed || status.status === 'queued' || status.status === 'processing' || Date.now() - lastFullRefresh.current > 30000) await refresh()
-      } catch (err) { if (active) setLoadError((err as Error).message) }
+  const refreshQueue = useCallback(async () => {
+    try {
+      const status = await api<EpisodeStatus>(`/episodes/${id}/status`)
+      setQueueSummary(status.queue)
+      setEpisode(current => current?.id === id ? { ...current, status: status.status, stage: status.stage } : current)
     }
-    void tick()
-    const timer = setInterval(tick, 2500)
-    return () => { active = false; clearInterval(timer) }
-  }, [id, refresh])
+    catch (err) { setLoadError((err as Error).message) }
+  }, [id])
+  useEffect(() => { void refresh(); void refreshQueue() }, [refresh, refreshQueue])
+  useEpisodeEvents(change => {
+    if (change.jobs || change.queue) void refreshQueue()
+    if (change.data || change.stale) void refresh()
+  }, id)
   // Cut Assistance edits the transcript outside this editor; reload it as soon as a proposal is applied.
   useEffect(() => { const reload = () => { void refresh() }; window.addEventListener('framewise:transcript-changed', reload); return () => window.removeEventListener('framewise:transcript-changed', reload) }, [refresh])
   useEffect(() => { if (episode) api<Project>(`/projects/${episode.project_id}`).then(setProject).catch(() => {}) }, [episode?.project_id])
@@ -338,7 +335,7 @@ function Editor({ id }: { id: string }) {
   const clampHeight = (value: number) => Math.round(Math.max(MIN_TIMELINE, Math.min(window.innerHeight * 0.6, value)))
   const workspaceStyle = { '--cuts-w': cutsCollapsed ? '0px' : `${DEFAULT_CUTS_WIDTH}px`, ...(timelineHeight ? { '--timeline-h': `${timelineHeight}px` } : {}) } as CSSProperties
   const audioBusy = jobs.some(job => ['transcribe', 'voice_sample', 'subtitles'].includes(job.pipeline) && active(job))
-  return <div className="editor-shell bg-[#0d1016]">
+  return <EpisodeEventsContext.Provider value={id}><div className="editor-shell bg-[#0d1016]">
     <EditorHeader projectId={episode?.project_id} projectTitle={project?.title} episodeTitle={episode?.title} status={episode?.status || 'queued'} stage={episode?.stage}
       hasCuts={!!episode?.cuts.length} mediaBlocked={busy ? 'Wait for the running jobs to finish.' : ''} characterBlock={characterBlock} onCharacterStep={step => void queueCharacterStep(step)}
       onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}
@@ -392,7 +389,7 @@ function Editor({ id }: { id: string }) {
       onOpenCut={cutId => { const cut = [...episode.cuts, ...episode.archived_cuts].find(item => item.id === cutId); if (cut) openCutAnalysis(cut); else toast({ tone: 'error', message: 'That cut no longer exists.' }) }}
       onOpenSequence={setSequenceOpen} />}
     {episode && settingsOpen && <EpisodeSettingsDialog episode={episode} initial={episode.settings} onSave={saveSettings} onDelete={() => void remove()} onClose={closeSettings} />}
-  </div>
+  </div></EpisodeEventsContext.Provider>
 }
 
 export default function App() {

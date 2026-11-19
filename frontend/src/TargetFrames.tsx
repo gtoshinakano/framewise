@@ -1,3 +1,4 @@
+import { useEpisodeEvents } from './episodeEvents'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Loader2, PencilLine, ScanFace, Trash2, XCircle } from 'lucide-react'
 import { api, type ContextItem, type KeyframeAnalysis, type KeyframeAnalysisState, type KeyframeSegment } from './api'
@@ -28,11 +29,7 @@ export function useTargetSelection(cutId: string, boundaryKey: string) {
     window.addEventListener('framewise:keyframes-changed', load)
     return () => window.removeEventListener('framewise:keyframes-changed', load)
   }, [load])
-  useEffect(() => {
-    if (selection?.status !== 'queued' && selection?.status !== 'running') return
-    const timer = setInterval(load, 3000)
-    return () => clearInterval(timer)
-  }, [load, selection?.status])
+  useEpisodeEvents(change => { if (change.jobs || change.data) load() })
   return { selection, error }
 }
 
@@ -63,11 +60,7 @@ export function useTargetDetections(cutId: string, boundaryKey: string, revision
     return () => window.removeEventListener('framewise:keyframes-changed', reload)
   }, [load])
   const active = isJobActive(data?.job)
-  useEffect(() => {
-    if (!active) return
-    const timer = setInterval(() => void load(), 3000)
-    return () => clearInterval(timer)
-  }, [active, load])
+  useEpisodeEvents(change => { if (change.jobs || change.data) void load() })
   const wasActive = useRef(false)
   useEffect(() => {
     if (wasActive.current && !active) changed.current?.()
@@ -90,12 +83,7 @@ export function useKeyframeAnalysis(cutId: string, revision: string) {
     window.addEventListener('framewise:keyframes-changed', load)
     return () => window.removeEventListener('framewise:keyframes-changed', load)
   }, [load])
-  const active = isJobActive(data?.job)
-  useEffect(() => {
-    if (!active) return
-    const timer = setInterval(load, 5000)
-    return () => clearInterval(timer)
-  }, [active, load])
+  useEpisodeEvents(change => { if (change.jobs || change.data || change.stale) load() })
   return data
 }
 

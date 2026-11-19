@@ -662,6 +662,8 @@ def init_db():
         for column, definition in (('prompt', "TEXT NOT NULL DEFAULT ''"), ('settings_json', "TEXT NOT NULL DEFAULT '{}'"), ('input_json', "TEXT NOT NULL DEFAULT '{}'")):
             if column not in compact_columns:
                 db.execute(f'ALTER TABLE composition_compactions ADD COLUMN {column} {definition}')
+        from . import episode_events
+        episode_events.init_schema(db)
         db.commit()
 
 

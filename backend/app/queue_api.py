@@ -1,10 +1,11 @@
 """HTTP routes of the episode queue drawer; the logic is in ``runs.py`` and ``job_kinds.py``."""
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import db, runs, worker
+from . import db, episode_events, runs, worker
 
 router = APIRouter(prefix='/api', tags=['queue'])
 
@@ -12,6 +13,24 @@ router = APIRouter(prefix='/api', tags=['queue'])
 def _episode(conn, episode_id):
     if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
         raise HTTPException(404, 'Episode not found')
+
+
+def _events(request, episode_id):
+    return StreamingResponse(episode_events.stream(request, episode_id, request.headers.get('last-event-id')),
+                             media_type='text/event-stream',
+                             headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@router.get('/events', summary='Watch queue and host engine changes')
+def queue_events(request: Request):
+    return _events(request, None)
+
+
+@router.get('/episodes/{episode_id}/events', summary='Watch episode job, queue and stale-result changes')
+def watch_episode(episode_id: str, request: Request):
+    with db.connect() as conn:
+        _episode(conn, episode_id)
+    return _events(request, episode_id)
 
 
 @router.get('/episodes/{episode_id}/queue', summary='What runs now, what waits and what needs attention in one episode')

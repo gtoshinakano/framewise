@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Cpu, X } from 'lucide-react'
 import { api } from './api'
+import { useEpisodeEvents } from './episodeEvents'
 import { RemoteTextServer } from './RemoteTextServer'
 import { remoteBadge, variantLabel, type RemoteServer } from './remoteText'
 
@@ -28,7 +29,8 @@ export function LocalModelControl({ compact = false }: { compact?: boolean } = {
     try { setStatus(await api<ModelStatus>('/local-text-model')) } catch (err) { setError((err as Error).message) }
     try { setRemote(await api<RemoteServer>('/remote-text-server')) } catch { /* an older API has no remote server */ }
   }
-  useEffect(() => { void refresh(); void api<TextSettings>('/text-generation-settings').then(setSettings).catch(err => setError((err as Error).message)); const timer = setInterval(() => void refresh(), 2500); return () => clearInterval(timer) }, [])
+  useEffect(() => { void refresh(); void api<TextSettings>('/text-generation-settings').then(setSettings).catch(err => setError((err as Error).message)) }, [])
+  useEpisodeEvents(change => { if (change.queue) void refresh() })
   useEffect(() => {
     if (!open) return
     const opener = document.activeElement as HTMLElement | null

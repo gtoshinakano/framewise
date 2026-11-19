@@ -77,15 +77,15 @@ This inventory records the behavior at `af57f81`. Each row stays open until its 
 | `CutAssistant` send/regenerate gates and GPU-busy send blocker | One reply owns a session while in progress | Dependency | Queue subsequent replies and preserve their order |
 | `Storage` cleanup-candidate controls | Backend candidate state includes an episode-wide active-job hold | Scope | Display specific resource conflicts |
 | `RunUi.ActionButton` pending and individual request guards throughout editor | Prevents duplicate mutations while an HTTP request is being sent. Some callers pass a job state as pending | Real conflict | Retain request-in-flight protection. Show existing jobs separately |
-| `App` Projects and Project Detail 5 s refresh | Job badges on multi-episode screens | Scope | Use shared refresh for the episodes displayed or aggregate notifications |
-| `App.Editor` 2.5 s status tick and idle full refresh | Queue changes and updated editor evidence | Scope | Subscribe once per episode. Keep prepare-version waveform caching |
-| `useCutStages` 4 s, `AnalysisTimeline` 5 s | Results/progress of in-flight work | Scope | Reload relevant slices on episode events |
-| `TargetFrames` 3 s selection, 3 s target detection, 5 s analysis | Selection and work status | Scope | Share the episode subscription |
-| `NewCharacterDialog` 3 s, `CharacterDetectionPanel` 3 s | Profile/detection job completion | Scope | Refresh from episode events |
-| `QueueDrawer` status poll and `SequenceDialog` 2.5 s | Queue rows, sequence job progress and stale state | Scope | Invalidate snapshots from episode events |
-| `CutAssistant` 10 s configuration and 3 s session refresh | Provider availability and turn lists | Scope | Keep the turn stream for token deltas. Share notifications for job/session changes |
-| `LocalModelControl` 2.5 s and `VisualEngineControl` 5 s | Host model startup and download status, including when no job exists | Scope | Host model status has its own scope and refresh needs |
-| `QueueDrawer` and `RunUi` 1 s ticks and `CutAssistant` 0.5 s tick | Relative and elapsed clocks | Scope | Keep local clock ticks. They make no API requests |
+| `App` Projects and Project Detail 5 s refresh | Job badges on multi-episode screens | Scope | Resolved. Both use the shared host event feed |
+| `App.Editor` 2.5 s status tick and idle full refresh | Queue changes and updated editor evidence | Scope | Resolved. A single episode connection refreshes status, data and the prepare-version waveform cache |
+| `useCutStages` 4 s, `AnalysisTimeline` 5 s | Results/progress of in-flight work | Scope | Resolved. Episode events trigger reads of the affected views |
+| `TargetFrames` 3 s selection, 3 s target detection, 5 s analysis | Selection and work status | Scope | Resolved. Target frames shares the episode subscription |
+| `NewCharacterDialog` 3 s, `CharacterDetectionPanel` 3 s | Profile/detection job completion | Scope | Resolved. Both refresh on episode events |
+| `QueueDrawer` status poll and `SequenceDialog` 2.5 s | Queue rows, sequence job progress and stale state | Scope | Resolved. Both refresh on episode events, including sequence export progress |
+| `CutAssistant` 10 s configuration and 3 s session refresh | Provider availability and turn lists | Scope | Resolved. Shared events update provider and session state. The turn stream carries token deltas |
+| `LocalModelControl` 2.5 s and `VisualEngineControl` 5 s | Host model startup and download status, including when no job exists | Scope | Resolved. Host notifications cover model status and expired worker heartbeats |
+| `QueueDrawer` and `RunUi` 1 s ticks and `CutAssistant` 0.5 s tick | Relative and elapsed clocks | Scope | Resolved. Local clock ticks make no API requests |
 
 ## Phase 3 notes
 

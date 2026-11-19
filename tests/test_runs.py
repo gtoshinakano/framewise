@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import threading
@@ -7,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import tests.test_analysis as analysis_tests
-from app import db, job_inputs, job_kinds, runs, worker
+from app import db, episode_events, job_inputs, job_kinds, runs, worker
 
 
 def add_job(job_id, pipeline, status='queued', payload=None, episode='e', created=None, finished=None, **columns):
@@ -40,6 +41,43 @@ class RunsTest(unittest.TestCase):
     def summary(self):
         with db.connect() as conn:
             return runs.summary(conn, 'e')
+
+    def test_episode_events_publish_changes_and_resume_after_disconnect(self):
+        class Connected:
+            async def is_disconnected(self):
+                return False
+
+        async def receive(events):
+            event = await asyncio.wait_for(anext(events), 3)
+            identity, kind, data = event.splitlines()[:3]
+            state = json.loads(data.removeprefix('data: '))
+            self.assertEqual(identity, f"id: {state['version']}")
+            self.assertEqual(kind, 'event: changed')
+            return state
+
+        async def check():
+            add_job('watched', 'regen', 'running', {'cut_id': 'c1'})
+            events = episode_events.stream(Connected(), 'e', None)
+            before = await receive(events)
+            await events.aclose()
+            with db.connect() as conn:
+                conn.execute("UPDATE jobs SET lease_until=? WHERE id='watched'", (time.time() + 60,))
+            self.assertEqual(episode_events.snapshot('e'), before)
+            with db.connect() as conn:
+                conn.execute("UPDATE jobs SET stage='Writing' WHERE id='watched'")
+            resumed = episode_events.stream(Connected(), 'e', before['version'])
+            stage = await receive(resumed)
+            self.assertGreater(stage['jobs'], before['jobs'])
+            self.assertEqual(stage['data'], before['data'])
+            with db.connect() as conn:
+                conn.execute("UPDATE cuts SET notes='New cut note' WHERE id='c1'")
+            edited = await receive(resumed)
+            self.assertGreater(edited['data'], stage['data'])
+            self.assertEqual(edited['jobs'], stage['jobs'])
+            await resumed.aclose()
+
+        asyncio.run(check())
+        self.assertEqual(self.client.get('/api/episodes/missing/events').status_code, 404)
 
     def test_every_pipeline_a_worker_claims_has_a_kind(self):
         source = Path(job_kinds.__file__).parent

@@ -1,3 +1,4 @@
+import { useEpisodeRevision } from './episodeEvents'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Bookmark, BookmarkMinus, CheckCircle2, ChevronDown, Info, Loader2, PencilLine, ScanFace, Trash2, UserPlus, UserX, XCircle } from 'lucide-react'
 import { api, type ContextItem, type Job } from './api'
@@ -80,6 +81,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
   const job = jobs.find(item => item.pipeline === 'character_detect' && item.cuts?.some(cut => cut.id === cutId))
   const active = job?.status === 'queued' || job?.status === 'running'
   // Detections are per cut; characters and references are per project and come from the shared cache first.
+  const inputRevision = useEpisodeRevision(['data'])
   const loadRun = useCallback(async () => { setRun(await api<DetectionRun | null>(`/cuts/${cutId}/character-detections`)); setLoaded(true) }, [cutId])
   const loadProject = useCallback(async () => {
     const [items, refs] = await Promise.all([loadCharacters(projectId), loadReferences(projectId)])
@@ -98,7 +100,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
       await loadRun()
     }).catch(reason => { if (alive) { setPriorSaving(false); setError((reason as Error).message); setLoaded(true) } })
     return () => { alive = false }
-  }, [loadRun, job?.status, job?.id, boundaryKey, cutId])
+  }, [loadRun, job?.status, job?.id, boundaryKey, cutId, inputRevision])
   useEffect(() => { void loadProject().catch(reason => setError((reason as Error).message)) }, [loadProject])
   useEffect(() => {
     if (!run) { onSummary?.((saving || priorSaving) ? { boxes: 0, autoUnverified: 0, unknown: 0, stale: false, saving: true } : null); return }
@@ -109,12 +111,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     onSummary?.({ boxes: firstFrameDetections.length, autoUnverified: named.filter(item => item.label_source === 'auto').length, unknown: firstFrameDetections.length - named.length, stale: run.stale, saving: saving > 0 || priorSaving })
   }, [run, noChars, saving, priorSaving, onSummary])
   useEffect(() => () => onSummary?.(null), [onSummary])
-  useEffect(() => {
-    if (!active) return
-    const timer = setInterval(() => { void api<{ id: string; status: string }>(`/jobs/${job.id}/character-detection-status`).then(value => { if (value.status !== 'queued' && value.status !== 'running') void onStarted() }).catch(() => {}) }, 3000)
-    return () => clearInterval(timer)
-  }, [active, job?.id, onStarted])
-  /** Runs a change, then reloads only this cut's detections (and the references when `refs` is set). */
+
   async function action(fn: () => Promise<unknown>, refs = false) {
     setWorking(true); setError('')
     try {

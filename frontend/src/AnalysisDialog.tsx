@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { ArrowLeft, ArrowRight, X } from 'lucide-react'
 import { mediaUrl, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type TranscriptSegment, type Waveform } from './api'
 import AnalysisControls from './AnalysisControls'
-import { activeRunFor } from './runState'
 import { useCutStages } from './useCutStages'
 import ResultEditor from './ResultEditor'
 import { CutSummaryPanel, SUMMARY_TITLE } from './AnimationPromptPanel'
@@ -107,7 +106,7 @@ function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proje
   const [runVideoOpen, setRunVideoOpen] = useState(false)
   const [charactersTarget, setCharactersTarget] = useState<HTMLElement | null>(null)
   const prefetchIds = useMemo(() => [previousId, nextId], [previousId, nextId])
-  const stages = useCutStages(cut.id, !!activeRunFor(jobs, cut.id), tab === 'run', jobsKey)
+  const stages = useCutStages(cut.id, tab === 'run', jobsKey)
   const current = results.find(result => result.title === SUMMARY_TITLE && !result.superseded_by)
   const consistency = results.find(result => result.settings.structured_type === 'consistency_summary' && !result.superseded_by)
   // The chat mounts on first visit and then stays mounted so a streaming reply survives tab switches.

@@ -1,5 +1,6 @@
 import { api, jsonBody } from './api'
 import type { DiffSegment } from './assistantApi'
+import { subscribeEpisodeEvents } from './episodeEvents'
 
 /** A shot boundary the user placed on the Dialogue timeline: the hard cut after `after_cut_id`, at `time` (episode seconds). */
 export type ShotPoint = { after_cut_id: string; time: number }
@@ -174,13 +175,36 @@ export const sequenceApi = {
   setVoices: (id: string, shotKey: string, speaker: string, segments: { from: number; delivery: Delivery }[] | null) =>
     api<SequenceDetail>(`/sequences/${id}/voices`, { method: 'PUT', body: JSON.stringify({ shot_key: shotKey, speaker, segments }) }),
   /** Queue the ZIP (package, audio, initial frames, prompts) and wait until it can be downloaded; returns its URL. */
-  async exportZip(id: string, onStage?: (stage: string) => void) {
-    let status = await api<ExportStatus>(`/v1/sequences/${id}/exports`, { method: 'POST' })
-    while (status.status === 'queued' || status.status === 'running') {
-      onStage?.(status.stage)
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      status = await api<ExportStatus>(`/v1/brief-exports/${status.job_id}`)
-    }
+  async exportZip(id: string, episodeId: string, onStage?: (stage: string) => void) {
+    const queued = await api<ExportStatus>(`/v1/sequences/${id}/exports`, { method: 'POST' })
+    const status = await new Promise<ExportStatus>((resolve, reject) => {
+      let refreshing = false
+      let changed = false
+      async function refresh() {
+        changed = true
+        if (refreshing) return
+        refreshing = true
+        try {
+          while (changed) {
+            changed = false
+            const current = await api<ExportStatus>(`/v1/brief-exports/${queued.job_id}`)
+            if (current.status !== 'queued' && current.status !== 'running') {
+              unsubscribe()
+              resolve(current)
+              break
+            }
+            onStage?.(current.stage)
+          }
+        } catch (error) {
+          unsubscribe()
+          reject(error)
+        } finally {
+          refreshing = false
+        }
+      }
+      const unsubscribe = subscribeEpisodeEvents(episodeId, change => { if (change.jobs) void refresh() })
+      void refresh()
+    })
     if (status.status !== 'done' || !status.download_url) throw new Error(status.error || 'The export failed')
     return status.download_url
   },
