@@ -247,6 +247,21 @@ def _detection_invalidates(conn, job):
     structured_results.invalidate_detections(conn, payload['cut_id'], target=payload.get('workflow') == 'target_frames_v1')
 
 
+def _profile_gather(conn, job):
+    from . import character_profile
+    return character_profile.gather(conn, job)
+
+
+def _profile_inputs(conn, job):
+    from . import character_profile
+    return character_profile.inputs(conn, job)
+
+
+def _profile_invalidates(conn, job):
+    from . import character_profile
+    character_profile.invalidate(conn, job)
+
+
 def _preview_scope(payload):
     ids = frozenset(ref['id'] for ref in _frame_cuts(payload))
     return Scope(frozenset({'cut_boundaries'}), frozenset({'cut_boundaries' if payload.get('frame_step') else 'previews'}),
@@ -446,7 +461,12 @@ KINDS = {kind.pipeline: kind for kind in (
          inputs=_detection_inputs, gather=_gather_detection, invalidates=_detection_invalidates),
     # Describes one labelled box of a character created from it and appends the text to its Details.
     Kind('character_profile', 'Character description', True, cuts=_one_cut, cancel_running=_always, retry=_always,
-         keys=lambda payload, cut_ids: [f"character_profile:{payload.get('character_context_id')}"]),
+         keys=lambda payload, cut_ids: [f"character_profile:{payload.get('character_context_id')}"],
+         resources=frozenset({'gpu'}),
+         scope=lambda payload: Scope(frozenset({'original', 'cut_boundaries', 'detections', 'context'}),
+                                     frozenset({f"context:{payload.get('character_context_id')}"}),
+                                     frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
+         priority_class=lambda payload: 'interactive', inputs=_profile_inputs, gather=_profile_gather, invalidates=_profile_invalidates),
     # The timed acting plan a text model compiles from the keyframe analysis (performance_beats.py).
     Kind('performance_beats', 'Performance beats', True, cuts=_one_cut, keys=_cut_keys('performance_beats'), cancel_running=_always, retry=_always,
          resources=frozenset({'text'}),

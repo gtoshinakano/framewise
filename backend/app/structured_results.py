@@ -95,6 +95,15 @@ def invalidate_transcript(conn, episode_id, start=0, end=None, reason='Transcrip
         (reason, episode_id, start, end, end))
 
 
+def invalidate_context(conn, project_id, episode_id, reason='Series context changed'):
+    scope = '''SELECT c.id FROM cuts c JOIN episodes e ON e.id=c.episode_id
+        WHERE c.active=1 AND e.project_id=? AND (? IS NULL OR e.id=?)'''
+    values = (reason, project_id, episode_id, episode_id)
+    conn.execute(f"""UPDATE analysis_results SET stale_reason=? WHERE superseded_by IS NULL AND cut_id IN ({scope})
+        AND (title='Cut summary' OR json_extract(settings_json,'$.structured_type') IN ('performance_beats','consistency_summary'))""", values)
+    conn.execute(f'UPDATE cut_review_drafts SET stale_reason=? WHERE cut_id IN ({scope})', values)
+
+
 def save_generated(conn, cut_id, job_id, owner, result_type, content, model_id, prompt, settings, context, *, expected_current=...):
     """Append a generated revision while holding the worker lease and transaction."""
     worker.require_lease(conn, job_id, owner)

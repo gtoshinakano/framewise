@@ -18,7 +18,7 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-from . import db, frame_model, media, visual_models, worker
+from . import db, frame_model, job_inputs, media, visual_models, worker
 from .visual_contracts import OUTFIT_RULE
 
 log = logging.getLogger('framewise.character_profile')
@@ -146,11 +146,36 @@ def describe(server_url, frame_jpeg, crop_jpeg, text, cancel_check=None, usage_o
     return validate(choice['message']['content'])
 
 
-def _finish(job_id, owner, episode_id, stage):
-    with db.connect() as conn:
-        worker.require_lease(conn, job_id, owner)
-        conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
-        worker.sync_episode_status(conn, episode_id)
+def gather(conn, job):
+    payload = json.loads(job['payload_json'])
+    row = conn.execute('''SELECT d.box_json,d.position,d.character_context_id,r.frames_json,r.cut_start,r.cut_end,
+                                 c.active,c.cut_index,c.start_time,c.end_time,e.project_id,e.title AS episode_title,e.original_ext,
+                                 ci.title AS name,ci.content AS notes,ci.episode_id AS context_episode_id
+                          FROM character_detections d JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id
+                          JOIN episodes e ON e.id=c.episode_id LEFT JOIN context_items ci ON ci.id=? AND ci.kind='character'
+                          WHERE d.id=? AND c.episode_id=?''',
+                       (payload.get('character_context_id'), payload.get('detection_id'), job['episode_id'])).fetchone()
+    if not row or row['name'] is None:
+        return {'skip': 'box or character removed'}
+    if not row['active'] or (row['start_time'], row['end_time']) != (row['cut_start'], row['cut_end']):
+        return {'skip': 'the cut or detected frame changed'}
+    if row['character_context_id'] != payload['character_context_id']:
+        return {'skip': 'the box was labelled with another character'}
+    return dict(row)
+
+
+def inputs(conn, job):
+    return job_inputs.fingerprint(job.get('gathered') or gather(conn, job))
+
+
+def invalidate(conn, job):
+    from .structured_results import invalidate_context
+    invalidate_context(conn, job['project_id'], job['context_episode_id'], 'Character details changed')
+
+
+def finish(conn, job_id, episode_id, stage):
+    conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
+    worker.sync_episode_status(conn, episode_id)
 
 
 def process(job_id, owner):
@@ -162,17 +187,13 @@ def process(job_id, owner):
     episode_id = job['episode_id']
     cancel_check = lambda: inference_worker.check_summary_lease(job_id, owner)
     try:
-        row = db.one('''SELECT d.box_json,d.position,d.character_context_id,r.frames_json,r.cut_start,r.cut_end,
-                               c.cut_index,c.start_time,c.end_time,e.project_id,e.title AS episode_title,e.original_ext,
-                               ci.title AS name,ci.content AS notes
-                        FROM character_detections d JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id
-                        JOIN episodes e ON e.id=c.episode_id LEFT JOIN context_items ci ON ci.id=?
-                        WHERE d.id=?''', (payload.get('character_context_id'), payload.get('detection_id')))
-        if not row or row['name'] is None:
-            _finish(job_id, owner, episode_id, 'Skipped · box or character removed')
-            return
-        if row['character_context_id'] != payload['character_context_id']:
-            _finish(job_id, owner, episode_id, 'Skipped · the box was labelled with another character')
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            live = job_inputs.JobInputs(conn, job, owner)
+        row = live.data
+        if row.get('skip'):
+            with live.publish(invalidate=False) as conn:
+                finish(conn, job_id, episode_id, 'Skipped · ' + row['skip'])
             return
         frame = next((item for item in json.loads(row['frames_json']) if item.get('position') == row['position']), None)
         if not frame:
@@ -194,19 +215,17 @@ def process(job_id, owner):
         result = {'model_id': model.model_id, 'model_revision': model.revision, 'visual_model': model.key, 'profile': profile, 'appended': block,
                   'box': box, 'frame_time': frame['time'], 'usage': usage, 'seconds': round(time.monotonic() - started, 1),
                   'prompt': {'system': PROFILE_INSTRUCTION, 'user': text}}
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            worker.require_lease(conn, job_id, owner)
-            # Appended in SQL so Details edited while the job waited are kept.
-            changed = conn.execute("""UPDATE context_items SET content=CASE WHEN trim(content)='' THEN ? ELSE rtrim(content) || char(10) || char(10) || ? END,
-                                      updated_at=CURRENT_TIMESTAMP WHERE id=?""", (block, block, payload['character_context_id'])).rowcount
-            conn.execute("UPDATE jobs SET payload_json=json_set(payload_json,'$.result',json(?)),status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                         (json.dumps(result, ensure_ascii=False), 'Complete · Details updated' if changed else 'Skipped · character removed', job_id))
-            worker.sync_episode_status(conn, episode_id)
+        provenance = {'fingerprint': live.stamp, 'detection_id': payload['detection_id'], 'character_context_id': payload['character_context_id']}
+        with live.publish(project_id=row['project_id'], context_episode_id=row['context_episode_id']) as conn:
+            conn.execute("""UPDATE context_items SET content=CASE WHEN trim(content)='' THEN ? ELSE rtrim(content) || char(10) || char(10) || ? END,
+                           updated_at=CURRENT_TIMESTAMP WHERE id=?""", (block, block, payload['character_context_id']))
+            conn.execute("UPDATE jobs SET payload_json=json_set(payload_json,'$.result',json(?)),input_json=? WHERE id=?",
+                         (json.dumps(result, ensure_ascii=False), json.dumps(provenance), job_id))
+            finish(conn, job_id, episode_id, 'Complete · Details updated')
     except inference_worker.SummaryCancelled:
         log.info('Character description %s was cancelled', job_id)
-    except worker.LeaseLost:
-        log.warning('Character description %s lost its lease', job_id)
+    except worker.LeaseLost as exc:
+        log.info('Character description %s stopped: %s', job_id, exc)
     except Exception as exc:
         log.exception('Character description failed for job %s', job_id)
         inference_worker.fail_job(job_id, owner, episode_id, exc)

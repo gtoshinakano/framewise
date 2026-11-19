@@ -448,6 +448,7 @@ def create_context(project_id: str, body: ContextInput):
     with db.connect() as conn:
         conn.execute("INSERT INTO context_items (id,project_id,episode_id,kind,title,content,is_main) VALUES (?,?,?,?,?,?,?)",
                      (context_id, project_id, body.episode_id, body.kind, body.title.strip(), body.content, int(body.is_main and body.kind == 'character')))
+        structured_results.invalidate_context(conn, project_id, body.episode_id)
     return db.one("SELECT * FROM context_items WHERE id=?", (context_id,))
 
 
@@ -461,17 +462,21 @@ def update_context(context_id: str, body: ContextInput):
     with db.connect() as conn:
         conn.execute("UPDATE context_items SET episode_id=?,kind=?,title=?,content=?,is_main=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                      (body.episode_id, body.kind, body.title.strip(), body.content, int(body.is_main and body.kind == 'character'), context_id))
+        structured_results.invalidate_context(conn, item['project_id'], item['episode_id'])
+        if item['episode_id'] is not None and body.episode_id != item['episode_id']:
+            structured_results.invalidate_context(conn, item['project_id'], body.episode_id)
     return db.one("SELECT * FROM context_items WHERE id=?", (context_id,))
 
 
 @app.delete("/api/context/{context_id}")
 def delete_context(context_id: str):
     with db.connect() as conn:
-        item = conn.execute("SELECT project_id FROM context_items WHERE id=?", (context_id,)).fetchone()
+        item = conn.execute("SELECT project_id,episode_id FROM context_items WHERE id=?", (context_id,)).fetchone()
         if not item:
             raise HTTPException(404, "Context item not found")
         samples = conn.execute("SELECT id FROM character_voice_samples WHERE character_context_id=?", (context_id,)).fetchall()
         conn.execute("DELETE FROM context_items WHERE id=?", (context_id,))
+        structured_results.invalidate_context(conn, item['project_id'], item['episode_id'])
     for sample in samples:
         media.voice_reference_path(item['project_id'], sample['id']).unlink(missing_ok=True)
     return {"ok": True}
@@ -1515,7 +1520,7 @@ def create_character_from_detection(detection_id: str, body: NewCharacterInput):
         raise HTTPException(400, 'Enter a character name')
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('''SELECT d.id,d.run_id,d.position,r.cut_start,r.cut_end,c.id AS cut_id,c.cut_index,c.title AS cut_title,c.start_time,c.end_time,
+        row = conn.execute('''SELECT d.id,d.run_id,d.position,r.cut_start,r.cut_end,c.id AS cut_id,c.active,c.start_time,c.end_time,
                                      c.episode_id,e.project_id FROM character_detections d
                               JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id
                               JOIN episodes e ON e.id=c.episode_id WHERE d.id=?''', (detection_id,)).fetchone()
@@ -1523,21 +1528,30 @@ def create_character_from_detection(detection_id: str, body: NewCharacterInput):
             raise HTTPException(404, 'Detection not found')
         if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
             raise HTTPException(409, 'Remove the saved reference before changing this label')
-        if row['cut_start'] != row['start_time'] or row['cut_end'] != row['end_time']:
+        if not row['active'] or row['cut_start'] != row['start_time'] or row['cut_end'] != row['end_time']:
             raise HTTPException(409, 'Cut timing changed. Detect characters again before labelling this box')
+        request = {'title': title, 'content': body.content, 'is_main': body.is_main, 'episode_only': body.episode_only}
+        existing = conn.execute("""SELECT j.id,json_extract(j.payload_json,'$.character_context_id') AS character_id
+            FROM jobs j JOIN character_detections d ON d.id=? AND d.character_context_id=json_extract(j.payload_json,'$.character_context_id')
+            WHERE j.episode_id=? AND j.pipeline='character_profile' AND j.status IN ('queued','running')
+            AND json_extract(j.payload_json,'$.detection_id')=? AND json_extract(j.payload_json,'$.creation')=json(?) LIMIT 1""",
+            (detection_id, row['episode_id'], detection_id, json.dumps(request, ensure_ascii=False))).fetchone()
+        if existing:
+            character = dict(conn.execute('SELECT * FROM context_items WHERE id=?', (existing['character_id'],)).fetchone())
+            return {'character': character, 'job_id': existing['id']}
         # Sequences link subjects to records by name, so two characters must not share one.
         if conn.execute("SELECT 1 FROM context_items WHERE project_id=? AND kind='character' AND lower(trim(title))=lower(?)", (row['project_id'], title)).fetchone():
             raise HTTPException(409, f'A character named “{title}” already exists in this project')
-        character_id, job_id = str(uuid.uuid4()), str(uuid.uuid4())
+        character_id = str(uuid.uuid4())
         conn.execute("INSERT INTO context_items (id,project_id,episode_id,kind,title,content,is_main) VALUES (?,?,?,'character',?,?,?)",
                      (character_id, row['project_id'], row['episode_id'] if body.episode_only else None, title, body.content, int(body.is_main)))
         conn.execute("UPDATE character_detections SET character_context_id=?,label_source='manual',match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (character_id, detection_id))
         structured_results.opening_box_edited(conn, row['run_id'], row['position'])
-        cut = {'id': row['cut_id'], 'cut_index': row['cut_index'], 'title': row['cut_title'], 'start_time': row['start_time'], 'end_time': row['end_time']}
+        structured_results.invalidate_context(conn, row['project_id'], row['episode_id'] if body.episode_only else None)
         from . import visual_models
-        payload = {'detection_id': detection_id, 'character_context_id': character_id, 'cut_id': row['cut_id'], 'cut': cut,
+        payload = {'detection_id': detection_id, 'character_context_id': character_id, 'cut_id': row['cut_id'], 'creation': request,
                    'models': visual_models.snapshot(conn, ('character_profile',))}
-        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'character_profile',?)", (job_id, row['episode_id'], json.dumps(payload)))
+        job_id = worker.insert_job(conn, row['episode_id'], 'character_profile', payload)
         worker.sync_episode_status(conn, row['episode_id'])
     return {'character': db.one('SELECT * FROM context_items WHERE id=?', (character_id,)), 'job_id': job_id}
 
@@ -2645,10 +2659,9 @@ def retry_analysis(job_id: str):
                 payload = json_object_or_empty(job['payload_json'])
                 if not conn.execute("SELECT 1 FROM context_items WHERE id=? AND kind='character'", (payload.get('character_context_id'),)).fetchone():
                     raise HTTPException(409, 'The character was deleted')
-                if conn.execute("SELECT 1 FROM jobs WHERE pipeline='character_profile' AND status IN ('queued','running') AND json_extract(payload_json,'$.character_context_id')=?", (payload.get('character_context_id'),)).fetchone():
-                    raise HTTPException(409, 'A description of this character is already queued or running')
-                retry_id = str(uuid.uuid4())
-                conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
+                for key in ('depends_on', 'result', 'cut'):
+                    payload.pop(key, None)
+                retry_id = worker.insert_job(conn, job['episode_id'], 'character_profile', payload, retry_of=job_id)
                 worker.sync_episode_status(conn, job['episode_id'])
                 return {'job_id': retry_id}
             if job["pipeline"] != "analyze" or job["status"] not in ("failed", "cancelled"):

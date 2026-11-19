@@ -45,6 +45,7 @@ class CharacterProfileTest(unittest.TestCase):
                          {'detection_id': 'box', 'character_context_id': character['id'], 'cut_id': 'c1'})
         status = self.client.get(f"/api/jobs/{job['id']}/character-profile-status").json()
         self.assertEqual((status['status'], status['character_context_id']), ('queued', character['id']))
+        self.assertEqual(self.create(is_main=True, episode_only=True).json()['job_id'], job['id'])
 
     def test_project_wide_by_default(self):
         self.add_box()
@@ -120,6 +121,29 @@ class CharacterProfileTest(unittest.TestCase):
         self.assertEqual((result['model_id'], result['visual_model']), ('LiquidAI/LFM3-Omni-2B-GGUF:BF16', 'lfm3-omni-2b'))
         self.assertIn('_Described by LFM3-Omni-2B', db.one('SELECT content FROM context_items WHERE id=?', (created['character']['id'],))['content'])
 
+    def test_edit_during_description_requeues_without_appending_old_text(self):
+        self.add_box()
+        created = self.create().json()
+        claimed = worker.claim_job(('character_profile',))
+
+        def describe(*args, **kwargs):
+            with db.connect() as conn:
+                conn.execute("UPDATE context_items SET content='Edited during generation.' WHERE id=?", (created['character']['id'],))
+            return ANSWER
+
+        with patch.object(character_profile, 'images', return_value=(b'frame', b'crop')), \
+             patch.object(frame_model, 'frame_server', return_value=nullcontext('http://model')), \
+             patch.object(character_profile, 'describe', side_effect=describe):
+            character_profile.process(*claimed)
+        job = db.one('SELECT status,stage,attempt_count FROM jobs WHERE id=?', (claimed[0],))
+        self.assertEqual((job['status'], job['stage'], job['attempt_count']), ('queued', 'Inputs changed, restarting', 0))
+        self.assertEqual(db.one('SELECT content FROM context_items WHERE id=?', (created['character']['id'],))['content'], 'Edited during generation.')
+        worker.release_lease(*claimed)
+        with db.connect() as conn:
+            conn.execute('UPDATE jobs SET not_before=0 WHERE id=?', (claimed[0],))
+        _, request = self.run_job()
+        self.assertIn('Edited during generation.', json.loads(request.call_args[0][0].data)['messages'][1]['content'][2]['text'])
+
     def test_removed_or_relabelled_box_is_skipped_without_the_model(self):
         self.add_box()
         created = self.create().json()
@@ -142,7 +166,7 @@ class CharacterProfileTest(unittest.TestCase):
         self.assertIn('outfit_sheet', job['error'])
         retry = self.client.post(f'/api/jobs/{job_id}/retry')
         self.assertEqual(retry.status_code, 200, retry.text)
-        self.assertEqual(self.client.post(f'/api/jobs/{job_id}/retry').status_code, 409)
+        self.assertEqual(self.client.post(f'/api/jobs/{job_id}/retry').json(), retry.json())
 
     def test_validate_fills_missing_fields_and_render_formats(self):
         profile = character_profile.validate({'character_sheet': {'hair': '  short   red '}, 'outfit_sheet': {'top': ''}})
