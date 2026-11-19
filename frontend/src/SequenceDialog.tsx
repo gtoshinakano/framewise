@@ -9,6 +9,7 @@ import SequenceTimeline from './SequenceTimeline'
 import type { DiffSegment } from './assistantApi'
 import { DiffText } from './DiffText'
 import { CopyButton, copyText } from './Markdown'
+import { StaleChip } from './RunUi'
 import { sequenceApi, shotFrameUrl, type Bible, type BoundaryChoice, type Delivery, type RunStep, type SequenceBoundary, type SequenceDetail, type SequenceShot, type ShotDialogue, type ShotHistory } from './sequenceApi'
 import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, DELIVERIES, deliveryLabel, edgeTags, hasOwnVoices, issueInstruction, issuesFor, progress, promptSections, revisionLabel, shotStatus, speakerRanges, stage, staleText, timecode, timecodeSegments, versionNote, type Tone } from './sequenceView'
 
@@ -106,7 +107,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
     return act('revise', async () => {
       for (const shot of shots) {
         const issues = issuesFor(flagged, shot)
-        if (issues.length && !shot.job) await sequenceApi.run(sequenceId, { step: 'shots', shot_keys: [shot.key], instruction: issueInstruction(issues), instruction_source: 'review' })
+        if (issues.length) await sequenceApi.run(sequenceId, { step: 'shots', shot_keys: [shot.key], instruction: issueInstruction(issues), instruction_source: 'review' })
       }
     })
   }
@@ -134,10 +135,11 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
         <span className="ml-auto flex flex-wrap items-center gap-2">
           {(where.key === 'directing' || where.key === 'writing' || where.key === 'compiling') && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void act('cancel', () => sequenceApi.cancel(sequenceId))}><Square size={12} /> Stop</button>}
           {where.key === 'review' && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" onClick={() => setTab('dialogue')}><Check size={13} /> Review dialogue</button>}
-          {(where.key === 'direct' || where.key === 'redirect') && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('direct')} title="The director writes the sequence bible and the shot plan, then waits for your review"><WandSparkles size={13} /> Direct sequence</button>}
-          {where.key === 'write' && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('shots')} title="Writes every shot that is missing, stale or failing its format check, two at a time"><Sparkles size={13} /> Write shot prompts ({counts.needWriting})</button>}
-          {(where.key === 'write' || where.key === 'ready') && counts.written > 0 && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working || reviewing} onClick={() => void run('review')} title="Get optional suggestions on continuity, speech and timing"><RefreshCw size={12} /> {reviewing ? 'Reviewing continuity…' : 'Review continuity'}</button>}
-          {(where.key === 'write' || where.key === 'ready') && flagged.length > 0 && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void reviseFlagged()} title="Rewrite shots using the review’s suggestions">Revise flagged shots ({new Set(flagged.map(issue => issue.shot_key)).size})</button>}
+          {['direct', 'redirect', 'directing', 'analyse'].includes(where.key) && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('direct')} title="Queue the sequence bible and shot plan"><WandSparkles size={13} /> Direct sequence</button>}
+          {(counts.needWriting > 0 || where.key === 'directing') && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('shots')} title="Writes missing and stale prompts and those failing the format check"><Sparkles size={13} /> Write shot prompts</button>}
+          {(counts.written > 0 || counts.step === 'shots' || counts.step === 'shot') && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('review')} title={reviewing ? 'Review already queued' : 'Get suggestions on continuity, speech and timing'}><RefreshCw size={12} /> Review continuity</button>}
+          {detail.review?.stale_reason && <StaleChip reason={detail.review.stale_reason} />}
+          {flagged.length > 0 && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void reviseFlagged()} title="Rewrite shots using the review’s suggestions">Revise flagged shots ({new Set(flagged.map(issue => issue.shot_key)).size})</button>}
         </span>
       </div>}
       {error && <div role="alert" className="flex items-start gap-3 border-b border-[#63363e] bg-[#2b191f] px-5 py-2 text-xs text-[#ffb6bc]"><span className="flex-1 whitespace-pre-wrap">{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><X size={14} /></button></div>}
@@ -145,7 +147,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
       {!detail ? <div className="muted p-12 text-sm">Loading sequence…</div> : <>
         {assistantMounted && <CutAssistant sequence={{ id: sequenceId, label }} active={tab === 'assistant'} onResultsChanged={() => { void load(); onChanged() }} />}
         {tab === 'dialogue' && <DialogueTab detail={detail} proxyReady={proxyReady} working={!!working} act={act} run={run} onContinue={() => setTab('direction')} />}
-        {tab === 'direction' && <DirectionTab detail={detail} working={!!working || active} act={act} run={run} onOpenShot={key => { setSelectedKey(key); setTab('shots') }} onOpenDialogue={() => setTab('dialogue')} />}
+        {tab === 'direction' && <DirectionTab detail={detail} working={!!working} act={act} run={run} onOpenShot={key => { setSelectedKey(key); setTab('shots') }} onOpenDialogue={() => setTab('dialogue')} />}
         {tab === 'shots' && <ShotsTab detail={detail} selected={selected} onSelect={setSelectedKey} proxyReady={proxyReady} working={!!working} act={act} run={run} onOpenAssistant={() => setTab('assistant')} />}
       </>}
     </div>
@@ -367,7 +369,7 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
   const dialogue: ShotDialogue[] = result?.derived.dialogue || shot.lines
   const sections = useMemo(() => result?.prompt ? promptSections(result.prompt) : [], [result?.prompt])
   const status = shotStatus(shot)
-  const busy = working || !!shot.job
+  const busy = working
   const canQueue = !busy && !!detail.bible
   const instructionField = useRef<HTMLTextAreaElement>(null)
   const queue = () => void run('shots', { shot_keys: [shot.key], instruction: instruction.trim() }).then(queued => { if (queued) { setInstruction(''); if (result) setHistoryOpen(true) } })
@@ -571,7 +573,7 @@ function frameText(shot: SequenceShot) {
   return shot.frame.continues_previous_shot ? `continues the take of the previous part of cut ${shot.frame.cut}` : `a moment into cut ${shot.frame.cut}, after the phrase the previous shot finished`
 }
 
-/** How each speaker of a shot is heard, as ranges over the shot; a change is saved on the plan and rewrites the shot. */
+/** How each speaker is heard over this shot. Edits are saved on the shot plan. */
 function VoicesPanel({ detail, shot, working, act }: { detail: SequenceDetail; shot: SequenceShot; working: boolean; act: Act }) {
   const player = usePlayer()
   const written = shot.result?.derived.voices ?? shot.result?.content.voices
@@ -580,7 +582,7 @@ function VoicesPanel({ detail, shot, working, act }: { detail: SequenceDetail; s
   return <section className="shrink-0 rounded-xl border hairline bg-[#1b202a] p-4" aria-label="Voices in this shot">
     <div className="mb-3 flex flex-wrap items-baseline gap-2">
       <h3 className="text-sm font-semibold">Voices in this shot</h3>
-      <p className="muted text-[11px]">How each speaker is heard in this take. Your choice is kept and the shot is rewritten around it.</p>
+      <p className="muted text-[11px]">Rewrite the shot prompt to apply saved voice changes.</p>
       {rewriting && <span className="ml-auto flex items-center gap-1.5 text-[11px] text-[#d6c8ff]"><LoaderCircle size={12} className="animate-spin" />{rewriting}</span>}
     </div>
     <ul className="space-y-3">{shot.speakers.map(speaker => {

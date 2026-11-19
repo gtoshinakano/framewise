@@ -143,8 +143,9 @@ class CompileFlowTest(SequenceBase):
         self.answers['compile'] = self.compile_answer
         sequence_id = self.create(review=None)
         self.assertEqual(self.detail(sequence_id)['compilation']['state'], 'running')
-        self.run_step(sequence_id, 'direct', expected=409)  # nothing is reviewed yet
-        self.assertEqual(self.work(), 1)
+        waiting = self.run_step(sequence_id, 'direct')
+        self.assertEqual(waiting['queued'], 2)
+        self.assertEqual(self.work(limit=1), 1)
         detail = self.detail(sequence_id)
         compilation = detail['compilation']
         self.assertEqual(compilation['state'], 'review')
@@ -162,7 +163,7 @@ class CompileFlowTest(SequenceBase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['compilation']['state'], 'confirmed')
         self.assertEqual(self.detail(sequence_id)['timeline']['lines'][2]['text'], '字幕の言葉')
-        self.assertEqual(self.run_step(sequence_id, 'direct')['queued'], 1)
+        self.assertEqual(self.run_step(sequence_id, 'direct')['queued'], 2)
         self.work()
         bible = self.detail(sequence_id)['bible']['content']
         self.assertEqual(sorted((voice['speaker_label'], voice['character'], voice['source']) for voice in bible['voices']), [('SPEAKER_01', 'Hero', 'reviewed'), ('SPEAKER_02', 'Hero', 'reviewed')])
@@ -293,7 +294,7 @@ class CompileFlowTest(SequenceBase):
         silent = self.create(review=None)
         self.work()
         self.assertEqual(self.detail(silent)['compilation']['state'], 'confirmed')
-        self.assertEqual(self.run_step(silent, 'direct')['queued'], 1)
+        self.assertEqual(self.run_step(silent, 'direct')['queued'], 2)
 
     def test_a_model_that_never_answers_validly_leaves_every_line_for_the_user(self):
         self.answers['compile'] = {'lines': [{'ids': ['L9'], 'text': 'x', 'speaker': None, 'subtitle_ids': [], 'confidence': 'low', 'note': '', 'continues_next': False}], 'voices': [], 'open_questions': []}

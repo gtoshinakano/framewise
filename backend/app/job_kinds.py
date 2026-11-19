@@ -17,7 +17,7 @@ STAGE_LABELS = {'initial_frame': 'Initial frame', 'keyframe_analysis': 'Keyframe
                 'last_frame': 'Last frame'}
 # The stages a visual job runs when its payload names none (single_cut_pipeline.ALL_STAGES).
 DEFAULT_STAGES = ('initial_frame', 'keyframe_analysis')
-SEQUENCE_STEPS = {'compile': 'Dialogue', 'bible': 'Bible', 'plan': 'Plan', 'shot': 'Shot', 'review': 'Review'}
+SEQUENCE_STEPS = {'compile': 'Dialogue', 'bible': 'Bible', 'plan': 'Plan', 'shot': 'Shot', 'shots': 'Shots', 'review': 'Review'}
 
 
 def _cut_ref(cut_id, snapshot=None):
@@ -410,6 +410,27 @@ def _summary_invalidates(conn, job):
     summary_jobs.invalidate(conn, job)
 
 
+def _sequence_scope(payload):
+    domain = f"sequence:{payload.get('sequence_id')}"
+    reads = {'cut_boundaries', 'prepared_audio', 'transcript', 'subtitles', 'results', 'context', 'decisions'}
+    return Scope(frozenset({*reads, domain}), frozenset({domain}))
+
+
+def _sequence_gather(conn, job):
+    from . import sequence_pipeline
+    return sequence_pipeline.gather(conn, job)
+
+
+def _sequence_inputs(conn, job):
+    from . import sequence_pipeline
+    return sequence_pipeline.inputs(conn, job)
+
+
+def _sequence_invalidates(conn, job):
+    from . import sequence_pipeline
+    sequence_pipeline.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -453,7 +474,10 @@ KINDS = {kind.pipeline: kind for kind in (
     Kind('composition_compact', 'Composition brief', True, cuts=_one_cut, keys=_cut_keys('composition_compact'), cancel_running=_always,
          retry=_always, attention=False),
     Kind('sequence', 'Sequence', True, label=_sequence_label, cancel_running=_always,
-         keys=lambda payload, cut_ids: [f"sequence:{payload.get('sequence_id')}:{payload.get('step')}:{payload.get('shot_key') or ''}"]),
+         keys=lambda payload, cut_ids: [f"sequence:{payload.get('sequence_id')}:{payload.get('step')}:{payload.get('shot_key') or ''}"],
+         resources=frozenset({'text'}), scope=_sequence_scope,
+         priority_class=lambda payload: 'interactive' if payload.get('shot_key') and not payload.get('batch') else 'batch',
+         inputs=_sequence_inputs, gather=_sequence_gather, invalidates=_sequence_invalidates),
     Kind('subtitles', 'Subtitle extraction', True, cancel_running=_always,
          keys=lambda payload, cut_ids: [f"subtitles:{payload.get('language') or ''}"], resources=frozenset({'gpu'}),
          scope=lambda payload: Scope(frozenset({'original', 'proxy', 'transcript'}), frozenset({'subtitles'})),

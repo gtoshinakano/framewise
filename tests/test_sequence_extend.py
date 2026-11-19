@@ -75,8 +75,7 @@ class SequenceExtendTest(SequenceBase):
         self.run_step(sequence_id, 'direct', expected=409)  # the new lines are not reviewed yet
 
         confirmed = self.confirm(sequence_id)
-        self.assertIsNone(confirmed['sequence']['extension'])
-        self.assertEqual([job['step'] for job in confirmed['jobs'] if job['status'] == 'queued'], ['bible'])
+        self.assertEqual(sorted(job['step'] for job in confirmed['jobs'] if job['status'] == 'queued'), ['bible', 'plan'])
         self.work()
         after = self.detail(sequence_id)
         self.assertEqual(self.steps(sequence_id)[-5:], ['bible', 'plan', 'shot', 'shot', 'shot'])
@@ -117,6 +116,11 @@ class SequenceExtendTest(SequenceBase):
             return self.answer(direction.COMPILE_SYSTEM, data)
         self.answers['compile'] = meanwhile
         self.work()
+        restart = db.one("SELECT id FROM jobs WHERE status='queued' AND stage='Inputs changed, restarting'")
+        self.assertIsNotNone(restart)
+        with db.connect() as conn:
+            conn.execute('UPDATE jobs SET not_before=0 WHERE id=?', (restart['id'],))
+        self.work()
         detail = self.detail(sequence_id)
         self.assertEqual([row['text'] for row in detail['compilation']['result']['content']['lines']], ['こんばんは', 'はい', 'じゃあね'])
         self.assertEqual(detail['compilation']['state'], 'review')
@@ -124,13 +128,12 @@ class SequenceExtendTest(SequenceBase):
 
     def test_refusals(self):
         busy = self.create(1, 2, review=None)  # its compilation is still queued
-        self.assertIn('jobs queued or running', self.extend(busy, expected=409)['detail'])
+        self.assertEqual(self.extend(busy)['sequence']['last_cut'], 3)
         whole = self.create(1, 3)
         self.assertEqual(self.extend(whole, expected=409)['detail'], 'Cut 3 is the last cut of the episode')
         short = self.create(1, 2)
         with db.connect() as conn:
             conn.execute("DELETE FROM analysis_results WHERE cut_id='c3'")
-        self.assertEqual(self.extend(short, expected=409)['detail'], 'Cut 3 needs a first-frame and a keyframe analysis first; run them from the cut, then add it')
         self.assertFalse(self.detail(short)['next_cut']['ready'])
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET end_time=200 WHERE id='c3'")

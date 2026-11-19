@@ -122,6 +122,7 @@ class SequenceBase(unittest.TestCase):
                 if not claimed:
                     break
                 sequence_pipeline.process(*claimed)
+                worker.release_lease(*claimed)
                 ran += 1
         return ran
 
@@ -192,9 +193,10 @@ class SequenceFlowTest(SequenceBase):
 
     def test_direct_writes_bible_then_plan_and_stops(self):
         sequence_id = self.create()
-        self.assertEqual(self.run_step(sequence_id, 'direct')['queued'], 1)
-        self.run_step(sequence_id, 'direct', expected=409)  # already running
-        self.assertEqual(self.work(), 2)  # the bible queued the plan; nothing follows the plan
+        first = self.run_step(sequence_id, 'direct')
+        self.assertEqual(first['queued'], 2)
+        self.assertEqual(self.run_step(sequence_id, 'direct'), first)
+        self.assertEqual(self.work(), 2)
         self.assertEqual([(job['step'], job['status']) for job in self.jobs()], [('bible', 'done'), ('plan', 'done')])
         detail = self.detail(sequence_id)
         bible = detail['bible']['content']
@@ -251,7 +253,7 @@ class SequenceFlowTest(SequenceBase):
         self.assertEqual(third['previous_shot']['ends_with'], [{'name': 'Hero', 'ends': 'center, hand raised'}])
         self.assertEqual(second['next_shot']['opens_with'], [{'name': 'Hero', 'position': 'center', 'pose': 'standing'}])
         self.assertNotIn('next_shot', third)
-        self.run_step(sequence_id, 'shots', expected=409)  # nothing left to write
+        self.assertEqual(self.run_step(sequence_id, 'shots')['queued'], 0)
 
 
     def test_shot_writer_uses_current_keyframes_beats_and_summary_camera(self):
@@ -342,9 +344,12 @@ class SequenceFlowTest(SequenceBase):
             conn.execute("DELETE FROM analysis_results WHERE id='c2-video_analysis'")
         sequence_id = self.create()
         self.assertEqual(self.detail(sequence_id)['missing'], [2])
-        self.assertIn('first-frame analysis, keyframes and performance beats for cuts: 2', self.run_step(sequence_id, 'direct', expected=409)['detail'])
-        self.run_step(sequence_id, 'shots', expected=409)
-        self.run_step(sequence_id, 'review', expected=409)
+        bible, plan = self.run_step(sequence_id, 'direct')['job_ids']
+        self.run_step(sequence_id, 'shots')
+        self.run_step(sequence_id, 'review')
+        self.work()
+        self.assertIn('first-frame analysis, keyframes and performance beats for cuts: 2', db.one('SELECT error FROM jobs WHERE id=?', (bible,))['error'])
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (plan,))['status'], 'cancelled')
 
     def test_changed_inputs_mark_shots_stale_and_one_shot_can_be_rewritten(self):
         sequence_id = self.written()
@@ -448,14 +453,22 @@ class SequenceFlowTest(SequenceBase):
 
     def test_a_result_edited_while_its_job_ran_is_not_overwritten(self):
         sequence_id = self.directed()
-        self.run_step(sequence_id, 'bible')
+        [job_id] = self.run_step(sequence_id, 'bible')['job_ids']
         bible = self.detail(sequence_id)['bible']
         edited = {**bible['content'], 'logline': 'Edited by hand.'}
-        self.assertEqual(self.client.put(f"/api/sequence-results/{bible['id']}", json={'content': edited}).status_code, 200)
+
+        def edit_while_writing(_data):
+            self.assertEqual(self.client.put(f"/api/sequence-results/{bible['id']}", json={'content': edited}).status_code, 200)
+            return BIBLE
+
+        self.answers['bible'] = edit_while_writing
         self.work()
-        job = self.jobs()[-1]
-        self.assertEqual((job['step'], job['status']), ('bible', 'failed'))
-        self.assertIn('changed while', job['error'])
+        self.assertEqual(db.one('SELECT status,stage FROM jobs WHERE id=?', (job_id,)),
+                         {'status': 'queued', 'stage': 'Inputs changed, restarting'})
+        with db.connect() as conn:
+            conn.execute('UPDATE jobs SET not_before=0 WHERE id=?', (job_id,))
+        self.work()
+        self.assertIn('edited by hand', db.one('SELECT stage FROM jobs WHERE id=?', (job_id,))['stage'])
         self.assertEqual(self.detail(sequence_id)['bible']['content']['logline'], 'Edited by hand.')
 
     def test_hand_edits_are_validated_like_model_output(self):
@@ -533,11 +546,12 @@ class SequenceFlowTest(SequenceBase):
         # A voice change rewrites the shot without an instruction; the history says why.
         saved = self.client.put(f'/api/sequences/{sequence_id}/voices', json={'shot_key': key, 'speaker': 'Hero', 'segments': [{'from': 0, 'delivery': 'narrative'}]})
         self.assertEqual(saved.status_code, 200, saved.text)
-        self.assertEqual(self.client.get(url).json()['pending'], {'status': 'queued', 'instruction': None, 'trigger': 'voices'})
+        self.assertIsNone(self.client.get(url).json()['pending'])
+        self.run_step(sequence_id, 'shots', shot_keys=[key])
         self.assertEqual(self.work(), 1)
         newest = self.client.get(url).json()['revisions'][0]
-        self.assertEqual((newest['number'], newest['instruction'], newest['trigger']), (4, None, 'voices'))
-        self.assertEqual(self.detail(sequence_id)['shots'][2]['result']['trigger'], 'voices')
+        self.assertEqual((newest['number'], newest['instruction'], newest['trigger']), (4, None, None))
+        self.assertIsNone(self.detail(sequence_id)['shots'][2]['result']['trigger'])
         self.assertEqual(self.client.get(f'/api/sequences/missing/shots/{key}/history').status_code, 404)
 
     def test_a_boundary_inside_speech_can_be_moved_by_hand(self):
@@ -623,11 +637,12 @@ class SequenceFlowTest(SequenceBase):
         self.assertEqual([(shot['start_time'], shot['end_time']) for shot in released['shots']], [(0.0, 2.0), (2.0, 4.75), (4.75, 10.0)])
         self.assertEqual(released['plan']['content']['boundaries'], [{'after_cut_id': 'c2', 'choice': 'after_line', 'reason': sequence_edit.RELEASED, 'by': 'app'}])
         self.assertIsNone(next(item for item in released['timeline']['boundaries'] if item['id'] == 'K2')['fixed'])
-        # Nothing can be placed while the plan is being written.
         self.run_step(sequence_id, 'plan')
-        self.assertEqual(self.client.put(url, json={'points': [{'after_cut_id': 'c2', 'time': 3.55}]}).status_code, 409)
+        self.assertEqual(self.client.put(url, json={'points': [{'after_cut_id': 'c2', 'time': 3.55}]}).status_code, 200)
+        self.work()
+        self.assertEqual(self.detail(sequence_id)['sequence']['shot_points'], [{'after_cut_id': 'c2', 'time': 3.55}])
 
-    def test_voices_are_decided_per_shot_and_rewrite_the_shot(self):
+    def test_voices_are_decided_per_shot_and_a_rewrite_reads_them(self):
         sequence_id = self.written()
         shot = self.detail(sequence_id)['shots'][2]
         self.assertEqual(shot['speakers'], ['Hero'])
@@ -641,10 +656,11 @@ class SequenceFlowTest(SequenceBase):
         after = saved.json()
         self.assertEqual(after['plan']['content']['voices'], [{'speaker': 'Hero', 'from': 4.0, 'to': 5.5, 'delivery': 'narrative'}, {'speaker': 'Hero', 'from': 5.5, 'to': 10.0, 'delivery': 'inner_voice'}])
         target = after['shots'][2]
-        self.assertEqual((target['stale'], target['job']), (['plan'], 'queued'))
+        self.assertEqual((target['stale'], target['job']), (['plan'], None))
         self.assertEqual(target['fixed_voices'], [{'speaker': 'Hero', 'from': 0.0, 'to': 1.5, 'delivery': 'narrative'}, {'speaker': 'Hero', 'from': 1.5, 'to': 6.0, 'delivery': 'inner_voice'}])
         self.assertEqual([shot['stale'] for shot in after['shots'][:2]], [[], []])  # nothing leaks into the neighbouring shots
-        # A second change while the rewrite is still queued adds no job: the queued one reads the voices when it starts.
+        self.run_step(sequence_id, 'shots', shot_keys=[target['key']])
+        # The queued rewrite reads the next voice edit when it starts.
         again = self.client.put(url, json={'shot_key': shot['key'], 'speaker': 'Hero', 'segments': [{'from': 0, 'delivery': 'narrative'}, {'from': 1.5, 'delivery': 'off_screen'}]})
         self.assertEqual(again.status_code, 200, again.text)
         self.assertEqual([job['step'] for job in self.jobs() if job['status'] == 'queued'], ['shot'])
@@ -680,8 +696,10 @@ class SequenceFlowTest(SequenceBase):
         self.assertTrue(detail['sequence']['cuts_changed'])
         # The old plan still tiles the range in time, but its shots no longer follow the hard cuts.
         self.assertEqual((detail['plan_problems'], detail['shots'][1]['source_cuts']), ([], [2, 3]))
-        self.assertIn('direct the sequence again', self.run_step(sequence_id, 'shots', expected=409)['detail'])
-        self.run_step(sequence_id, 'direct')
+        direction_jobs = self.run_step(sequence_id, 'direct')['job_ids']
+        [waiting] = self.run_step(sequence_id, 'shots')['job_ids']
+        request = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (waiting,))['payload_json'])
+        self.assertIn(direction_jobs[-1], request['depends_on'])
         self.work()
         detail = self.detail(sequence_id)
         self.assertEqual((detail['sequence']['cuts_changed'], detail['plan_problems'], [shot['duration'] for shot in detail['shots']]), (False, [], [2.0, 1.0, 7.0]))

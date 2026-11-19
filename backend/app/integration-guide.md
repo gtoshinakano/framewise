@@ -50,6 +50,8 @@ The current track from `GET /api/v1/episodes/{episode_id}/subtitles` can include
 
 `POST /api/episodes/{episode_id}/prepare` takes a required `language` for burned-in subtitles. It queues unfinished hard-cut detection, transcription, subtitle extraction, character boxes and recognition in that order, and waits for media preparation when needed. The response lists each step as `queued` with its job IDs or `skipped`. Each step can still be requested individually. Use the episode event stream or queue endpoint to follow progress.
 
+Sequence compilation, direction, shot prompts and continuity review use the current source revisions when they start. Edited voices and shot boundaries can make a saved shot stale. Rewriting its prompt is an explicit action.
+
 ## Agent-ready briefs and downloads
 
 `GET /api/cuts/{cut_id}/structured-analysis` returns structured single-cut outputs as JSON objects, including their type, source and revision links. Pass `?history=true` for all revisions. The brief's `initial_frame` includes the current structured initial-frame result when available. A missing result means it has not yet been generated; do not infer one from a legacy summary. Editing an existing structured result through `PUT /api/analysis-results/{id}` requires `content` to be a JSON object encoded as a string, and creates a new revision.

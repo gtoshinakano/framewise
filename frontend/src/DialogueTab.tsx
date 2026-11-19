@@ -142,9 +142,18 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const player = usePlayer()
   const [draft, setDraft] = useState<Compilation | null>(result ? result.content : null)
   const [baseId, setBaseId] = useState<string | undefined>(result?.id)
+  const [original, setOriginal] = useState<Compilation | null>(result?.content ?? null)
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState<Filter>('all')
-  useEffect(() => { if (result && result.id !== baseId) { setDraft(result.content); setBaseId(result.id) } }, [result, baseId])
+  const dialogueDirty = !!draft && !!original && !sameContent(draft, original)
+  const sourceChanged = !!result && baseId !== undefined && result.id !== baseId && dialogueDirty
+  useEffect(() => {
+    if (result && result.id !== baseId && !dialogueDirty) {
+      setDraft(result.content)
+      setOriginal(result.content)
+      setBaseId(result.id)
+    }
+  }, [result, baseId, dialogueDirty])
   useEffect(() => { player.setRange({ start: info.start_time, end: info.end_time }) }, [player, info.start_time, info.end_time])
   // The shot boundaries placed on the timeline: a draft until saved, reset when the saved ones change.
   const savedKey = JSON.stringify(info.shot_points ?? [])
@@ -160,7 +169,6 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const options = useMemo(() => speakerOptions(characters), [characters])
   const lines = useMemo(() => draft?.lines ?? [], [draft])
   const problems = useMemo(() => problemsById(lines, duration), [lines, duration])
-  const dialogueDirty = !!draft && !!result && !sameContent(draft, result.content)
   const pointsDirty = !samePoints(points, JSON.parse(savedKey) as ShotPoint[])
   const dirty = dialogueDirty || pointsDirty
   // Lines of a cut added at the end are new until the direction is redone; they count as lines to review.
@@ -177,7 +185,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const state = view.state
   const compileJob = detail.jobs.find(job => job.step === 'compile' && (job.status === 'queued' || job.status === 'running'))
   const failedJob = !compileJob && view.state === 'none' ? detail.jobs.find(job => job.step === 'compile' && job.status === 'failed') : undefined
-  const busy = working || !!detail.jobs.some(job => job.status === 'queued' || job.status === 'running')
+  const busy = working
   const playhead = useCallback(() => player.time() - info.start_time, [player, info.start_time])
 
   const edit = useCallback((id: string, change: (line: CompiledLine) => CompiledLine) => setDraft(current => current && { ...current, lines: current.lines.map(line => line.id === id ? change(line) : line) }), [])
@@ -223,14 +231,19 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   }
 
   function save(finalize = false) {
-    return act(finalize ? 'confirm-dialogue' : 'save-dialogue', () => result
-      ? sequenceApi.saveDialogue(info.id, {
-        result_id: result.id,
+    if (sourceChanged) return Promise.resolve(false)
+    return act(finalize ? 'confirm-dialogue' : 'save-dialogue', async () => {
+      const saved = result ? await sequenceApi.saveDialogue(info.id, {
+        result_id: baseId || result.id,
         content: dialogueDirty && draft ? payload(draft) : undefined,
         points: pointsDirty ? points : undefined,
         confirm: finalize,
-      })
-      : sequenceApi.setShotPoints(info.id, points))
+      }) : await sequenceApi.setShotPoints(info.id, points)
+      setOriginal(saved.compilation?.result?.content ?? null)
+      setDraft(saved.compilation?.result?.content ?? null)
+      setBaseId(saved.compilation?.result?.id)
+      return saved
+    })
   }
   async function confirm() {
     if (!result || !draft) return
@@ -242,11 +255,17 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
     if (!detail.bible && !info.extension) void run('direct')
   }
   function rerun() {
-    const warning = dirty ? 'The director will compile the dialogue again and your unsaved edits will be lost. Continue?' : 'The director will compile the dialogue again from the transcript and the subtitles. The current version stays in the history, but must be saved again. Continue?'
+    const warning = 'Compile dialogue again from the transcript and subtitles? The current version stays in history.'
     if (window.confirm(warning)) void run('compile')
   }
   function useOriginal() {
-    if (window.confirm('Use the original transcript as the dialogue, without corrections? Qwen\'s compilation and your edits will be replaced.')) void act('use-source', () => sequenceApi.useSourceDialogue(info.id))
+    if (window.confirm('Use the original transcript as the dialogue? Your previous compilation stays in history.')) void act('use-source', async () => {
+      const saved = await sequenceApi.useSourceDialogue(info.id)
+      setOriginal(saved.compilation?.result?.content ?? null)
+      setDraft(saved.compilation?.result?.content ?? null)
+      setBaseId(saved.compilation?.result?.id)
+      return saved
+    })
   }
 
   const voices = useMemo(() => {
@@ -258,7 +277,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
   const rewrite = !!info.extension?.rewrite_shots || detail.shots.some(shot => shot.result)
   const directed = !!(detail.bible || detail.plan)
   const addBlocked = !nextCut ? '' : !nextCut.fits ? `With cut ${nextCut.number} the sequence would last more than ${clock(detail.limits.sequence_seconds)}`
-    : !nextCut.ready ? `Cut ${nextCut.number} needs a first-frame and a keyframe analysis first` : dirty ? 'Save your changes first' : busy ? 'Wait for the running jobs to finish' : ''
+    : dirty ? 'Save your changes first' : busy ? 'Saving changes…' : ''
   function addCut() {
     if (!nextCut || addBlocked) return
     const then = directed ? ` Once the new lines are saved (at once if nobody speaks in it), the bible and the shot plan are written again${rewrite ? ', then every shot prompt is rewritten' : ''}.` : ''
@@ -317,8 +336,9 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
       {speechHint && nextCut && <p role="status" className="flex shrink-0 flex-wrap items-center gap-2 bg-[#2b2442] px-4 py-2 text-xs leading-5 text-[#d6c8ff]"><AlertTriangle size={14} className="shrink-0" />
         <span className="min-w-0 flex-1">Speech runs on past the end of the sequence into cut {nextCut.number}: “{speechHint.text_before}” <strong className="text-white">“{speechHint.words_after}”</strong></span>{addButton}</p>}
 
-      {state === 'running' ? <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center"><LoaderCircle size={22} className="animate-spin text-[#d6c8ff]" /><p className="text-sm font-semibold">Qwen is compiling the dialogue…</p><p className="muted max-w-md text-xs leading-5">{compileJob?.stage || 'Queued'}. It matches the transcript with the subtitles, corrects the wording, joins lines that were cut in half and proposes speakers. You review it here when it finishes; whether a speaker is seen speaking is decided per shot later.</p></div>
-        : !draft ? <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
+      {compileJob && <p role="status" className="flex items-center gap-2 px-4 py-2 text-xs text-[#d6c8ff]"><LoaderCircle size={14} className="animate-spin" aria-hidden />{compileJob.stage === 'Inputs changed, restarting' ? 'Restarting with your changes' : compileJob.status === 'queued' ? 'Dialogue compilation queued' : compileJob.stage}</p>}
+      {sourceChanged && <p role="alert" className="bg-[#4a3a17] px-4 py-2 text-xs text-[#ffd59a]">The saved dialogue changed. Copy any edits you want to keep, then <button type="button" className="underline" onClick={() => { if (result) { setDraft(result.content); setOriginal(result.content); setBaseId(result.id) } }}>load the current dialogue</button>.</p>}
+      {!draft ? <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
           <WandSparkles size={22} className="text-[#e0a96d]" /><p className="text-sm font-semibold">The dialogue has not been compiled yet</p>
           {failedJob?.error && <p role="alert" className="max-w-md text-xs leading-5 text-[#ffaaa7]">The last attempt failed: {failedJob.error}</p>}
           <p className="muted max-w-md text-xs leading-5">Qwen reconciles the recognised speech with the burned-in subtitles so that wording, speakers and timing are right before the sequence is directed.</p>
@@ -337,8 +357,8 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
                 {points.length > 0 && ` · ${points.length} shot boundar${points.length > 1 ? 'ies' : 'y'} placed by you`}{pointsDirty && detail.plan ? ' · saving moves the planned shots, which must then be written again' : ''}</span>
               <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy} onClick={useOriginal} title="Replace everything with the original transcript, uncorrected">Use original transcript</button>
               <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy} onClick={rerun} title="Qwen compiles the dialogue again"><RefreshCw size={13} /> Re-run Qwen</button>
-              <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy || !dirty || Object.keys(problems).length > 0} onClick={() => void save()}><Save size={13} /> Save</button>
-              <button type="button" className="btn btn-primary !py-2 !text-xs" disabled={busy || Object.keys(problems).length > 0} onClick={() => void confirm()}
+              <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={busy || sourceChanged || !dirty || Object.keys(problems).length > 0} onClick={() => void save()}><Save size={13} /> Save</button>
+              <button type="button" className="btn btn-primary !py-2 !text-xs" disabled={busy || sourceChanged || Object.keys(problems).length > 0} onClick={() => void confirm()}
                 title="Save this dialogue as final; the director starts from it">{state === 'confirmed' && !dirty ? 'Continue to Direction' : 'Save & continue to Direction'}</button>
             </footer>
           </>}

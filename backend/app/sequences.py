@@ -154,10 +154,11 @@ def delete_sequence(sequence_id: str):
     """Delete a sequence with its results and chats. Its jobs are cancelled first; cuts and their analysis are untouched."""
     def action(conn):
         sequence = require(conn, sequence_id)
-        sequence_edit.cancel(conn, sequence)
+        jobs = sequence_edit.cancel(conn, sequence)
         conn.execute('DELETE FROM sequences WHERE id=?', (sequence_id,))
-        return {'ok': True}
-    return edit(action)
+        return jobs
+    worker.after_cancel(edit(action))
+    return {'ok': True}
 
 
 @router.post('/sequences/{sequence_id}/run')
@@ -167,7 +168,7 @@ def run_sequence(sequence_id: str, body: SequenceRunInput):
     return {'queued': len(job_ids), 'job_ids': job_ids}
 
 
-@router.post('/sequences/{sequence_id}/extend', responses={409: {'description': 'No cut follows the sequence, the added cut is not analysed, or jobs are queued or running.'},
+@router.post('/sequences/{sequence_id}/extend', responses={409: {'description': 'No cut follows the sequence or its end was archived.'},
                                                     422: {'description': 'With the next cut the sequence would last more than three minutes.'}})
 def extend_sequence(sequence_id: str):
     """Add the episode's next cut to the end of the sequence, for speech that runs on past its last cut.
@@ -182,7 +183,9 @@ def extend_sequence(sequence_id: str):
 
 @router.post('/sequences/{sequence_id}/cancel')
 def cancel_sequence_jobs(sequence_id: str):
-    return {'cancelled': edit(lambda conn: sequence_edit.cancel(conn, require(conn, sequence_id)))}
+    jobs = edit(lambda conn: sequence_edit.cancel(conn, require(conn, sequence_id)))
+    worker.after_cancel(jobs)
+    return {'cancelled': len(jobs)}
 
 
 def result_row(conn, result_id):
@@ -292,7 +295,7 @@ def set_shot_boundary(sequence_id: str, body: ShotBoundaryInput):
     return detail_or_404(sequence_id)
 
 
-@router.put('/sequences/{sequence_id}/shot-points', responses={409: {'description': 'The bible or the shot plan is being written, or the sequence lost its cuts.'},
+@router.put('/sequences/{sequence_id}/shot-points', responses={409: {'description': 'A sequence boundary was archived.'},
                                                           422: {'description': 'A point is outside the sequence, or the shots would be out of order, longer than one take or without their own picture.'}})
 def set_shot_points(sequence_id: str, body: ShotPointsInput):
     """Save the shot boundaries the user placed on the Dialogue timeline. They are final for the director; with a plan, its shots move onto them

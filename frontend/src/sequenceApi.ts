@@ -104,7 +104,7 @@ export type SequenceShot = {
   speakers: string[]
   result: ShotResult | null; stale: StaleReason[]; job: 'queued' | 'running' | null
 }
-export type SequenceResult<T> = { id: string; content: T; origin: string; model_id: string | null; job_id: string | null; parent_id: string | null; created_at: string; completed_by_app: string | null; generation_seconds?: number | null }
+export type SequenceResult<T> = { id: string; content: T; origin: string; model_id: string | null; job_id: string | null; parent_id: string | null; created_at: string; completed_by_app: string | null; generation_seconds?: number | null; stale_reason?: string | null }
 export type Bible = {
   logline: string; synopsis: string; spoken_language: string; arc: string; pacing: string
   scenes: { id: string; from_cut: number; to_cut: number; location: string; time_of_day: string; lighting: string; mood: string; scenario: string | null }[]

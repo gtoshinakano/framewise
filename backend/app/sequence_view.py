@@ -177,6 +177,7 @@ def result_view(row):
     settings = store.loads(row['settings_json'], {})
     return {'id': row['id'], 'content': store.loads(row['content'], {}), 'origin': row['origin'], 'model_id': row['model_id'], 'job_id': row['job_id'],
             'parent_id': row['parent_id'], 'created_at': row['created_at'], 'completed_by_app': settings.get('completed_by_app'),
+            'stale_reason': row.get('stale_reason'),
             'usage': settings.get('usage'), 'generation_seconds': settings.get('summary_generation_seconds')}
 
 

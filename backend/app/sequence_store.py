@@ -145,13 +145,21 @@ def timeline_for(conn, sequence, cuts, points=None):
     return build_timeline(conn, sequence, cuts, compiled, points)
 
 
-def build_timeline(conn, sequence, cuts, compilation, points=None):
+def audio_envelope(conn, sequence, cuts):
     episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (sequence['episode_id'],)).fetchone()
     start, end = cuts[0]['start_time'], cuts[-1]['end_time']
     audio = media.episode_dir(episode['project_id'], sequence['episode_id']) / 'audio.wav'
-    envelope = sequence_timeline.audio_envelope(audio, start, end) if audio.is_file() else []
+    return sequence_timeline.audio_envelope(audio, start, end) if audio.is_file() else []
+
+
+def build_timeline(conn, sequence, cuts, compilation, points=None, *, envelope=None, events=None):
+    start, end = cuts[0]['start_time'], cuts[-1]['end_time']
+    if envelope is None:
+        envelope = audio_envelope(conn, sequence, cuts)
+    if events is None:
+        events = event_starts(conn, cuts)
     lines = sequence_compile.merged_lines(compilation, start) if compilation is not None else transcript_lines(conn, sequence['episode_id'], start, end)
-    timeline = sequence_timeline.build(cuts, lines, envelope, event_starts(conn, cuts), shot_points(sequence) if points is None else points)
+    timeline = sequence_timeline.build(cuts, lines, envelope, events, shot_points(sequence) if points is None else points)
     timing = {item['after_cut_id']: item for item in (compilation or {}).get('timing', [])}
     accepted = {}
     for boundary in timeline['boundaries']:
@@ -236,8 +244,21 @@ def save(conn, sequence_id, result_type, content, *, shot_key='', rendered=None,
                   json.dumps(settings or {}, ensure_ascii=False), json.dumps(context or {}, ensure_ascii=False), base['id'] if base else None))
     if base:
         conn.execute('UPDATE sequence_results SET superseded_by=? WHERE id=?', (result_id, base['id']))
+    if not job_id and result_type != 'review':
+        invalidate_review(conn, sequence_id)
+    if origin != 'model' and not job_id:
+        step = 'compile' if result_type == 'compilation' else result_type
+        conn.execute("""UPDATE jobs SET input_json=json_set(COALESCE(input_json,'{}'),'$.keep_output',json('true'))
+            WHERE pipeline='sequence' AND status IN ('queued','running') AND json_extract(payload_json,'$.sequence_id')=?
+            AND json_extract(payload_json,'$.step')=? AND COALESCE(json_extract(payload_json,'$.shot_key'),'')=?""",
+            (sequence_id, step, shot_key or ''))
     conn.execute('UPDATE sequences SET updated_at=CURRENT_TIMESTAMP WHERE id=?', (sequence_id,))
     return result_id
+
+
+def invalidate_review(conn, sequence_id):
+    conn.execute("""UPDATE sequence_results SET stale_reason='Sequence evidence changed'
+        WHERE sequence_id=? AND type='review' AND superseded_by IS NULL""", (sequence_id,))
 
 
 def record_sources(conn, sequence_id, result_id, source_hash, subtitle_run_id, transcript_count, subtitle_count):
@@ -293,6 +314,5 @@ def recent_jobs(conn, sequence_id, limit=60):
 
 
 def insert_job(conn, sequence, payload):
-    job_id = str(uuid.uuid4())
-    conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'sequence',?)", (job_id, sequence['episode_id'], json.dumps({'sequence_id': sequence['id'], **payload}, ensure_ascii=False)))
-    return job_id
+    from . import worker
+    return worker.insert_job(conn, sequence['episode_id'], 'sequence', {'sequence_id': sequence['id'], **payload})
