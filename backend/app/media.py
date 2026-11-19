@@ -358,12 +358,14 @@ def scale_image(source: Path, output: Path, width: int, timeout: float | None = 
     run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', str(source), '-vf', f"scale=w='min(iw,{width})':h=-2", '-frames:v', '1', '-q:v', '3', str(output)], timeout)
 
 
-def crop_image(source: Path, output: Path, box: tuple[float, float, float, float], timeout: float | None = 60):
-    """Crop a JPEG to ``box`` given as fractions (x1, y1, x2, y2) of its width and height, at its own resolution."""
+def crop_image(source: Path, output: Path, box: tuple[float, float, float, float], timeout: float | None = 60, height: int | None = None):
+    """Crop a JPEG to ``box`` given as fractions (x1, y1, x2, y2) of its width and height, at its own resolution or at most ``height`` lines high."""
     x1, y1, x2, y2 = (min(1.0, max(0.0, float(value))) for value in box)
     if x2 - x1 <= 0 or y2 - y1 <= 0:
         raise ValueError('The crop box is empty')
     crop = f"crop=w='trunc({x2 - x1:.6f}*iw)':h='trunc({y2 - y1:.6f}*ih)':x='trunc({x1:.6f}*iw)':y='trunc({y1:.6f}*ih)'"
+    if height:
+        crop += f",scale=w=-2:h='min(ih,{int(height)})'"
     run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', str(source), '-vf', crop, '-frames:v', '1', '-q:v', '2', str(output)], timeout)
 
 

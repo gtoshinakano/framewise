@@ -109,6 +109,24 @@ class FrameRecoveryTest(unittest.TestCase):
         frame_cache._store(frame_cache._key(spec), b'\xff\xd8 not this frame')
         self.assertNotEqual(frame_cache.request(spec).result(timeout=20), b'\xff\xd8 not this frame')
 
+    def test_reference_image_is_a_small_crop_of_its_box(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO context_items(id,project_id,kind,title,content) VALUES ('hero','p','character','Hero','')")
+            conn.execute("""INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('run','c',0,3,?,'m')""",
+                         (json.dumps([{'position': 'first', 'time': 1.0, 'image_size': [320, 180]}]),))
+            conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('box','run','first','[0,0,80,45]','hero')")
+            conn.execute("INSERT INTO character_image_references(id,character_context_id,detection_id) VALUES ('ref','hero','box')")
+        whole = self.client.get('/api/character-detection-runs/run/frame/first')
+        crop = self.client.get('/api/character-references/ref/image')
+        self.assertEqual(crop.status_code, 200, crop.text)
+        self.assertTrue(crop.content.startswith(b'\xff\xd8'))
+        self.assertNotEqual(crop.headers['etag'], whole.headers['etag'])
+        size = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', '-'],
+                              input=crop.content, capture_output=True, check=True).stdout.decode().strip()
+        self.assertIn(size, ('80,45', '80,44'))  # a quarter of the 320x180 frame, as the box says (4:2:0 JPEG rounds to even lines)
+        self.assertEqual(self.client.get('/api/character-references/ref/image', headers={'If-None-Match': crop.headers['etag']}).status_code, 304)
+        self.assertEqual(self.client.get('/api/character-references/missing/image').status_code, 404)
+
     def test_disk_cache_drops_the_least_recently_used_frames(self):
         import os, time
         folder = db.DATA_DIR / 'cache' / 'frames' / 'ab'

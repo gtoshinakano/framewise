@@ -67,10 +67,17 @@ def build(cut_id):
         return None
     events = [_event('created', 'done', _epoch(cut['created_at']))]
 
-    columns = 'id,pipeline,status,stage,error,created_at,started_at,finished_at'
-    jobs = db.all_rows(f"""SELECT {columns} FROM jobs WHERE pipeline IN ('character_detect','analyze','performance_beats','consistency_summary','review_answers','regen')
-        AND (json_extract(payload_json,'$.cut_id')=? OR EXISTS (SELECT 1 FROM json_each(payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)
-             OR id IN (SELECT job_id FROM analysis_job_cuts WHERE cut_id=?)) ORDER BY created_at,rowid""", (cut_id, cut_id, cut_id))
+    # Which cut a job is for lives in its payload, which can hold whole analysis contexts. Only the cut's episode is
+    # searched (indexed), and a payload is parsed only when the cut's id appears in it at all: scanning and parsing every
+    # job of every episode took over a second on a long-used database.
+    columns = ("id,pipeline,status,stage,error,created_at,started_at,finished_at,"
+               "json_extract(payload_json,'$.phase') AS phase,json_extract(payload_json,'$.result_type') AS result_type")
+    jobs = db.all_rows(f"""SELECT {columns} FROM jobs WHERE episode_id=(SELECT episode_id FROM cuts WHERE id=?)
+        AND pipeline IN ('character_detect','analyze','performance_beats','consistency_summary','review_answers','regen')
+        AND (id IN (SELECT job_id FROM analysis_job_cuts WHERE cut_id=?)
+             OR (instr(payload_json,?)>0 AND (json_extract(payload_json,'$.cut_id')=?
+                 OR EXISTS (SELECT 1 FROM json_each(payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?))))
+        ORDER BY created_at,rowid""", (cut_id, cut_id, cut_id, cut_id, cut_id))
     stage_seconds = {}
     for row in db.all_rows('SELECT job_id,status,started_at,last_seen_at,finished_at FROM analysis_job_stages WHERE cut_id=?', (cut_id,)):
         end = row['finished_at'] or (now if row['status'] == 'running' else row['last_seen_at'])
@@ -85,8 +92,7 @@ def build(cut_id):
     for job in jobs:
         pipeline = job['pipeline']
         if pipeline == 'character_detect':
-            payload = db.one('SELECT json_extract(payload_json,\'$.phase\') AS phase FROM jobs WHERE id=?', (job['id'],))
-            phase = payload['phase'] if payload else None
+            phase = job['phase']
             if phase == 'boxes':
                 events.append(_job_event('character_boxes', job, now))
             elif phase == 'recognize':
@@ -106,8 +112,7 @@ def build(cut_id):
         elif pipeline == 'review_answers':
             events.append(_job_event('review_answers', job, now))
         elif pipeline == 'regen':
-            payload = db.one('SELECT json_extract(payload_json,\'$.result_type\') AS result_type FROM jobs WHERE id=?', (job['id'],))
-            if payload and payload['result_type'] == 'summary':
+            if job['result_type'] == 'summary':
                 events.append(_job_event('cut_summary', job, now))
     # Older runs whose job row is gone, and summaries created outside a summary job.
     for run in runs:

@@ -1,4 +1,4 @@
-import { EpisodeEventsContext, useEpisodeEvents } from './episodeEvents'
+import { EpisodeEventsContext, useEpisodeEvents, type Revisions } from './episodeEvents'
 import { LocalModelControl } from './LocalModelControl'
 import { VisualEngineControl } from './VisualEngineControl'
 import Storage from './Storage'
@@ -268,18 +268,26 @@ function Editor({ id }: { id: string }) {
     return next.done
   }, [loadParts])
   const refresh = useCallback(() => load(EVERYTHING), [load])
+  // The event counters read before the editor's first load: the event stream's first message is compared with them, so
+  // opening an episode does not load everything a second time when nothing changed in between.
+  const baseline = useRef<{ id: string; revision: Revisions } | null>(null)
   const refreshQueue = useCallback(async () => {
     try {
       const status = await api<EpisodeStatus>(`/episodes/${id}/status`)
+      if (baseline.current?.id !== id && status.revision) baseline.current = { id, revision: status.revision }
       setQueueSummary(status.queue)
       setEpisode(current => current?.id === id ? { ...current, status: status.status, stage: status.stage } : current)
     }
     catch (err) { setLoadError((err as Error).message) }
   }, [id])
-  useEffect(() => { void refresh(); void refreshQueue() }, [refresh, refreshQueue])
-  useEpisodeEvents(change => {
-    if (change.jobs || change.queue) void refreshQueue()
-    if (change.data || change.stale) void load({ episode: true, transcript: change.transcript })
+  // The status (with the counters) is read first, so anything that changes after it is news to the first event.
+  useEffect(() => { void refreshQueue().finally(() => { void refresh() }) }, [refresh, refreshQueue])
+  useEpisodeEvents((change, revisions) => {
+    const base = change.initial && revisions && baseline.current?.id === id ? baseline.current.revision : null
+    const moved = (field: 'jobs' | 'data' | 'stale' | 'queue') => base ? revisions![field] !== base[field] : change[field]
+    const transcript = base ? (revisions!.transcript === undefined ? moved('data') : revisions!.transcript !== base.transcript) : change.transcript
+    if (moved('jobs') || moved('queue')) void refreshQueue()
+    if (moved('data') || moved('stale')) void load({ episode: true, transcript })
   }, id)
   // Cut Assistance edits the transcript outside this editor; reload it as soon as a proposal is applied.
   useEffect(() => { const reload = () => { void load({ episode: false, transcript: true }) }; window.addEventListener('framewise:transcript-changed', reload); return () => window.removeEventListener('framewise:transcript-changed', reload) }, [load])

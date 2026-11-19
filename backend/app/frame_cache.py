@@ -46,7 +46,9 @@ def _prune(now):
 def _key(spec):
     path = Path(spec['source'])
     st = path.stat()
-    return (str(path), st.st_mtime_ns, st.st_size, spec['time'], spec['start'], spec['end'], spec['width'], spec['last'], spec.get('quality'), spec.get('seek_tolerance', 0), spec.get('probe_padding', 0), spec.get('ordinal'))
+    key = (str(path), st.st_mtime_ns, st.st_size, spec['time'], spec['start'], spec['end'], spec['width'], spec['last'], spec.get('quality'), spec.get('seek_tolerance', 0), spec.get('probe_padding', 0), spec.get('ordinal'))
+    # Only a cropped frame carries the crop, so the keys (file names, ETags) of every other frame stay as they were.
+    return key + (tuple(spec['crop']), spec.get('crop_height')) if spec.get('crop') else key
 
 
 def _target_frame(spec, output):
@@ -97,6 +99,10 @@ def _generate(spec):
                 raise RuntimeError('Original video changed')
             return data
         media.extract_cut_frame(Path(spec['source']), output, spec['time'], spec['start'], spec['end'], width=spec['width'], last=spec['last'], quality=spec.get('quality'), seek_tolerance=spec.get('seek_tolerance', 0), probe_padding=spec.get('probe_padding', 0), timeout=60)
+        if spec.get('crop'):
+            cropped = Path(tmp) / 'crop.jpg'
+            media.crop_image(output, cropped, tuple(spec['crop']), timeout=60, height=spec.get('crop_height'))
+            return cropped.read_bytes()
         return output.read_bytes()
 
 

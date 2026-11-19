@@ -32,7 +32,8 @@ function formatTime(at: string | null) {
   return at ? new Date(at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'time not recorded'
 }
 
-export default function AnalysisTimeline({ cutId, refreshKey }: { cutId: string; refreshKey: string }) {
+/** Shown only after the user asks for it (it is history, not something to act on); it then follows the episode's changes. */
+export default function AnalysisTimeline({ cutId, onHide }: { cutId: string; onHide: () => void }) {
   const [data, setData] = useState<TimelineData | null>(null)
   const [error, setError] = useState('')
   const [bump, setBump] = useState(0)
@@ -43,12 +44,13 @@ export default function AnalysisTimeline({ cutId, refreshKey }: { cutId: string;
     const load = () => api<TimelineData>(`/cuts/${cutId}/timeline`).then(value => { if (!cancelled) { setData(value); setError('') } }).catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : 'Timeline unavailable') })
     void load()
     return () => { cancelled = true }
-  }, [cutId, refreshKey, revision, bump])
-  if (error && !data) return <nav aria-label="Analysis timeline" className="border-b hairline px-5 py-2 text-xs text-[#ffb6bc]">Analysis timeline unavailable: {error}</nav>
-  if (!data) return <nav aria-label="Analysis timeline" className="border-b hairline px-5 py-2 text-xs muted">Loading analysis timeline…</nav>
+  }, [cutId, revision, bump])
+  const hide = <button type="button" onClick={onHide} className="text-[11px] text-[#aeb5c1] hover:text-white hover:underline">Hide</button>
+  if (error && !data) return <nav aria-label="Analysis timeline" className="flex shrink-0 justify-between gap-3 border-t hairline px-5 py-2 text-xs text-[#ffb6bc]"><span>Analysis timeline unavailable: {error}</span>{hide}</nav>
+  if (!data) return <nav aria-label="Analysis timeline" className="shrink-0 border-t hairline px-5 py-2 text-center text-xs muted">Loading analysis timeline…</nav>
   const total = Math.max(data.total_seconds, 1)
-  return <nav aria-label="Analysis timeline" className="shrink-0 border-b hairline px-5 py-2.5">
-    <div className="mb-1.5 flex items-baseline justify-between gap-3"><h3 className="text-[11px] font-semibold uppercase tracking-[.14em] text-[#a58ae8]">Analysis timeline</h3><p className="text-[11px] muted">Total time spent: <span className="font-semibold text-white">{formatDuration(data.total_seconds)}</span> <span className="hidden sm:inline">· queue time excluded</span></p></div>
+  return <nav aria-label="Analysis timeline" className="shrink-0 border-t hairline px-5 py-2.5">
+    <div className="mb-1.5 flex items-baseline justify-between gap-3"><h3 className="text-[11px] font-semibold uppercase tracking-[.14em] text-[#a58ae8]">Analysis timeline</h3><p className="ml-auto text-[11px] muted">Total time spent: <span className="font-semibold text-white">{formatDuration(data.total_seconds)}</span> <span className="hidden sm:inline">· queue time excluded</span></p>{hide}</div>
     <ol className="scrollbar flex gap-1 overflow-x-auto pb-1">
       {data.events.map((event, index) => {
         const kind = KINDS[event.kind] ?? KINDS.created

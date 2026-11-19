@@ -80,6 +80,10 @@ class RunsTest(unittest.TestCase):
             spoken = await receive(resumed)
             self.assertGreater(spoken['transcript'], edited['transcript'])
             self.assertGreater(spoken['data'], edited['data'])
+            # The status carries the same counters, so the editor can tell whether a new stream's first message is news.
+            status = self.client.get('/api/episodes/e/status').json()
+            self.assertEqual(status['revision']['data'], spoken['data'])
+            self.assertEqual(status['revision']['transcript'], spoken['transcript'])
             await resumed.aclose()
 
         asyncio.run(check())

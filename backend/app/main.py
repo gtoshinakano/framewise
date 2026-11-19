@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results
+from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results, episode_events
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
@@ -575,10 +575,12 @@ def get_episode_status(episode_id: str):
     episode = db.one("SELECT status,stage,error FROM episodes WHERE id=?", (episode_id,))
     if not episode:
         raise HTTPException(404, "Episode not found")
+    # The event counters as they stand now: a client that reads them before loading knows which first event is news.
+    revision = episode_events.snapshot(episode_id)
     latest = db.one("SELECT id,status FROM jobs WHERE episode_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (episode_id,))
     with db.connect() as conn:
         queue = runs.summary(conn, episode_id)
-    return {**episode, "job_id": latest["id"] if latest else None, "job_status": latest["status"] if latest else None, "queue": queue}
+    return {**episode, "job_id": latest["id"] if latest else None, "job_status": latest["status"] if latest else None, "queue": queue, "revision": revision}
 
 
 @app.patch("/api/episodes/{episode_id}")
@@ -1688,6 +1690,36 @@ def list_character_references(project_id: str):
         row['image_size'] = frame['image_size'] if frame else None
         row['box'] = json.loads(row.pop('box_json'))
     return rows
+
+
+@app.get('/api/character-references/{reference_id}/image', response_class=Response)
+async def character_reference_image(reference_id: str, request: Request):
+    """The reference's box alone, at most 240 px high: the references list shows these instead of whole 1280 px frames."""
+    row = db.one('''SELECT d.position,d.box_json,r.frames_json,r.cut_start,r.cut_end,e.id AS episode_id,e.project_id,e.original_ext
+                    FROM character_image_references ref JOIN character_detections d ON d.id=ref.detection_id
+                    JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id JOIN episodes e ON e.id=c.episode_id
+                    WHERE ref.id=?''', (reference_id,))
+    if not row:
+        raise HTTPException(404, 'Reference not found')
+    frame = next((frame for frame in json.loads(row['frames_json']) if frame['position'] == row['position']), None)
+    size = frame.get('image_size') if frame else None
+    if not size or not size[0] or not size[1]:
+        raise HTTPException(404, 'Frame unavailable')
+    box = json.loads(row['box_json'])
+    crop = tuple(round(min(1.0, max(0.0, value / scale)), 6) for value, scale in zip(box, (size[0], size[1], size[0], size[1])))
+    source = media.episode_dir(row['project_id'], row['episode_id']) / f"original{row['original_ext']}"
+    if not source.is_file():
+        raise HTTPException(404, 'Frame unavailable')
+    spec = {'source': source, 'time': frame['time'], 'start': row['cut_start'], 'end': row['cut_end'], 'width': 1280, 'last': False,
+            'seek_tolerance': .000002, 'crop': crop, 'crop_height': 240}
+    try:
+        headers = frame_cache.http_headers(spec, request)
+        if frame_cache.unchanged(request, headers):
+            return Response(status_code=304, headers=headers)
+        image = await frame_cache.get(spec)
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return Response(content=image, media_type='image/jpeg', headers=headers)
 
 
 @app.delete('/api/character-references/{reference_id}')

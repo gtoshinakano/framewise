@@ -2,13 +2,14 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react'
 
 export const EpisodeEventsContext = createContext<string | undefined>(undefined)
 
-type Revisions = { version: string; queue: string; jobs?: number; data?: number; stale?: number; transcript?: number }
-// `transcript` also moves `data`; listeners that only need the transcript can watch it alone.
-type Change = { queue: boolean; jobs: boolean; data: boolean; stale: boolean; transcript: boolean }
-type Listener = (change: Change) => void
+export type Revisions = { version: string; queue: string; jobs?: number; data?: number; stale?: number; transcript?: number }
+// `transcript` also moves `data`; listeners that only need the transcript can watch it alone. `initial` marks a new
+// stream's first message, which reports everything as changed because the feed has nothing to compare it with.
+type Change = { queue: boolean; jobs: boolean; data: boolean; stale: boolean; transcript: boolean; initial: boolean }
+type Listener = (change: Change, revisions?: Revisions) => void
 
 const RECONNECT_REFRESH_MS = 12000
-const ALL_CHANGED: Change = { queue: true, jobs: true, data: true, stale: true, transcript: true }
+const ALL_CHANGED: Change = { queue: true, jobs: true, data: true, stale: true, transcript: true, initial: false }
 const feeds = new Map<string | null, { listeners: Set<Listener>; close: () => void }>()
 
 function openFeed(episodeId: string | null) {
@@ -38,10 +39,10 @@ function openFeed(episodeId: string | null) {
       queue: next.queue !== previous.queue, jobs: next.jobs !== previous.jobs,
       data: next.data !== previous.data, stale: next.stale !== previous.stale,
       // A server without the counter: any data change may be a transcript change.
-      transcript: next.transcript === undefined ? next.data !== previous.data : next.transcript !== previous.transcript,
-    } : ALL_CHANGED
+      transcript: next.transcript === undefined ? next.data !== previous.data : next.transcript !== previous.transcript, initial: false,
+    } : { ...ALL_CHANGED, initial: true }
     previous = next
-    for (const listener of listeners) listener(change)
+    for (const listener of listeners) listener(change, next)
   })
   return { listeners, close() { stopFallback(); source.close() } }
 }
@@ -65,7 +66,7 @@ export function useEpisodeEvents(onChange: Listener, episodeId?: string | null) 
   const scope = episodeId === undefined ? inherited ?? null : episodeId
   const latest = useRef(onChange)
   latest.current = onChange
-  useEffect(() => subscribeEpisodeEvents(scope, change => latest.current(change)), [scope])
+  useEffect(() => subscribeEpisodeEvents(scope, (change, revisions) => latest.current(change, revisions)), [scope])
 }
 
 export function useEpisodeRevision(fields: (keyof Change)[], enabled = true) {

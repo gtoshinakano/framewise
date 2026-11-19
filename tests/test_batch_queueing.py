@@ -191,6 +191,20 @@ class BatchQueueingTest(unittest.TestCase):
             kinds = [event['kind'] for event in cut_timeline.build(cut_id)['events'] if event['status'] != 'pending']
             self.assertIn('visual_analysis', kinds, cut_id)
 
+    def test_timeline_reads_only_this_cuts_jobs_of_its_episode(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO episodes(id,project_id,title,original_filename,original_ext,status,settings_json) VALUES ('e2','p','Other','o.mp4','.mp4','ready','{}')")
+            for job_id, episode, pipeline_name, payload in (
+                    ('summary', 'e', 'regen', {'cut_id': 'c1', 'result_type': 'summary'}),
+                    ('boxes', 'e', 'character_detect', {'cut_id': 'c1', 'phase': 'boxes'}),
+                    ('neighbour', 'e', 'regen', {'cut_id': 'c2', 'result_type': 'summary', 'context': {'previous': 'c1'}}),
+                    ('elsewhere', 'e2', 'regen', {'cut_id': 'c1', 'result_type': 'summary'})):
+                conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status,stage,payload_json) VALUES (?,?,?,'done','',?)", (job_id, episode, pipeline_name, json.dumps(payload)))
+        main.queue_episode_visual_analysis('e')  # queued: listed in the payload, not yet in analysis_job_cuts
+        events = [event for event in cut_timeline.build('c1')['events'] if event['status'] != 'pending']
+        self.assertEqual(sorted((event['kind'], event['job_id']) for event in events if event['job_id']),
+                         [('character_boxes', 'boxes'), ('cut_summary', 'summary'), ('visual_analysis', self.jobs('analyze')[0]['id'])])
+
     def test_detect_all_characters_queues_full_phase_jobs_in_one_batch(self):
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET no_characters=1 WHERE id='c2'")

@@ -1884,9 +1884,9 @@
     "semantic_hash": ""
   },
   "backend/app/keyframes_api.py": {
-    "mtime": 1795100301.8719652,
-    "seen": 1795100486.6213875,
-    "ast_hash": "4366a691c7d4b9aeb6613b15097666fe",
+    "mtime": 1795100499.5806718,
+    "seen": 1795100578.0125153,
+    "ast_hash": "896756393ddb541566740875116bbf11",
     "semantic_hash": ""
   },
   "backend/app/model_manifest.json": {
