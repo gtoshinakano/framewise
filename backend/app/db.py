@@ -348,6 +348,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS target_cast_settings (
             cut_id TEXT PRIMARY KEY REFERENCES cuts(id) ON DELETE CASCADE, locked INTEGER NOT NULL
         );
+        -- Frames the user added to or removed from a cut's keyframe selection (keyframes.apply_edits). A per-cut
+        -- setting, not a result: it outlives a new selection and is ignored once the cut's boundaries change.
+        CREATE TABLE IF NOT EXISTS keyframe_edits (
+            cut_id TEXT PRIMARY KEY REFERENCES cuts(id) ON DELETE CASCADE,
+            cut_start REAL NOT NULL, cut_end REAL NOT NULL,
+            added_json TEXT NOT NULL DEFAULT '[]', removed_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         -- User correction history stays available after the keyframe selection and its run are replaced.
         CREATE TABLE IF NOT EXISTS target_corrections (
             id INTEGER PRIMARY KEY, cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE,

@@ -71,14 +71,24 @@ def latest_job(conn, episode_id, cut_id):
 def current_selection(cut_id, conn=None):
     """``(cut, source path, key, result)`` of the cut's latest selection; key and result are None when it is missing or stale.
 
-    The cut is None when it does not exist or is not active. The key is the ``keyframe_results`` cache key: the
-    settings of the cut's latest selection job with today's subtitle mask, so extracting subtitles makes it stale.
+    The cut is None when it does not exist or is not active. The result includes the frames the user added or
+    removed (``apply_edits``); the key is the ``keyframe_results`` cache key (the settings of the cut's latest
+    selection job with today's subtitle mask, so extracting subtitles makes it stale), changed by those edits.
     """
-    from . import db, media
+    from . import db
     if conn is None:
         with db.connect() as conn:
             conn.execute('BEGIN')
             return current_selection(cut_id, conn)
+    cut, source, key, result = base_selection(cut_id, conn)
+    if key is None:
+        return cut, source, key, result
+    return (cut, source, *apply_edits(key, result, edits_for(cut, conn)))
+
+
+def base_selection(cut_id, conn):
+    """``current_selection`` without the user's edits: the automatic selection as the selector saved it."""
+    from . import db, media
     cut = db.one('''SELECT c.*,e.project_id,e.original_ext FROM cuts c JOIN episodes e ON e.id=c.episode_id
                     WHERE c.id=? AND c.active=1''', (cut_id,), conn=conn)
     if not cut:
@@ -131,6 +141,171 @@ def ensure_selection(conn, episode_id, cut_ids):
     for payload in groups.values():
         waits.append(worker.enqueue_in(conn, episode_id, 'keyframes', payload))
     return list(dict.fromkeys(waits))
+
+
+# -- frames the user adds or removes ---------------------------------------------------------------------------------
+
+MAX_FRAMES = 30  # the selector stops at 15; a hand-edited cut may hold this many (about 8 vision-model windows)
+BETWEEN = 4  # in-between frames offered between two selected frames
+
+
+def edits_for(cut, conn):
+    """The user's edits of the cut's selection, empty when there are none or they were made for other boundaries."""
+    row = conn.execute('SELECT cut_start,cut_end,added_json,removed_json FROM keyframe_edits WHERE cut_id=?', (cut['id'],)).fetchone()
+    if not row or row['cut_start'] != cut['start_time'] or row['cut_end'] != cut['end_time']:
+        return {'added': [], 'removed': []}
+    return {'added': json.loads(row['added_json']), 'removed': json.loads(row['removed_json'])}
+
+
+def apply_edits(key, result, edits):
+    """``(key, result)`` of the selection with the user's frames added (``reason: 'manual'``) and removed.
+
+    The first frame is never removed and nothing is added before it. Edits that change nothing (a frame the
+    selector also picked, a removed frame it no longer picks) leave the key and result as they are, so the
+    selection's dependants only turn stale when the frames really differ.
+    """
+    if not edits.get('added') and not edits.get('removed'):
+        return key, result
+    frames = sorted(result['selected_frames'], key=lambda item: item['source_frame_index'])
+    if not frames:
+        return key, result
+    first, start = frames[0]['source_frame_index'], result['start_timestamp_seconds']
+    have = {item['source_frame_index'] for item in frames}
+    removed = sorted(have & {ordinal for ordinal in edits.get('removed') or [] if ordinal != first})
+    added = sorted((item for item in edits.get('added') or [] if item['ordinal'] not in have and item['ordinal'] > first
+                    and start <= item['timestamp_seconds'] < result['end_timestamp_seconds']), key=lambda item: item['ordinal'])
+    if not removed and not added:
+        return key, result
+    manual = [{'source_frame_index': item['ordinal'], 'timestamp_seconds': item['timestamp_seconds'],
+               'relative_timestamp_seconds': item['timestamp_seconds'] - start, 'reason': 'manual'} for item in added]
+    kept = [item for item in frames if item['source_frame_index'] not in removed]
+    selected = sorted(kept + manual, key=lambda item: item['source_frame_index'])
+    ordinals = [item['ordinal'] for item in added]
+    edited = hashlib.sha256(json.dumps([key, ordinals, removed], separators=(',', ':')).encode()).hexdigest()
+    return edited, {**result, 'selected_frames': selected, 'selected_frame_count': len(selected),
+                    'edits': {'added': ordinals, 'removed': removed, 'base_key': key}}
+
+
+def frames_between(source, a, b, cut):
+    """Every decoded frame strictly between selected frames ``a`` and ``b`` (``b`` None: up to the cut's end).
+
+    ``[(ordinal, timestamp_seconds)]`` on the selector's clock. Ordinals count from ``a``'s, so the frames are read
+    with ffprobe around the gap instead of decoding the episode; a ``ValueError`` when ``a`` (or ``b``) cannot be
+    matched to exactly one frame there.
+    """
+    from . import media
+    text = media.run(['ffprobe', '-v', 'error', '-show_entries', 'format=start_time', '-of', 'default=noprint_wrappers=1:nokey=1', str(source)], timeout=30).stdout.strip()
+    try:
+        origin = float(text)
+    except ValueError:
+        origin = math.nan
+    if not math.isfinite(origin):
+        raise ValueError('The video has no usable start time')
+    end = b['timestamp_seconds'] if b else cut['end_time']
+    interval = f"{max(origin, origin + a['timestamp_seconds'] - .5):.6f}%{origin + end + .05:.6f}"
+    probe = media.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-read_intervals', interval,
+                       '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'csv=p=0', str(source)], timeout=60)
+    times = []
+    for line in probe.stdout.splitlines():
+        try:
+            times.append(float(line.split(',')[0]) - origin)
+        except ValueError:
+            continue
+
+    def at(t):
+        found = [index for index, value in enumerate(times) if abs(value - t) <= 1e-5]
+        if len(found) != 1:
+            raise ValueError('The frames around this gap could not be matched exactly')
+        return found[0]
+
+    index = at(a['timestamp_seconds'])
+    if b and b['source_frame_index'] - a['source_frame_index'] != at(b['timestamp_seconds']) - index:
+        raise ValueError('The frames around this gap could not be matched exactly')
+    limit = end - 1e-5
+    return [(a['source_frame_index'] + offset, times[index + offset]) for offset in range(1, len(times) - index)
+            if times[index + offset] < limit]
+
+
+def spread(frames, count=BETWEEN):
+    """``count`` items evenly spaced through ``frames`` (all of them when there are not more)."""
+    if len(frames) <= count:
+        return list(frames)
+    picks = [round(k * (len(frames) + 1) / (count + 1)) - 1 for k in range(1, count + 1)]
+    return [frames[index] for index in dict.fromkeys(min(len(frames) - 1, max(0, pick)) for pick in picks)]
+
+
+def neighbours(frames, ordinal):
+    """The selected frames just before and after ``ordinal`` (either may be None)."""
+    before = [item for item in frames if item['source_frame_index'] < ordinal]
+    after = [item for item in frames if item['source_frame_index'] > ordinal]
+    return (before[-1] if before else None), (after[0] if after else None)
+
+
+def edit_frames(conn, cut_id, add=None, remove=None):
+    """Add or remove one frame of the cut's selection inside the caller's write transaction; returns the new selection.
+
+    Raises ``LookupError`` for an inactive cut and ``ValueError`` with a sentence for the user. The selection's
+    dependants are marked stale and the Target frames run is re-keyed to the new selection, so the boxes the
+    user reviewed on the other frames stay (a removed frame's boxes are kept in the correction log).
+    """
+    from . import target_reviews
+    cut, source, key, result = current_selection(cut_id, conn)
+    if not cut:
+        raise LookupError('Active cut not found')
+    if key is None:
+        raise ValueError('This cut has no current frame selection; evaluate it first')
+    _, _, _, base = base_selection(cut_id, conn)
+    automatic = {item['source_frame_index'] for item in base['selected_frames']}
+    frames = sorted(result['selected_frames'], key=lambda item: item['source_frame_index'])
+    ordinals = [item['source_frame_index'] for item in frames]
+    edits = edits_for(cut, conn)
+    if add is not None:
+        if add in ordinals:
+            raise ValueError('That frame is already selected')
+        if len(frames) >= MAX_FRAMES:
+            raise ValueError(f'A cut can have at most {MAX_FRAMES} frames; remove one first')
+        a, b = neighbours(frames, add)
+        if a is None:
+            raise ValueError('Frames can only be added after the first frame')
+        match = next((t for ordinal, t in frames_between(source, a, b, cut) if ordinal == add), None)
+        if match is None:
+            raise ValueError('That frame is not inside this cut')
+        edits['removed'] = [ordinal for ordinal in edits['removed'] if ordinal != add]
+        if add not in automatic:
+            edits['added'] = [*[item for item in edits['added'] if item['ordinal'] != add], {'ordinal': add, 'timestamp_seconds': match}]
+    if remove is not None:
+        if remove not in ordinals:
+            raise ValueError('That frame is not selected')
+        if remove == ordinals[0]:
+            raise ValueError('The first frame cannot be removed')
+        if len(frames) <= 2:
+            raise ValueError('A cut keeps at least two frames')
+        edits['added'] = [item for item in edits['added'] if item['ordinal'] != remove]
+        if remove in automatic:
+            edits['removed'] = sorted({*edits['removed'], remove})
+    conn.execute('''INSERT INTO keyframe_edits(cut_id,cut_start,cut_end,added_json,removed_json) VALUES (?,?,?,?,?)
+                    ON CONFLICT(cut_id) DO UPDATE SET cut_start=excluded.cut_start,cut_end=excluded.cut_end,
+                    added_json=excluded.added_json,removed_json=excluded.removed_json,updated_at=CURRENT_TIMESTAMP''',
+                 (cut_id, cut['start_time'], cut['end_time'], json.dumps(edits['added']), json.dumps(edits['removed'])))
+    _, _, new_key, new_result = current_selection(cut_id, conn)
+    if new_key == key:
+        return new_result
+    mark_stale(conn, cut_id, 'Target frames edited')
+    target_reviews.archive_selection(conn, cut_id, key)
+    conn.execute('DELETE FROM target_detection_runs WHERE cut_id=? AND selection_key!=?', (cut_id, key))
+    run = conn.execute('SELECT id,cut_id,selection_key,frames_json,candidates_json FROM target_detection_runs WHERE cut_id=? AND selection_key=?', (cut_id, key)).fetchone()
+    if run:
+        frames_json, candidates = json.loads(run['frames_json']), json.loads(run['candidates_json'])
+        if remove is not None:
+            boxes = [target_reviews.box_row(row) for row in conn.execute('SELECT * FROM target_detections WHERE run_id=? AND frame_ordinal=?', (run['id'], remove))]
+            if boxes:
+                target_reviews.record(conn, run, 'frame_removed', boxes, frame_ordinal=remove)
+            conn.execute('DELETE FROM target_detections WHERE run_id=? AND frame_ordinal=?', (run['id'], remove))
+            frames_json = [item for item in frames_json if item['ordinal'] != remove]
+            candidates = [item for item in candidates if item.get('frame_ordinal') != remove]
+        conn.execute('UPDATE target_detection_runs SET selection_key=?,frames_json=?,candidates_json=? WHERE id=?',
+                     (new_key, json.dumps(frames_json), json.dumps(candidates), run['id']))
+    return new_result
 
 
 def decoded(source, width, height, edge):
@@ -365,11 +540,16 @@ def inputs(conn, job):
     return job_inputs.fingerprint(job.get('gathered') or gather(conn, job))
 
 
-def invalidate(conn, job):
-    conn.execute("""UPDATE analysis_results SET stale_reason='Target frame selection changed'
+def mark_stale(conn, cut_id, reason):
+    """Mark the cut's results built on its keyframes stale."""
+    conn.execute("""UPDATE analysis_results SET stale_reason=?
         WHERE cut_id=? AND superseded_by IS NULL AND
         (json_extract(settings_json,'$.structured_type') IN ('keyframe_analysis','performance_beats','consistency_summary')
-         OR title='Cut summary')""", (job['unit_id'],))
+         OR title='Cut summary')""", (reason, cut_id))
+
+
+def invalidate(conn, job):
+    mark_stale(conn, job['unit_id'], 'Target frame selection changed')
 
 
 def process(job, owner, episode, payload, source):
@@ -394,11 +574,13 @@ def process(job, owner, episode, payload, source):
     index, shot = 0, None
 
     def save(current, unit):
-        result = current.finish()
+        result = {**current.finish(), 'input_fingerprint': unit.stamp, 'input_settings': settings}
         cut_id, key = unit.job['unit_id'], unit.data['cache_key']
         with unit.publish() as conn:
             conn.execute('INSERT INTO keyframe_results(cache_key,episode_id,cut_id,result_json) VALUES (?,?,?,?)',
-                         (key, episode['id'], cut_id, json.dumps({**result, 'input_fingerprint': unit.stamp, 'input_settings': settings})))
+                         (key, episode['id'], cut_id, json.dumps(result)))
+            # The user's added and removed frames apply to the new selection too.
+            key, _ = apply_edits(key, result, edits_for(unit.data['cut'], conn))
             # Preserve the reviews of frames that no longer belong to the current selection.
             target_reviews.archive_selection(conn, cut_id, key)
             conn.execute('DELETE FROM target_detection_runs WHERE cut_id=? AND selection_key!=?', (cut_id, key))

@@ -1,15 +1,19 @@
 import { useEpisodeEvents } from './episodeEvents'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Loader2, PencilLine, ScanFace, Trash2, XCircle } from 'lucide-react'
+import { Check, ImageMinus, Loader2, PencilLine, ScanFace, Trash2, XCircle } from 'lucide-react'
 import { api, type ContextItem, type KeyframeAnalysis, type KeyframeAnalysisState, type KeyframeSegment } from './api'
+import { BetweenFrames } from './BetweenFrames'
 import { BoxEditor, type EditorBox } from './BoxEditor'
 import { boxColor } from './boxColors'
 import { cachedCharacters, loadCharacters } from './runCache'
 import { ActionButton, StaleChip, StatusChip } from './RunUi'
 import { boxesInFrame, canDraw, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, REVIEW_LABELS, slotChip, slotName, type Box, type TargetBox, type TargetCandidate, type TargetDetections, type TargetFrameInfo, type TargetRun } from './targetView'
 
+/** One selected frame; `reason: 'manual'` when the user added it. */
 type TargetFrame = { source_frame_index: number; relative_timestamp_seconds: number; reason: string }
-export type Selection = { revision?: string | null; status: string; error?: string | null; result_status?: string; result: null | { shot_change_score: number; change_level: string; coverage_limited: boolean; selected_frames: TargetFrame[] } }
+/** `edits` lists the frames the user added and the selector's frames they removed (absent when there are none). */
+export type Selection = { revision?: string | null; status: string; error?: string | null; result_status?: string; max_frames?: number
+  result: null | { shot_change_score: number; change_level: string; coverage_limited: boolean; selected_frames: TargetFrame[]; edits?: { added: number[]; removed: number[] } } }
 
 export function useTargetSelection(cutId: string, boundaryKey: string) {
   const [selection, setSelection] = useState<Selection | null>(null)
@@ -170,6 +174,10 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
   const swap = (slot: number, other: number, ordinal: number) => edit(() => api(`/target-slots/${live!.id}/${slot}/swap-from`, { method: 'POST', body: JSON.stringify({ other, frame_ordinal: ordinal }) }))
   const review = (ordinal: number, value: boolean) => edit(() => api(`/target-runs/${live!.id}/frames/${ordinal}/reviewed`, { method: 'PUT', body: JSON.stringify({ reviewed: value }) }))
   const decide = (item: TargetCandidate, action: 'promote' | 'split' | 'reject') => edit(() => api(`/target-runs/${live!.id}/candidates/${item.id}`, { method: 'POST', body: JSON.stringify({ action }) }))
+  /** Add or remove a frame of the selection; the tab reads the selection again, and its analysis turns stale. */
+  const frames = (task: () => Promise<unknown>) => edit(async () => { await task(); window.dispatchEvent(new Event('framewise:keyframes-changed')) })
+  const addFrame = (ordinal: number) => frames(() => api(`/cuts/${cutId}/keyframe-selection/frames`, { method: 'POST', body: JSON.stringify({ ordinal }) }))
+  const dropFrame = (ordinal: number) => frames(() => api(`/cuts/${cutId}/keyframe-selection/frames/${ordinal}`, { method: 'DELETE' }))
   async function detect() {
     setQueueing(true); setEditError('')
     try { await api(`/cuts/${cutId}/target-detection`, { method: 'POST' }); await reload(); onChanged() } catch (failure) { setEditError((failure as Error).message) } finally { setQueueing(false) }
@@ -208,9 +216,12 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
     {(editError || loadError) && <p role="alert" className="text-xs text-[#ff9fa7]">{editError || loadError}</p>}
     {selection?.result && <>
       <p className="muted text-xs">Change: {selection.result.change_level} ({selection.result.shot_change_score.toFixed(1)} / 100)</p>
-      {selection.result.coverage_limited && <p className="text-xs text-[#e6c58b]">Some detected changes may not be represented in the selected frames.</p>}
+      {selection.result.coverage_limited && <p className="text-xs text-[#e6c58b]">Some detected changes may not be represented in the selected frames. Add frames between two cards to cover them.</p>}
+      {selection.result.edits && <p className="muted text-xs">{[selection.result.edits.added.length && `${selection.result.edits.added.length} added`, selection.result.edits.removed.length && `${selection.result.edits.removed.length} removed`].filter(Boolean).join(' · ')} by you. They stay when the cut is evaluated again.</p>}
       {data?.job?.status === 'failed' && <p role="alert" className="flex items-start gap-2 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]"><XCircle size={14} className="mt-0.5 shrink-0" aria-hidden />{data.job.error || 'Detection failed.'}</p>}
-      {run?.stale && <p className="rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#e6c58b]">The cut's timing or evaluation changed since these people were found. Detect characters again; evaluating different frames removes them.</p>}
+      {run?.stale && <p className="rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#e6c58b]">{run.stale_reason === 'Frames were added; detect again'
+        ? 'You added frames since these people were found. Detect again to find them on the new frames; your boxes and names on the other frames stay.'
+        : "The cut's timing or evaluation changed since these people were found. Detect characters again; evaluating different frames removes them."}</p>}
       {!run && !active && data && <p className="muted rounded-lg border border-dashed hairline px-3 py-3 text-center text-xs">No people found on these frames yet. Press Detect characters. The first frame's boxes set the order and the colours.</p>}
       {live && <div className="space-y-1.5 rounded-lg border hairline p-2" role="group" aria-label="People in this cut">
         <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs text-[#d5dbe5]">People · {visibleSlots.length}</strong>
@@ -241,17 +252,23 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
       {live && visibleSlots.length > 0 && <Filmstrip run={live} cutId={cutId} revision={selection.revision} flagged={flagged} filtered={filtering} onPick={goTo} />}
       {analysis && <KeyframeHeader state={keyframes!} analysis={analysis} />}
       {filtering && !flagged.size && <p className="muted text-xs">No flagged frames. Clear Needs review to see every frame.</p>}
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">{selection.result.selected_frames.map((frame, index) => {
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">{selection.result.selected_frames.map((frame, index, all) => {
         if (filtering && !flagged.has(frame.source_frame_index)) return null
         const info = live?.frames.find(item => item.ordinal === frame.source_frame_index)
         const described = keyframes?.status === 'current' ? analysis?.frames.find(item => item.ordinal === frame.source_frame_index) : undefined
         const after = described ? analysis?.segments.find(segment => segment.from === described.label) : undefined
+        const last = index === all.length - 1
+        const maxFrames = selection.max_frames ?? 30
         return <div key={frame.source_frame_index} className="space-y-1.5">
           <FrameCard index={index} frame={frame} src={frameUrl(cutId, frame.source_frame_index, selection.revision)} info={info} run={live}
             drawing={drawing === frame.source_frame_index} locked={locked} onDrawing={on => setDrawing(on ? frame.source_frame_index : null)}
             onDraw={box => draw(frame.source_frame_index, box)} onMove={move} onRemove={remove} onReslot={reslot} described={described} slotOf={slotOf}
-            selectedBox={selectedBox} onSelect={setSelectedBox} onIgnore={ignore} onSwap={swap} onReview={review} onDecide={decide} maxBoxes={maxBoxes} />
+            selectedBox={selectedBox} onSelect={setSelectedBox} onIgnore={ignore} onSwap={swap} onReview={review} onDecide={decide} maxBoxes={maxBoxes}
+            onRemoveFrame={index > 0 ? () => dropFrame(frame.source_frame_index) : undefined} frameLocked={saving > 0 || all.length <= 2} />
           {after && <PairChanges segment={after} slotOf={slotOf} />}
+          {(!last || frame.reason !== 'final_state') && selection.revision && <BetweenFrames key={`${frame.source_frame_index}:${selection.revision}`} cutId={cutId} revision={selection.revision}
+            after={frame.source_frame_index} from={`Frame ${index + 1}`} to={last ? null : `Frame ${index + 2}`} maxFrames={maxFrames}
+            full={all.length >= maxFrames} disabled={saving > 0} onAdd={addFrame} />}
         </div>
       })}</div>
     </>}
@@ -306,13 +323,15 @@ function KeyframeHeader({ state, analysis }: { state: KeyframeAnalysisState; ana
 }
 
 function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, onDraw, onMove, onRemove, onReslot, described, slotOf,
-  selectedBox, onSelect, onIgnore, onSwap, onReview, onDecide, maxBoxes }: {
+  selectedBox, onSelect, onIgnore, onSwap, onReview, onDecide, maxBoxes, onRemoveFrame, frameLocked }: {
   index: number; frame: TargetFrame; src: string; info?: TargetFrameInfo; run: TargetRun | null; drawing: boolean; locked: boolean
   onDrawing: (on: boolean) => void; onDraw: (box: Box) => void; onMove: (id: string, box: Box) => void; onRemove: (id: string) => void; onReslot: (id: string, slot: number) => void
   described?: KeyframeAnalysis['frames'][number]; slotOf: (name: string) => number | null
   selectedBox?: string; onSelect: (id: string) => void; maxBoxes: number
   onIgnore: (slot: number) => void; onSwap: (slot: number, other: number, ordinal: number) => void; onReview: (ordinal: number, value: boolean) => void
   onDecide: (item: TargetCandidate, action: 'promote' | 'split' | 'reject') => void
+  /** Absent for the first frame, which always stays. */
+  onRemoveFrame?: () => void; frameLocked: boolean
 }) {
   const ordinal = frame.source_frame_index
   const boxes: TargetBox[] = run && info ? boxesInFrame(run, ordinal) : []
@@ -341,11 +360,15 @@ function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, o
     </div>
     <figcaption className="space-y-1.5 p-2 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-2"><span>Frame {index + 1} · {frame.relative_timestamp_seconds.toFixed(3)}s</span>
-        <span className="flex items-center gap-2"><span className="muted">{frame.reason.replaceAll('_', ' ')}</span>
+        <span className="flex items-center gap-2">{frame.reason === 'manual'
+          ? <StatusChip tone="green" title="You added this frame; it stays when the cut is evaluated again">Added</StatusChip>
+          : <span className="muted">{frame.reason.replaceAll('_', ' ')}</span>}
           {run && info && <>
             <span className="muted tabular-nums">{mirrored ? boxes.length : `${boxes.length}/${maxBoxes}`}</span>
             {!mirrored && <button type="button" className="inline-flex items-center gap-1 text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked || (!room && !drawing)} onClick={() => onDrawing(!drawing)}>{drawing ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing ? 'Cancel drawing' : 'Draw box'}</button>}
-          </>}</span></div>
+          </>}
+          {onRemoveFrame && <ActionButton compact variant="danger" icon={<ImageMinus size={12} />} disabled={frameLocked} onClick={onRemoveFrame}
+            aria-label={`Remove frame ${index + 1} from the analysis`} title={frameLocked ? 'A cut keeps at least two frames' : 'Remove this frame from the analysis; its boxes are kept in the correction log'} />}</span></div>
       {mirrored && <p className="muted text-[11px]">The first frame, as you left it in Characters in this cut. Change its boxes there, then detect again.</p>}
       {!mirrored && summary && <div className="flex flex-wrap items-center gap-1.5">
         {summary.score != null && <StatusChip tone="grey" title="Tracking confidence score">{Math.round(summary.score * 100)}%</StatusChip>}

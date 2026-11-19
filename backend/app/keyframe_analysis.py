@@ -509,7 +509,7 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
                  'dwpose': pose_provenance, 'generation_seconds': timings['total'], 'timings': timings, 'usage': usage}
 
         def finish(conn, result_id):
-            if not conn.execute('SELECT 1 FROM keyframe_results WHERE cache_key=?', (key,)).fetchone():
+            if keyframes.current_selection(cut_run.cut_id, conn)[2] != key:
                 raise RuntimeError('The keyframe selection changed while analysing; run Keyframes again')
             for frame in content['frames']:
                 qwen = [{'name': p['name'], 'character_context_id': p['character_context_id'], 'state': p['state']} for p in frame['characters'] if p['state']]

@@ -56,6 +56,12 @@ def latest_job(cut_id, conn=None):
                      ORDER BY rowid DESC LIMIT 1""", (WORKFLOW, cut_id), conn=conn)
 
 
+def uncovered(frames_json, selection):
+    """Whether the selection has a frame the run never looked at (a frame the user added after detection)."""
+    seen = {frame['ordinal'] for frame in json.loads(frames_json)}
+    return any(frame['source_frame_index'] not in seen for frame in (selection or {}).get('selected_frames') or [])
+
+
 def run_for(cut_id, key, conn=None):
     return db.one('SELECT * FROM target_detection_runs WHERE cut_id=? AND selection_key=?', (cut_id, key), conn=conn)
 
@@ -68,7 +74,7 @@ def frame_capacity(slots, locked=False):
 
 def state(cut_id, conn=None):
     """What the Target frames tab shows: the evaluation, the latest run with its slots and boxes, and the job."""
-    cut, _, key, _ = current_selection(cut_id, conn)
+    cut, _, key, selection = current_selection(cut_id, conn)
     if not cut:
         return None
     run = db.one('SELECT * FROM target_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1', (cut_id,), conn=conn)
@@ -87,6 +93,8 @@ def state(cut_id, conn=None):
         detections = [target_reviews.box_row(box) for box in boxes]
         stale = key is None or run['selection_key'] != key or run['cut_start'] != cut['start_time'] or run['cut_end'] != cut['end_time']
         stale_reason = 'Cut timing or target frame selection changed' if stale else None
+        if not stale and uncovered(run['frames_json'], selection):
+            stale, stale_reason = True, 'Frames were added; detect again'
         if not stale and bool(run['cast_locked']) != locked:
             stale_reason = 'Opening cast setting changed'
         result['run'] = {
@@ -425,7 +433,8 @@ def process(job_id, owner, runtime):
                     return
             raise RuntimeError('No target frames could be evaluated for this cut')
         existing = data['existing']
-        if payload.get('only_missing') and existing and existing['review_version'] == REVIEW_VERSION and bool(existing['cast_locked']) == data['locked']:
+        if payload.get('only_missing') and existing and existing['review_version'] == REVIEW_VERSION and bool(existing['cast_locked']) == data['locked'] \
+                and not uncovered(existing['frames_json'], result):
             with inputs.publish(invalidate=False) as conn:
                 anime_bulk.finish(conn, job, 'Skipped · Target detections are current')
             return

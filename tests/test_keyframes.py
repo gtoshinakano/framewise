@@ -163,6 +163,139 @@ class KeyframeQueueTest(unittest.TestCase):
         self.assertEqual(result['result']['total_frames'], 3)
 
 
+class KeyframeEditsTest(unittest.TestCase):
+    RESULT = {'start_timestamp_seconds': 1.0, 'end_timestamp_seconds': 3.0,
+              'selected_frames': [{'source_frame_index': n, 'timestamp_seconds': 1 + n / 10, 'relative_timestamp_seconds': n / 10, 'reason': r}
+                                  for n, r in ((0, 'initial_state'), (10, 'global_change_peak'), (19, 'final_state'))]}
+
+    def test_no_edit_keeps_the_key_and_result(self):
+        self.assertEqual(keyframes.apply_edits('k', self.RESULT, {'added': [], 'removed': []}), ('k', self.RESULT))
+        # Edits that change nothing: a frame the selector already has, the first frame, one outside the cut.
+        edits = {'added': [{'ordinal': 10, 'timestamp_seconds': 2.0}, {'ordinal': 40, 'timestamp_seconds': 5.0}], 'removed': [0, 7]}
+        self.assertEqual(keyframes.apply_edits('k', self.RESULT, edits), ('k', self.RESULT))
+
+    def test_added_frames_sort_in_and_removed_frames_go(self):
+        edits = {'added': [{'ordinal': 4, 'timestamp_seconds': 1.4}], 'removed': [10]}
+        key, result = keyframes.apply_edits('k', self.RESULT, edits)
+        self.assertNotEqual(key, 'k')
+        self.assertEqual([(f['source_frame_index'], f['reason']) for f in result['selected_frames']], [(0, 'initial_state'), (4, 'manual'), (19, 'final_state')])
+        self.assertAlmostEqual(result['selected_frames'][1]['relative_timestamp_seconds'], .4)
+        self.assertEqual(result['selected_frame_count'], 3)
+        self.assertEqual(result['edits'], {'added': [4], 'removed': [10], 'base_key': 'k'})
+        self.assertEqual(key, keyframes.apply_edits('k', self.RESULT, edits)[0])
+        # The analysis labels the edited selection like any other: more frames are only more windows.
+        from app import keyframe_analysis, keyframe_schema
+        more = {'added': [{'ordinal': n, 'timestamp_seconds': 1 + n / 10} for n in (2, 4, 6, 12, 15)], 'removed': []}
+        labelled = keyframe_analysis.frames_of(keyframes.apply_edits('k', self.RESULT, more)[1])
+        self.assertEqual([(f['label'], f['ordinal'], f['reason']) for f in labelled[:3]], [('F1', 0, 'initial_state'), ('F2', 2, 'manual'), ('F3', 4, 'manual')])
+        self.assertEqual([keyframe_schema.labels(w) for w in keyframe_schema.make_windows(labelled, keyframe_analysis.WINDOW)],
+                         [['F1', 'F2', 'F3', 'F4', 'F5'], ['F5', 'F6', 'F7', 'F8']])
+
+    def test_spread(self):
+        self.assertEqual(keyframes.spread(list(range(3))), [0, 1, 2])
+        self.assertEqual(keyframes.spread(list(range(9))), [1, 3, 5, 7])
+        self.assertEqual(keyframes.spread(list(range(5))), [0, 1, 3, 4])
+
+
+class KeyframeEditApiTest(unittest.TestCase):
+    setUp = analysis_tests.AnalysisTest.setUp
+    tearDown = analysis_tests.AnalysisTest.tearDown
+
+    def seed(self):
+        """A 2 s, 10 fps original and the selector's frames 0, 10 and 19 for cut c1 (0–2 s), with a people run and boxes."""
+        import subprocess
+        source = media.episode_dir('p', 'e') / 'original.mp4'
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=96x64:rate=10:duration=2', '-c:v', 'mpeg4', '-y', str(source)], check=True)
+        settings = keyframes.config({})
+        cut = db.one("SELECT id,start_time,end_time FROM cuts WHERE id='c1'")
+        key = keyframes.cache_key(source, cut, settings, keyframes.mask_for('e', settings))
+        frames = [{'source_frame_index': n, 'timestamp_seconds': n / 10, 'relative_timestamp_seconds': n / 10, 'reason': r}
+                  for n, r in ((0, 'initial_state'), (10, 'global_change_peak'), (19, 'final_state'))]
+        result = {'start_timestamp_seconds': 0, 'end_timestamp_seconds': 2, 'selected_frames': frames,
+                  'shot_change_score': 30, 'change_level': 'moderate', 'coverage_limited': False}
+        with db.connect() as conn:
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status,payload_json) VALUES ('kf','e','keyframes','done',?)",
+                         (json.dumps({'keyframe_settings': settings, 'cut_ids': ['c1']}),))
+            conn.execute('INSERT INTO keyframe_results(cache_key,episode_id,cut_id,result_json) VALUES (?,?,?,?)', (key, 'e', 'c1', json.dumps(result)))
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,content,settings_json) VALUES ('kfa','c1','structured','{}',?)",
+                         (json.dumps({'structured_type': 'keyframe_analysis'}),))
+            conn.execute("INSERT INTO target_detection_runs(id,cut_id,selection_key,cut_start,cut_end,frames_json) VALUES ('run','c1',?,0,2,?)",
+                         (key, json.dumps([{'ordinal': n, 'image_size': [96, 64]} for n in (0, 10, 19)])))
+            conn.execute("INSERT INTO target_slots(run_id,slot,origin) VALUES ('run',0,'first_frame')")
+            conn.execute("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json,source) VALUES ('b10','run',10,0,'[1,1,9,9]','manual'),('b19','run',19,0,'[2,2,9,9]','manual')")
+        return key
+
+    def ordinals(self, state):
+        return [(f['source_frame_index'], f['reason']) for f in state['result']['selected_frames']]
+
+    def test_between_add_and_remove(self):
+        from app import target_characters
+        key = self.seed()
+        between = self.client.get('/api/cuts/c1/keyframe-selection/between?after=0')
+        self.assertEqual(between.status_code, 200, between.text)
+        self.assertEqual(between.json()['available'], 9)
+        self.assertEqual([f['ordinal'] for f in between.json()['frames']], [2, 4, 6, 8])
+        self.assertAlmostEqual(between.json()['frames'][1]['timestamp_seconds'], .4, places=4)
+        picture = self.client.get('/api/cuts/c1/keyframe-selection/candidates/4?time=0.4')
+        self.assertEqual(picture.status_code, 200, picture.text)
+        self.assertEqual(picture.headers['content-type'], 'image/jpeg')
+
+        added = self.client.post('/api/cuts/c1/keyframe-selection/frames', json={'ordinal': 4})
+        self.assertEqual(added.status_code, 200, added.text)
+        state = added.json()
+        self.assertEqual(self.ordinals(state), [(0, 'initial_state'), (4, 'manual'), (10, 'global_change_peak'), (19, 'final_state')])
+        self.assertNotEqual(state['revision'], key)
+        self.assertEqual(db.one("SELECT stale_reason FROM analysis_results WHERE id='kfa'")['stale_reason'], 'Target frames edited')
+        # The people run follows the new selection with the user's boxes, and asks to be detected again.
+        self.assertEqual(db.one("SELECT selection_key FROM target_detection_runs WHERE id='run'")['selection_key'], state['revision'])
+        people = target_characters.state('c1')['run']
+        self.assertEqual(people['stale_reason'], 'Frames were added; detect again')
+        self.assertEqual({box['id'] for box in people['detections']}, {'b10', 'b19'})
+        self.assertEqual(self.client.post('/api/cuts/c1/keyframe-selection/frames', json={'ordinal': 4}).status_code, 409)
+        self.assertEqual(self.client.post('/api/cuts/c1/keyframe-selection/frames', json={'ordinal': 30}).status_code, 409)
+
+        removed = self.client.delete('/api/cuts/c1/keyframe-selection/frames/10')
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertEqual(self.ordinals(removed.json()), [(0, 'initial_state'), (4, 'manual'), (19, 'final_state')])
+        self.assertIsNone(db.one("SELECT 1 FROM target_detections WHERE id='b10'"))
+        correction = db.one("SELECT before_json FROM target_corrections WHERE action='frame_removed'")
+        self.assertEqual([box['id'] for box in json.loads(correction['before_json'])], ['b10'])
+        self.assertEqual(self.client.delete('/api/cuts/c1/keyframe-selection/frames/0').status_code, 409)
+        self.assertEqual(self.client.delete('/api/cuts/c1/keyframe-selection/frames/4').status_code, 200)
+        self.assertEqual(self.client.delete('/api/cuts/c1/keyframe-selection/frames/19').status_code, 409)  # two frames stay
+
+        # Putting the selector's frame back leaves no edit: the original key and selection return.
+        back = self.client.post('/api/cuts/c1/keyframe-selection/frames', json={'ordinal': 10}).json()
+        self.assertEqual(back['revision'], key)
+        self.assertEqual(json.loads(db.one("SELECT removed_json FROM keyframe_edits WHERE cut_id='c1'")['removed_json']), [])
+
+    def test_cap_and_cut_timing(self):
+        self.seed()
+        with patch.object(keyframes, 'MAX_FRAMES', 3):
+            response = self.client.post('/api/cuts/c1/keyframe-selection/frames', json={'ordinal': 4})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('at most 3 frames', response.json()['detail'])
+        self.assertEqual(self.client.post('/api/cuts/c1/keyframe-selection/frames', json={'ordinal': 4}).status_code, 200)
+        with db.connect() as conn:
+            self.assertEqual(len(keyframes.edits_for({'id': 'c1', 'start_time': 0, 'end_time': 2}, conn)['added']), 1)
+            self.assertEqual(keyframes.edits_for({'id': 'c1', 'start_time': 0, 'end_time': 1.5}, conn), {'added': [], 'removed': []})
+
+    def test_a_new_selection_keeps_the_edits(self):
+        key = self.seed()
+        self.client.post('/api/cuts/c1/keyframe-selection/frames', json={'ordinal': 4})
+        frames = [(index, index / 10, np.zeros((64, 96), dtype=np.uint8)) for index in range(20)]
+        with db.connect() as conn:
+            conn.execute('DELETE FROM keyframe_results')
+        job = self.client.post('/api/cuts/c1/keyframe-selection').json()['job_id']
+        with patch.object(media, 'probe', return_value={'width': 96, 'height': 64}), patch.object(keyframes, 'decoded', return_value=iter(frames)):
+            worker.process(*worker.claim_job(('keyframes',)))
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job,))['status'], 'done')
+        state = self.client.get('/api/cuts/c1/keyframe-selection').json()
+        self.assertIn((4, 'manual'), self.ordinals(state))
+        self.assertNotEqual(state['revision'], key)
+        self.assertEqual(db.one("SELECT selection_key FROM target_detection_runs WHERE id='run'")['selection_key'], state['revision'])
+
+
 class KeyframeJobTest(unittest.TestCase):
     def test_episode_job_and_stale_cache(self):
         import json

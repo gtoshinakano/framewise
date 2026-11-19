@@ -33,6 +33,7 @@ EPISODE_TABLES = {
         JOIN cuts c ON c.id=r.cut_id WHERE r.id={row}.run_id)''', 'data', None),
     'target_cast_settings': ('(SELECT episode_id FROM cuts WHERE id={row}.cut_id)', 'data', None),
     'keyframe_results': ('(SELECT episode_id FROM cuts WHERE id={row}.cut_id)', 'data', None),
+    'keyframe_edits': ('(SELECT episode_id FROM cuts WHERE id={row}.cut_id)', 'data', None),
     'character_voice_samples': ('episode_id', 'data', None),
 }
 GLOBAL_TABLES = {
