@@ -87,6 +87,50 @@ This inventory records the behavior at `af57f81`. The final column records the i
 | `LocalModelControl` 2.5 s and `VisualEngineControl` 5 s | Host model startup and download status, including when no job exists | Scope | Resolved. Host notifications cover model status and expired worker heartbeats. |
 | `QueueDrawer` and `RunUi` 1 s ticks and `CutAssistant` 0.5 s tick | Relative and elapsed clocks | Scope | Resolved. Local clock ticks make no API requests. |
 
+## Verification
+
+- The full container backend suite passed all 947 tests and 55 subtests. The frontend production build and all 122 frontend tests passed. Both final suites ran with zero skips.
+- `docker compose up -d` and both worker restarts completed. The rebuilt API, inference and audio images were running when `/api/health` returned `{"ok":true}`.
+- Chromium queued visual analysis during opening-frame detection, split a cut while its preview lease was held, saved a moved target box during tracking, and received queue drawer updates through one episode event stream. The in-flight states used controlled leases. The media worker generated the replacement previews and the split retained the original cut ID on its first half.
+- The disposable app imported and prepared clips with and without audio, detected three cuts, sought and decoded a cut in Chromium, and saved a note. A container restart preserved the note, split, silent-clip status, and original upload checksum. An invalid MP4 failed during preparation and an unsupported extension returned HTTP 400.
+- Separate processes contended for the same GPU lock, and the second acquired it after the first released it. Both rebuilt worker images allocated a tensor and ran a calculation on the Radeon GPU under that lock.
+
+### Earlier verification failures and skips
+
+- The host baseline had 24 failures and nine skips with missing media or ONNX dependencies. Affected tests included frame sampling, evidence cleanup and recovery, keyframes, target selection, frame budgets, import, timing edits, and silent clips. The skips covered the AniRef ONNX interpreter comparison, the five subtitle video scan tests, the brief's original-resolution boundary frame export, sequence image tiling and cropping, and the audio-preserving listening clip test. Container subsets without ONNX also skipped the AniRef test. The final full container suite includes FFmpeg, FFprobe, ONNX and ONNX Runtime.
+- Intermediate queue tests flagged obsolete snapshot expectations in analysis, audio, character detection, frame budgets, keyframes, and legacy retry. Character batch coverage exposed a thread-order assumption. Scope tests flagged obsolete concurrency expectations for adjacent consistency summaries and sequence shots, plus missing episode settings in a GPU-lock test fixture. Updated assertions cover live inputs and the intended scope, and the fixtures now supply their dependencies.
+- An initial media workflow test assumed synchronous preview updates, and early browser test runs used an unsuitable fixture container format, assumed malformed MP4s failed synchronously, read queue dependency labels in the wrong shape, or matched duplicate UI controls. These checks were rerun after correcting the fixtures and assertions.
+- The first full Compose build timed out downloading a CPU Torch wheel selected by audio dependency resolution. The audio image now pins the existing ROCm Torch and NumPy versions and its rebuilt image passed the audio runtime imports. The next full build timed out downloading the pinned inference ROCm SDK from AMD. The inference image was rebuilt with the current source and the previously installed, matching ROCm runtime. A separate backend test setup timed out on PyPI and the suite was rerun using already installed test dependencies.
+- The first direct GPU smoke check reached its timeout while the configured resident text server held the lock. Both checks passed with the inference service temporarily stopped. After it started again, the API health check passed.
+
+<details>
+<summary>Backend tests that failed in earlier runs, using their names at the time</summary>
+
+- `test_analysis.py` — `test_batch_snapshots_and_resume`
+- `test_analysis_media.py` — `test_fractional_boundary_first_frame_is_not_skipped`, `test_fractional_frame_rate_boundaries_exclude_next_shot`, `test_frame_sampling_never_includes_the_next_cut`, `test_model_receives_only_frames_through_the_saved_last_preview`, `test_prepares_silent_padded_clip_without_overwriting_source`
+- `test_assistant.py` — `test_chat_session_can_refuse_to_wait`, `test_visual_work_waits_for_chat_and_chat_waits_for_visual_work`
+- `test_audio_api.py` — `test_many_generated_words_are_queued_as_analysis_context_without_approval`, `test_transcribe_range_validation_and_queued_payload`
+- `test_batch_pipeline.py` — `test_run_batch_runs_stages_in_model_order_for_all_cuts`
+- `test_batch_queueing.py` — `test_characters_must_be_settled_before_cuts_are_queued_from_a_cut`, `test_episode_visual_analysis_queues_one_job_for_every_cut`, `test_only_missing_stages_are_queued_and_finished_cuts_are_skipped`, `test_queued_cut_context_carries_the_episode_subtitles_that_overlap_it`
+- `test_brief.py` — `test_export_uses_snapshotted_first_frame`
+- `test_character_detection_api.py` — `test_analysis_receives_frame_labels_and_reference_images`, `test_automatic_matches_are_unverified_and_queued_labels_are_snapshotted`, `test_batch_queue_does_not_confirm_labels`, `test_bulk_detection_continues_after_failure_and_requeues_only_failed`, `test_detect_label_reference_and_snapshot`
+- `test_character_profile.py` — `test_edit_during_description_requeues_without_appending_old_text`
+- `test_composition_brief.py` — `test_export_can_run_alongside_analysis`
+- `test_frame_recovery.py` — `test_bulk_gc_keeps_mismatched_evidence_and_original`, `test_cache_is_bounded_and_expires`, `test_cleanup_verifies_linked_result_before_removing`, `test_detection_uses_precise_time_when_rounded_labels_collide`, `test_different_legacy_image_is_preserved`, `test_legacy_sampled_frame_is_recreated_then_removed`, `test_missing_manifest_recreates_interval_index`, `test_missing_original_uses_legacy_frame_without_deleting_it`, `test_result_and_cut_frames_are_regenerated_without_persisting_jpegs`
+- `test_keyframe_analysis.py` — `test_a_pending_selection_is_reused_and_a_first_frame_only_job_waits_for_none`, `test_the_visual_job_queues_the_missing_selection_and_waits_for_it`
+- `test_keyframes.py` — `test_decoder`, `test_episode_job_and_stale_cache`, `test_variable_rate_timestamps`
+- `test_keyframes_cut_api.py` — `test_queue_snapshots_only_current_cut`
+- `test_local_text.py` — `test_failed_legacy_analysis_can_retry_as_cancellable_local_text`, `test_text_jobs_of_one_episode_can_run_together_but_other_jobs_still_wait`
+- `test_remote_text.py` — `test_remote_lane_runs_text_beside_visual_analysis_without_holding_it_back`, `test_routing_splits_local_provider_jobs_between_lanes`
+- `test_runs.py` — `test_gpu_is_exclusive_across_episodes_and_until_cancelled_job_releases`
+- `test_sequence_pipeline.py` — `test_sequence_jobs_share_their_episode_with_text_jobs_only`
+- `test_target_characters.py` — `test_a_different_selection_deletes_the_people_found_on_the_old_frames`
+- `test_text_chain.py` — `test_later_jobs_wait_for_the_job_before_them`
+- `test_video_frame_budget.py` — `test_automatic_budget_limits_encoded_frames_across_windows`, `test_detected_character_context_is_included_without_selection`
+- `test_workflow.py` — `test_detect_inside_selected_cut_preserves_neighbors_and_archives`, `test_frame_step_moves_both_cuts_and_preserves_results`, `test_import_prepare_detect_edit_and_persist`, `test_low_frame_rate_cut_end_uses_decoded_frame`, `test_low_frame_rate_no_audio_workflow`
+
+</details>
+
 ## Phase 3 notes
 
 - Retain stable cut IDs and per-cut input fingerprints. Analyze already has per-cut result checkpoints, per-stage progress, and model-major execution. Retries can preserve checkpoints knowing the matching input revisions.
