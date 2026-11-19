@@ -214,7 +214,12 @@ class CharacterDetectionAPITest(unittest.TestCase):
         frames = [{'position': 'first', 'time': 2, 'image_size': [100, 80]}]
         runtime = anime_bulk.BulkRuntime()
         detector = type('Detector', (), {'revision': 'test', 'detect': lambda _, images: [[] for _ in images]})()
-        with patch.object(anime_bulk, '_extract_frames', side_effect=[RuntimeError('detection failed'), (frames, [object()])]), \
+        def extract(_source, cut, *_args):
+            if cut['id'] == 'c1':
+                raise RuntimeError('detection failed')
+            return frames, [object()]
+
+        with patch.object(anime_bulk, '_extract_frames', side_effect=extract), \
              patch.object(runtime, 'get_detector', return_value=detector):
             claimed, owner = worker.claim_job(('character_detect',))
             self.assertEqual(claimed, first)
