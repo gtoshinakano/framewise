@@ -137,7 +137,7 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
       setMessage('Consistency summary queued.'); await onStarted()
     } catch (error) { setMessage((error as Error).message) } finally { setWorking(false) }
   }
-  const rerun = <ActionButton compact icon={<RefreshCw size={13} aria-hidden />} pending={working} disabled={disabled || !!activeJob} onClick={() => void queue()} title="Queue a new consistency summary for this cut">{result ? 'Re-run' : 'Queue'}</ActionButton>
+  const rerun = <ActionButton compact icon={<RefreshCw size={13} aria-hidden />} pending={working} disabled={disabled} onClick={() => void queue()} title="Queue a new consistency summary for this cut">{result ? 'Re-run' : 'Queue'}</ActionButton>
   const pictures = typeof result?.settings?.pictures === 'number' ? result.settings.pictures : 0
   // Only reviews written since pictures were offered record `vision`; older ones say nothing about it.
   const sight = !result || typeof result.settings?.vision !== 'boolean' ? null

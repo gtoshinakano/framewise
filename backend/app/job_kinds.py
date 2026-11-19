@@ -365,6 +365,21 @@ def _beats_invalidates(conn, job):
     performance_beats.invalidate(conn, job)
 
 
+def _consistency_gather(conn, job):
+    from . import summary_queue
+    return summary_queue.gather(conn, job)
+
+
+def _consistency_inputs(conn, job):
+    from . import summary_queue
+    return summary_queue.inputs(conn, job)
+
+
+def _consistency_invalidates(conn, job):
+    from . import summary_queue
+    summary_queue.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -387,7 +402,12 @@ KINDS = {kind.pipeline: kind for kind in (
          scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results:initial_frame', 'results:keyframe_analysis', 'transcript', 'context', 'chunks'}),
                                      frozenset({'results:performance_beats'}), frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
          priority_class=lambda payload: 'interactive', inputs=_beats_inputs, gather=_beats_gather, invalidates=_beats_invalidates),
-    Kind('consistency_summary', 'Consistency summary', True, cuts=_one_cut, keys=_cut_keys('consistency_summary'), cancel_running=_always),
+    Kind('consistency_summary', 'Consistency summary', True, cuts=_one_cut, keys=_cut_keys('consistency_summary'), cancel_running=_always,
+         resources=frozenset({'text'}),
+         scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results', 'transcript', 'context', 'chunks', 'detections', 'target_detections', 'subtitles'}),
+                                     frozenset({'results:consistency_summary'})),
+         priority_class=lambda payload: 'batch' if payload.get('batch') else 'interactive',
+         inputs=_consistency_inputs, gather=_consistency_gather, invalidates=_consistency_invalidates),
     Kind('review_answers', 'Production decisions draft', True, cuts=_one_cut, keys=_cut_keys('review_answers'), cancel_running=_always),
     Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always),
     Kind('composition_compact', 'Composition brief', True, cuts=_one_cut, keys=_cut_keys('composition_compact'), cancel_running=_always,

@@ -1876,27 +1876,22 @@ def queue_episode_text_processing(episode_id: str, body: BatchTextInput):
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT id FROM episodes WHERE id=?', (episode_id,)).fetchone():
             raise HTTPException(404, 'Episode not found')
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (episode_id,)).fetchone():
-            raise HTTPException(409, 'Wait for media preparation or detection to finish')
         cuts = conn.execute('SELECT * FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 ORDER BY cut_index', (episode_id,)).fetchall()
         job_ids, skipped = [], 0
         for cut in cuts:
             cut_id = cut['id']
-            if conn.execute("SELECT 1 FROM jobs j WHERE j.episode_id=? AND j.status IN ('queued','running') AND j.pipeline IN ('analyze','regen','consistency_summary','performance_beats') AND (json_extract(j.payload_json,'$.cut_id')=? OR EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?))", (episode_id, cut_id, cut_id)).fetchone():
-                skipped += 1; continue
-            _, config = analysis_config_for_cut(cut_id)
+            config = snapshot_analysis_config(conn, cut)
             config = config.model_copy(update={'text_provider': body.text_provider, 'local_thinking': body.local_thinking, 'openrouter_model': body.openrouter_model})
-            context = selected_analysis_context(cut_id, config)
-            results = structured_results.list_results(cut_id)
-            try:
-                consistency = summary_queue.payload_for(cut_id, config.model_dump(), context, results)
-            except ValueError:
-                skipped += 1; continue
+            results = structured_results.list_results(cut_id, conn=conn)
+            pending = worker.pending_jobs(conn, episode_id, ('analyze', 'performance_beats'), [cut_id])
+            if not pending and summary_queue.missing_evidence({item['type']: item for item in results}):
+                skipped += 1
+                continue
+            consistency = {'cut_id': cut_id, 'config': config.model_dump(), 'batch': True}
             brief = summary_snapshot(conn, cut, config, 'regenerate', '')
             first = summary_queue.insert(conn, episode_id, consistency)
             brief['depends_on'] = [first]
-            second = str(uuid.uuid4())
-            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'regen',?)", (second, episode_id, json.dumps(brief, ensure_ascii=False)))
+            second = worker.insert_job(conn, episode_id, 'regen', brief, priority_class='batch')
             job_ids.extend((first, second))
         if job_ids:
             worker.sync_episode_status(conn, episode_id)
@@ -2073,73 +2068,35 @@ def queue_performance_beats(cut_id: str):
 
 @app.post('/api/cuts/{cut_id}/consistency-summary')
 def queue_consistency_summary(cut_id: str):
-    """Queue a detached summary of the current structured results and transcript."""
-    from . import performance_beats, structured_results, summary_queue
+    """Queue a summary of the evidence available when work starts."""
+    from . import summary_queue
     cut, config = analysis_config_for_cut(cut_id)
     if not cut['active']:
         raise HTTPException(400, 'Only active cuts can be summarized')
-    context = selected_analysis_context(cut_id, config)
-    results = structured_results.list_results(cut_id)
-    try:
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='analyze' AND status IN ('queued','running') AND json_extract(payload_json,'$.workflow')='single_cut_v2' AND EXISTS (SELECT 1 FROM json_each(payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (cut['episode_id'], cut_id)).fetchone():
-                raise ValueError('Wait for this cut analysis to finish before queuing its summary')
-            # Beats still being written: the summary waits for them and reads them when it starts.
-            beats = performance_beats.pending_job(conn, cut_id)
-            payload = summary_queue.payload_for(cut_id, config.model_dump(), context, results, pending_beats=bool(beats))
-            if beats:
-                payload['depends_on'] = [beats]
-            job_id = summary_queue.insert(conn, cut['episode_id'], payload)
-            worker.sync_episode_status(conn, cut['episode_id'])
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        job_id = summary_queue.insert(conn, cut['episode_id'], {'cut_id': cut_id, 'config': config.model_dump()})
+        worker.sync_episode_status(conn, cut['episode_id'])
     return {'job_id': job_id}
 
 
 @app.post('/api/episodes/{episode_id}/consistency-summaries')
 def queue_episode_consistency_summaries(episode_id: str, from_cut: int | None = None):
-    """Queue a consistency summary for this cut and every later enabled cut, all or nothing.
-
-    `from_cut` is the cut number shown in the editor (cut_index + 1). Every cut in the range must already
-    have its initial frame and performance beats (cuts analysed before keyframes: their video analysis) and no
-    pending analysis, beats or summary job; otherwise
-    nothing is queued and the offending cuts are returned in `blocked` with the reason.
-    """
-    from . import structured_results, summary_queue
+    """Queue consistency summaries from the displayed cut number onward."""
+    from . import summary_queue
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        if not conn.execute('SELECT id FROM episodes WHERE id=?', (episode_id,)).fetchone():
+        if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
             raise HTTPException(404, 'Episode not found')
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
-            raise HTTPException(409, 'Wait for media preparation or detection to finish')
         first_index = max(0, from_cut - 1) if from_cut else 0
-        cuts = conn.execute('SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index', (episode_id, first_index)).fetchall()
-        payloads, blocked = [], {'missing_results': [], 'busy': []}
-        for cut in cuts:
-            cut_id, number = cut['id'], cut['cut_index'] + 1
-            if conn.execute("SELECT 1 FROM jobs j WHERE j.episode_id=? AND j.status IN ('queued','running') AND j.pipeline IN ('analyze','regen','consistency_summary','performance_beats') AND (json_extract(j.payload_json,'$.cut_id')=? OR EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?))", (episode_id, cut_id, cut_id)).fetchone():
-                blocked['busy'].append(number); continue
-            _, config = analysis_config_for_cut(cut_id)
-            context = selected_analysis_context(cut_id, config)
-            try:
-                payloads.append(summary_queue.payload_for(cut_id, config.model_dump(), context, structured_results.list_results(cut_id)))
-            except ValueError:
-                blocked['missing_results'].append(number)
-        if not payloads and not any(blocked.values()):
-            raise HTTPException(409, 'There are no enabled cuts to summarize')
-        if any(blocked.values()):
-            def listed(numbers):
-                return ', '.join(map(str, numbers[:8])) + (f' and {len(numbers) - 8} more' if len(numbers) > 8 else '')
-            parts = ['Not every cut is ready for a consistency summary; nothing was queued.']
-            if blocked['missing_results']:
-                parts.append(f"Initial frame or performance beats (or an older video analysis) missing: cut {listed(blocked['missing_results'])}.")
-            if blocked['busy']:
-                parts.append(f"Analysis or summary already queued or running: cut {listed(blocked['busy'])}.")
-            raise HTTPException(409, ' '.join(parts))
-        job_ids = [summary_queue.insert(conn, episode_id, payload) for payload in payloads]
-        worker.sync_episode_status(conn, episode_id)
+        cuts = conn.execute("""SELECT * FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1
+            AND cut_index>=? ORDER BY cut_index""", (episode_id, first_index)).fetchall()
+        job_ids = [summary_queue.insert(conn, episode_id, {'cut_id': cut['id'], 'batch': True,
+                    'config': snapshot_analysis_config(conn, cut).model_dump()}) for cut in cuts]
+        if job_ids:
+            worker.sync_episode_status(conn, episode_id)
     return {'queued': len(job_ids), 'job_ids': job_ids}
+
 
 
 def review_answers_payload(cut, config, auto_save=False, pending_review=False):
@@ -2270,18 +2227,16 @@ def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, only_
                 attached += 1
                 continue
             cut, config = analysis_config_for_cut(cut_id)
-            context = selected_analysis_context(cut_id, config)
-            results = structured_results.list_results(cut_id)
+            results = structured_results.list_results(cut_id, conn=conn)
             by_type = {item['type']: item for item in results}
             # The beats come first when the keyframe analysis has none of its own yet: queued now, or the one already waiting.
             beats_id = None
             if 'keyframe_analysis' in by_type and not prompt_context.beats_current(by_type) and (by_type.get('initial_frame') or {}).get('content') is not None:
                 beats_id = performance_beats.pending_job(conn, cut_id) or performance_beats.insert(
                     conn, episode_id, cut_id, {key: getattr(config, key) for key in ('text_provider', 'local_thinking', 'openrouter_model')})
-            try:
-                consistency = summary_queue.payload_for(cut_id, config.model_dump(), context, results, pending_beats=bool(beats_id))
-            except ValueError:
+            if summary_queue.missing_evidence(by_type, pending_beats=bool(beats_id)):
                 blocked['missing_results'].append(number); continue
+            consistency = {'cut_id': cut_id, 'config': config.model_dump(), 'batch': True}
             if beats_id:
                 consistency['depends_on'] = [beats_id]
                 job_ids.append(beats_id)

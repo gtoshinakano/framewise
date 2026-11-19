@@ -470,7 +470,7 @@ class AnalysisTest(unittest.TestCase):
         brief = self.client.get('/api/v1/episodes/e/brief?from=1&to=1').json()
         self.assertEqual(brief['cuts'][0]['initial_frame']['frame_url'], f"/api/analysis-results/{revised['id']}/frame")
 
-    def test_detached_consistency_summary_uses_snapshot_and_is_revision_safe(self):
+    def test_detached_consistency_summary_reads_transcript_changes_made_after_queueing(self):
         from app import structured_results, consistency_summary
         job = self.client.post('/api/cuts/c1/analyze').json()['job_id']
         _, owner = worker.claim_job(('analyze',))
@@ -481,11 +481,14 @@ class AnalysisTest(unittest.TestCase):
         response = self.client.post('/api/cuts/c1/consistency-summary')
         self.assertEqual(response.status_code, 200, response.text)
         summary_job = response.json()['job_id']
-        self.assertEqual(self.client.post('/api/cuts/c1/consistency-summary').status_code, 409)
+        self.assertEqual(self.client.post('/api/cuts/c1/consistency-summary').json()['job_id'], summary_job)
+        with db.connect() as conn:
+            conn.execute("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text) VALUES ('new','e',.5,1,'Late addition')")
         _, owner = worker.claim_job(('consistency_summary',))
         output = {key: key for key in consistency_summary.FIELDS}
-        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(consistency_summary, 'generate', return_value=(output, 'test/model')):
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(consistency_summary, 'generate', return_value=(output, 'test/model')) as generate:
             inference_worker.process_consistency_summary(summary_job, owner)
+        self.assertIn('Late addition', json.dumps(generate.call_args.args[1]))
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (summary_job,))['status'], 'done')
         result = next(item for item in self.client.get('/api/cuts/c1/structured-analysis').json() if item['type'] == 'consistency_summary')
         self.assertEqual(result['content'], output)
@@ -532,12 +535,8 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(queued.status_code, 200, queued.text)
         summary = db.one("SELECT * FROM jobs WHERE pipeline='consistency_summary' AND episode_id='e'")
         summary_payload = json.loads(summary['payload_json'])
-        self.assertEqual((summary['status'], summary_payload['depends_on'], summary_payload['refresh_evidence']), ('queued', [beats['id']], True))
-        self.assertEqual(len(summary_payload['source_result_ids']), 2)
-        evidence = summary_payload['evidence']['visual_evidence_text']
-        self.assertIn('First frame:', evidence)
-        self.assertIn('Keyframes:', evidence)
-        self.assertIn('Performance beats:\nNot written yet.', evidence)
+        self.assertEqual((summary['status'], summary_payload['depends_on']), ('queued', [beats['id']]))
+        self.assertNotIn('evidence', summary_payload)
         self.assertIsNone(worker.claim_job(('consistency_summary',)))  # held until the beats are written
         stages = self.client.get('/api/cuts/c1/analysis-stages').json()
         self.assertEqual([(stage['stage_key'], stage['status']) for stage in stages], [('initial_frame', 'done'), ('keyframe_analysis', 'done')])

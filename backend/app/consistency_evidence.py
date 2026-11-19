@@ -325,31 +325,33 @@ def _references(conn, ids, cut_id):
     return out
 
 
-def gather(cut_id, by_type):
+def gather(cut_id, by_type, conn=None):
     """``(pictures, keyframe content, aspect)``: every picture this cut could offer, before ``fit``."""
-    with db.connect() as conn:
-        cut = conn.execute('SELECT c.*,e.width,e.height FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE c.id=?', (cut_id,)).fetchone()
-        if not cut:
-            return [], None, 9 / 16
-        segments = [dict(row) for row in conn.execute("""SELECT t.start_time,t.end_time,t.text,t.speaker_label,t.character_context_id,c.title AS character_name
-                                                         FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id
-                                                         WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>?
-                                                         ORDER BY t.start_time""", (cut['episode_id'], cut['end_time'], cut['start_time']))]
-        aspect = (cut['height'] / cut['width']) if cut['width'] and cut['height'] else 9 / 16
-        keyframes = (by_type.get('keyframe_analysis') or {}).get('content')
-        keyframes = keyframes if isinstance(keyframes, dict) and keyframes.get('contract') == 'keyframes-v1' else None
-        boxes = _target_boxes(conn, cut_id) + _first_frame_boxes(conn, cut_id)
-        ids = []
-        for item in boxes + [{'character_id': segment['character_context_id']} for segment in segments]:
-            if item.get('character_id') and item['character_id'] not in ids:
-                ids.append(item['character_id'])
-        characters = _references(conn, ids[:MAX_REFERENCES], cut_id) if ids else []
-        neighbours = {}
-        if cut['active']:
-            for side, index in (('previous', cut['cut_index'] - 1), ('next', cut['cut_index'] + 1)):
-                row = conn.execute('SELECT id FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?', (cut['episode_id'], index)).fetchone()
-                if row:
-                    neighbours[side] = row['id']
+    if conn is None:
+        with db.connect() as conn:
+            return gather(cut_id, by_type, conn)
+    cut = conn.execute('SELECT c.*,e.width,e.height FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE c.id=?', (cut_id,)).fetchone()
+    if not cut:
+        return [], None, 9 / 16
+    segments = [dict(row) for row in conn.execute("""SELECT t.start_time,t.end_time,t.text,t.speaker_label,t.character_context_id,c.title AS character_name
+                                                     FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id
+                                                     WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>?
+                                                     ORDER BY t.start_time""", (cut['episode_id'], cut['end_time'], cut['start_time']))]
+    aspect = (cut['height'] / cut['width']) if cut['width'] and cut['height'] else 9 / 16
+    keyframes = (by_type.get('keyframe_analysis') or {}).get('content')
+    keyframes = keyframes if isinstance(keyframes, dict) and keyframes.get('contract') == 'keyframes-v1' else None
+    boxes = _target_boxes(conn, cut_id) + _first_frame_boxes(conn, cut_id)
+    ids = []
+    for item in boxes + [{'character_id': segment['character_context_id']} for segment in segments]:
+        if item.get('character_id') and item['character_id'] not in ids:
+            ids.append(item['character_id'])
+    characters = _references(conn, ids[:MAX_REFERENCES], cut_id) if ids else []
+    neighbours = {}
+    if cut['active']:
+        for side, index in (('previous', cut['cut_index'] - 1), ('next', cut['cut_index'] + 1)):
+            row = conn.execute('SELECT id FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?', (cut['episode_id'], index)).fetchone()
+            if row:
+                neighbours[side] = row['id']
     return plan(dict(cut), keyframes, segments, boxes, characters, neighbours, aspect), keyframes, aspect
 
 

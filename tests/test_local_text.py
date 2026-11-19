@@ -137,7 +137,8 @@ class LocalTextTest(unittest.TestCase):
         response = self.client.post('/api/episodes/e/text-processing', json={'text_provider':'local','local_thinking': True})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['cuts_queued'], 2)
-        self.assertEqual(self.client.post('/api/episodes/e/text-processing', json={'text_provider':'local'}).json()['cuts_queued'], 0)
+        duplicate = self.client.post('/api/episodes/e/text-processing', json={'text_provider':'local','local_thinking': True})
+        self.assertEqual(duplicate.json()['job_ids'], response.json()['job_ids'])
         job_ids = response.json()['job_ids']
         batch = [db.one('SELECT * FROM jobs WHERE id=?', (job_id,)) for job_id in job_ids]
         self.assertEqual([job['pipeline'] for job in batch], ['consistency_summary','regen','consistency_summary','regen'])
@@ -256,7 +257,9 @@ class LocalTextTest(unittest.TestCase):
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('legacy','e','analyze',?)", (json.dumps({'cuts':[{'cut_id':'c1'},{'cut_id':'c2'}]}),))
         self.assertEqual(self.client.post('/api/episodes/e/visual-analysis').json()['queued'],2)
         response=self.client.post('/api/episodes/e/text-processing',json={}).json()
-        self.assertEqual((response['cuts_queued'],response['skipped']),(0,2))
+        self.assertEqual((response['cuts_queued'],response['skipped']),(2,0))
+        for job_id in response['job_ids'][::2]:
+            self.assertIn('legacy', json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,))['payload_json'])['depends_on'])
 
     def test_concurrent_batch_requests_do_not_duplicate_work(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -264,7 +267,7 @@ class LocalTextTest(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses=list(pool.map(lambda _: self.client.post('/api/episodes/e/text-processing',json={'text_provider':'local'}), range(2)))
         self.assertEqual([r.status_code for r in responses],[200,200])
-        self.assertEqual(sorted(r.json()['cuts_queued'] for r in responses),[0,2])
+        self.assertEqual(responses[0].json()['job_ids'], responses[1].json()['job_ids'])
         self.assertEqual(len(db.all_rows("SELECT id FROM jobs WHERE status='queued'")),4)
 
     def test_idle_preload_yields_for_visual_or_remote_work_but_not_local_text(self):

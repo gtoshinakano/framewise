@@ -724,31 +724,26 @@ def process_regen(job_id, owner):
         log.exception("Prompt regeneration failed for job %s", job_id)
 
 
-def consistency_inputs(job_id, owner, episode_id, cut_id, payload, cancel_check):
+def consistency_inputs(job_id, owner, episode_id, snapshot, cancel_check):
     """``(evidence, rendered pictures, stored picture references)`` of a consistency review, read when the job starts.
 
-    The queued evidence gets the episode around the cut. When the server can see, the cut's pictures are planned,
-    fitted into one slot with that evidence and cut from the original video; otherwise the review is text only.
+    When the server can see, its pictures are fitted into one slot with the captured evidence.
     """
-    from . import consistency_evidence, consistency_summary, sequence_evidence, structured_results
-    with db.connect() as conn:
-        cut = conn.execute('SELECT * FROM cuts WHERE id=?', (cut_id,)).fetchone()
-        episode = consistency_evidence.episode_context(conn, cut) if cut else {}
-    evidence = {**payload['evidence'], **({'episode': episode} if episode else {})}
-    provider = payload['config'].get('text_provider', 'openrouter')
+    from . import consistency_evidence, consistency_summary, sequence_evidence
+    evidence = snapshot['evidence']
+    provider = snapshot['config'].get('text_provider', 'openrouter')
     if not endpoint_vision(provider, cancel_check):
         return evidence, [], None
     worker.stage(job_id, owner, episode_id, 'Consistency summary · cutting pictures')
-    by_type = {item['type']: item for item in structured_results.list_results(cut_id)}
-    planned, keyframes, aspect = consistency_evidence.gather(cut_id, by_type)
-    planned, evidence, level = consistency_evidence.fit(planned, evidence, consistency_summary.system(True), sequence_evidence.slot_tokens(provider), keyframes, aspect)
+    planned, evidence, level = consistency_evidence.fit(snapshot['pictures'], evidence, consistency_summary.system(True),
+        sequence_evidence.slot_tokens(provider), snapshot['keyframes'], snapshot['aspect'])
     rendered, missing = consistency_evidence.render(planned, cancel_check)
     sent = {'level': level, 'sent': [consistency_evidence.reference(picture) for picture, _ in rendered], **({'missing': missing} if missing else {})}
     return evidence, rendered, sent
 
 
 def process_consistency_summary(job_id, owner):
-    from . import structured_results, consistency_summary
+    from . import job_inputs, structured_results, consistency_summary
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
         return
@@ -765,30 +760,45 @@ def process_consistency_summary(job_id, owner):
                 conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
                 worker.sync_episode_status(conn, job['episode_id'])
             return
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            snapshot = job_inputs.JobInputs(conn, job, owner)
+        values = snapshot.data
+        if values.get('missing'):
+            with snapshot.publish(invalidate=False):
+                raise RuntimeError(values['missing'])
+        current = values.get('base') or {}
+        base = json.loads(job['input_json'] or '{}').get('output_base', current.get('id'))
+        edited = current.get('id') != base and current.get('origin') in ('manual', 'manual_edit', 'assistant_edit')
+        if values.get('skip') or edited:
+            with snapshot.publish(invalidate=False) as conn:
+                stage = f"Skipped · {values.get('skip') or 'consistency summary edited by hand'}"
+                conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
+                worker.sync_episode_status(conn, job['episode_id'])
+            return
+        provenance = {'fingerprint': snapshot.stamp, 'output_base': base, 'source_result_ids': values['source_result_ids'],
+                      'source_transcript_ids': values['source_transcript_ids']}
+
+        def record_inputs(conn):
+            conn.execute('UPDATE jobs SET input_json=? WHERE id=?', (json.dumps(provenance), job_id))
+
+        with snapshot.publish(invalidate=False, on_changed=record_inputs) as conn:
+            record_inputs(conn)
         with worker.analysis_stage(job_id, owner, cut_id, 'consistency_summary', 'Consistency summary'):
             worker.stage(job_id, owner, job['episode_id'], 'Summarizing consistency')
-            if payload.get('refresh_evidence'):
-                # Queued behind a performance beats job: build the evidence from what the chain wrote.
-                from . import summary_queue
-                results = structured_results.list_results(cut_id)
-                problem = summary_queue.missing_evidence({item['type']: item for item in results})
-                if problem:
-                    raise RuntimeError(problem)
-                consistency_summary.refresh(payload, results)
             telemetry = {}
             started = time.monotonic()
             cancel = lambda: check_summary_lease(job_id, owner)
-            evidence, rendered, sent = consistency_inputs(job_id, owner, job['episode_id'], cut_id, payload, cancel)
+            evidence, rendered, sent = consistency_inputs(job_id, owner, job['episode_id'], values, cancel)
             output, actual_model = consistency_summary.generate(payload['config'], evidence,
                 progress=lambda attempt, total: worker.stage(job_id, owner, job['episode_id'], f'Consistency summary · attempt {attempt}/{total}'),
                 cancel_check=cancel, usage_out=telemetry, pictures=rendered)
             elapsed = time.monotonic() - started
             vision = bool(rendered) and 'visual_check' in output
-            with db.connect() as conn:
-                conn.execute('BEGIN IMMEDIATE')
+            with snapshot.publish() as conn:
                 structured_results.save_generated(conn, cut_id, job_id, owner, 'consistency_summary', output, actual_model,
-                    consistency_summary.system(vision), {'source_result_ids': payload['source_result_ids'], 'provider': payload['config'].get('text_provider', 'openrouter'), 'model_revision': local_text_runtime.revision_for(telemetry.get('model_variant')) if payload['config'].get('text_provider') == 'local' else None, 'thinking': payload['config'].get('local_thinking', False) if payload['config'].get('text_provider') == 'local' else None, 'thinking_budget_tokens': int(os.environ.get('QWEN36_THINKING_BUDGET', '2048')) if payload['config'].get('text_provider') == 'local' and payload['config'].get('local_thinking') else None, 'summary_generation_seconds': elapsed, 'usage': telemetry,
-                    'vision': vision, 'pictures': len(rendered) if vision else 0}, {**evidence, **({'pictures': sent} if vision else {})}, expected_current=payload['base_id'])
+                    consistency_summary.system(vision), {'source_result_ids': values['source_result_ids'], 'provider': payload['config'].get('text_provider', 'openrouter'), 'model_revision': local_text_runtime.revision_for(telemetry.get('model_variant')) if payload['config'].get('text_provider') == 'local' else None, 'thinking': payload['config'].get('local_thinking', False) if payload['config'].get('text_provider') == 'local' else None, 'thinking_budget_tokens': int(os.environ.get('QWEN36_THINKING_BUDGET', '2048')) if payload['config'].get('text_provider') == 'local' and payload['config'].get('local_thinking') else None, 'summary_generation_seconds': elapsed, 'usage': telemetry,
+                    'vision': vision, 'pictures': len(rendered) if vision else 0}, {**evidence, 'inputs': provenance, **({'pictures': sent} if vision else {})})
         with db.connect() as conn:
             worker.require_lease(conn, job_id, owner)
             conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
@@ -797,6 +807,8 @@ def process_consistency_summary(job_id, owner):
         if payload.get('config', {}).get('text_provider') == 'local':
             local_text_runtime.cancel_local('Cancelled')
         log.info('Consistency summary %s was cancelled', job_id)
+    except worker.LeaseLost:
+        return
     except Exception as exc:
         fail_job(job_id, owner, job['episode_id'], exc)
         log.exception('Consistency summary failed for job %s', job_id)
@@ -861,10 +873,9 @@ def process(job_id, owner):
             summaries = []
             for item in items if payload.get('auto_consistency', True) else []:
                 # Jobs queued before 2026-11-14 summarize every cut that is ready; a cut whose beats are still queued is left to the user.
-                try:
-                    summaries.append(summary_queue.payload_for(item['cut_id'], item['config'], item['context'], structured_results.list_results(item['cut_id'])))
-                except ValueError:
-                    continue
+                results = structured_results.list_results(item['cut_id'])
+                if not summary_queue.missing_evidence({value['type']: value for value in results}):
+                    summaries.append({'cut_id': item['cut_id'], 'config': item['config']})
             with db.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 worker.require_lease(conn, job_id, owner)

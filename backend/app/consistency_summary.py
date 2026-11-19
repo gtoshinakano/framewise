@@ -309,29 +309,6 @@ def delivery_checks(line, motion):
     return []
 
 
-def refresh_inputs(context):
-    """What ``refresh`` needs to build the evidence again when a chained job starts: named transcript lines and the characters."""
-    names = {item['id']: item['title'] for item in context.get('context_items') or [] if item.get('kind') == 'character'}
-    segments = [{**prompt_context.slim_transcript([segment])[0], 'character_context_id': segment.get('character_context_id')}
-                for segment in context.get('transcript_segments') or [] if prompt_context.slim_transcript([segment])]
-    return {'transcript_segments': [{**segment, 'character_name': segment.get('character_name') or names.get(segment.get('character_context_id'))} for segment in segments],
-            'context_items': [{'id': key, 'title': value, 'kind': 'character'} for key, value in names.items()]}
-
-
-def refresh(payload, results):
-    """Build the evidence again from the cut's current results (a chained job: the beats were written after it was queued).
-
-    The transcript, subtitles, series notes and character boxes stay as they were queued.
-    """
-    saved, inputs = payload['evidence'], payload.get('refresh') or {}
-    fresh = build_input(results, inputs.get('transcript_segments') or [], inputs.get('context_items') or [], saved.get('subtitles'), saved.get('series'))
-    if saved.get('character_detections'):
-        fresh['character_detections'] = saved['character_detections']
-    from .summary_queue import source_ids
-    payload['evidence'], payload['source_result_ids'] = fresh, source_ids(results)
-    return payload
-
-
 def build_input(results, transcripts, context_items, subtitles=None, series=None, episode=None):
     result_map = {item['type']: item for item in results}
     parts = []
