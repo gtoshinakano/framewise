@@ -3,7 +3,7 @@ import json
 import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -343,7 +343,7 @@ def shot_prompt_history(sequence_id: str, shot_key: str):
 
 @router.get('/sequences/{sequence_id}/shots/{shot_key}/frame', response_class=Response,
             responses={200: {'content': {'image/jpeg': {'schema': {'type': 'string', 'format': 'binary'}}}, 'description': 'Preview of the initial frame of a planned shot'}})
-async def shot_frame(sequence_id: str, shot_key: str):
+async def shot_frame(sequence_id: str, shot_key: str, request: Request):
     from . import main
     spec, episode_id = shot_frame_spec(sequence_id, shot_key=shot_key)
-    return await main.rendered_frame(spec, None, episode_id)
+    return await main.rendered_frame(spec, None, episode_id, request)

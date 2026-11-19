@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { FrameImage } from './FrameImage'
 import { Download, Eye, EyeOff, ScanEye, X } from 'lucide-react'
-import type { AnalysisResult, Cut } from './api'
+import { cutFrameUrl, type AnalysisResult, type Cut } from './api'
 
 type Detection = { type: string; coords: number[] }
 type Frame = { id: string; time: string; size: [number, number]; detections: Record<string, Detection[]> }
@@ -33,7 +33,7 @@ export function DetectionPreview({ cut, results, frameVersion }: { cut: Cut; res
   const labels = frame ? Object.keys(frame.detections) : []
   const color = (label: string) => palette[labels.indexOf(label) % palette.length]
   const toggle = (label: string) => setHidden(current => { const next = new Set(current); if (next.has(label)) next.delete(label); else next.add(label); return next })
-  if (!frame) return <div className="mx-auto w-full max-w-3xl space-y-2"><div className="overflow-hidden rounded-lg border border-[#343b49] bg-black"><FrameImage src={`/api/cuts/${cut.id}/frame/first?v=${encodeURIComponent(frameVersion)}`} alt="First frame of the cut" className="aspect-video w-full object-contain" /></div><a href={`/api/cuts/${cut.id}/frame/first?v=${encodeURIComponent(frameVersion)}`} download={`cut-${cut.cut_index + 1}-first.jpg`} className="btn btn-quiet"><Download size={14} /> Download image</a><p className="muted text-[11px] leading-5">No detections yet. Run the analysis to see detected objects as layers on the frame.</p></div>
+  if (!frame) return <div className="mx-auto w-full max-w-3xl space-y-2"><div className="overflow-hidden rounded-lg border border-[#343b49] bg-black"><FrameImage src={cutFrameUrl(cut, 'first', frameVersion)} alt="First frame of the cut" className="aspect-video w-full object-contain" /></div><a href={cutFrameUrl(cut, 'first', frameVersion)} download={`cut-${cut.cut_index + 1}-first.jpg`} className="btn btn-quiet"><Download size={14} /> Download image</a><p className="muted text-[11px] leading-5">No detections yet. Run the analysis to see detected objects as layers on the frame.</p></div>
   const [width, height] = frame.size
   const stroke = Math.max(2, width / 400)
   const font = Math.max(12, width / 55)
@@ -62,7 +62,7 @@ export function frameDownload(cut: Cut, results: AnalysisResult[], frameVersion:
   const version = encodeURIComponent(frameVersion)
   return frame
     ? { href: `/api/analysis-results/${frame.id}/frame?v=${version}`, filename: `cut-${cut.cut_index + 1}-frame-${frame.time}s.jpg` }
-    : { href: `/api/cuts/${cut.id}/frame/first?v=${version}`, filename: `cut-${cut.cut_index + 1}-first.jpg` }
+    : { href: cutFrameUrl(cut, 'first', frameVersion), filename: `cut-${cut.cut_index + 1}-first.jpg` }
 }
 
 /** Two small buttons laid over a corner of the video: preview the analyzed frames in a dialog, or download one. */

@@ -1,7 +1,7 @@
 import { useEpisodeEvents, useEpisodeRevision } from './episodeEvents'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, ArrowDown, ArrowUp, Brain, Check, ChevronRight, Cloud, Cpu, Eye, Gauge, Layers, Loader2, MessageSquarePlus, Pencil, RefreshCw, Send, Sparkles, Square, Timer, Trash2, Wrench, X, Zap } from 'lucide-react'
-import type { Cut } from './api'
+import { cutFrameUrl, type Cut } from './api'
 import { assistantApi, pictureUrl, streamUrl, type AssistantConfig, type AssistantScope, type AssistantProposal, type AssistantSession, type AssistantTurn, type AssistantUsage, type LocalModelStatus, type ProviderInfo, type SessionDetail, type SkillInfo } from './assistantApi'
 import { ACTIVE_STATUSES, activeTurn, applyStreamEvent, contextShare, formatSeconds, formatTokens, groupTurns, prettyArguments, prettyResult, reasoningTokens, starterText, turnElapsed, type Step, type ToolStep, type TurnView } from './assistantFormat'
 import { DiffText } from './DiffText'
@@ -264,7 +264,7 @@ export default function CutAssistant({ cut, sequence, active, onResultsChanged }
         {!loading && !sessions.length && <p className="muted px-2 text-xs leading-5">No chats for this {scopeKind} yet. Ask a question to start one.</p>}
         {sessions.map(item => <SessionItem key={item.id} item={item} selected={item.id === sessionId} onSelect={() => { stick.current = true; setSessionId(item.id) }} onRename={() => void renameSession(item)} onDelete={() => void removeSession(item)} />)}
       </div>
-      {cut && !sequence && <div className="border-t hairline p-3"><p className="label">Cut frames</p><div className="grid grid-cols-2 gap-2">{(['first', 'last'] as const).map(position => <a key={position} href={`/api/cuts/${cut.id}/frame/${position}`} target="_blank" rel="noreferrer" className="overflow-hidden rounded-md border border-[#343b49] hover:border-[#a58ae8]"><img src={`/api/cuts/${cut.id}/frame/${position}`} alt={`${position} frame`} className="aspect-video w-full object-cover" loading="lazy" /></a>)}</div></div>}
+      {cut && !sequence && <div className="border-t hairline p-3"><p className="label">Cut frames</p><div className="grid grid-cols-2 gap-2">{(['first', 'last'] as const).map(position => <a key={position} href={cutFrameUrl(cut, position)} target="_blank" rel="noreferrer" className="overflow-hidden rounded-md border border-[#343b49] hover:border-[#a58ae8]"><img src={cutFrameUrl(cut, position)} alt={`${position} frame`} className="aspect-video w-full object-cover" loading="lazy" /></a>)}</div></div>}
     </aside>
     <section className="flex min-h-0 flex-col" aria-label="Cut Assistance chat">
       <header className="flex flex-wrap items-center gap-2 border-b hairline px-4 py-2.5">

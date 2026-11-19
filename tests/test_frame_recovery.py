@@ -75,6 +75,52 @@ class FrameRecoveryTest(unittest.TestCase):
             frame_cache._prune(float('inf'))
             self.assertFalse(frame_cache._cache)
 
+    def test_frames_are_kept_on_disk_and_revalidated_without_rendering(self):
+        from unittest.mock import patch
+        first = self.client.get('/api/cuts/c/frame/first?v=a')
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.headers['cache-control'], frame_cache.VERSIONED)
+        stored = list((db.DATA_DIR / 'cache' / 'frames').rglob('*.jpg'))
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0].read_bytes(), first.content)
+        with frame_cache._lock:
+            frame_cache._cache.clear()
+        with patch.object(frame_cache, '_generate', side_effect=AssertionError('rendered again')):
+            # Another visit after the memory cache expired reads the disk.
+            again = self.client.get('/api/cuts/c/frame/first')
+            self.assertEqual(again.content, first.content)
+            self.assertEqual(again.headers['cache-control'], frame_cache.REVALIDATE)
+            self.assertEqual(again.headers['etag'], first.headers['etag'])
+            # A browser holding the frame gets a 304 without the frame being rendered or read.
+            stored[0].unlink()
+            with frame_cache._lock:
+                frame_cache._cache.clear()
+            unchanged = self.client.get('/api/cuts/c/frame/first', headers={'If-None-Match': first.headers['etag']})
+            self.assertEqual(unchanged.status_code, 304)
+            self.assertEqual(unchanged.content, b'')
+        # Another frame time is another picture, so another tag.
+        with db.connect() as conn:
+            conn.execute("UPDATE cuts SET first_frame_time=1 WHERE id='c'")
+        moved = self.client.get('/api/cuts/c/frame/first', headers={'If-None-Match': first.headers['etag']})
+        self.assertEqual(moved.status_code, 200)
+        self.assertNotEqual(moved.headers['etag'], first.headers['etag'])
+        # Cleanup checks compare old JPEGs with a fresh render, never with the disk cache.
+        spec = {'source': self.folder / 'original.mp4', 'time': 1.0, 'start': 0, 'end': 3, 'width': 480, 'last': False}
+        frame_cache._store(frame_cache._key(spec), b'\xff\xd8 not this frame')
+        self.assertNotEqual(frame_cache.request(spec).result(timeout=20), b'\xff\xd8 not this frame')
+
+    def test_disk_cache_drops_the_least_recently_used_frames(self):
+        import os, time
+        folder = db.DATA_DIR / 'cache' / 'frames' / 'ab'
+        folder.mkdir(parents=True)
+        now = time.time()
+        for name, age in (('old.jpg', 300), ('middle.jpg', 200), ('new.jpg', 100), ('.left.partial', 7200)):
+            (folder / name).write_bytes(b'\xff\xd8' + b'x' * 998)
+            os.utime(folder / name, (now - age, now - age))
+        self.assertEqual(frame_cache.prune_disk(max_bytes=2000), 2000)  # down to 90% of the cap
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), ['new.jpg'])
+        self.assertEqual(frame_cache.prune_disk(max_bytes=2000), 0)
+
     def test_legacy_sampled_frame_is_recreated_then_removed(self):
         frames = self.folder / 'frames'
         media.extract_frames(self.folder / 'proxy.mp4', frames, 1.0)

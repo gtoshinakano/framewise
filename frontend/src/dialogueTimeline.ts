@@ -101,7 +101,8 @@ export function openingFrame(marker: Pick<Marker, 't'>, cut: SequenceCut, origin
   const into = round(marker.t - cut.t0)
   if (into <= 0.002) {
     const held = into < -0.002 ? `; it holds ${(-into).toFixed(2)} s before the cut's own motion starts` : ''
-    return { url: `/api/cuts/${cut.id}/frame/first?v=${cut.start_time}`, caption: `First frame of cut ${cut.number}${held}`, derived: false }
+    // Unversioned: a sequence cut does not carry the frame time, so the browser revalidates the picture (a 304 when unchanged).
+    return { url: `/api/cuts/${cut.id}/frame/first`, caption: `First frame of cut ${cut.number}${held}`, derived: false }
   }
   return { url: `/api/cuts/${cut.id}/boundary-preview-frame?time=${(origin + marker.t).toFixed(3)}`,
     caption: `${into.toFixed(2)} s into cut ${cut.number}: the director describes this moment from the motion, it was never analysed`, derived: true }

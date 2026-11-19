@@ -59,6 +59,12 @@ export function upload<T>(path: string, body: FormData, onProgress: (value: numb
 }
 
 export const mediaUrl = (episodeId: string, name: string) => `/api/episodes/${episodeId}/media/${name}`
+/**
+ * A cut's first or last frame. `v` names everything that decides the picture (the cut's edges, its chosen frame time
+ * and `source`, the preview it is cut from), because the server lets the browser keep a versioned frame for good.
+ */
+export const cutFrameUrl = (cut: Pick<Cut, 'id' | 'start_time' | 'end_time' | 'first_frame_time' | 'last_frame_time'>, position: 'first' | 'last', source = '') =>
+  `/api/cuts/${cut.id}/frame/${position}?v=${encodeURIComponent([source, cut.start_time, cut.end_time, position === 'first' ? cut.first_frame_time : cut.last_frame_time].join('_'))}`
 export const jsonBody = (value: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(value) })
 
 /** One character in one keyframe (keyframes-v1): the vision model's state and, when DWPose read the body, the measured one. */

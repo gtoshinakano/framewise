@@ -72,6 +72,14 @@ class RunsTest(unittest.TestCase):
             edited = await receive(resumed)
             self.assertGreater(edited['data'], stage['data'])
             self.assertEqual(edited['jobs'], stage['jobs'])
+            # The editor reloads the large transcript only when its own counter moves.
+            self.assertEqual(edited['transcript'], stage['transcript'])
+            with db.connect() as conn:
+                conn.execute("""INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,speaker_label,origin)
+                                VALUES ('line','e',0,1,'Hello','SPEAKER_00','manual')""")
+            spoken = await receive(resumed)
+            self.assertGreater(spoken['transcript'], edited['transcript'])
+            self.assertGreater(spoken['data'], edited['data'])
             await resumed.aclose()
 
         asyncio.run(check())

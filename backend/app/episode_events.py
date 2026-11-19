@@ -70,15 +70,23 @@ def init_schema(conn):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS episode_event_revisions (
             episode_id TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
-            jobs INTEGER NOT NULL DEFAULT 0, data INTEGER NOT NULL DEFAULT 0, stale INTEGER NOT NULL DEFAULT 0
+            jobs INTEGER NOT NULL DEFAULT 0, data INTEGER NOT NULL DEFAULT 0, stale INTEGER NOT NULL DEFAULT 0,
+            transcript INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS queue_event_revision (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
         INSERT OR IGNORE INTO queue_event_revision VALUES (1,0);
     """)
+    if 'transcript' not in {row[1] for row in conn.execute('PRAGMA table_info(episode_event_revisions)')}:
+        conn.execute('ALTER TABLE episode_event_revisions ADD COLUMN transcript INTEGER NOT NULL DEFAULT 0')
     for table, (episode, field, columns) in EPISODE_TABLES.items():
         for action, row in (('INSERT', 'NEW'), ('UPDATE', 'NEW'), ('DELETE', 'OLD')):
             source = episode.format(row=row) if '{row}' in episode else f'{row}.{episode}'
             _trigger(conn, f'episode_events_{table}_{action}', table, action, columns, _bump_local(field, f'id={source}'))
+    # A transcript change also bumps `data` above; this counter lets the editor skip the (megabyte) transcript
+    # when only other data changed.
+    for action, row in (('INSERT', 'NEW'), ('UPDATE', 'NEW'), ('DELETE', 'OLD')):
+        _trigger(conn, f'episode_events_transcript_{action}', 'transcript_segments', action, None,
+                 _bump_local('transcript', f'id={row}.episode_id'))
     for action, row in (('INSERT', 'NEW'), ('UPDATE', 'NEW'), ('DELETE', 'OLD')):
         _trigger(conn, f'episode_events_job_lifecycle_{action}', 'jobs', action, 'status',
                  _bump_local('data', f'id={row}.episode_id'))
@@ -114,11 +122,12 @@ def snapshot(episode_id):
         queue = f'{host[0]}.{online}'
         if episode_id is None:
             return {'version': str(queue), 'queue': queue}
-        row = conn.execute("""SELECT COALESCE(r.jobs,0) AS jobs,COALESCE(r.data,0) AS data,COALESCE(r.stale,0) AS stale
+        row = conn.execute("""SELECT COALESCE(r.jobs,0) AS jobs,COALESCE(r.data,0) AS data,COALESCE(r.stale,0) AS stale,
+            COALESCE(r.transcript,0) AS transcript
             FROM episodes e LEFT JOIN episode_event_revisions r ON r.episode_id=e.id WHERE e.id=?""", (episode_id,)).fetchone()
         if not row:
             return None
-        return {'version': f"{queue}.{row['jobs']}.{row['data']}.{row['stale']}", 'queue': queue, **dict(row)}
+        return {'version': f"{queue}.{row['jobs']}.{row['data']}.{row['stale']}.{row['transcript']}", 'queue': queue, **dict(row)}
 
 
 async def stream(request, episode_id, previous):

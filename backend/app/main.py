@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -40,7 +40,14 @@ async def lifespan(_app: FastAPI):
     worker.start_worker()
     frame_cache.clear_abandoned_temporary_files()
     async def clear_cache_periodically():
+        ticks = 0
         while True:
+            if ticks % 20 == 0:  # the disk cache every ten minutes, starting now
+                try:
+                    await asyncio.to_thread(frame_cache.prune_disk)
+                except OSError as exc:
+                    frame_cache.log.warning('Could not prune the frame cache: %s', exc)
+            ticks += 1
             await asyncio.sleep(30)
             frame_cache.clear_expired()
     cleaner = asyncio.create_task(clear_cache_periodically())
@@ -54,6 +61,8 @@ async def lifespan(_app: FastAPI):
 INTEGRATION_GUIDE = (Path(__file__).parent / "integration-guide.md").read_text(encoding="utf-8")
 app = FastAPI(title="Framewise API", version="1.0.0", description=INTEGRATION_GUIDE, lifespan=lifespan,
               docs_url=None, redoc_url=None)
+from .json_gzip import JsonGzip
+app.add_middleware(JsonGzip)
 from .composition_brief import CompositionError
 
 @app.exception_handler(CompositionError)
@@ -824,11 +833,11 @@ def boundary_preview_times(cut_id: str, position: Literal['first', 'last'], arou
 
 
 @app.get('/api/cuts/{cut_id}/boundary-preview-frame')
-async def boundary_preview_frame(cut_id: str, time: float):
+async def boundary_preview_frame(cut_id: str, time: float, request: Request):
     cut, episode, source = boundary_preview_source(cut_id)
     if not math.isfinite(time) or time < 0 or time > (episode['duration'] or 0):
         raise HTTPException(400, 'Frame is outside the boundary preview window')
-    return await rendered_frame({'source': source, 'time': time, 'start': max(0, time - .000002), 'end': min(episode['duration'], time + 1), 'width': 480, 'last': False, 'seek_tolerance': .000002}, episode_id=episode['id'])
+    return await rendered_frame({'source': source, 'time': time, 'start': max(0, time - .000002), 'end': min(episode['duration'], time + 1), 'width': 480, 'last': False, 'seek_tolerance': .000002}, episode_id=episode['id'], request=request)
 
 
 @app.post('/api/cuts/{cut_id}/boundary-frame')
@@ -1646,7 +1655,7 @@ def character_profile_status(job_id: str):
 
 
 @app.get('/api/character-detection-runs/{run_id}/frame/{position}')
-async def character_detection_frame(run_id: str, position: Literal['first', 'last']):
+async def character_detection_frame(run_id: str, position: Literal['first', 'last'], request: Request):
     run = db.one('''SELECT r.*,e.id AS episode_id,e.project_id,e.original_ext FROM character_detection_runs r
                     JOIN cuts c ON c.id=r.cut_id JOIN episodes e ON e.id=c.episode_id WHERE r.id=?''', (run_id,))
     if not run:
@@ -1656,11 +1665,15 @@ async def character_detection_frame(run_id: str, position: Literal['first', 'las
     source = media.episode_dir(run['project_id'], run['episode_id']) / f"original{run['original_ext']}"
     if not frame or not source.is_file():
         raise HTTPException(404, 'Frame unavailable')
+    spec = {'source': source, 'time': frame['time'], 'start': run['cut_start'], 'end': run['cut_end'], 'width': 1280, 'last': False, 'seek_tolerance': .000002}
     try:
-        image = await frame_cache.get({'source': source, 'time': frame['time'], 'start': run['cut_start'], 'end': run['cut_end'], 'width': 1280, 'last': False, 'seek_tolerance': .000002})
+        headers = frame_cache.http_headers(spec, request)
+        if frame_cache.unchanged(request, headers):
+            return Response(status_code=304, headers=headers)
+        image = await frame_cache.get(spec)
     except (RuntimeError, OSError) as exc:
         raise HTTPException(503, str(exc)) from exc
-    return Response(content=image, media_type='image/jpeg')
+    return Response(content=image, media_type='image/jpeg', headers=headers)
 
 
 @app.get('/api/projects/{project_id}/character-references')
@@ -2539,19 +2552,25 @@ def remove_regenerated_legacy(path, episode_id, fingerprint):
         pass
 
 
-async def rendered_frame(spec, legacy=None, episode_id=None):
+async def rendered_frame(spec, legacy=None, episode_id=None, request=None):
+    """A frame rendered from its source. A URL with ``v`` names every input of its picture (the caller's promise), so
+    the browser keeps it for good; any other is revalidated by ETag and answered 304 without rendering."""
     fingerprint = None
     if legacy and legacy.is_file():
         stat = legacy.stat()
         fingerprint = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
     try:
+        headers = frame_cache.http_headers(spec, request, versioned=request is not None and 'v' in request.query_params)
+        # A legacy JPEG that differs from the render is served instead, so only skip the work without one.
+        if not fingerprint and frame_cache.unchanged(request, headers):
+            return Response(status_code=304, headers=headers)
         data = await frame_cache.get(spec)
         # Preserve legacy evidence if timestamp reconstruction is not byte-for-byte
         # identical; overlays must continue to match the image that produced them.
         if fingerprint and legacy.read_bytes() != data:
             return FileResponse(legacy, media_type='image/jpeg')
         task = BackgroundTask(remove_regenerated_legacy, legacy, episode_id, fingerprint) if fingerprint and episode_id else None
-        return Response(data, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=120'}, background=task)
+        return Response(data, media_type='image/jpeg', headers=headers, background=task)
     except (OSError, RuntimeError, ValueError) as exc:
         if fingerprint:
             return FileResponse(legacy, media_type='image/jpeg')
@@ -2562,14 +2581,14 @@ async def rendered_frame(spec, legacy=None, episode_id=None):
          summary="Download a sampled analysis frame",
          responses={200: {"content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}}, "description": "Sampled JPEG for the result or an ancestor"},
                     404: {"description": "No frame can be reconstructed for this result or its ancestors"}})
-async def get_analysis_result_frame(result_id: str):
+async def get_analysis_result_frame(result_id: str, request: Request):
     """Retrieve a stored legacy frame or recreate it from its recorded source and time."""
     spec = frame_source.result_frame_spec(result_id)
     if not spec:
         raise HTTPException(404, "No source frame is available for this result")
     if 'source' not in spec:
         return FileResponse(spec['legacy'], media_type='image/jpeg')
-    return await rendered_frame(spec, spec['legacy'], spec['episode_id'])
+    return await rendered_frame(spec, spec['legacy'], spec['episode_id'], request)
 
 
 @app.post("/api/cuts/{cut_id}/analyze")
@@ -2747,7 +2766,7 @@ def get_frames(episode_id: str):
 
 
 @app.get("/api/episodes/{episode_id}/media/{name}")
-async def get_media(episode_id: str, name: str):
+async def get_media(episode_id: str, name: str, request: Request):
     episode = require_episode(episode_id)
     path = media.episode_dir(episode["project_id"], episode_id)
     if name == "proxy":
@@ -2768,13 +2787,13 @@ async def get_media(episode_id: str, name: str):
             index = int(name[6:12]) - 1
             boundary = min(episode['duration'], (index + .5) * manifest['interval'])
             if boundary > 0:
-                return await rendered_frame({'source': proxy, 'time': boundary, 'start': max(0, boundary - 5), 'end': boundary, 'width': 480, 'last': True, 'quality': 4, 'seek_tolerance': .000002, 'probe_padding': 1}, target, episode['id'])
+                return await rendered_frame({'source': proxy, 'time': boundary, 'start': max(0, boundary - 5), 'end': boundary, 'width': 480, 'last': True, 'quality': 4, 'seek_tolerance': .000002, 'probe_padding': 1}, target, episode['id'], request)
     elif re.fullmatch(r"cut_\d{6}\.jpg", name):
         target, mime = path / "thumbnails" / name, "image/jpeg"
         index = int(name[4:10])
         cut = db.one('SELECT id FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?', (episode_id, index))
         if cut:
-            return await get_cut_frame(cut['id'], 'first')
+            return await get_cut_frame(cut['id'], 'first', request)
     else:
         raise HTTPException(404, "Media not found")
     if not target.is_file():
@@ -2785,7 +2804,7 @@ async def get_media(episode_id: str, name: str):
 @app.get("/api/cuts/{cut_id}/frame/{position}", response_class=Response,
          responses={200: {"content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}}, "description": "Cut boundary frame"},
                     404: {"description": "Cut or source video not found"}})
-async def get_cut_frame(cut_id: str, position: Literal["first", "last"]):
+async def get_cut_frame(cut_id: str, position: Literal["first", "last"], request: Request):
     """Download a cut boundary, recreating it from video when necessary."""
     cut = db.one("SELECT * FROM cuts WHERE id=?", (cut_id,))
     if not cut:
@@ -2803,7 +2822,7 @@ async def get_cut_frame(cut_id: str, position: Literal["first", "last"]):
     saved = cut['first_frame_time'] if position == 'first' else cut['last_frame_time']
     first, last = media.cut_frame_times(cut['start_time'], cut['end_time'])
     timestamp = saved if saved is not None else first if position == 'first' else last
-    return await rendered_frame({'source': source, 'time': timestamp, 'start': cut['start_time'], 'end': cut['end_time'], 'width': 480, 'last': position == 'last' and saved is None, 'seek_tolerance': .000002, 'probe_padding': 1 if position == 'last' and saved is None else 0}, target, episode['id'])
+    return await rendered_frame({'source': source, 'time': timestamp, 'start': cut['start_time'], 'end': cut['end_time'], 'width': 480, 'last': position == 'last' and saved is None, 'seek_tolerance': .000002, 'probe_padding': 1 if position == 'last' and saved is None else 0}, target, episode['id'], request)
 
 
 app.include_router(external_router)

@@ -2,6 +2,7 @@
 import json
 import subprocess
 from fastapi import APIRouter, HTTPException
+from fastapi import Request as HttpRequest  # this module's own `Request` is the selection request body
 from pydantic import BaseModel, Field
 from . import db, media, worker
 
@@ -69,9 +70,7 @@ def get_cut_selection(cut_id: str):
     return cut_selection(cut_id)[2]
 
 @router.get('/api/cuts/{cut_id}/keyframe-selection/frames/{ordinal}')
-async def get_target_frame(cut_id: str, ordinal: int, revision: str | None = None):
-    from fastapi.responses import Response
-    from . import frame_cache
+async def get_target_frame(cut_id: str, ordinal: int, request: HttpRequest, revision: str | None = None):
     cut, source, state = cut_selection(cut_id)
     result = state.get('result')
     frame = next((frame for frame in result['selected_frames'] if frame['source_frame_index'] == ordinal), None) if result else None
@@ -79,11 +78,8 @@ async def get_target_frame(cut_id: str, ordinal: int, revision: str | None = Non
         raise HTTPException(404, 'Target frame unavailable or stale')
     spec = {'source': source, 'time': frame['timestamp_seconds'], 'start': cut['start_time'], 'end': cut['end_time'],
             'width': 640, 'last': False, 'ordinal': ordinal}
-    try:
-        image = await frame_cache.get(spec)
-    except (RuntimeError, OSError, TimeoutError, subprocess.SubprocessError) as exc:
-        raise HTTPException(503, 'Could not extract target frame') from exc
-    return Response(content=image, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=300' if revision else 'no-store'})
+    # The revision is the selection the frame belongs to, so a URL that names it never changes picture.
+    return await _frame_response(spec, request, versioned=revision is not None, failure='Could not extract target frame')
 
 
 def _frames(state):
@@ -109,19 +105,27 @@ def get_between(cut_id: str, after: int):
 
 
 @router.get('/api/cuts/{cut_id}/keyframe-selection/candidates/{ordinal}')
-async def get_candidate_frame(cut_id: str, ordinal: int, time: float):
+async def get_candidate_frame(cut_id: str, ordinal: int, time: float, request: HttpRequest):
     """A small picture of a frame offered between two selected frames."""
-    from fastapi.responses import Response
-    from . import frame_cache
     cut, source, state = cut_selection(cut_id)
     if not source or not cut['start_time'] <= time < cut['end_time']:
         raise HTTPException(404, 'Frame outside this cut')
     spec = {'source': source, 'time': time, 'start': cut['start_time'], 'end': cut['end_time'], 'width': 320, 'last': False, 'ordinal': ordinal}
+    # The source frame's ordinal and time are in the URL and the original is never overwritten.
+    return await _frame_response(spec, request, versioned=True, failure='Could not extract the frame')
+
+
+async def _frame_response(spec, request, versioned, failure):
+    from fastapi.responses import Response
+    from . import frame_cache
     try:
+        headers = frame_cache.http_headers(spec, request, versioned)
+        if frame_cache.unchanged(request, headers):
+            return Response(status_code=304, headers=headers)
         image = await frame_cache.get(spec)
     except (RuntimeError, OSError, TimeoutError, subprocess.SubprocessError) as exc:
-        raise HTTPException(503, 'Could not extract the frame') from exc
-    return Response(content=image, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=300'})
+        raise HTTPException(503, failure) from exc
+    return Response(content=image, media_type='image/jpeg', headers=headers)
 
 
 class FrameEdit(BaseModel):

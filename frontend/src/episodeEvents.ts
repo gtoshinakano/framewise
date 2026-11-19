@@ -2,12 +2,13 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react'
 
 export const EpisodeEventsContext = createContext<string | undefined>(undefined)
 
-type Revisions = { version: string; queue: string; jobs?: number; data?: number; stale?: number }
-type Change = { queue: boolean; jobs: boolean; data: boolean; stale: boolean }
+type Revisions = { version: string; queue: string; jobs?: number; data?: number; stale?: number; transcript?: number }
+// `transcript` also moves `data`; listeners that only need the transcript can watch it alone.
+type Change = { queue: boolean; jobs: boolean; data: boolean; stale: boolean; transcript: boolean }
 type Listener = (change: Change) => void
 
 const RECONNECT_REFRESH_MS = 12000
-const ALL_CHANGED: Change = { queue: true, jobs: true, data: true, stale: true }
+const ALL_CHANGED: Change = { queue: true, jobs: true, data: true, stale: true, transcript: true }
 const feeds = new Map<string | null, { listeners: Set<Listener>; close: () => void }>()
 
 function openFeed(episodeId: string | null) {
@@ -36,6 +37,8 @@ function openFeed(episodeId: string | null) {
     const change = previous ? {
       queue: next.queue !== previous.queue, jobs: next.jobs !== previous.jobs,
       data: next.data !== previous.data, stale: next.stale !== previous.stale,
+      // A server without the counter: any data change may be a transcript change.
+      transcript: next.transcript === undefined ? next.data !== previous.data : next.transcript !== previous.transcript,
     } : ALL_CHANGED
     previous = next
     for (const listener of listeners) listener(change)

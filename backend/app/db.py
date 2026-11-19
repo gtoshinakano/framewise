@@ -559,6 +559,10 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status,lease_until,created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS jobs_leases_idx ON jobs(lease_until) WHERE lease_owner IS NOT NULL")
         db.execute("CREATE INDEX IF NOT EXISTS transcript_active_idx ON transcript_segments(episode_id,start_time) WHERE superseded_by IS NULL")
+        # The episode's per-cut flags look up the latest run's boxes and the cut's latest job once per cut; without these
+        # every lookup scanned the whole table, which made GET /api/episodes/{id} take seconds on long episodes.
+        db.execute("CREATE INDEX IF NOT EXISTS character_detections_run_idx ON character_detections(run_id,position)")
+        db.execute("CREATE INDEX IF NOT EXISTS analysis_job_cuts_cut_idx ON analysis_job_cuts(cut_id)")
         # Incremental composition reads need a watermark for edits as well as
         # new revisions. SQLite's millisecond clock is used consistently here.
         trigger_drops = '\n'.join('DROP TRIGGER "' + trigger['name'].replace('"', '""') + '";'

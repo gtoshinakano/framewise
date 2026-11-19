@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ChevronsLeft } from 'lucide-react'
 import { FrameImage } from './FrameImage'
-import type { Cut } from './api'
+import { cutFrameUrl, type Cut } from './api'
 import type { AnalysisQueueState } from './analysisQueueStates'
 import { CutStatusIcons } from './CutStatus'
 import { IconButton } from './EditorUi'
@@ -20,7 +20,7 @@ export function CutGallery({ cuts, selectedId, onSelect, onOpenAnalysis, frameVe
       <IconButton icon={ChevronsLeft} label="Hide the cut list" size="sm" className="ghost" onClick={onCollapse} /></div>
     {cuts.length ? <><div className="space-y-1">{cuts.slice(visiblePage * PAGE, visiblePage * PAGE + PAGE).map(cut => <button id={`cut-card-${cut.id}`} key={cut.id} onClick={() => onSelect(cut)} onDoubleClick={() => onOpenAnalysis(cut)} title="Click to select, double-click to open the analysis"
       className={`flex w-full items-center gap-2 rounded-lg border p-1.5 text-left ${selectedId === cut.id ? 'border-[#ab8df2] bg-[#282238]' : 'border-transparent bg-[#171c24] hover:border-[#4a4361]'}`}>
-      <FrameImage fallbackClassName="flex aspect-video w-20 shrink-0 items-center justify-center rounded bg-[#222938] p-1 text-center text-[9px] text-[#98a1af]" src={`/api/cuts/${cut.id}/frame/first?v=${encodeURIComponent(frameVersion)}`} className="aspect-video w-20 shrink-0 rounded bg-[#222938] object-cover" alt={`First frame of cut ${cut.cut_index + 1}`} loading="lazy" />
+      <FrameImage fallbackClassName="flex aspect-video w-20 shrink-0 items-center justify-center rounded bg-[#222938] p-1 text-center text-[9px] text-[#98a1af]" src={cutFrameUrl(cut, 'first', frameVersion)} className="aspect-video w-20 shrink-0 rounded bg-[#222938] object-cover" alt={`First frame of cut ${cut.cut_index + 1}`} loading="lazy" />
       <span className="min-w-0 flex-1 text-[10px] leading-4">
         <span className="flex items-center gap-1.5"><b className="text-[11px] text-[#c3aeff]">{cut.cut_index + 1}</b><strong className="truncate text-xs font-semibold">{cut.title || `Cut ${cut.cut_index + 1}`}</strong></span>
         <span className="muted block truncate font-mono tabular-nums">{formatTimecode(cut.start_time, { precision: 1 })} · {formatDuration(cut.end_time - cut.start_time)}</span>

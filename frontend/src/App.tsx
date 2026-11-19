@@ -176,6 +176,9 @@ function ContextLibrary({ projectId, episodes }: { projectId: string; episodes: 
 
 const DEFAULT_CUTS_WIDTH = 260
 const MIN_TIMELINE = 160
+// What an editor reload fetches: the episode (with its sequences and waveform) and the transcript, which can run to megabytes.
+type EditorParts = { episode: boolean; transcript: boolean }
+const EVERYTHING: EditorParts = { episode: true, transcript: true }
 function Editor({ id }: { id: string }) {
   const toast = useToast()
   const [episode, setEpisode] = useState<Episode | null>(null)
@@ -217,28 +220,54 @@ function Editor({ id }: { id: string }) {
     latestEpisode.current = value
     setEpisode(value)
   }, [])
-  const refresh = useCallback(async () => {
+  const loadParts = useCallback(async (parts: EditorParts) => {
     try {
-      const value = await api<Episode>(`/episodes/${id}`)
-      showEpisode(value)
-      const preparedBy = value.jobs.find(job => job.pipeline === 'prepare' && job.status === 'done')?.id || 'initial'
-      const preparing = value.jobs.some(job => job.pipeline === 'prepare' && (job.status === 'queued' || job.status === 'running'))
-      const waveformKey = `${id}:${preparedBy}`
-      if (!preparing && waveformVersion.current !== waveformKey) {
-        const nextWaveform = await api<Waveform>(`/episodes/${id}/waveform`)
-        const latest = latestEpisode.current
-        const latestPrepare = latest?.jobs.find(job => job.pipeline === 'prepare' && job.status === 'done')?.id || 'initial'
-        const prepareRunning = latest?.jobs.some(job => job.pipeline === 'prepare' && (job.status === 'queued' || job.status === 'running'))
-        if (latest?.id === id && !prepareRunning && latestPrepare === preparedBy) {
-          setWaveform(nextWaveform)
-          waveformVersion.current = waveformKey
+      const [value, segments, list] = await Promise.all([
+        parts.episode ? api<Episode>(`/episodes/${id}`) : null,
+        parts.transcript ? api<TranscriptSegment[]>(`/episodes/${id}/transcript`) : null,
+        parts.episode ? sequenceApi.list(id) : null,
+      ])
+      if (segments) setTranscript(segments)
+      if (list) setSequences(list)
+      if (value) {
+        showEpisode(value)
+        const preparedBy = value.jobs.find(job => job.pipeline === 'prepare' && job.status === 'done')?.id || 'initial'
+        const preparing = value.jobs.some(job => job.pipeline === 'prepare' && (job.status === 'queued' || job.status === 'running'))
+        const waveformKey = `${id}:${preparedBy}`
+        if (!preparing && waveformVersion.current !== waveformKey) {
+          const nextWaveform = await api<Waveform>(`/episodes/${id}/waveform`)
+          const latest = latestEpisode.current
+          const latestPrepare = latest?.jobs.find(job => job.pipeline === 'prepare' && job.status === 'done')?.id || 'initial'
+          const prepareRunning = latest?.jobs.some(job => job.pipeline === 'prepare' && (job.status === 'queued' || job.status === 'running'))
+          if (latest?.id === id && !prepareRunning && latestPrepare === preparedBy) {
+            setWaveform(nextWaveform)
+            waveformVersion.current = waveformKey
+          }
         }
       }
-      setTranscript(await api<TranscriptSegment[]>(`/episodes/${id}/transcript`))
-      setSequences(await sequenceApi.list(id))
       setLoadError('')
     } catch (err) { setLoadError((err as Error).message) }
   }, [id, showEpisode])
+  // While analysis runs, events arrive faster than an episode loads. One load runs at a time and every request made
+  // meanwhile joins a single follow-up load, so a caller that awaits still sees data newer than its own change.
+  const loading = useRef<{ running: Promise<void>; next: { loader: typeof loadParts; parts: EditorParts; done: Promise<void> } | null }>({ running: Promise.resolve(), next: null })
+  const load = useCallback((parts: EditorParts) => {
+    const queue = loading.current
+    // A load queued for another episode is not joined: it would never fetch this one.
+    if (queue.next?.loader === loadParts) {
+      queue.next.parts = { episode: queue.next.parts.episode || parts.episode, transcript: queue.next.parts.transcript || parts.transcript }
+      return queue.next.done
+    }
+    const next = { loader: loadParts, parts: { ...parts }, done: Promise.resolve() }
+    next.done = queue.running.then(() => {
+      if (queue.next === next) queue.next = null
+      queue.running = loadParts(next.parts)
+      return queue.running
+    })
+    queue.next = next
+    return next.done
+  }, [loadParts])
+  const refresh = useCallback(() => load(EVERYTHING), [load])
   const refreshQueue = useCallback(async () => {
     try {
       const status = await api<EpisodeStatus>(`/episodes/${id}/status`)
@@ -250,10 +279,10 @@ function Editor({ id }: { id: string }) {
   useEffect(() => { void refresh(); void refreshQueue() }, [refresh, refreshQueue])
   useEpisodeEvents(change => {
     if (change.jobs || change.queue) void refreshQueue()
-    if (change.data || change.stale) void refresh()
+    if (change.data || change.stale) void load({ episode: true, transcript: change.transcript })
   }, id)
   // Cut Assistance edits the transcript outside this editor; reload it as soon as a proposal is applied.
-  useEffect(() => { const reload = () => { void refresh() }; window.addEventListener('framewise:transcript-changed', reload); return () => window.removeEventListener('framewise:transcript-changed', reload) }, [refresh])
+  useEffect(() => { const reload = () => { void load({ episode: false, transcript: true }) }; window.addEventListener('framewise:transcript-changed', reload); return () => window.removeEventListener('framewise:transcript-changed', reload) }, [load])
   useEffect(() => { if (episode) api<Project>(`/projects/${episode.project_id}`).then(setProject).catch(() => {}) }, [episode?.project_id])
   useEffect(() => { setSelectedId(null); setSelectedChunkId(null); setSelectedTranscriptId(null); setAudioSelection(null); setWaveform(null); setTranscript([]); setSequences([]); setSequenceOpen(null); setTime(0); playbackEnd.current = null }, [id])
   const selected = [...(episode?.cuts || []), ...(episode?.archived_cuts || [])].find(cut => cut.id === selectedId)
@@ -297,8 +326,10 @@ function Editor({ id }: { id: string }) {
   }
   async function detectWithin(threshold: number) { if (!selected) return; try { const result = await api<{ job_id: string }>(`/cuts/${selected.id}/detect-hardcuts`, jsonBody({ scene_threshold: threshold })); setCutDetection({ cutId: selected.id, jobId: result.job_id }); await refresh() } catch (err) { fail(err) } }
   async function toggleAnalysis() { if (!selected) return; try { await api<Cut>(`/cuts/${selected.id}/analysis-enabled`, { method: 'PUT', body: JSON.stringify({ analysis_enabled: !selected.analysis_enabled }) }); await refresh() } catch (err) { fail(err) } }
-  async function saveNotes(notes: Pick<Cut, 'title' | 'description' | 'notes'>) { if (!selected) return; try { await api<Cut>(`/cuts/${selected.id}`, { method: 'PUT', body: JSON.stringify({ ...notes, results: selected.results }) }); await refresh(); toast({ tone: 'success', message: `Saved the notes of cut ${selected.cut_index + 1}.` }) } catch (err) { fail(err) } }
-  async function saveChunk(chunk: Chunk) { try { await api<Chunk>(`/chunks/${chunk.id}`, { method: 'PUT', body: JSON.stringify({ title: chunk.title, notes: chunk.notes }) }); await refresh(); toast({ tone: 'success', message: `Saved chunk ${chunk.chunk_index + 1}.` }) } catch (err) { fail(err) } }
+  // A save shows its answer at once; the change event reloads the rest of the episode in the background.
+  const patchEpisode = (patch: (current: Episode) => Episode) => setEpisode(current => { const next = current?.id === id ? patch(current) : current; latestEpisode.current = next; return next })
+  async function saveNotes(notes: Pick<Cut, 'title' | 'description' | 'notes'>) { if (!selected) return; try { const saved = await api<Cut>(`/cuts/${selected.id}`, { method: 'PUT', body: JSON.stringify({ ...notes, results: selected.results }) }); const merge = (cut: Cut) => cut.id === saved.id ? { ...cut, ...saved } : cut; patchEpisode(current => ({ ...current, cuts: current.cuts.map(merge), archived_cuts: current.archived_cuts.map(merge) })); toast({ tone: 'success', message: `Saved the notes of cut ${selected.cut_index + 1}.` }) } catch (err) { fail(err) } }
+  async function saveChunk(chunk: Chunk) { try { const saved = await api<Chunk>(`/chunks/${chunk.id}`, { method: 'PUT', body: JSON.stringify({ title: chunk.title, notes: chunk.notes }) }); patchEpisode(current => ({ ...current, chunks: current.chunks.map(item => item.id === saved.id ? saved : item) })); toast({ tone: 'success', message: `Saved chunk ${chunk.chunk_index + 1}.` }) } catch (err) { fail(err) } }
   async function saveSettings(settings: Episode['settings']) { try { await api(`/episodes/${id}/settings`, { method: 'PUT', body: JSON.stringify(settings) }); await refresh(); toast({ tone: 'success', message: 'Settings saved. Run Prepare or redetect cuts to apply them.' }); return true } catch (err) { fail(err); return false } }
   async function remove() { if (!episode || !window.confirm(`Delete “${episode.title}” and all its media? This cannot be undone.`)) return; try { await api(`/episodes/${id}`, { method: 'DELETE' }); go(`/project/${episode.project_id}`) } catch (err) { fail(err) } }
   // After a cut edit the playhead stays where it is, so several splits in a row need no scrubbing back.
@@ -310,7 +341,9 @@ function Editor({ id }: { id: string }) {
   const analysisBusy = jobs.some(job => (['prepare', 'hardcuts', 'character_detect'].includes(job.pipeline) || job.workflow === 'boundary_frame') && active(job))
   const hardcutsQueued = jobs.some(job => job.pipeline === 'hardcuts' && active(job))
   const characterBlock = bulkDetectionWorking ? 'Queuing…' : !episode?.cuts.length && !hardcutsQueued ? 'Detect hard cuts first.' : ''
-  const frameVersion = `${jobs[0]?.id || ''}-${jobs[0]?.status || ''}`
+  // Frames are cut from the preview made by Prepare (or the original before it), so only a new Prepare changes them;
+  // each cut's own edges and frame times are added by cutFrameUrl.
+  const frameVersion = jobs.find(job => job.pipeline === 'prepare' && job.status === 'done')?.id || 'original'
   const history = episode?.cut_history
   const activeSelected = selected?.active ? selected : undefined
   const historyReason = cutEdits.working ? 'Saving cut edit…' : ''

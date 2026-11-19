@@ -1,8 +1,16 @@
-"""Bounded, disposable in-memory image cache and background frame queue."""
+"""Bounded, disposable image caches and background frame queue.
+
+Frames live briefly in memory and, for the pages that show them, in a size-capped disk cache under
+``DATA_DIR/cache/frames``: outside the projects, never beside an original, deleted oldest first and safe to remove at
+any time. Files are named by the hash of everything that decides the picture (the source file's identity and every
+render setting), so a changed source or setting simply misses. The same hash is the frame's HTTP ETag.
+"""
 import asyncio
 import concurrent.futures
+import hashlib
 import logging
 import math
+import os
 import subprocess
 import shutil
 import tempfile
@@ -17,6 +25,10 @@ log = logging.getLogger(__name__)
 MAX_BYTES = 64 * 1024 * 1024
 TTL_SECONDS = 120
 MAX_PENDING = 128
+DISK_MAX_BYTES = int(os.environ.get('FRAME_CACHE_MB', '1024')) * 1024 * 1024
+DISK_PRUNE_TO = .9  # prune below the cap so every write does not trigger another prune
+VERSIONED = 'private, max-age=31536000, immutable'  # the URL names every input of the picture
+REVALIDATE = 'private, no-cache'  # ask every time; an unchanged frame answers 304 without rendering
 _lock = threading.Lock()
 _cache = OrderedDict()
 _inflight = {}
@@ -116,7 +128,7 @@ def request(spec):
             return _inflight[key]
         if len(_inflight) >= MAX_PENDING:
             raise RuntimeError('Frame preview queue is full; try again shortly')
-        future = _pool.submit(_generate, dict(spec))
+        future = _pool.submit(_generate_and_store, key, dict(spec))
         _inflight[key] = future
     future.add_done_callback(lambda done: _complete(key, done))
     return future
@@ -125,7 +137,115 @@ def request(spec):
 async def get(spec):
     # The FFmpeg work is queued, deduplicated and performed outside the API
     # event loop. Cancelling one request must not cancel another's shared work.
+    # Only pages read the disk cache: storage cleanup and frame_gc compare old JPEGs with a fresh render before
+    # deleting them, so they go through request() alone.
+    key = _key(spec)
+    with _lock:
+        cached = _cache.get(key)
+    if cached is None or cached[0] <= time.monotonic():
+        stored = await asyncio.to_thread(_read_stored, key)
+        if stored is not None:
+            _remember(key, stored)
+            return stored
     return await asyncio.shield(asyncio.wrap_future(request(spec)))
+
+
+def _digest(key):
+    return hashlib.sha256(repr(key).encode()).hexdigest()
+
+
+def etag(spec):
+    return f'"{_digest(_key(spec))}"'
+
+
+def http_headers(spec, request=None, versioned=False):
+    """ETag and caching of a frame response. A caller without the HTTP request keeps the old short cache."""
+    policy = 'private, max-age=120' if request is None else VERSIONED if versioned else REVALIDATE
+    return {'ETag': etag(spec), 'Cache-Control': policy}
+
+
+def unchanged(request, headers):
+    """Whether the browser already holds this exact frame (If-None-Match), so a 304 can skip rendering and reading."""
+    sent = request.headers.get('if-none-match') if request is not None else None
+    return bool(sent) and (sent.strip() == '*' or headers['ETag'] in (tag.strip().removeprefix('W/') for tag in sent.split(',')))
+
+
+def _stored_path(key):
+    digest = _digest(key)
+    return db.DATA_DIR / 'cache' / 'frames' / digest[:2] / f'{digest}.jpg'
+
+
+def _read_stored(key):
+    path = _stored_path(key)
+    try:
+        data = path.read_bytes()
+        if not data.startswith(b'\xff\xd8'):
+            path.unlink(missing_ok=True)
+            return None
+        os.utime(path)  # the prune removes the least recently used first
+        return data
+    except OSError:
+        return None
+
+
+def _store(key, data):
+    path = _stored_path(key)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp = tempfile.mkstemp(prefix='.', suffix='.partial', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as handle:
+                handle.write(data)
+            os.replace(temp, path)
+        except BaseException:
+            Path(temp).unlink(missing_ok=True)
+            raise
+    except OSError as exc:
+        # A full disk must not break previews; the frame is simply rendered again next time.
+        log.warning('Could not store a frame in the cache: %s', exc)
+
+
+def _generate_and_store(key, spec):
+    data = _generate(spec)
+    _store(key, data)
+    return data
+
+
+def _remember(key, data):
+    with _lock:
+        _cache[key] = (time.monotonic() + TTL_SECONDS, data)
+        _cache.move_to_end(key)
+        _prune(time.monotonic())
+
+
+def prune_disk(max_bytes=None):
+    """Delete the least recently used cached frames until the cache is under its cap; returns the bytes removed."""
+    cap = DISK_MAX_BYTES if max_bytes is None else max_bytes
+    files, total, removed = [], 0, 0
+    now = time.time()
+    for path in (db.DATA_DIR / 'cache' / 'frames').glob('*/*'):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if path.name.endswith('.partial'):
+            if now - stat.st_mtime > 3600:  # left by a process that stopped mid-write
+                path.unlink(missing_ok=True)
+            continue
+        files.append((stat.st_mtime, stat.st_size, path))
+        total += stat.st_size
+    if total <= cap:
+        return 0
+    files.sort()
+    for _, size, path in files:
+        if total - removed <= cap * DISK_PRUNE_TO:
+            break
+        try:
+            path.unlink()
+            removed += size
+        except OSError:
+            continue
+    return removed
 
 
 def clear_expired():

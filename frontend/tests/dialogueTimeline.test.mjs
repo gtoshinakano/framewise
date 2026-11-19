@@ -62,7 +62,7 @@ test('dragging snaps to hard cuts, the silence around lines and word edges', () 
 
 test('the opening frame is the cut\'s first frame unless the shot starts inside its cut', () => {
   const early = openingFrame({ t: 3.5 }, cuts[1], 100)
-  assert.equal(early.url, '/api/cuts/b/frame/first?v=104')
+  assert.equal(early.url, '/api/cuts/b/frame/first')
   assert.match(early.caption, /First frame of cut 6; it holds 0.50 s/)
   assert.equal(openingFrame({ t: 4 }, cuts[1], 100).derived, false)
   const late = openingFrame({ t: 4.75 }, cuts[1], 100)

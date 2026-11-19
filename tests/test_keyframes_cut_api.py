@@ -19,7 +19,7 @@ class CutKeyframesApiTest(unittest.IsolatedAsyncioTestCase):
         state = {'result': {'selected_frames': [{'source_frame_index': 7}]}}
         with patch.object(keyframes_api, 'cut_selection', return_value=({}, None, state)):
             with self.assertRaises(HTTPException) as error:
-                await keyframes_api.get_target_frame('c', 8)
+                await keyframes_api.get_target_frame('c', 8, None)
         self.assertEqual(error.exception.status_code, 404)
 
 if __name__ == '__main__': unittest.main()
