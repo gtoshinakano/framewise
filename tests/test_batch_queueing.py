@@ -33,6 +33,37 @@ class BatchQueueingTest(unittest.TestCase):
     def jobs(self, pipeline_name):
         return db.all_rows('SELECT * FROM jobs WHERE pipeline=? ORDER BY rowid', (pipeline_name,))
 
+    def test_episode_requests_wait_and_select_new_cuts_with_queued_model_choices(self):
+        from app import target_characters_api
+        with db.connect() as conn:
+            conn.execute('UPDATE cuts SET active=0,cut_index=-1-cut_index')
+        hardcuts = worker.enqueue('e', 'hardcuts')
+        self.assertEqual(main.put_text_generation_settings(main.TextGenerationSettings(openrouter_model='test/original'))['openrouter_model'], 'test/original')
+        requests = [main.queue_episode_consistency_summaries('e'), main.queue_episode_review_answers('e'), main.queue_episode_text_chain('e'),
+                    main.queue_episode_cut_summaries('e'), main.queue_episode_text_processing('e', main.BatchTextInput(openrouter_model='test/explicit')),
+                    target_characters_api.queue_episode('e')]
+        for result in requests:
+            self.assertTrue(result['deferred'], result)
+            job = db.one('SELECT payload_json,priority_class FROM jobs WHERE id=?', (result['job_ids'][0],))
+            self.assertEqual(json.loads(job['payload_json'])['depends_on'], [hardcuts])
+            self.assertEqual(job['priority_class'], 'batch')
+        self.assertEqual(main.queue_episode_consistency_summaries('e')['job_ids'], requests[0]['job_ids'])
+        self.assertIsNone(worker.claim_job(('episode_request',)))
+        main.put_text_generation_settings(main.TextGenerationSettings(openrouter_model='test/later'))
+        with db.connect() as conn:
+            conn.execute("INSERT INTO cuts(id,episode_id,cut_index,start_time,end_time) VALUES ('new','e',0,0,2)")
+            visual = worker.insert_job(conn, 'e', 'analyze', {'workflow': 'single_cut_v2', 'cuts': [{'cut_id': 'new'}], 'depends_on': [hardcuts]})
+            conn.execute("UPDATE jobs SET status='done' WHERE id=?", (hardcuts,))
+        while lease := worker.claim_job(('episode_request',)):
+            worker.process(*lease)
+            worker.release_lease(*lease)
+        jobs = [json.loads(row['payload_json']) for row in self.jobs('consistency_summary')]
+        self.assertEqual({item['cut_id'] for item in jobs}, {'new'})
+        self.assertEqual({item['config']['openrouter_model'] for item in jobs}, {'test/original', 'test/explicit'})
+        self.assertTrue(all(visual in item['depends_on'] for item in jobs))
+        targets = [json.loads(row['payload_json']) for row in self.jobs('character_detect')]
+        self.assertEqual([item['cut_id'] for item in targets], ['new'])
+
     def test_episode_visual_analysis_queues_one_job_for_every_cut(self):
         result = main.queue_episode_visual_analysis('e')
         self.assertEqual(result['queued'], 3)

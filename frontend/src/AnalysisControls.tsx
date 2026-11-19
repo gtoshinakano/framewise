@@ -238,8 +238,8 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   }, { steps: ['consistency'] })
 
   const queueConsistencyFromHere = () => perform('consistency-from', async () => {
-    const result = await api<{ queued: number }>(`/episodes/${episodeId}/consistency-summaries?from_cut=${cut.cut_index + 1}`, { method: 'POST' })
-    return `Consistency summary queued for ${result.queued} cuts from cut ${cut.cut_index + 1}.`
+    const result = await api<TextBatchResult>(`/episodes/${episodeId}/consistency-summaries?from_cut=${cut.cut_index + 1}`, { method: 'POST' })
+    return batchQueueMessage('Consistency summary', cut.cut_index + 1, result, {})
   })
 
   const queueTextFromHere = (kind: 'answers' | 'summaries') => perform(`${kind}-from`, async () => {
@@ -258,8 +258,9 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
 
   const queueAllText = () => perform('text-all', async () => {
     const settings = await api<Pick<AnalysisConfig, 'text_provider' | 'local_thinking' | 'openrouter_model'>>('/text-generation-settings')
-    const result = await api<{ cuts_queued: number; skipped: number }>(`/episodes/${episodeId}/text-processing`, { method: 'POST', body: JSON.stringify(settings) })
-    return `Text processing queued for ${result.cuts_queued} cuts; ${result.skipped} not ready or already queued.`
+    const result = await api<{ cuts_queued: number; skipped: number; deferred?: boolean }>(`/episodes/${episodeId}/text-processing`, { method: 'POST', body: JSON.stringify(settings) })
+    if (result.deferred) return 'Text processing queued after media preparation or cut detection.'
+    return `Text processing queued for ${result.cuts_queued} cuts. ${result.skipped} still need evidence.`
   })
 
   const queueTargets = (kind: 'cut' | 'from-here' | 'all') => perform(`targets-${kind}`, async () => {

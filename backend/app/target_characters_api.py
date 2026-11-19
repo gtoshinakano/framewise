@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import db, keyframes, structured_results, target_characters, target_reviews, target_tracking, worker
+from . import db, episode_requests, keyframes, structured_results, target_characters, target_reviews, target_tracking, worker
 
 router = APIRouter()
 
@@ -64,40 +64,46 @@ def get_target_detections(cut_id: str):
     return result
 
 
+def queue_targets(conn, episode_id, cuts, *, cut_id=None, only_missing=True):
+    skipped = {'not_evaluated': [], 'analysis_disabled': [], 'no_characters': [], 'up_to_date': [], 'already_queued': []}
+    job_ids = []
+    for cut in cuts:
+        cid = cut['id']
+        if not cut_id and (not cut['analysis_enabled'] or cut['no_characters']):
+            reason = 'analysis_disabled' if not cut['analysis_enabled'] else 'no_characters'
+            skipped[reason].append(cut['cut_index'] + 1)
+            continue
+        deps = worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts'), [cid])
+        deps.extend(target_characters.pending_opening_detection(conn, episode_id, cid))
+        deps.extend(keyframes.ensure_selection(conn, episode_id, [cid]))
+        payload = {'cut_id': cid, 'workflow': target_characters.WORKFLOW,
+                   **({'episode_batch': True, 'only_missing': only_missing} if cut_id is None else {})}
+        if deps:
+            payload['depends_on'] = list(dict.fromkeys(deps))
+        job_ids.append(worker.insert_job(conn, episode_id, 'character_detect', payload))
+    return {'queued': len(job_ids), 'job_ids': job_ids, 'skipped': skipped}
+
+
 def _queue(episode_id, cut_id=None, from_cut=None, only_missing=True):
     """Queue one request per cut. Each worker reads the current selection and anchors."""
-    first_index = max(0, from_cut - 1) if from_cut else 0
-    skipped = {'not_evaluated': [], 'analysis_disabled': [], 'no_characters': [], 'up_to_date': [], 'already_queued': []}
+    first_index = max(0, (from_cut or 1) - 1)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
             raise HTTPException(404, 'Episode not found')
-        cuts = conn.execute("""SELECT id,cut_index,analysis_enabled,no_characters FROM cuts
-            WHERE episode_id=? AND active=1 AND cut_index>=? AND (? IS NULL OR id=?) ORDER BY cut_index""",
-            (episode_id, first_index, cut_id, cut_id)).fetchall()
-        if cut_id and not cuts:
-            raise HTTPException(404, 'Active cut not found')
-        job_ids = []
-        for cut in cuts:
-            cid = cut['id']
-            if not cut_id and (not cut['analysis_enabled'] or cut['no_characters']):
-                reason = 'analysis_disabled' if not cut['analysis_enabled'] else 'no_characters'
-                skipped[reason].append(cut['cut_index'] + 1)
-                continue
-            deps = worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts'), [cid])
-            deps.extend(row['id'] for row in conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline='character_detect'
-                AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?
-                AND COALESCE(json_extract(payload_json,'$.workflow'),'')!=?""", (episode_id, cid, target_characters.WORKFLOW)))
-            deps.extend(keyframes.ensure_selection(conn, episode_id, [cid]))
-            payload = {'cut_id': cid, 'workflow': target_characters.WORKFLOW,
-                       **({'episode_batch': True, 'only_missing': only_missing} if cut_id is None else {})}
-            if deps:
-                payload['depends_on'] = list(dict.fromkeys(deps))
-            job_ids.append(worker.insert_job(conn, episode_id, 'character_detect', payload))
-        if job_ids:
+        dispatch = None if cut_id else episode_requests.defer(conn, episode_id, 'target_detection',
+                                                               {'first_index': first_index, 'only_missing': only_missing})
+        if dispatch:
+            result = {'queued': 0, 'job_ids': [dispatch], 'skipped': {}, 'deferred': True}
+        else:
+            cuts = episode_requests.cuts(conn, episode_id, first_index, cut_id)
+            if cut_id and not cuts:
+                raise HTTPException(404, 'Active cut not found')
+            result = queue_targets(conn, episode_id, cuts, cut_id=cut_id, only_missing=only_missing)
+        if result['job_ids']:
             worker.sync_episode_status(conn, episode_id)
     worker.wake_event.set()
-    return {'queued': len(job_ids), 'job_ids': job_ids, 'skipped': skipped}
+    return result
 
 
 @router.post('/api/cuts/{cut_id}/target-detection')

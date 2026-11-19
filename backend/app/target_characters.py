@@ -379,6 +379,14 @@ def gather(conn, job, payload):
             'gallery': anime_gallery.evidence(conn, data['episode']['project_id'])}
 
 
+def pending_opening_detection(conn, episode_id, cut_id):
+    return [row['id'] for row in conn.execute('''SELECT id FROM jobs
+        WHERE episode_id=? AND pipeline='character_detect' AND status IN ('queued','running')
+          AND COALESCE(json_extract(payload_json,'$.workflow'),'')!=?
+          AND (json_extract(payload_json,'$.cut_id')=? OR json_extract(payload_json,'$.select_cuts')=1) ORDER BY rowid''',
+        (episode_id, WORKFLOW, cut_id))]
+
+
 def process(job_id, owner, runtime):
     """Find and order the people on one cut's evaluated frames."""
     from . import inference_worker
@@ -387,6 +395,12 @@ def process(job_id, owner, runtime):
         return
     try:
         payload = json.loads(job['payload_json'])
+        with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            waits = pending_opening_detection(conn, job['episode_id'], payload['cut_id'])
+            if waits:
+                worker.defer_for_dependencies(conn, job, owner, waits, 'Waiting for opening-frame character detection')
+                return
         inputs = anime_bulk.job_snapshot(job, owner, runtime)
         data = inputs.data
         if data.get('skip'):

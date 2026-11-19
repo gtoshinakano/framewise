@@ -1,4 +1,4 @@
-export type BatchQueueResult = { queued: number; skipped?: number; blocked?: Record<string, number[]> }
+export type BatchQueueResult = { queued: number; skipped?: number; blocked?: Record<string, number[]>; deferred?: boolean }
 
 function cutList(numbers: number[]) {
   return numbers.slice(0, 8).join(', ') + (numbers.length > 8 ? ` and ${numbers.length - 8} more` : '')
@@ -9,6 +9,7 @@ function cutList(numbers: number[]) {
  * `reasons` maps a `blocked` key from the server to the words that follow "Not queued,"; its order is the order shown.
  */
 export function batchQueueMessage(what: string, firstCut: number, result: BatchQueueResult, reasons: Record<string, string>, skippedReason?: string) {
+  if (result.deferred) return `${what} queued after media preparation or cut detection.`
   const parts = [`${what} queued for ${result.queued} ${result.queued === 1 ? 'cut' : 'cuts'} from cut ${firstCut}.`]
   if (result.skipped && skippedReason) parts.push(`${result.skipped} skipped, ${skippedReason}.`)
   for (const [key, reason] of Object.entries(reasons)) {

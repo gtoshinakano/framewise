@@ -111,7 +111,14 @@ def pending_jobs(conn, episode_id, pipelines, cut_ids=None):
     requested = set(cut_ids) if cut_ids is not None else None
     found = []
     for row in rows:
-        targets = {ref['id'] for ref in job_kinds.kind_of(row['pipeline']).cuts(json.loads(row['payload_json']))}
+        kind = job_kinds.kind_of(row['pipeline'])
+        payload = json.loads(row['payload_json'])
+        scope = kind.scope(payload) if kind.scope else None
+        if requested is not None and scope and scope.cut_range is not None:
+            targets = {item['id'] for item in conn.execute('SELECT id FROM cuts WHERE episode_id=? AND active=1 AND cut_index BETWEEN ? AND ?',
+                                                          (episode_id, *scope.cut_range))}
+        else:
+            targets = {ref['id'] for ref in kind.cuts(payload)}
         if requested is None or not targets or requested & targets:
             found.append(row['id'])
     return found

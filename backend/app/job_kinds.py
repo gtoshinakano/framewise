@@ -233,7 +233,11 @@ def _visual_scope(payload):
     if payload.get('workflow') != 'single_cut_v2':
         reads.update({'transcript', 'chunks', 'results'})
         writes.add('results')
-    return Scope(frozenset(reads), frozenset(writes), frozenset(ref['id'] for ref in _analysis_cuts(payload)) or None)
+    ids = frozenset(ref['id'] for ref in _analysis_cuts(payload)) or None
+    if payload.get('dynamic_cuts'):
+        return Scope(frozenset(reads), frozenset(writes), cut_range=(payload.get('from_index', 0), 2**63 - 1))
+    nearby = frozenset({'cut_boundaries', 'results'}) if payload.get('workflow') != 'single_cut_v2' else frozenset()
+    return Scope(frozenset(reads), frozenset(writes), ids, nearby)
 
 
 def _visual_invalidates(conn, job):
@@ -528,7 +532,32 @@ def _cut_scope(payload, reads, writes, adjacent_reads=()):
     return Scope(frozenset(reads), frozenset(writes), frozenset({cut_id}) if cut_id else None, frozenset(adjacent_reads))
 
 
+def _episode_request_label(payload):
+    return {'consistency': 'Consistency summaries', 'review_answers': 'Production decisions drafts', 'text_chain': 'Cut text steps',
+            'cut_summaries': 'Cut summaries', 'text_processing': 'Episode text processing',
+            'target_detection': 'Target-frame characters'}.get(payload.get('action'), 'Episode request')
+
+
+def _episode_request_gather(conn, job):
+    from . import episode_requests
+    return episode_requests.gather(conn, job)
+
+
+def _episode_request_inputs(conn, job):
+    from . import episode_requests
+    return episode_requests.inputs(conn, job)
+
+
+def _episode_request_invalidates(conn, job):
+    from . import episode_requests
+    episode_requests.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
+    Kind('episode_request', 'Episode request', False, label=_episode_request_label, cancel_running=_always,
+         resources=frozenset({'cpu_media'}), scope=lambda payload: Scope(frozenset({'cut_boundaries'}), frozenset({'queue'})),
+         priority_class=lambda payload: 'batch', handler='episode_requests.process', inputs=_episode_request_inputs,
+         gather=_episode_request_gather, invalidates=_episode_request_invalidates),
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
          cancel_running=lambda payload: payload.get('workflow') == 'single_cut_v2' or payload.get('text_only') is True,

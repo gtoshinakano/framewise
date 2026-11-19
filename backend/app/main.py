@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import analysis_context, db, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results
+from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
@@ -1885,28 +1885,24 @@ class BatchTextInput(BaseModel):
 @app.post('/api/episodes/{episode_id}/text-processing')
 def queue_episode_text_processing(episode_id: str, body: BatchTextInput):
     """Queue consistency followed by a dependent production brief for each prepared cut."""
+    return queue_text_batch(episode_id, 'text_processing', {'first_index': 0, 'text_choices': body.model_dump()})
+
+
+def _batch_text_processing(conn, episode_id, options, cuts, configuration):
     from . import structured_results, summary_queue
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        if not conn.execute('SELECT id FROM episodes WHERE id=?', (episode_id,)).fetchone():
-            raise HTTPException(404, 'Episode not found')
-        cuts = conn.execute('SELECT * FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 ORDER BY cut_index', (episode_id,)).fetchall()
-        job_ids, skipped = [], 0
-        for cut in cuts:
-            cut_id = cut['id']
-            config = snapshot_analysis_config(conn, cut)
-            config = config.model_copy(update={'text_provider': body.text_provider, 'local_thinking': body.local_thinking, 'openrouter_model': body.openrouter_model})
-            results = structured_results.list_results(cut_id, conn=conn)
-            pending = worker.pending_jobs(conn, episode_id, ('analyze', 'performance_beats'), [cut_id])
-            if not pending and summary_queue.missing_evidence({item['type']: item for item in results}):
-                skipped += 1
-                continue
-            consistency = {'cut_id': cut_id, 'config': config.model_dump(), 'batch': True}
-            first = summary_queue.insert(conn, episode_id, consistency)
-            second = summary_jobs.insert(conn, episode_id, summary_jobs.choices(cut_id, config.model_dump()), parents=[first], batch=True)
-            job_ids.extend((first, second))
-        if job_ids:
-            worker.sync_episode_status(conn, episode_id)
+    job_ids, skipped = [], 0
+    for cut in cuts:
+        cut_id = cut['id']
+        config = {**configuration(cut), **options['text_choices']}
+        results = structured_results.list_results(cut_id, conn=conn)
+        pending = worker.pending_jobs(conn, episode_id, ('analyze', 'performance_beats'), [cut_id])
+        if not pending and summary_queue.missing_evidence({item['type']: item for item in results}):
+            skipped += 1
+            continue
+        consistency = {'cut_id': cut_id, 'config': config, 'batch': True}
+        first = summary_queue.insert(conn, episode_id, consistency)
+        second = summary_jobs.insert(conn, episode_id, summary_jobs.choices(cut_id, config), parents=[first], batch=True)
+        job_ids.extend((first, second))
     return {'cuts_queued': len(job_ids) // 2, 'skipped': skipped, 'job_ids': job_ids}
 
 
@@ -2063,20 +2059,14 @@ def queue_consistency_summary(cut_id: str):
 @app.post('/api/episodes/{episode_id}/consistency-summaries')
 def queue_episode_consistency_summaries(episode_id: str, from_cut: int | None = None):
     """Queue consistency summaries from the displayed cut number onward."""
-    from . import summary_queue
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
-            raise HTTPException(404, 'Episode not found')
-        first_index = max(0, from_cut - 1) if from_cut else 0
-        cuts = conn.execute("""SELECT * FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1
-            AND cut_index>=? ORDER BY cut_index""", (episode_id, first_index)).fetchall()
-        job_ids = [summary_queue.insert(conn, episode_id, {'cut_id': cut['id'], 'batch': True,
-                    'config': snapshot_analysis_config(conn, cut).model_dump()}) for cut in cuts]
-        if job_ids:
-            worker.sync_episode_status(conn, episode_id)
-    return {'queued': len(job_ids), 'job_ids': job_ids}
+    return queue_text_batch(episode_id, 'consistency', {'first_index': max(0, (from_cut or 1) - 1)})
 
+
+def _batch_consistency(conn, episode_id, options, cuts, configuration):
+    from . import summary_queue
+    job_ids = [summary_queue.insert(conn, episode_id, {'cut_id': cut['id'], 'batch': True,
+                'config': configuration(cut)}) for cut in cuts]
+    return {'queued': len(job_ids), 'job_ids': job_ids}
 
 
 @app.post('/api/cuts/{cut_id}/review-answers')
@@ -2096,85 +2086,76 @@ def queue_review_answers(cut_id: str):
 @app.post('/api/episodes/{episode_id}/review-answers')
 def queue_episode_review_answers(episode_id: str, from_cut: int | None = None):
     """Queue production-decision drafts for the enabled cuts in the requested range."""
+    return queue_text_batch(episode_id, 'review_answers', {'first_index': max(0, (from_cut or 1) - 1)})
+
+
+def _batch_review_answers(conn, episode_id, options, cuts, configuration):
     from . import review_answers
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        if not conn.execute('SELECT id FROM episodes WHERE id=?', (episode_id,)).fetchone():
-            raise HTTPException(404, 'Episode not found')
-        first_index = max(0, from_cut - 1) if from_cut else 0
-        cuts = conn.execute("""SELECT * FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1
-            AND cut_index>=? ORDER BY cut_index""", (episode_id, first_index)).fetchall()
-        blocked = {'no_consistency': [], 'busy': [], 'nothing_to_review': []}
-        job_ids = []
-        for cut in cuts:
-            pending = worker.pending_jobs(conn, episode_id, ('consistency_summary',), [cut['id']])
-            if not pending and (reason := review_answers.readiness(conn, cut['id'])):
-                blocked[reason].append(cut['cut_index'] + 1)
-                continue
-            config = snapshot_analysis_config(conn, cut).model_dump()
-            job_ids.append(review_answers.insert(conn, episode_id, {'cut_id': cut['id'], 'config': config, 'auto_save': True}))
-        if job_ids:
-            worker.sync_episode_status(conn, episode_id)
+    blocked = {'no_consistency': [], 'busy': [], 'nothing_to_review': []}
+    job_ids = []
+    for cut in cuts:
+        pending = worker.pending_jobs(conn, episode_id, ('consistency_summary',), [cut['id']])
+        if not pending and (reason := review_answers.readiness(conn, cut['id'])):
+            blocked[reason].append(cut['cut_index'] + 1)
+            continue
+        config = configuration(cut)
+        job_ids.append(review_answers.insert(conn, episode_id, {'cut_id': cut['id'], 'config': config, 'auto_save': True}))
     return {'queued': len(job_ids), 'blocked': blocked, 'job_ids': job_ids}
 
 
 @app.post('/api/episodes/{episode_id}/text-chain')
 def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, only_missing: bool = True):
     """Queue related text steps and reuse current requests with the same choices."""
+    return queue_text_batch(episode_id, 'text_chain', {'first_index': max(0, (from_cut or 1) - 1), 'only_missing': only_missing})
+
+
+def _batch_text_chain(conn, episode_id, options, cuts, configuration):
     from . import performance_beats, review_answers, summary_queue
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
-            raise HTTPException(404, 'Episode not found')
-        first_index = max(0, from_cut - 1) if from_cut else 0
-        cuts = conn.execute("""SELECT * FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1
-            AND cut_index>=? ORDER BY cut_index""", (episode_id, first_index)).fetchall()
-        blocked = {'missing_results': [], 'busy': []}
-        job_ids, queued, kept_summaries, attached = [], 0, 0, 0
-        for cut in cuts:
-            cut_id, number = cut['id'], cut['cut_index'] + 1
-            config = snapshot_analysis_config(conn, cut).model_dump()
-            prior = []
-            for row in conn.execute("""SELECT j.id,j.payload_json FROM jobs j WHERE episode_id=? AND pipeline='review_answers'
-                AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?
-                AND json_extract(payload_json,'$.auto_save')=1
-                AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.depends_on') p JOIN jobs parent ON parent.id=p.value
-                    WHERE parent.pipeline='consistency_summary')
-                ORDER BY rowid DESC""", (episode_id, cut_id)):
-                if json.loads(row['payload_json']).get('config') == config:
-                    prior.append(row)
-            if prior:
-                answer_id = prior[0]['id']
-                parents = json.loads(prior[0]['payload_json']).get('depends_on', [])
-                job_ids.extend([*parents, answer_id])
-            else:
-                results = structured_results.list_results(cut_id, conn=conn)
-                by_type = {item['type']: item for item in results}
-                visual = worker.pending_jobs(conn, episode_id, ('analyze',), [cut_id])
-                beats = performance_beats.pending_job(conn, cut_id)
-                if not beats and 'keyframe_analysis' in by_type and not prompt_context.beats_current(by_type) and by_type.get('initial_frame', {}).get('content'):
-                    beats = performance_beats.insert(conn, episode_id, cut_id,
-                                                   {key: config[key] for key in ('text_provider', 'local_thinking', 'openrouter_model')})
-                if not visual and summary_queue.missing_evidence(by_type, pending_beats=bool(beats)):
-                    blocked['missing_results'].append(number)
-                    continue
-                parents = [beats] if beats else []
-                consistency_id = summary_queue.insert(conn, episode_id, {'cut_id': cut_id, 'config': config,
-                                                      'batch': True, 'depends_on': parents})
-                answer_id = review_answers.insert(conn, episode_id, {'cut_id': cut_id, 'config': config,
-                                                 'auto_save': True, 'depends_on': [consistency_id]})
-                job_ids.extend([*parents, consistency_id, answer_id])
-                queued += 1
-            if only_missing and summary_jobs.current(conn, cut_id):
-                kept_summaries += 1
+    only_missing = options['only_missing']
+    blocked = {'missing_results': [], 'busy': []}
+    job_ids, queued, kept_summaries, attached = [], 0, 0, 0
+    for cut in cuts:
+        cut_id, number = cut['id'], cut['cut_index'] + 1
+        config = configuration(cut)
+        prior = []
+        for row in conn.execute("""SELECT j.id,j.payload_json FROM jobs j WHERE episode_id=? AND pipeline='review_answers'
+            AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?
+            AND json_extract(payload_json,'$.auto_save')=1
+            AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.depends_on') p JOIN jobs parent ON parent.id=p.value
+                WHERE parent.pipeline='consistency_summary')
+            ORDER BY rowid DESC""", (episode_id, cut_id)):
+            if json.loads(row['payload_json']).get('config') == config:
+                prior.append(row)
+        if prior:
+            answer_id = prior[0]['id']
+            parents = json.loads(prior[0]['payload_json']).get('depends_on', [])
+            job_ids.extend([*parents, answer_id])
+        else:
+            results = structured_results.list_results(cut_id, conn=conn)
+            by_type = {item['type']: item for item in results}
+            visual = worker.pending_jobs(conn, episode_id, ('analyze',), [cut_id])
+            beats = performance_beats.pending_job(conn, cut_id)
+            if not beats and 'keyframe_analysis' in by_type and not prompt_context.beats_current(by_type) and by_type.get('initial_frame', {}).get('content'):
+                beats = performance_beats.insert(conn, episode_id, cut_id,
+                                               {key: config[key] for key in ('text_provider', 'local_thinking', 'openrouter_model')})
+            if not visual and summary_queue.missing_evidence(by_type, pending_beats=bool(beats)):
+                blocked['missing_results'].append(number)
                 continue
-            existing = worker.pending_jobs(conn, episode_id, ('regen',), [cut_id])
-            summary_id = summary_jobs.insert(conn, episode_id, summary_jobs.choices(cut_id, config), parents=[answer_id], batch=True)
-            if prior and summary_id not in existing:
-                attached += 1
-            job_ids.append(summary_id)
-        if job_ids:
-            worker.sync_episode_status(conn, episode_id)
+            parents = [beats] if beats else []
+            consistency_id = summary_queue.insert(conn, episode_id, {'cut_id': cut_id, 'config': config,
+                                                  'batch': True, 'depends_on': parents})
+            answer_id = review_answers.insert(conn, episode_id, {'cut_id': cut_id, 'config': config,
+                                             'auto_save': True, 'depends_on': [consistency_id]})
+            job_ids.extend([*parents, consistency_id, answer_id])
+            queued += 1
+        if only_missing and summary_jobs.current(conn, cut_id):
+            kept_summaries += 1
+            continue
+        existing = worker.pending_jobs(conn, episode_id, ('regen',), [cut_id])
+        summary_id = summary_jobs.insert(conn, episode_id, summary_jobs.choices(cut_id, config), parents=[answer_id], batch=True)
+        if prior and summary_id not in existing:
+            attached += 1
+        job_ids.append(summary_id)
     return {'queued': queued, 'attached': attached, 'skipped': kept_summaries, 'blocked': blocked,
             'job_ids': list(dict.fromkeys(job_ids))}
 
@@ -2182,30 +2163,68 @@ def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, only_
 @app.post('/api/episodes/{episode_id}/cut-summaries')
 def queue_episode_cut_summaries(episode_id: str, from_cut: int | None = None, only_missing: bool = True):
     """Queue Cut summaries for enabled cuts from the displayed cut number onward."""
+    return queue_text_batch(episode_id, 'cut_summaries', {'first_index': max(0, (from_cut or 1) - 1), 'only_missing': only_missing})
+
+
+def _batch_cut_summaries(conn, episode_id, options, cuts, configuration):
+    only_missing = options['only_missing']
+    blocked = {'no_consistency': [], 'answers_pending': [], 'busy': []}
+    job_ids, skipped = [], 0
+    for cut in cuts:
+        cut_id = cut['id']
+        if only_missing and summary_jobs.current(conn, cut_id):
+            skipped += 1
+            continue
+        parents = worker.pending_jobs(conn, episode_id, ('consistency_summary',), [cut_id])
+        if not parents and not conn.execute("""SELECT 1 FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL
+            AND json_extract(settings_json,'$.structured_type')='consistency_summary'""", (cut_id,)).fetchone():
+            blocked['no_consistency'].append(cut['cut_index'] + 1)
+            continue
+        choices = summary_jobs.choices(cut_id, configuration(cut))
+        job_ids.append(summary_jobs.insert(conn, episode_id, choices, parents=parents, batch=True))
+    return {'queued': len(job_ids), 'skipped': skipped, 'blocked': blocked, 'job_ids': job_ids}
+
+
+TEXT_BATCHES = {'text_processing': _batch_text_processing, 'consistency': _batch_consistency,
+                'review_answers': _batch_review_answers, 'text_chain': _batch_text_chain, 'cut_summaries': _batch_cut_summaries}
+
+
+def snapshot_batch_config(conn, episode_id):
+    settings = text_generation_settings(conn)
+    default = AnalysisConfig(video_frame_budget=60).model_copy(update=settings).model_dump()
+    saved = {row['id']: AnalysisConfig.model_validate_json(row['config_json']).model_copy(update=settings).model_dump()
+             for row in conn.execute("""SELECT c.id,ac.config_json FROM cuts c JOIN cut_analysis_configs ac ON ac.cut_id=c.id
+                 WHERE c.episode_id=? AND c.active=1""", (episode_id,))}
+    return {'default': default, 'cuts': saved}
+
+
+def run_text_batch(conn, episode_id, action, options, cuts, configs=None):
+    def configuration(cut):
+        if configs is None:
+            return snapshot_analysis_config(conn, cut).model_dump()
+        chosen = dict(configs['cuts'].get(cut['id'], configs['default']))
+        if chosen.get('video_frame_budget') is not None:
+            chosen['video_fps'] = automatic_video_fps(max(0.000001, cut['end_time'] - cut['start_time']))
+        return chosen
+
+    return TEXT_BATCHES[action](conn, episode_id, options, [cut for cut in cuts if cut['analysis_enabled']], configuration)
+
+
+def queue_text_batch(episode_id, action, options):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
             raise HTTPException(404, 'Episode not found')
-        first_index = max(0, from_cut - 1) if from_cut else 0
-        cuts = conn.execute("""SELECT * FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1
-            AND cut_index>=? ORDER BY cut_index""", (episode_id, first_index)).fetchall()
-        blocked = {'no_consistency': [], 'answers_pending': [], 'busy': []}
-        job_ids, skipped = [], 0
-        for cut in cuts:
-            cut_id = cut['id']
-            if only_missing and summary_jobs.current(conn, cut_id):
-                skipped += 1
-                continue
-            parents = worker.pending_jobs(conn, episode_id, ('consistency_summary',), [cut_id])
-            if not parents and not conn.execute("""SELECT 1 FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL
-                AND json_extract(settings_json,'$.structured_type')='consistency_summary'""", (cut_id,)).fetchone():
-                blocked['no_consistency'].append(cut['cut_index'] + 1)
-                continue
-            choices = summary_jobs.choices(cut_id, snapshot_analysis_config(conn, cut).model_dump())
-            job_ids.append(summary_jobs.insert(conn, episode_id, choices, parents=parents, batch=True))
-        if job_ids:
+        dispatch = episode_requests.defer(conn, episode_id, action, options, config=lambda: snapshot_batch_config(conn, episode_id))
+        if dispatch:
+            result = {'queued': 0, 'cuts_queued': 0, 'skipped': 0, 'blocked': {}, 'job_ids': [dispatch], 'deferred': True}
+        else:
+            cuts = episode_requests.cuts(conn, episode_id, options['first_index'])
+            result = run_text_batch(conn, episode_id, action, options, cuts)
+        if result['job_ids']:
             worker.sync_episode_status(conn, episode_id)
-    return {'queued': len(job_ids), 'skipped': skipped, 'blocked': blocked, 'job_ids': job_ids}
+    worker.wake_event.set()
+    return result
 
 
 @app.get('/api/cuts/{cut_id}/review-answers')
