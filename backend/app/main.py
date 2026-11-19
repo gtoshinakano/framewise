@@ -1012,6 +1012,68 @@ def queue_subtitles(conn, episode_id, language, depends_on=()):
     return job_id
 
 
+@app.post('/api/episodes/{episode_id}/prepare')
+def prepare_episode(episode_id: str, body: SubtitleRunInput):
+    """Queue the episode's remaining setup steps in their input order."""
+    from . import anime_bulk, subtitle_reader
+    try:
+        language = subtitle_reader.resolve_language(body.language)['name']
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        episode = db.one('SELECT * FROM episodes WHERE id=?', (episode_id,), conn=conn)
+        if not episode:
+            raise HTTPException(404, 'Episode not found')
+        steps, depends_on = [], []
+
+        def record(step, jobs):
+            depends_on.extend(job for job in jobs if job not in depends_on)
+            steps.append({'step': step, 'job_ids': jobs, 'status': 'queued' if jobs else 'skipped'})
+
+        media_jobs = worker.pending_jobs(conn, episode_id, ('prepare',))
+        folder = media.episode_dir(episode['project_id'], episode_id)
+        if not media_jobs and (not episode['duration'] or not (folder / 'proxy.mp4').is_file()):
+            media_jobs = [worker.enqueue_in(conn, episode_id, 'prepare')]
+        record('media', media_jobs)
+
+        cut_jobs = [row['id'] for row in conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline='hardcuts'
+            AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id') IS NULL ORDER BY rowid""", (episode_id,))]
+        if not cut_jobs and not conn.execute('SELECT 1 FROM cuts WHERE episode_id=? AND active=1 LIMIT 1', (episode_id,)).fetchone():
+            cut_jobs = [worker.enqueue_in(conn, episode_id, 'hardcuts', {'depends_on': list(depends_on)})]
+        record('hardcuts', cut_jobs)
+
+        full_audio = conn.execute("""SELECT id,status,payload_json FROM jobs WHERE episode_id=? AND pipeline='transcribe'
+            AND status IN ('queued','running','done') AND json_extract(payload_json,'$.range') IS NULL
+            ORDER BY CASE WHEN status='done' THEN 1 ELSE 0 END,rowid DESC LIMIT 1""", (episode_id,)).fetchone()
+        audio_jobs = []
+        if full_audio and full_audio['status'] != 'done':
+            if full_audio['status'] == 'queued':
+                worker.add_dependencies(conn, full_audio, depends_on)
+            audio_jobs = [full_audio['id']]
+        elif not full_audio and episode['has_audio'] != 0:
+            audio_jobs = [worker.enqueue_in(conn, episode_id, 'transcribe', {'depends_on': list(depends_on)})]
+        record('transcribe', audio_jobs)
+
+        subtitles = subtitle_store.current_run(episode_id, conn)
+        subtitle_jobs = []
+        if not subtitles or subtitles['language'] != language:
+            subtitle_jobs = [queue_subtitles(conn, episode_id, language, depends_on)]
+        record('subtitles', subtitle_jobs)
+
+        for phase in ('boxes', 'recognize'):
+            # Pending boundary replacement may produce additional cuts. The dispatcher
+            # checks the new cuts after the prerequisites and skips any completed work.
+            queued = []
+            if cut_jobs or (phase == 'recognize' and steps[-1]['job_ids']) or anime_bulk.eligible_cuts(conn, episode_id, phase):
+                queued = anime_bulk.enqueue(conn, episode_id, phase, depends_on=depends_on)
+            record(phase, queued)
+        worker.sync_episode_status(conn, episode_id)
+    worker.wake_event.set()
+    return {'steps': steps, 'job_ids': depends_on}
+
+
 @app.get("/api/episodes/{episode_id}/subtitles", responses={200: {"model": EpisodeSubtitles}})
 def list_episode_subtitles(episode_id: str, history: bool = False):
     """Return the subtitle language, the current run and its lines. Lines belong to the episode, not to a cut."""

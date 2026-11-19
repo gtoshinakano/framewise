@@ -24,6 +24,7 @@ import { ChunkInspector } from './ChunkInspector'
 import { QueueDrawer } from './QueueDrawer'
 import type { QueueSummary } from './queueView'
 import { EpisodeSettingsDialog } from './EpisodeSettingsDialog'
+import { PrepareEpisodeDialog } from './PrepareEpisodeDialog'
 import { IconButton } from './EditorUi'
 import { useCutEdits } from './useCutEdits'
 import { useEditorShortcuts } from './useEditorShortcuts'
@@ -199,6 +200,7 @@ function Editor({ id }: { id: string }) {
   const closeSequence = useCallback(() => setSequenceOpen(null), [])
   const refreshSequences = useCallback(() => { void sequenceApi.list(id).then(setSequences).catch(() => {}) }, [id])
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [prepareOpen, setPrepareOpen] = useState(false)
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
   // The queue drawer, opened at the top or at Needs attention.
   const [queueOpen, setQueueOpen] = useState<false | 'top' | 'attention'>(false)
@@ -322,7 +324,7 @@ function Editor({ id }: { id: string }) {
   const undo = () => { if (history?.undo && !historyReason) void cutEdits.undo() }
   const redo = () => { if (history?.redo && !historyReason) void cutEdits.redo() }
   const step = (direction: 1 | -1) => { if (!activeSelected || !episode) return; const target = episode.cuts[activeSelected.cut_index + direction]; if (target) selectCut(target) }
-  useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !queueOpen, {
+  useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !prepareOpen && !queueOpen, {
     playPause: togglePlay, split, undo, redo, previous: () => step(-1), next: () => step(1),
     nextNeeding: () => { if (!episode) return; const next = nextNeedingAction(episode.cuts, selectedId, cutFilters.active); if (next) selectCut(next) },
     filters: () => setFiltersOpen(true),
@@ -344,6 +346,7 @@ function Editor({ id }: { id: string }) {
     <EditorHeader projectId={episode?.project_id} projectTitle={project?.title} episodeTitle={episode?.title} status={episode?.status || 'queued'} stage={episode?.stage}
       hasCuts={!!episode?.cuts.length} mediaBlocked={mediaRequest ? 'Queuing…' : ''} characterBlock={characterBlock} onCharacterStep={step => void queueCharacterStep(step)}
       onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}
+      onPrepareEpisode={() => setPrepareOpen(true)}
       queue={queueSummary} running={jobs.some(job => job.status === 'running')} onOpenQueue={focus => setQueueOpen(focus || 'top')}
       onOpenSettings={() => setSettingsOpen(true)} onDeleteEpisode={() => void remove()} />
     {!episode ? <div className="muted p-12">{loadError || 'Loading episode…'}</div> : <div className="editor-workspace" style={workspaceStyle}>
@@ -394,6 +397,8 @@ function Editor({ id }: { id: string }) {
       onOpenCut={cutId => { const cut = [...episode.cuts, ...episode.archived_cuts].find(item => item.id === cutId); if (cut) openCutAnalysis(cut); else toast({ tone: 'error', message: 'That cut no longer exists.' }) }}
       onOpenSequence={setSequenceOpen} />}
     {episode && settingsOpen && <EpisodeSettingsDialog episode={episode} initial={episode.settings} onSave={saveSettings} onDelete={() => void remove()} onClose={closeSettings} />}
+    {episode && prepareOpen && <PrepareEpisodeDialog episodeId={id} savedLanguage={episode.subtitle_language} onClose={() => setPrepareOpen(false)}
+      onQueued={queued => { setPrepareOpen(false); if (queued) setQueueOpen('top'); toast({ message: queued ? 'Episode preparation queued.' : 'Episode preparation is already complete.' }); void refresh() }} />}
   </div></EpisodeEventsContext.Provider>
 }
 

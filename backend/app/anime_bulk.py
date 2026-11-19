@@ -165,7 +165,7 @@ def enqueue(conn, episode_id, phase, *, rerun=False, cut_id=None, depends_on=())
     return _enqueue_cuts(conn, episode_id, phase, rerun=rerun, cut_id=cut_id, depends_on=waits)
 
 
-def _enqueue_cuts(conn, episode_id, phase, *, rerun, cut_id=None, depends_on=()):
+def eligible_cuts(conn, episode_id, phase, *, rerun=False, cut_id=None, depends_on=()):
     # The latest run for the cut's current boundaries decides what is still missing.
     latest = """(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id AND r2.cut_start=c.start_time AND r2.cut_end=c.end_time ORDER BY r2.rowid DESC LIMIT 1)"""
     # Current detection runs save one frame. Older runs may still have both
@@ -188,8 +188,12 @@ def _enqueue_cuts(conn, episode_id, phase, *, rerun, cut_id=None, depends_on=())
     scope = "AND c.id=?" if cut_id else "AND c.analysis_enabled=1 AND c.no_characters=0"
     if cut_id and depends_on:
         need = ''  # a cut producer can make its current evidence obsolete
-    cuts = conn.execute(f"""SELECT c.id FROM cuts c WHERE c.episode_id=? AND c.active=1 {scope}
+    return conn.execute(f"""SELECT c.id FROM cuts c WHERE c.episode_id=? AND c.active=1 {scope}
         {need} ORDER BY c.cut_index""", (episode_id, *([cut_id] if cut_id else []))).fetchall()
+
+
+def _enqueue_cuts(conn, episode_id, phase, *, rerun, cut_id=None, depends_on=()):
+    cuts = eligible_cuts(conn, episode_id, phase, rerun=rerun, cut_id=cut_id, depends_on=depends_on)
     job_ids, batch_id = [], str(uuid.uuid4())
     for row in cuts:
         cid = row['id']

@@ -3,7 +3,7 @@ import { Captions } from 'lucide-react'
 import { api, type EpisodeSubtitles, type Job, type SubtitleLine, type SubtitleRun } from './api'
 import { StaleChip } from './RunUi'
 
-const LANGUAGES = ['Portuguese', 'Brazilian Portuguese', 'English', 'Spanish', 'French', 'German', 'Italian', 'Japanese', 'Korean', 'Chinese', 'Russian', 'Arabic', 'Hindi', 'Turkish', 'Indonesian']
+export const SUBTITLE_LANGUAGES = ['Portuguese', 'Brazilian Portuguese', 'English', 'Spanish', 'French', 'German', 'Italian', 'Japanese', 'Korean', 'Chinese', 'Russian', 'Arabic', 'Hindi', 'Turkish', 'Indonesian']
 const PAGE = 40
 
 function clock(seconds: number) {
@@ -57,7 +57,7 @@ export default function SubtitlePanel({ episodeId, ready, savedLanguage, run, jo
     <div className="flex items-end gap-2">
       <label className="min-w-0 flex-1"><span className="label !mb-1 !text-[10px]">Subtitle language · required</span>
         <input className="field !py-2" list="subtitle-languages" value={language} maxLength={60} placeholder="e.g. Portuguese" disabled={working} onChange={event => setLanguage(event.target.value)} />
-        <datalist id="subtitle-languages">{LANGUAGES.map(name => <option key={name} value={name} />)}</datalist>
+        <datalist id="subtitle-languages">{SUBTITLE_LANGUAGES.map(name => <option key={name} value={name} />)}</datalist>
       </label>
       <button className="btn btn-primary !py-2" disabled={working || !!reason || !language.trim()} onClick={() => void extract()} title={run ? 'Extract subtitles again for the entire video' : 'Extract subtitles for the entire video'}>
         <Captions size={14} /> {run ? 'Extract again' : 'Extract'}

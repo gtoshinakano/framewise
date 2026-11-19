@@ -142,6 +142,49 @@ class SubtitleJobTest(unittest.TestCase):
         self.assertEqual(self.client.post(f'/api/jobs/{job_id}/cancel').status_code, 200)
         self.assertEqual(db.one('SELECT status,stage FROM jobs WHERE id=?', (job_id,)), {'status': 'cancelled', 'stage': 'Cancelled'})
 
+    def test_prepare_episode_orders_steps_reuses_pending_requests_and_skips_finished_steps(self):
+        self.prepare()
+        folder = media.episode_dir('p', 'e')
+        (folder / 'proxy.mp4').touch()
+        with db.connect() as conn:
+            conn.execute("DELETE FROM cuts WHERE episode_id='e'")
+        url = '/api/episodes/e/prepare'
+        self.assertEqual(self.client.post(url, json={}).status_code, 422)
+        transcribe = self.client.post('/api/episodes/e/transcribe').json()['job_id']
+        self.client.post('/api/episodes/e/voice-samples', json={'character_context_id': 'ctx', 'start_time': 0, 'end_time': 3})
+        response = self.client.post(url, json={'language': 'pt'})
+        self.assertEqual(response.status_code, 200, response.text)
+        steps = response.json()['steps']
+        self.assertEqual([step['step'] for step in steps],
+                         ['media', 'hardcuts', 'transcribe', 'subtitles', 'boxes', 'recognize'])
+        self.assertEqual(steps[0]['status'], 'skipped')
+        jobs = response.json()['job_ids']
+        self.assertEqual(len(jobs), 5)
+        self.assertEqual(jobs[1], transcribe)
+        self.assertEqual(self.client.post(url, json={'language': 'Portuguese'}).json()['job_ids'], jobs)
+        for parent, successor in zip(jobs, jobs[1:]):
+            payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (successor,))['payload_json'])
+            self.assertIn(parent, payload['depends_on'])
+        self.assertIsNone(worker.claim_job(('transcribe', 'subtitles', 'character_detect')))
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='done' WHERE episode_id='e'")
+            conn.execute("INSERT INTO cuts(id,episode_id,cut_index,start_time,end_time) VALUES ('new','e',0,0,60)")
+            conn.execute("""INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,phase,model_id)
+                VALUES ('recognized','new',0,60,'[{"position":"first"}]','complete','test')""")
+            conn.execute("INSERT INTO subtitle_runs(id,episode_id,status,language) VALUES ('sub','e','complete','Portuguese')")
+        finished = self.client.post(url, json={'language': 'Portuguese'}).json()
+        self.assertEqual(finished['job_ids'], [])
+        self.assertTrue(all(step['status'] == 'skipped' for step in finished['steps']))
+
+    def test_prepare_episode_skips_transcription_on_a_known_silent_video(self):
+        self.prepare()
+        (media.episode_dir('p', 'e') / 'proxy.mp4').touch()
+        with db.connect() as conn:
+            conn.execute("UPDATE episodes SET has_audio=0 WHERE id='e'")
+        steps = self.client.post('/api/episodes/e/prepare', json={'language': 'en'}).json()['steps']
+        self.assertEqual(steps[2], {'step': 'transcribe', 'status': 'skipped', 'job_ids': []})
+        self.assertEqual(steps[3]['status'], 'queued')
+
     # -- the job ------------------------------------------------------------------------------------
 
     def test_new_transcript_times_restart_an_inflight_scan(self):

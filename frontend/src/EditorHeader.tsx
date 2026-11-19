@@ -9,7 +9,7 @@ export type CharacterStep = 'character-boxes' | 'character-detection' | 'charact
 const go = (path: string) => { window.location.hash = path }
 
 /** The episode editor's top bar: where you are, the episode-wide actions grouped in menus, and the queue. */
-export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, queue, running, onOpenQueue, onOpenSettings, onDeleteEpisode }: {
+export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, onOpenSettings, onDeleteEpisode }: {
   projectId?: string
   projectTitle?: string
   episodeTitle?: string
@@ -23,6 +23,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   onCharacterStep: (step: CharacterStep) => void
   onDetectCuts: () => void
   onPrepare: () => void
+  onPrepareEpisode: () => void
   /** The episode's queue counter (backend runs.summary); null until the first status response. */
   queue: QueueSummary | null
   /** Anything of this episode running, GPU or media work. */
@@ -40,7 +41,9 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
     { key: 'rerun', icon: RotateCcw, tone: 'caution', title: 'Redo automatic labels…', hint: 'Recognizes every cut again using your confirmed labels as examples. Manual labels and drawn boxes stay as they are.', disabled: !!characterBlock, disabledReason: characterBlock, onSelect: () => onCharacterStep('character-detection-rerun') },
   ]
   const cutItems: MenuEntry[] = [
-    ...(hasCuts ? [{ key: 'redetect', icon: Scissors, tone: 'caution' as const, title: 'Redetect all cuts…', hint: 'Finds hard cuts in the whole video again. Notes stay on matching cuts; cut edits can no longer be undone.', disabled: !!mediaBlocked, disabledReason: mediaBlocked, onSelect: onDetectCuts }] : []),
+    ...(hasCuts ? [{ key: 'prepare-episode', icon: ListChecks, title: 'Prepare episode…', onSelect: onPrepareEpisode }] : []),
+    { key: 'redetect', icon: Scissors, tone: hasCuts ? 'caution' : undefined, title: hasCuts ? 'Redetect all cuts…' : 'Detect hard cuts',
+      hint: hasCuts ? 'Notes stay on matching cuts. Earlier cut edits can no longer be undone.' : undefined, disabled: !!mediaBlocked, disabledReason: mediaBlocked, onSelect: onDetectCuts },
     { key: 'prepare', icon: RefreshCw, title: 'Rebuild preview & waveform', hint: 'Creates the preview video, frames, audio and waveform again (Prepare).', disabled: !!mediaBlocked, disabledReason: mediaBlocked, onSelect: onPrepare },
   ]
   const episodeItems: MenuEntry[] = [
@@ -63,7 +66,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
       {hasCuts
         ? <Menu label="Cuts and media" items={cutItems} align="end" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md icon-btn-text" title="Cuts and media"><Scissors size={16} className="text-[#bca7ff]" aria-hidden /><span className="hidden lg:inline">Cuts</span><ChevronDown size={13} aria-hidden /></button>} />
         : <>
-          <button type="button" disabled={!!mediaBlocked} title={mediaBlocked || 'Find the hard cuts in the whole video'} onClick={onDetectCuts} className="icon-btn icon-btn-md icon-btn-text tone-primary"><Scissors size={16} aria-hidden /><span>Detect hard cuts</span></button>
+          <button type="button" onClick={onPrepareEpisode} className="icon-btn icon-btn-md icon-btn-text tone-primary"><ListChecks size={16} aria-hidden /><span>Prepare episode</span></button>
           <Menu label="Media" items={cutItems} align="end" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md" aria-label="Media actions" title="Media actions"><ChevronDown size={14} aria-hidden /></button>} />
         </>}
       <span className="mx-1 hidden h-5 w-px bg-[#333945] sm:block" aria-hidden />

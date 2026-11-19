@@ -71,15 +71,36 @@ def insert_job(conn, episode_id, pipeline, payload, *, priority_class=None, retr
     if choice.get('upload_hash'):
         choice.pop('upload_id', None)
     request_key = job_inputs.fingerprint({'payload': choice, 'retry_of': retry_of})
-    existing = conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline=? AND request_key=?
+    existing = conn.execute("""SELECT id,status,payload_json FROM jobs WHERE episode_id=? AND pipeline=? AND request_key=?
         AND status IN ('queued','running')""", (episode_id, pipeline, request_key)).fetchone()
     if existing:
+        if existing['status'] == 'queued' and payload.get('depends_on'):
+            add_dependencies(conn, existing, payload['depends_on'])
         return existing['id']
     job_id = str(uuid.uuid4())
     conn.execute("""INSERT INTO jobs(id,episode_id,pipeline,payload_json,stage,priority_class,retry_of,request_key)
         VALUES (?,?,?,?,?,?,?,?)""", (job_id, episode_id, pipeline, json.dumps(payload, ensure_ascii=False), stage,
                                       priority_class or kind.priority(payload), retry_of, request_key))
     return job_id
+
+
+def add_dependencies(conn, job, requested):
+    """A reused queued request also waits for its new prerequisites, barring cycles."""
+    payload = json.loads(job['payload_json'])
+    previous = payload.get('depends_on') or []
+    parents = list(previous)
+    for parent in dict.fromkeys(requested):
+        if parent in parents:
+            continue
+        cycle = conn.execute("""WITH RECURSIVE ancestors(id) AS (
+            SELECT ? UNION SELECT p.value FROM ancestors a JOIN jobs j ON j.id=a.id,
+                json_each(j.payload_json,'$.depends_on') p
+        ) SELECT 1 FROM ancestors WHERE id=?""", (parent, job['id'])).fetchone()
+        if not cycle:
+            parents.append(parent)
+    if parents != previous:
+        conn.execute('UPDATE jobs SET payload_json=? WHERE id=?',
+                     (json.dumps({**payload, 'depends_on': parents}, ensure_ascii=False), job['id']))
 
 
 def pending_jobs(conn, episode_id, pipelines, cut_ids=None):
