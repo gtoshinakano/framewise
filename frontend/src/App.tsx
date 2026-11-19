@@ -303,16 +303,13 @@ function Editor({ id }: { id: string }) {
   const jobs = episode?.jobs || []
   const active = (job: Job) => job.status === 'running' || job.status === 'queued'
   const busy = jobs.some(active)
-  const mediaBusy = jobs.some(job => ['prepare', 'hardcuts', 'cutframes'].includes(job.pipeline) && active(job))
-  // Cut edits wait for preview jobs by themselves; only these two replace or rebuild cuts underneath them.
-  const cutsBusy = jobs.some(job => ['prepare', 'hardcuts'].includes(job.pipeline) && active(job))
   const cutQueueStates = analysisQueueStates(jobs)
   const analysisBusy = jobs.some(job => (['prepare', 'hardcuts', 'character_detect'].includes(job.pipeline) || job.workflow === 'boundary_frame') && active(job))
   const characterBlock = bulkDetectionWorking ? 'Queuing…' : !episode?.cuts.length ? 'Detect hard cuts first.' : ''
   const frameVersion = `${jobs[0]?.id || ''}-${jobs[0]?.status || ''}`
   const history = episode?.cut_history
   const activeSelected = selected?.active ? selected : undefined
-  const historyReason = cutsBusy ? 'Wait for the cut detection or Prepare to finish' : cutEdits.working ? 'Working…' : ''
+  const historyReason = cutEdits.working ? 'Saving cut edit…' : ''
   const editReason = !activeSelected ? 'Select a cut first' : historyReason
   // Split works on the cut under the playhead, like a video editor, so several splits in a row need no reselecting.
   const splitTarget = episode?.cuts.find(cut => time >= cut.start_time + 0.1 && time <= cut.end_time - 0.1)
@@ -365,7 +362,7 @@ function Editor({ id }: { id: string }) {
         </div>
       </main>
       <aside id="inspector-panel" className="editor-inspector bg-[#131720]" role="tabpanel" aria-labelledby={`inspector-tab-${activeTab}`}>
-        {activeTab === 'cut' ? selected ? <CutInspector cut={selected} cuts={episode.cuts} queueState={cutQueueStates.get(selected.id)} time={time} duration={duration} mediaBusy={mediaBusy} busy={busy} frameVersion={frameVersion}
+        {activeTab === 'cut' ? selected ? <CutInspector cut={selected} cuts={episode.cuts} queueState={cutQueueStates.get(selected.id)} time={time} duration={duration} frameVersion={frameVersion}
           sceneThreshold={episode.settings.scene_threshold ?? 0.32} detectionJob={cutDetectionJob} onSelect={selectCut} onPlay={playRange} onSeek={seek} onOpenAnalysis={() => setAnalysisOpen(true)}
           onToggleAnalysis={() => void toggleAnalysis()} onSaveNotes={saveNotes} onApplyTiming={(start, end) => void cutEdits.edit('timing', selected.id, { start, end })} onDetectWithin={threshold => void detectWithin(threshold)}
           onCopy={text => { void navigator.clipboard?.writeText(text).then(() => toast({ message: `Copied ${text}`, duration: 2000 })).catch(() => {}) }} />

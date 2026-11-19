@@ -37,8 +37,8 @@ test('the running job is preferred as the active run', () => {
 })
 
 test('preflight explains what is blocking or risky', () => {
-  assert.deepEqual(preflight({ mediaBusy: false, enabled: true, characters: null }), [])
-  const texts = preflight({ mediaBusy: true, enabled: false, characters: { boxes: 3, autoUnverified: 2, unknown: 1, stale: true } })
+  assert.deepEqual(preflight({ hasPrerequisites: false, enabled: true, characters: null }), [])
+  const texts = preflight({ hasPrerequisites: true, enabled: false, characters: { boxes: 3, autoUnverified: 2, unknown: 1, stale: true } })
   assert.equal(texts.length, 5)
   assert.equal(texts[0].level, 'error')
   assert.match(texts.find(item => /unverified/.test(item.text)).text, /^2 automatic labels are unverified/)

@@ -79,6 +79,12 @@ def opening_box_edited(conn, run_id, position):
         invalidate_detections(conn, row['id'], reason='First-frame boxes or labels were edited')
 
 
+def invalidate_cut_timing(conn, cut_ids):
+    conn.executemany("""UPDATE analysis_results SET stale_reason='Cut timing changed' WHERE cut_id=?
+        AND superseded_by IS NULL AND (origin='model' OR title='Cut summary'
+        OR json_extract(settings_json,'$.structured_type') IS NOT NULL)""", [(cut_id,) for cut_id in cut_ids])
+
+
 def save_generated(conn, cut_id, job_id, owner, result_type, content, model_id, prompt, settings, context, *, expected_current=...):
     """Append a generated revision while holding the worker lease and transaction."""
     worker.require_lease(conn, job_id, owner)

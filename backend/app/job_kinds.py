@@ -245,6 +245,27 @@ def _detection_invalidates(conn, job):
     structured_results.invalidate_detections(conn, payload['cut_id'], target=payload.get('workflow') == 'target_frames_v1')
 
 
+def _preview_scope(payload):
+    ids = frozenset(ref['id'] for ref in _frame_cuts(payload))
+    return Scope(frozenset({'cut_boundaries'}), frozenset({'cut_boundaries' if payload.get('frame_step') else 'previews'}),
+                 None if payload.get('frame_step') else ids or None)
+
+
+def _preview_gather(conn, job):
+    from . import cut_previews
+    return cut_previews.gather(conn, job)
+
+
+def _preview_inputs(conn, job):
+    from . import cut_previews
+    return cut_previews.inputs(conn, job)
+
+
+def _preview_invalidates(conn, job):
+    from . import cut_previews
+    cut_previews.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -281,7 +302,10 @@ KINDS = {kind.pipeline: kind for kind in (
     Kind('hardcuts', 'Hard-cut detection', False, cuts=_one_cut, cancel_queued=False,
          keys=lambda payload, cut_ids: [f'hardcuts:{cut_id}' for cut_id in cut_ids] or ['hardcuts']),
     Kind('cutframes', 'Cut previews', False, cuts=_frame_cuts, cancel_queued=False,
-         keys=lambda payload, cut_ids: [f'cutframes:{cut_id}' for cut_id in cut_ids]),
+         keys=lambda payload, cut_ids: [f'cutframes:{cut_id}' for cut_id in cut_ids],
+         resources=frozenset({'cpu_media'}), scope=_preview_scope,
+         priority_class=lambda payload: 'interactive' if payload.get('frame_step') else 'batch',
+         inputs=_preview_inputs, gather=_preview_gather, invalidates=_preview_invalidates),
     Kind('brief_export', 'Download', False, label=_export_label, cuts=_export_cuts, cancel_queued=False, attention=False),
 )}
 

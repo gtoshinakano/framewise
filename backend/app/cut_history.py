@@ -102,9 +102,9 @@ def has_history(conn, cut_id: str) -> bool:
 
 
 def busy(conn, episode_id: str) -> bool:
-    # A queued preview job is harmless: it reads the cut times when it runs. A running one may be
-    # writing frames for the times it read, and the other two replace or move cuts themselves.
-    return conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND ((pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')) OR (pipeline='cutframes' AND status='running'))",
+    # Only an episode-wide replacement owns the entire cut list.
+    return conn.execute("""SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')
+        AND (pipeline='prepare' OR (pipeline='hardcuts' AND json_extract(payload_json,'$.cut_id') IS NULL))""",
                         (episode_id,)).fetchone() is not None
 
 
@@ -125,9 +125,9 @@ def _restore(conn, episode_id: str, expected: list[dict], target: list[dict], cr
             continue
         if cut['id'] in created_ids and not has_history(conn, cut['id']):
             conn.execute('DELETE FROM cuts WHERE id=?', (cut['id'],))
-            removed.append(cut['id'])
         else:
             conn.execute('UPDATE cuts SET active=0 WHERE id=?', (cut['id'],))
+        removed.append(cut['id'])
     changed = set()
     for cut in target:
         row = conn.execute('SELECT active,start_time,end_time FROM cuts WHERE id=? AND episode_id=?', (cut['id'], episode_id)).fetchone()
@@ -146,7 +146,7 @@ def _restore(conn, episode_id: str, expected: list[dict], target: list[dict], cr
 
 def undo(conn, episode_id: str) -> dict:
     if busy(conn, episode_id):
-        raise Busy('Cut previews are being updated; undo again in a moment')
+        raise Busy('Wait for media preparation or full hard-cut detection to finish')
     edit = conn.execute('SELECT * FROM cut_edits WHERE episode_id=? AND undone_at IS NULL ORDER BY rowid DESC LIMIT 1', (episode_id,)).fetchone()
     if not edit:
         raise Conflict('There is no cut edit to undo')
@@ -157,7 +157,7 @@ def undo(conn, episode_id: str) -> dict:
 
 def redo(conn, episode_id: str) -> dict:
     if busy(conn, episode_id):
-        raise Busy('Cut previews are being updated; redo again in a moment')
+        raise Busy('Wait for media preparation or full hard-cut detection to finish')
     edit = conn.execute('SELECT * FROM cut_edits WHERE episode_id=? AND undone_at IS NOT NULL ORDER BY rowid ASC LIMIT 1', (episode_id,)).fetchone()
     if not edit:
         raise Conflict('There is no cut edit to redo')

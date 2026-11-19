@@ -100,7 +100,7 @@ def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
             if not episode:
                 raise ValueError("Episode not found")
             existing = conn.execute("SELECT id FROM jobs WHERE episode_id=? AND pipeline NOT IN ('brief_export','composition_compact') AND status IN ('queued','running')", (episode_id,)).fetchone()
-            if existing:
+            if existing and pipeline != 'cutframes':
                 raise ValueError("An analysis job is already running for this episode")
             if pipeline == 'hardcuts' and extra and extra.get('cut_id'):
                 cut = conn.execute('SELECT start_time,end_time FROM cuts WHERE id=? AND episode_id=? AND active=1', (extra['cut_id'], episode_id)).fetchone()
@@ -108,19 +108,20 @@ def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
                     raise ValueError('Active cut not found')
                 extra = {**extra, 'cut_start': cut['start_time'], 'cut_end': cut['end_time']}
             if pipeline == 'cutframes' and extra and extra.get('frame_step'):
-                cut = conn.execute('SELECT * FROM cuts WHERE id=? AND episode_id=? AND active=1', (extra['cut_id'], episode_id)).fetchone()
+                cut = conn.execute('SELECT cut_index FROM cuts WHERE id=? AND episode_id=? AND active=1', (extra['cut_id'], episode_id)).fetchone()
                 if not cut:
                     raise ValueError('Active cut not found')
-                next_cut = conn.execute('SELECT * FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?', (episode_id, cut['cut_index'] + 1)).fetchone()
-                if not next_cut:
+                following = conn.execute('SELECT id FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?', (episode_id, cut['cut_index'] + 1)).fetchone()
+                if not following:
                     raise ValueError('There is no following cut at this boundary')
-                if abs(cut['end_time'] - next_cut['start_time']) > .000001:
-                    raise ValueError('The cuts do not share a boundary')
-                extra = {**extra, 'cut_start': cut['start_time'], 'cut_end': cut['end_time'], 'cut_last': cut['last_frame_time'],
-                         'next_cut_id': next_cut['id'], 'next_end': next_cut['end_time']}
+                extra = {**extra, 'next_cut_id': following['id']}
             payload = {"settings": json.loads(episode["settings_json"]), **(extra or {})}
+            if pipeline == 'cutframes':
+                deps = pending_jobs(conn, episode_id, ('prepare', 'hardcuts'))
+                if deps:
+                    payload['depends_on'] = deps
             job_id = insert_job(conn, episode_id, pipeline, payload)
-            conn.execute("UPDATE episodes SET status='queued', stage=? , error=NULL WHERE id=?", (pipeline, episode_id))
+            sync_episode_status(conn, episode_id)
     except sqlite3.IntegrityError as exc:
         raise ValueError("An analysis job is already running for this episode") from exc
     wake_event.set()
@@ -458,6 +459,10 @@ def process(job_id: str, owner: str):
     payload = json.loads(job["payload_json"])
     settings = payload.get("settings") or json.loads(episode["settings_json"])
     try:
+        if job['pipeline'] == 'cutframes':
+            from . import cut_previews
+            cut_previews.process(job, owner, payload, path)
+            return
         if job['pipeline'] == 'brief_export':
             from .brief import process_export
             process_export(job, owner, episode, payload)
@@ -589,62 +594,13 @@ def process(job_id: str, owner: str):
                         conn.execute("UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?", (first, last, cut_id))
                         for position in ('first', 'last'):
                             (path / 'thumbnails' / f"{cut_id}_{position}.jpg").unlink(missing_ok=True)
-        if job["pipeline"] == "cutframes" and payload.get('frame_step'):
-            if not payload.get('frame_step_done'):
-                stage(job_id, owner, episode_id, 'Moving cut boundary by one frame')
-                # The displayed last frame can deliberately be earlier than the
-                # stored boundary. Step from what the user sees when adjusting
-                # an end, and close that gap when moving the adjacent start.
-                end_anchor = payload.get('frame_anchor', 'end') == 'end' and payload['cut_last'] is not None
-                anchor = payload['cut_last'] if end_anchor else payload['cut_end']
-                boundary = media.step_frame_boundary(proxy, anchor, payload['frame_step'], after_stepped_frame=end_anchor)
-                if not payload['cut_start'] < boundary < payload['next_end']:
-                    raise RuntimeError('Moving the boundary would leave a cut without a positive duration')
-                with tempfile.TemporaryDirectory(prefix='framewise-boundaries-') as scratch:
-                    last = media.extract_cut_frame(proxy, Path(scratch) / 'last.jpg', boundary,
-                        payload['cut_start'], boundary, last=True, probe_padding=1)
-                    # FFmpeg's seek is rounded to microseconds; seek just before
-                    # the boundary so rounding up cannot skip its first frame.
-                    first = media.extract_cut_frame(proxy, Path(scratch) / 'first.jpg', boundary,
-                        max(0, boundary - .000002), payload['next_end'], seek_tolerance=.000002)
-                with db.connect() as conn:
-                    conn.execute('BEGIN IMMEDIATE')
-                    require_lease(conn, job_id, owner)
-                    cut = conn.execute('SELECT * FROM cuts WHERE id=? AND episode_id=? AND active=1', (payload['cut_id'], episode_id)).fetchone()
-                    following = conn.execute('SELECT * FROM cuts WHERE id=? AND episode_id=? AND active=1', (payload['next_cut_id'], episode_id)).fetchone()
-                    if (not cut or not following or following['cut_index'] != cut['cut_index'] + 1
-                            or cut['start_time'] != payload['cut_start'] or cut['end_time'] != payload['cut_end'] or cut['last_frame_time'] != payload['cut_last']
-                            or abs(following['start_time'] - payload['cut_end']) > .000001 or following['end_time'] != payload['next_end']):
-                        raise RuntimeError('The cuts changed while the boundary was queued; try again')
-                    if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND id!=? AND status IN ('queued','running') AND pipeline NOT IN ('brief_export','composition_compact')", (episode_id, job_id)).fetchone():
-                        raise RuntimeError('Wait for the current episode job to finish')
-                    before = cut_history.snapshot(conn, episode_id)
-                    conn.execute('UPDATE cuts SET end_time=?,last_frame_time=? WHERE id=?', (boundary, last, cut['id']))
-                    conn.execute('UPDATE cuts SET start_time=?,first_frame_time=? WHERE id=?', (boundary, first, following['id']))
-                    cut_history.record(conn, episode_id, 'boundary', f"Moved the end of cut {cut['cut_index'] + 1} one frame {'earlier' if payload['frame_step'] < 0 else 'later'}", cut['id'], before)
-                    payload['frame_step_done'] = True
-                    conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload), job_id))
-                (path / 'thumbnails' / f"{cut['id']}_last.jpg").unlink(missing_ok=True)
-                (path / 'thumbnails' / f"{following['id']}_first.jpg").unlink(missing_ok=True)
-        elif job["pipeline"] == "cutframes":
-            stage(job_id, owner, episode_id, "Updating cut frames")
-            with tempfile.TemporaryDirectory(prefix='framewise-boundaries-') as scratch:
-                for cut in db.all_rows("SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 AND (first_frame_time IS NULL OR last_frame_time IS NULL) ORDER BY cut_index", (episode_id,)):
-                    if "cut_ids" in payload and cut["id"] not in payload["cut_ids"]:
-                        continue
-                    first, last = media.cut_frame_times(cut["start_time"], cut["end_time"])
-                    first = media.extract_cut_frame(proxy, Path(scratch) / 'first.jpg', first, cut["start_time"], cut["end_time"])
-                    last = media.extract_cut_frame(proxy, Path(scratch) / 'last.jpg', last, cut["start_time"], cut["end_time"], last=True, probe_padding=1)
-                    with db.connect() as conn:
-                        require_lease(conn, job_id, owner)
-                        conn.execute("UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?", (first, last, cut["id"]))
-                        for position in ('first', 'last'):
-                            (path / 'thumbnails' / f"{cut['id']}_{position}.jpg").unlink(missing_ok=True)
         with db.connect() as conn:
             require_lease(conn, job_id, owner)
             final_stage = ('Complete · no new cuts found' if targeted and not payload.get('detected_cut_ids') else 'Complete')
             conn.execute("UPDATE jobs SET status='done', stage=?, error=NULL, lease_owner=NULL, lease_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (final_stage, job_id))
             sync_episode_status(conn, episode_id)
+    except LeaseLost:
+        return
     except Exception as exc:
         fail_job(job_id, owner, episode_id, exc)
         log.exception("Failed processing episode %s", episode_id)

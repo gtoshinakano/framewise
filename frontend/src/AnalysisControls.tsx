@@ -110,7 +110,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
     return Object.fromEntries((Object.keys(base) as StepKey[]).map(key => [key, optimistic[key] && base[key] !== 'running' ? optimistic[key] : base[key]])) as Record<StepKey, StepState>
   }, [results, stages, jobs, cutId, optimistic])
   const counts = useMemo(() => batchCounts(cuts, cut), [cuts, cut])
-  const warnings = useMemo(() => preflight({ mediaBusy: busy, enabled, characters }), [busy, enabled, characters])
+  const warnings = useMemo(() => preflight({ hasPrerequisites: busy, enabled, characters }), [busy, enabled, characters])
 
   const boundaryDirty = Object.values(boundaryDraft).some(draft => draft && draft.index !== draft.original)
   const settingsReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : !enabled ? 'Analysis is disabled for this cut' : !config ? 'Settings are still loading' : ''
@@ -127,7 +127,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const nextReason = settingsReason || (!onNext ? 'This is the last cut' : '')
   const precedingCut = cuts.find(item => item.cut_index === cut.cut_index - 1)
   const followingCut = cuts.find(item => item.cut_index === cut.cut_index + 1)
-  const boundaryBusy = movingBoundary || !!characters?.saving || jobs.some(job => job.status === 'queued' || job.status === 'running')
+  const boundaryBusy = movingBoundary || !!characters?.saving
   async function moveBoundary(position: 'first' | 'last', direction: -1 | 1) {
     if (boundaryBusy || boundaryLoading) return
     setBoundaryError('')

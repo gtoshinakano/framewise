@@ -13,14 +13,12 @@ const MIN_LENGTH = 0.1
 type Notes = Pick<Cut, 'title' | 'description' | 'notes'>
 
 /** The Cut panel: what the selected cut is, its notes and frames, and precise timing. Split, merge and delete live in the timeline toolbar. */
-export function CutInspector({ cut, cuts, queueState, time, duration, mediaBusy, busy, frameVersion, sceneThreshold, detectionJob, onSelect, onPlay, onSeek, onOpenAnalysis, onToggleAnalysis, onSaveNotes, onApplyTiming, onDetectWithin, onCopy }: {
+export function CutInspector({ cut, cuts, queueState, time, duration, frameVersion, sceneThreshold, detectionJob, onSelect, onPlay, onSeek, onOpenAnalysis, onToggleAnalysis, onSaveNotes, onApplyTiming, onDetectWithin, onCopy }: {
   cut: Cut
   cuts: Cut[]
   queueState?: AnalysisQueueState
   time: number
   duration: number
-  mediaBusy: boolean
-  busy: boolean
   frameVersion: string
   sceneThreshold: number
   detectionJob?: Job
@@ -96,7 +94,7 @@ export function CutInspector({ cut, cuts, queueState, time, duration, mediaBusy,
       </Section>
       {cut.active && <Section id="cut.timing" title="Timing & detection" icon={Timer} accent={PANEL_ACCENT.cut} defaultOpen={false} badge={timingChanged ? <span className="ml-1 h-1.5 w-1.5 rounded-full bg-[#f2c879]" title="Not applied yet" /> : null}>
         <TimeRangeInput start={range.start} end={range.end} onChange={setRange} min={0} max={duration} playhead={time} onPlay={onPlay}
-          lockStart={mediaBusy || index === 0} lockEnd={mediaBusy || index === cuts.length - 1} />
+          lockStart={index === 0} lockEnd={index === cuts.length - 1} />
         <ul className="muted mt-2 space-y-0.5 text-[11px]">
           {index === 0 ? <li>The first cut always starts at 0:00.000.</li> : timingChanged && previous && Math.abs(start - cut.start_time) > 1e-6 && <li>Cut {index} will end at <span className="font-mono text-[#e4e5ea]">{formatTimecode(start)}</span>.</li>}
           {index === cuts.length - 1 ? <li>The last cut always ends with the video.</li> : timingChanged && next && Math.abs(end - cut.end_time) > 1e-6 && <li>Cut {index + 2} will start at <span className="font-mono text-[#e4e5ea]">{formatTimecode(end)}</span>.</li>}
@@ -104,14 +102,14 @@ export function CutInspector({ cut, cuts, queueState, time, duration, mediaBusy,
         {timingChanged && timingError && <p role="alert" className="mt-2 text-[11px] text-[#ff9fa7]">{timingError}</p>}
         <div className="mt-3 flex gap-2">
           <button className="btn btn-quiet flex-1 !py-2" disabled={!timingChanged} onClick={() => setRange({ start: cut.start_time, end: cut.end_time })}><RotateCcw size={14} /> Reset</button>
-          <button className="btn btn-primary flex-1 !py-2" disabled={mediaBusy || !timingChanged || !!timingError} onClick={() => onApplyTiming(start, end)} title={mediaBusy ? 'Wait for the current media job to finish' : 'Neighbouring cuts adjust so the whole video stays covered. Undo with Ctrl+Z.'}>Apply timing</button>
+          <button className="btn btn-primary flex-1 !py-2" disabled={!timingChanged || !!timingError} onClick={() => onApplyTiming(start, end)} title={'Neighbouring cuts adjust so the whole video stays covered. Undo with Ctrl+Z.'}>Apply timing</button>
         </div>
         <div className="mt-4 rounded-lg border hairline p-3">
           <p className="flex items-center gap-1.5 text-xs font-semibold"><ScanSearch size={14} className="text-[#bca7ff]" aria-hidden /> Detect cuts inside this cut</p>
           <p className="muted mt-1 text-[11px] leading-4">Lower thresholds find more changes. The first part keeps this cut’s notes. Undo with Ctrl+Z.</p>
           <div className="mt-2 flex items-end gap-2">
             <label className="w-24"><span className="label !mb-1 !text-[10px]">Threshold</span><input className="field !py-1.5" type="number" min="0.05" max="0.9" step="0.01" value={threshold} onChange={event => setThreshold(event.target.value)} aria-invalid={!thresholdValid} /></label>
-            <button className="btn btn-quiet flex-1 !py-2" disabled={busy || !thresholdValid} onClick={() => onDetectWithin(thresholdValue)} title={busy ? 'Wait for the running jobs to finish' : undefined}><Scissors size={14} /> Detect</button>
+            <button className="btn btn-quiet flex-1 !py-2" disabled={!thresholdValid} onClick={() => onDetectWithin(thresholdValue)}><Scissors size={14} /> Detect</button>
           </div>
           {detectionJob && <p role="status" className="muted mt-2 text-[11px]">{detectionJob.error || detectionJob.stage}</p>}
         </div>

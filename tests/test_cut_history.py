@@ -113,15 +113,14 @@ class CutHistoryTest(unittest.TestCase):
         self.assertIsNone(db.one("SELECT first_frame_time FROM cuts WHERE id='c1'")['first_frame_time'], 'moved cuts get new frames')
         self.assertIsNotNone(db.one("SELECT first_frame_time FROM cuts WHERE id='c3'")['first_frame_time'])
 
-    def test_undo_is_refused_when_the_cuts_changed_or_media_work_runs(self):
+    def test_undo_refuses_changed_history_and_full_cut_replacement(self):
         self.split()
-        # A queued preview job does not block undo; the analysis switch is not part of the timeline.
         self.client.put('/api/cuts/c1/analysis-enabled', json={'analysis_enabled': False})
         with db.connect() as conn:
-            conn.execute("UPDATE jobs SET status='running' WHERE pipeline='cutframes'")
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline) VALUES ('full','e','hardcuts')")
         self.assertEqual(self.client.post('/api/episodes/e/cut-edits/undo').status_code, 423)
         with db.connect() as conn:
-            conn.execute("UPDATE jobs SET status='queued' WHERE pipeline='cutframes'")
+            conn.execute("UPDATE jobs SET status='done' WHERE id='full'")
             conn.execute("UPDATE cuts SET end_time=1.5 WHERE id='c1'")
         response = self.client.post('/api/episodes/e/cut-edits/undo')
         self.assertEqual(response.status_code, 409)
@@ -130,6 +129,51 @@ class CutHistoryTest(unittest.TestCase):
             conn.execute("UPDATE cuts SET end_time=2 WHERE id='c1'")
         self.assertEqual(self.client.post('/api/episodes/e/cut-edits/undo').status_code, 200)
         self.assertEqual(self.client.post('/api/episodes/e/cut-edits/undo').status_code, 409, 'nothing left to undo')
+
+    def test_split_during_preview_extraction_replaces_preview_and_keeps_original_cut_jobs(self):
+        old_right = self.split()
+        analysis = self.client.post('/api/cuts/c2/analysis-stages/run', json={'stage': 'initial_frame'}).json()['job_id']
+        preview = worker.claim_job(('cutframes',))
+        spawned = []
+
+        def edit_during_extract(*args, **kwargs):
+            if not spawned:
+                spawned.append(self.split('c2', 2.5))
+            return extract(*args, **kwargs)
+
+        with patch.object(media, 'extract_cut_frame', side_effect=edit_during_extract):
+            worker.process(*preview)
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (preview[0],))['status'], 'cancelled')
+        self.assertIsNone(db.one("SELECT first_frame_time FROM cuts WHERE id='c2'")['first_frame_time'])
+        worker.release_lease(*preview)
+        self.settle()
+        cut = db.one("SELECT end_time,last_frame_time FROM cuts WHERE id='c2'")
+        self.assertEqual(cut['end_time'], 2.5)
+        self.assertLess(cut['last_frame_time'], 2.5)
+        self.assertIsNotNone(db.one('SELECT first_frame_time FROM cuts WHERE id=?', (old_right,))['first_frame_time'])
+        job = db.one('SELECT status,payload_json FROM jobs WHERE id=?', (analysis,))
+        self.assertEqual(job['status'], 'queued')
+        self.assertEqual([item['cut_id'] for item in json.loads(job['payload_json'])['cuts']], ['c2'])
+        self.assertIsNone(db.one('SELECT id FROM analysis_results WHERE cut_id=?', (spawned[0],)))
+
+    def test_merge_cancels_jobs_for_the_archived_cut_and_marks_the_survivors_results_stale(self):
+        stage = '/api/cuts/c2/analysis-stages/run'
+        running = self.client.post(stage, json={'stage': 'initial_frame'}).json()['job_id']
+        self.assertEqual((claim := worker.claim_job(('analyze',)))[0], running)
+        queued = self.client.post(stage, json={'stage': 'keyframe_analysis'}).json()['job_id']
+        survivor = self.client.post('/api/cuts/c1/analysis-stages/run', json={'stage': 'initial_frame'}).json()['job_id']
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,origin) VALUES ('r','c1','cut_description','Cut summary','Before merge','model')")
+        response = self.client.post('/api/cuts/c1/merge-next')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(db.one("SELECT active FROM cuts WHERE id='c2'")['active'], 0)
+        for job_id in (running, queued):
+            job = db.one('SELECT status,error FROM jobs WHERE id=?', (job_id,))
+            self.assertEqual(job, {'status': 'cancelled', 'error': 'Cancelled because the target cut was archived'})
+        with self.assertRaises(worker.LeaseLost), db.connect() as conn:
+            worker.require_lease(conn, *claim)
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (survivor,))['status'], 'queued')
+        self.assertEqual(db.one("SELECT stale_reason FROM analysis_results WHERE id='r'")['stale_reason'], 'Cut timing changed')
 
     def test_detection_inside_a_cut_and_frame_steps_are_recorded_and_full_redetection_clears(self):
         self.assertEqual(self.client.post('/api/cuts/c3/detect-hardcuts', json={'scene_threshold': 0.3}).status_code, 200)
