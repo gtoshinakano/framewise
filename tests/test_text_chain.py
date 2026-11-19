@@ -85,12 +85,12 @@ class TextChainTest(unittest.TestCase):
         consistency = self.jobs('consistency_summary')
         first = worker.claim_job(TEXT)
         self.assertEqual(first[0], consistency['c1'])
-        second = worker.claim_job(TEXT)  # a second lane: the answers for c1 must not start, so it takes c2's summary
-        self.assertEqual(second[0], consistency['c2'])
-        self.assertIsNone(worker.claim_job(TEXT))  # everything else waits
+        # The next cut's summary can read the first cut's summary as neighboring evidence.
+        self.assertIsNone(worker.claim_job(TEXT))
         self.finish_consistency('c1')
+        worker.release_lease(*first)
         self.assertEqual(worker.claim_job(TEXT)[0], self.jobs('review_answers')['c1'])
-        self.assertIsNone(worker.claim_job(TEXT))  # c1's Cut summary still waits for its answers
+        self.assertIsNone(worker.claim_job(('regen',)))
 
     def test_a_failed_job_cancels_the_ones_waiting_for_it(self):
         self.seed(consistency=False)

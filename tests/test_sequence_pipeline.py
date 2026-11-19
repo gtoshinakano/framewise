@@ -717,16 +717,19 @@ class SequenceFlowTest(SequenceBase):
         self.assertEqual(db.one('SELECT COUNT(*) AS n FROM sequence_results')['n'], 0)
         self.assertEqual(db.one("SELECT COUNT(*) AS n FROM jobs WHERE pipeline='sequence' AND status IN ('queued','running')")['n'], 0)
 
-    def test_sequence_jobs_share_their_episode_with_text_jobs_only(self):
+    def test_independent_shots_run_together_and_wait_for_writers_of_their_evidence(self):
         sequence_id = self.directed()
         self.run_step(sequence_id, 'shots')
         first = worker.claim_job(worker.TEXT_PIPELINES)
         second = worker.claim_job(worker.TEXT_PIPELINES)
-        self.assertTrue(first and second and first[0] != second[0])  # two shots write side by side
+        rows = [json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (lease[0],))['payload_json']) for lease in (first, second)]
+        shots = self.detail(sequence_id)['shots']
+        self.assertEqual([row['shot_key'] for row in rows], [shots[0]['key'], shots[2]['key']])
+        self.assertIsNone(worker.claim_job(worker.TEXT_PIPELINES))
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='queued',lease_owner=NULL,lease_until=NULL WHERE id IN (?,?)", (first[0], second[0]))
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status,lease_owner,lease_until) VALUES ('visual','e','analyze','running','x',?)", (9e12,))
-        self.assertIsNone(worker.claim_job(worker.TEXT_PIPELINES))  # visual analysis holds the episode
+        self.assertIsNone(worker.claim_job(worker.TEXT_PIPELINES))  # analysis writes evidence the shot reads
         episode = self.client.get('/api/episodes/e').json()
         job = next(job for job in episode['jobs'] if job['pipeline'] == 'sequence' and job['sequence']['step'] == 'shot')
         self.assertEqual((job['sequence']['id'], job['cuts']), (sequence_id, []))

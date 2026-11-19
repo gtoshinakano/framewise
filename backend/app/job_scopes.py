@@ -33,6 +33,21 @@ def _neighbor_ids(conn, episode_id, cut_ids):
     return cut_ids | {row['id'] for row in rows}
 
 
+def _preceding_shot(conn, sequence_id, target):
+    from . import sequence_store, sequence_timeline
+    plan = sequence_store.current(conn, sequence_id, 'plan')
+    content = sequence_store.loads(plan['content'], {}) if plan else {}
+    previous = None
+    for span in content.get('shots') or []:
+        if not isinstance(span, dict) or not all(isinstance(span.get(key), (int, float)) for key in ('start_time', 'end_time')):
+            return None
+        key = sequence_timeline.shot_key(span['start_time'], span['end_time'])
+        if key == target:
+            return previous
+        previous = key
+    return None
+
+
 @dataclass(frozen=True)
 class Footprint:
     episode_id: str
@@ -56,6 +71,8 @@ def footprint(conn, job, owner):
             resources |= {'gpu_text'}
     project_id = conn.execute('SELECT project_id FROM episodes WHERE id=?', (job['episode_id'],)).fetchone()['project_id']
     reads = {domain: nearby if domain in scope.adjacent_reads else cut_ids for domain in scope.reads | scope.adjacent_reads}
+    if scope.previous_shot_to and (previous := _preceding_shot(conn, scope.sequence_id, scope.previous_shot_to)):
+        reads[f'sequence:{scope.sequence_id}:shot:{previous}'] = cut_ids
     writes = dict.fromkeys(scope.writes, cut_ids)
     return Footprint(job['episode_id'], project_id, owner, resources, reads, writes)
 

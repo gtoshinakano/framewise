@@ -156,6 +156,7 @@ class Scope:
     sequence_id: str | None = None
     # Zero-based inclusive cut numbers. These are resolved in the claim transaction.
     cut_range: tuple[int, int] | None = None
+    previous_shot_to: str | None = None
 
 
 @dataclass(frozen=True)
@@ -458,12 +459,13 @@ def _sequence_scope(payload):
     reads = {'cut_boundaries', 'prepared_audio', 'transcript', 'subtitles', 'results', 'context', 'decisions'}
     if step == 'shot':
         output = f"{domain}:shot:{payload.get('shot_key')}"
-        reads.update({f'{domain}:shot', f'{domain}:bible', f'{domain}:plan', f'{domain}:compilation'})
+        reads.update({f'{domain}:bible', f'{domain}:plan', f'{domain}:compilation'})
         writes = {output}
     else:
         reads.add(domain)
         writes = {domain}
-    return Scope(frozenset(reads), frozenset(writes), sequence_id=sequence_id)
+    return Scope(frozenset(reads), frozenset(writes), sequence_id=sequence_id,
+                 previous_shot_to=payload.get('shot_key') if step == 'shot' else None)
 
 
 def _compaction_gather(conn, job):
