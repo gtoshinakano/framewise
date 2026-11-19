@@ -879,6 +879,7 @@ def revise_analysis_result(result_id: str, body: ResultUpdate):
     """Append a human revision."""
     new_id = str(uuid.uuid4())
     with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         old = conn.execute("SELECT * FROM analysis_results WHERE id=?", (result_id,)).fetchone()
         if not old:
             raise HTTPException(404, "Analysis result not found")
@@ -2059,18 +2060,12 @@ def retry_analysis_request(cut_id: str, body: AnalysisRequestRetry):
 @app.post('/api/cuts/{cut_id}/performance-beats')
 def queue_performance_beats(cut_id: str):
     """Queue the performance beats of one cut: a text model compiles its keyframe analysis into timed acting (performance_beats.py)."""
-    from . import performance_beats, structured_results
+    from . import performance_beats
     cut, config = analysis_config_for_cut(cut_id)
     if not cut['active']:
         raise HTTPException(400, 'Only active cuts can have performance beats')
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        if not any(item['type'] == 'keyframe_analysis' for item in structured_results.list_results(cut_id, conn=conn)):
-            raise HTTPException(409, 'This cut has no keyframe analysis; run Keyframes first')
-        if pending_cut_jobs(conn, cut['episode_id'], cut_id, ('analyze',)):
-            raise HTTPException(409, 'Wait for this cut analysis to finish; it queues the beats itself')
-        if performance_beats.pending_job(conn, cut_id):
-            raise HTTPException(409, 'Performance beats are already queued or being written for this cut')
         job_id = performance_beats.insert(conn, cut['episode_id'], cut_id, {key: getattr(config, key) for key in ('text_provider', 'local_thinking', 'openrouter_model')})
         worker.sync_episode_status(conn, cut['episode_id'])
     return {'job_id': job_id}
@@ -2791,12 +2786,7 @@ def retry_analysis(job_id: str):
             if job['pipeline'] == 'performance_beats' and job['status'] in ('failed', 'cancelled'):
                 from . import performance_beats
                 payload = json_object_or_empty(job['payload_json'])
-                if performance_beats.pending_job(conn, payload.get('cut_id')):
-                    raise HTTPException(409, 'Performance beats are already queued or being written for this cut')
-                if not conn.execute('SELECT 1 FROM cuts WHERE id=? AND active=1', (payload.get('cut_id'),)).fetchone():
-                    raise HTTPException(409, 'The cut is archived or was deleted')
-                retry_id = str(uuid.uuid4())  # the job reads its inputs when it starts, so the same payload is current
-                conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
+                retry_id = performance_beats.insert(conn, job['episode_id'], payload['cut_id'], payload.get('config'), retry_of=job_id)
                 worker.sync_episode_status(conn, job['episode_id'])
                 return {'job_id': retry_id}
             if job['pipeline'] == 'character_profile' and job['status'] in ('failed', 'cancelled'):

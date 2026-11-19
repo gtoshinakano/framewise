@@ -108,13 +108,13 @@ class BeatsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, sentence):
                 beats.validate(bad, ctx)
 
-    def test_queueing_reuses_a_waiting_job_and_adds_one_beside_a_running_one(self):
+    def test_queueing_reuses_waiting_and_running_beats_jobs(self):
         with db.connect() as conn:
             first = beats.ensure_queued(conn, 'e', 'c1')
             self.assertEqual(beats.ensure_queued(conn, 'e', 'c1'), first)
             conn.execute("UPDATE jobs SET status='running' WHERE id=?", (first,))
             second = beats.ensure_queued(conn, 'e', 'c1')
-        self.assertNotEqual(first, second)
+        self.assertEqual(first, second)
         self.assertEqual(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (second,))['payload_json'])['config']['text_provider'], 'openrouter')
 
     def run_job(self, reply):
@@ -144,19 +144,28 @@ class BeatsTest(unittest.TestCase):
         self.assertTrue(prompt_context.beats_current(by_type))
         self.assertEqual(db.one("SELECT status FROM analysis_job_stages WHERE job_id=?", (job_id,))['status'], 'done')
 
-    def test_a_newer_keyframe_analysis_supersedes_the_job(self):
+    def test_a_newer_keyframe_analysis_requeues_the_job(self):
         self.seed()
 
         def reply(config, data, ctx, **_):
             with db.connect() as conn:  # the keyframes were analysed again meanwhile
-                conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,settings_json,parent_id) VALUES ('kf2','c1','cut_description','Keyframe analysis','{}',?, 'kf')",
-                             (json.dumps({'structured_type': 'keyframe_analysis'}),))
+                conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,settings_json,parent_id) VALUES ('kf2','c1','cut_description','Keyframe analysis',?,?, 'kf')",
+                             (json.dumps(KEYFRAMES), json.dumps({'structured_type': 'keyframe_analysis'})))
                 conn.execute("UPDATE analysis_results SET superseded_by='kf2' WHERE id='kf'")
             return beats.validate(answer(('S1', 'S2')), ctx), 'test/model'
         job_id = self.run_job(reply)
         job = db.one('SELECT status,stage FROM jobs WHERE id=?', (job_id,))
-        self.assertEqual((job['status'], job['stage']), ('done', 'Superseded by a newer keyframe analysis'))
+        self.assertEqual((job['status'], job['stage']), ('queued', 'Inputs changed, restarting'))
         self.assertIsNone(db.one("SELECT id FROM analysis_results WHERE job_id=?", (job_id,)))
+        owner = db.one('SELECT lease_owner FROM jobs WHERE id=?', (job_id,))['lease_owner']
+        worker.release_lease(job_id, owner)
+        self.assertIsNone(worker.claim_job(('performance_beats',)))
+        with db.connect() as conn:
+            conn.execute('UPDATE jobs SET not_before=0 WHERE id=?', (job_id,))
+        with patch.object(beats, 'generate', side_effect=lambda config, data, ctx, **_: (beats.validate(answer(('S1', 'S2')), ctx), 'test/model')):
+            beats.process(*worker.claim_job(('performance_beats',)))
+        content = json.loads(db.one('SELECT content FROM analysis_results WHERE job_id=?', (job_id,))['content'])
+        self.assertEqual(content['based_on']['keyframe_analysis'], 'kf2')
 
     def test_without_keyframes_the_job_fails_with_the_reason(self):
         job_id = self.run_job(lambda *a, **k: self.fail('no model call without keyframes'))
@@ -175,10 +184,10 @@ class BeatsTest(unittest.TestCase):
         self.assertEqual(db.one("SELECT stale_reason FROM analysis_results WHERE id='beats'")['stale_reason'], 'Keyframe analysis changed')
 
     def test_endpoint_and_retry(self):
-        self.assertEqual(self.client.post('/api/cuts/c1/performance-beats').status_code, 409)  # no keyframes yet
+        self.assertEqual(self.client.post('/api/cuts/c1/performance-beats').status_code, 200)
         self.seed()
         job_id = self.client.post('/api/cuts/c1/performance-beats').json()['job_id']
-        self.assertEqual(self.client.post('/api/cuts/c1/performance-beats').status_code, 409)
+        self.assertEqual(self.client.post('/api/cuts/c1/performance-beats').json()['job_id'], job_id)
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='failed' WHERE id=?", (job_id,))
         retry = self.client.post(f'/api/jobs/{job_id}/retry')

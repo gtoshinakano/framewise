@@ -14,7 +14,7 @@ the answer and sends its sentences back to the model.
 
 The job is queued in the transaction that saves a keyframe analysis (``ensure_queued``), by hand
 (``POST /api/cuts/{id}/performance-beats``) and as the first link of the text chain. It reads its inputs when it
-starts; a keyframe analysis saved meanwhile makes it finish as superseded (a newer beats job is queued with it).
+starts; a change to its inputs restarts the job before it can save.
 The result is the ``performance_beats`` analysis result (contract ``beats-v1``, ``based_on`` the keyframe and
 first-frame results it read). It has no approval status.
 """
@@ -22,9 +22,8 @@ import json
 import logging
 import os
 import time
-import uuid
 
-from . import db, keyframe_view, prompt_context, structured_results, worker
+from . import db, job_inputs, keyframe_view, prompt_context, structured_results, worker
 
 log = logging.getLogger('framewise.performance_beats')
 
@@ -185,9 +184,40 @@ def gather(conn, cut_id):
     if cut['subtitle_language']:
         data['dialogue_language'] = cut['subtitle_language']
     context = {'duration': duration, 'anchors': anchors, 'names': roster, 'lines': lines, 'max_beats': max_beats,
-               'cut': {'cut_index': cut['cut_index'], 'start_time': cut['start_time'], 'end_time': cut['end_time']}}
+               'cut': {'cut_index': cut['cut_index'], 'start_time': cut['start_time'], 'end_time': cut['end_time']},
+               'transcript_segment_ids': [row['id'] for row in transcript]}
     based_on = {'keyframe_analysis': keyframes['id'], 'initial_frame': first['id'] if first else None}
     return data, context, based_on
+
+
+def _current_output(conn, cut_id):
+    return db.one("""SELECT id,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL
+        AND json_extract(settings_json,'$.structured_type')='performance_beats' ORDER BY rowid DESC LIMIT 1""",
+        (cut_id,), conn=conn)
+
+
+def gather_job(conn, job):
+    cut_id = json.loads(job['payload_json'])['cut_id']
+    if not conn.execute('SELECT 1 FROM cuts WHERE id=? AND active=1', (cut_id,)).fetchone():
+        return {'skip': 'Cut archived or removed'}
+    try:
+        data, context, based_on = gather(conn, cut_id)
+    except RuntimeError as exc:
+        return {'missing': str(exc)}
+    return {'data': data, 'context': context, 'based_on': based_on, 'base': _current_output(conn, cut_id)}
+
+
+def inputs(conn, job):
+    values = job.get('gathered') or gather_job(conn, job)
+    if 'context' not in values:
+        return job_inputs.fingerprint(values)
+    cut = {key: value for key, value in values['context']['cut'].items() if key != 'cut_index'}
+    return job_inputs.fingerprint({**values, 'context': {**values['context'], 'cut': cut}})
+
+
+def invalidate(conn, job):
+    cut_id = json.loads(job['payload_json'])['cut_id']
+    structured_results.invalidate_text(conn, cut_id, 'performance_beats')
 
 
 # -- the answer ----------------------------------------------------------------------------------------------------------
@@ -335,16 +365,15 @@ def pending_job(conn, cut_id, statuses=('queued', 'running')):
     return row['id'] if row else None
 
 
-def insert(conn, episode_id, cut_id, config=None):
-    job_id = str(uuid.uuid4())
-    conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'performance_beats',?)",
-                 (job_id, episode_id, json.dumps({'cut_id': cut_id, 'config': config or text_config(conn)})))
-    return job_id
+def insert(conn, episode_id, cut_id, config=None, *, retry_of=None):
+    waits = worker.pending_jobs(conn, episode_id, ('analyze', 'hardcuts', 'transcribe'), [cut_id])
+    return worker.insert_job(conn, episode_id, 'performance_beats',
+                             {'cut_id': cut_id, 'config': config or text_config(conn), 'depends_on': waits}, retry_of=retry_of)
 
 
 def ensure_queued(conn, episode_id, cut_id, config=None):
-    """A queued beats job for the cut: the waiting one, else a new one (also beside a running one, which reads older inputs)."""
-    return pending_job(conn, cut_id, ('queued',)) or insert(conn, episode_id, cut_id, config)
+    """Queue the first beats of this cut as part of its analysis workflow."""
+    return pending_job(conn, cut_id) or insert(conn, episode_id, cut_id, config)
 
 
 # -- the job -------------------------------------------------------------------------------------------------------------
@@ -377,11 +406,33 @@ def process(job_id, owner):
                 _done(conn, job_id)
                 worker.sync_episode_status(conn, job['episode_id'])
             return
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            snapshot = job_inputs.JobInputs(conn, job, owner)
+        values = snapshot.data
+        if 'missing' in values:
+            with snapshot.publish(invalidate=False):
+                raise RuntimeError(values['missing'])
+        recorded = json.loads(job['input_json'] or '{}')
+        base = values.get('base') or {}
+        base_id = recorded.get('output_base', base.get('id'))
+        edited_while_running = (base.get('id') != base_id and base.get('origin') in ('manual', 'manual_edit', 'assistant_edit'))
+        if values.get('skip') or edited_while_running:
+            with snapshot.publish(invalidate=False) as conn:
+                _done(conn, job_id, f"Skipped · {values.get('skip') or 'performance beats edited by hand'}")
+                worker.sync_episode_status(conn, job['episode_id'])
+            return
+        data, ctx, based_on = (values[key] for key in ('data', 'context', 'based_on'))
+        provenance = {'fingerprint': snapshot.stamp, 'output_base': base_id, 'based_on': based_on,
+                      'transcript_segment_ids': ctx['transcript_segment_ids']}
+
+        def record_inputs(conn):
+            conn.execute('UPDATE jobs SET input_json=? WHERE id=?', (json.dumps(provenance), job_id))
+
+        with snapshot.publish(invalidate=False, on_changed=record_inputs) as conn:
+            record_inputs(conn)
         with worker.analysis_stage(job_id, owner, cut_id, 'performance_beats', 'Performance beats'):
             worker.stage(job_id, owner, job['episode_id'], 'Writing performance beats')
-            with db.connect() as conn:
-                data, ctx, based_on = gather(conn, cut_id)
-                base = next((item['id'] for item in structured_results.list_results(cut_id, conn=conn) if item['type'] == 'performance_beats'), None)
             telemetry = {}
             started = time.monotonic()
             content, actual_model = generate(config, data, ctx,
@@ -395,17 +446,9 @@ def process(job_id, owner):
                         'thinking': config.get('local_thinking', False) if local else None,
                         'thinking_budget_tokens': int(os.environ.get('QWEN36_THINKING_BUDGET', '2048')) if local and config.get('local_thinking') else None,
                         'summary_generation_seconds': elapsed, 'usage': telemetry}
-            with db.connect() as conn:
-                conn.execute('BEGIN IMMEDIATE')
-                worker.require_lease(conn, job_id, owner)
-                current = next((item for item in structured_results.list_results(cut_id, conn=conn) if item['type'] == 'keyframe_analysis'), None)
-                if not current or current['id'] != based_on['keyframe_analysis']:
-                    # A newer keyframe analysis queued its own beats job in the transaction that saved it.
-                    _done(conn, job_id, 'Superseded by a newer keyframe analysis')
-                    worker.sync_episode_status(conn, job['episode_id'])
-                    return
+            with snapshot.publish() as conn:
                 structured_results.save_generated(conn, cut_id, job_id, owner, 'performance_beats', content, actual_model, SYSTEM, settings,
-                                                  {'cut': ctx['cut'], 'input': data}, expected_current=base)
+                                                  {'cut': ctx['cut'], 'input': data, **provenance})
         with db.connect() as conn:
             worker.require_lease(conn, job_id, owner)
             _done(conn, job_id)
@@ -414,6 +457,8 @@ def process(job_id, owner):
         if config.get('text_provider') == 'local':
             local_text_runtime.cancel_local('Cancelled')
         log.info('Performance beats %s was cancelled', job_id)
+    except worker.LeaseLost:
+        return
     except Exception as exc:
         inference_worker.fail_job(job_id, owner, job['episode_id'], exc)
         log.exception('Performance beats failed for job %s', job_id)

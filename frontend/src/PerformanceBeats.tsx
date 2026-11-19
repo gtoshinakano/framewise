@@ -14,7 +14,8 @@ export function PerformanceBeats({ cutId, results, jobs, disabled, onStarted }: 
   const [error, setError] = useState('')
   const keyframes = results.find(result => result.settings.structured_type === 'keyframe_analysis' && !result.superseded_by)
   const result = results.find(result => result.settings.structured_type === 'performance_beats' && !result.superseded_by)
-  if (!keyframes && !result) return null
+  const visual = jobs.some(job => job.pipeline === 'analyze' && ['queued', 'running'].includes(job.status) && job.cuts?.some(item => item.id === cutId))
+  if (!keyframes && !result && !visual) return null
   let beats: Beats | null = null
   try { beats = result ? JSON.parse(result.content) as Beats : null } catch { beats = null }
   const pending = jobs.find(job => job.pipeline === 'performance_beats' && ['queued', 'running'].includes(job.status) && job.cuts?.some(item => item.id === cutId))
@@ -41,7 +42,7 @@ export function PerformanceBeats({ cutId, results, jobs, disabled, onStarted }: 
           {line.line} · {line.speaker} · {DELIVERY[line.delivery] ?? line.delivery}</span>)}</div>}
       </li>)}</ol>}
       {error && <p role="alert" className="text-[#ff9fa7]">{error}</p>}
-      {keyframes && <ActionButton compact icon={<RotateCcw size={13} />} pending={queueing} disabled={disabled || !!pending} title={pending ? 'Beats are already being written' : 'Write the beats again from the current keyframe analysis'} onClick={() => void rewrite()}>{beats ? 'Write beats again' : 'Write beats'}</ActionButton>}
+      {(keyframes || visual) && <ActionButton compact icon={<RotateCcw size={13} />} pending={queueing} disabled={disabled} title="Queue beats from the current keyframe analysis" onClick={() => void rewrite()}>{beats ? 'Write beats again' : 'Write beats'}</ActionButton>}
     </div>
   </details>
 }

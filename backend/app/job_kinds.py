@@ -350,6 +350,21 @@ def _subtitle_invalidates(conn, job):
     subtitle_pipeline.invalidate(conn, job)
 
 
+def _beats_gather(conn, job):
+    from . import performance_beats
+    return performance_beats.gather_job(conn, job)
+
+
+def _beats_inputs(conn, job):
+    from . import performance_beats
+    return performance_beats.inputs(conn, job)
+
+
+def _beats_invalidates(conn, job):
+    from . import performance_beats
+    performance_beats.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -367,7 +382,11 @@ KINDS = {kind.pipeline: kind for kind in (
     Kind('character_profile', 'Character description', True, cuts=_one_cut, cancel_running=_always, retry=_always,
          keys=lambda payload, cut_ids: [f"character_profile:{payload.get('character_context_id')}"]),
     # The timed acting plan a text model compiles from the keyframe analysis (performance_beats.py).
-    Kind('performance_beats', 'Performance beats', True, cuts=_one_cut, keys=_cut_keys('performance_beats'), cancel_running=_always, retry=_always),
+    Kind('performance_beats', 'Performance beats', True, cuts=_one_cut, keys=_cut_keys('performance_beats'), cancel_running=_always, retry=_always,
+         resources=frozenset({'text'}),
+         scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results:initial_frame', 'results:keyframe_analysis', 'transcript', 'context', 'chunks'}),
+                                     frozenset({'results:performance_beats'}), frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
+         priority_class=lambda payload: 'interactive', inputs=_beats_inputs, gather=_beats_gather, invalidates=_beats_invalidates),
     Kind('consistency_summary', 'Consistency summary', True, cuts=_one_cut, keys=_cut_keys('consistency_summary'), cancel_running=_always),
     Kind('review_answers', 'Production decisions draft', True, cuts=_one_cut, keys=_cut_keys('review_answers'), cancel_running=_always),
     Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always),
