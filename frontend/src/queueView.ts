@@ -133,6 +133,23 @@ export function localTime(value: string | null | undefined, now = Date.now()) {
   if (day(date) === day(new Date(now - 86_400_000))) return `Yesterday ${time}`
   return `${date.getDate()} ${date.toLocaleString('en', { month: 'short' })} ${time}`
 }
+/** When something happened, read back to the viewer: "just now", "5 minutes ago", "3 days ago", older than a month as a date. */
+export function formatAgo(value: string | null | undefined, now = Date.now()): string {
+  const at = parseUtc(value)
+  if (!Number.isFinite(at)) return ''
+  const seconds = Math.max(0, (now - at) / 1000)
+  if (seconds < 45) return 'just now'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`
+  const hours = Math.round(seconds / 3600)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.round(seconds / 86400)
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`
+  const weeks = Math.round(days / 7)
+  if (weeks < 5) return `${weeks} week${weeks === 1 ? '' : 's'} ago`
+  const date = new Date(at)
+  return `${date.getDate()} ${date.toLocaleString('en', { month: 'short' })}${date.getFullYear() !== new Date(now).getFullYear() ? ` ${date.getFullYear()}` : ''}`
+}
 
 /** A stage worth showing under the run name (not just its status repeated). */
 export function stageText(run: Pick<Run, 'stage' | 'status'> & Partial<Pick<Run, 'waiting_for'>>) {

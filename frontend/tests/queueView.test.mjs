@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { attentionText, attentionTitle, counterText, counterTitle, cutText, formatRunTime, mergeFirstPage, runSeconds, stageText, targetText, unitsText } from '../src/queueView.ts'
+import { attentionText, attentionTitle, counterText, counterTitle, cutText, formatAgo, formatRunTime, mergeFirstPage, runSeconds, stageText, targetText, unitsText } from '../src/queueView.ts'
 
 const summary = (overrides = {}) => ({ busy: true, since: null, done: 35, failed: 2, running: 1, waiting: 202, stopping: 0, cancelled: 0, total: 240, finished: 37, attention: 0, other_active: 0, ...overrides })
 const cut = (number, overrides = {}) => ({ id: `c${number}`, number, title: '', archived: false, missing: false, start_time: 0, end_time: 1, completed: false, ...overrides })
@@ -55,4 +55,17 @@ test('a refreshed first page keeps the older pages already loaded', () => {
   const shown = [item(10), item(9), item(8), item(5), item(4)]
   assert.deepEqual(mergeFirstPage(shown, [item(12), item(11), item(10)]).map(run => run.seq), [12, 11, 10, 9, 8, 5, 4])
   assert.deepEqual(mergeFirstPage(shown, []), [])
+})
+
+test('result times read back as minutes, hours and days', () => {
+  const now = Date.parse('2026-11-19T12:00:00Z')
+  assert.equal(formatAgo(null, now), '')
+  assert.equal(formatAgo('2026-11-19 11:59:30', now), 'just now')
+  assert.equal(formatAgo('2026-11-19 11:59:00', now), '1 minute ago')
+  assert.equal(formatAgo('2026-11-19 11:58:00', now), '2 minutes ago')
+  assert.equal(formatAgo('2026-11-19 10:00:00', now), '2 hours ago')
+  assert.equal(formatAgo('2026-11-18 12:00:00', now), '1 day ago')
+  assert.equal(formatAgo('2026-11-16 12:00:00', now), '3 days ago')
+  assert.equal(formatAgo('2026-11-05 12:00:00', now), '2 weeks ago')
+  assert.match(formatAgo('2026-04-19 12:00:00', now), /Apr/)
 })

@@ -2273,8 +2273,8 @@ class BriefInstructionsInput(BaseModel):
 @app.get("/api/cuts/{cut_id}/brief-instructions")
 def get_brief_instructions(cut_id: str):
     analysis_config_for_cut(cut_id)
-    row = db.one("SELECT content FROM cut_brief_instructions WHERE cut_id=?", (cut_id,))
-    return {"content": row["content"] if row else ""}
+    row = db.one("SELECT content, updated_at FROM cut_brief_instructions WHERE cut_id=?", (cut_id,))
+    return {"content": row["content"] if row else "", "updated_at": row["updated_at"] if row else None}
 
 
 @app.put("/api/cuts/{cut_id}/brief-instructions")
@@ -2284,7 +2284,8 @@ def put_brief_instructions(cut_id: str, body: BriefInstructionsInput):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         review_answers.save_hand_answers(conn, cut_id, body.content)
-    return {"content": body.content}
+        row = db.one("SELECT updated_at FROM cut_brief_instructions WHERE cut_id=?", (cut_id,), conn=conn)
+    return {"content": body.content, "updated_at": row["updated_at"] if row else None}
 
 
 class TextGenerationSettings(BaseModel):

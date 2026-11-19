@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ChevronDown, Drama, RotateCcw } from 'lucide-react'
 import { api, type AnalysisResult, type Job, type PerformanceBeats as Beats } from './api'
 import { ActionButton, StaleChip, StatusChip } from './RunUi'
+import { formatAgo } from './queueView'
 
 const DELIVERY: Record<string, string> = { on_screen: 'lip-synced', off_screen: 'off screen', inner_voice: 'inner voice', narrative: 'narration' }
 
@@ -29,7 +30,7 @@ export function PerformanceBeats({ cutId, results, jobs, disabled, onStarted }: 
     : beats ? <StatusChip tone="green">Current</StatusChip> : <StatusChip tone="grey">Not written</StatusChip>
   return <details open className="group shrink-0 rounded-lg border hairline bg-[#171c25] text-xs">
     <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 font-semibold text-[#d5dbe5]"><ChevronDown size={14} className="-rotate-90 transition-transform group-open:rotate-0" aria-hidden />
-      <Drama size={14} className="text-[#f08a5d]" aria-hidden />Performance beats<span className="ml-auto">{status}</span></summary>
+      <Drama size={14} className="text-[#f08a5d]" aria-hidden />Performance beats{result?.created_at && <span className="font-normal text-[10px] text-[#9aa0a8]">{formatAgo(result.created_at)}</span>}<span className="ml-auto">{status}</span></summary>
     <div className="space-y-2 border-t hairline p-3">
       {beats?.summary && <p className="text-[#d5dbe5]">{beats.summary}</p>}
       {!beats && <p className="muted">The keyframes have no beats yet. They are written after the keyframe analysis, or with the button below.</p>}

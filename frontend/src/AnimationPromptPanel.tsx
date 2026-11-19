@@ -8,6 +8,7 @@ import { useEpisodeRevision } from './episodeEvents'
 import { Disclosure, StepPanel } from './ReviewUi'
 import type { AnswersApi } from './ConsistencySummary'
 import { Markdown } from './Markdown'
+import { formatAgo } from './queueView'
 
 export const SUMMARY_TITLE = 'Cut summary'
 
@@ -47,6 +48,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
   const [instructionsError, setInstructionsError] = useState('')
   const [humanInstructions, setHumanInstructions] = useState('')
   const [savedInstructions, setSavedInstructions] = useState('')
+  const [savedUpdatedAt, setSavedUpdatedAt] = useState<string | undefined>(undefined)
   const [instructionsLoaded, setInstructionsLoaded] = useState(false)
   const [previousAnswers, setPreviousAnswers] = useState<string | null>(null)
   const [reviewError, setReviewError] = useState('')
@@ -57,16 +59,17 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
   useEffect(() => {
     let active = true
     setInstructionsLoaded(false)
-    api<{ content: string }>(`/cuts/${cutId}/brief-instructions`).then(value => { if (active) { setHumanInstructions(value.content); setSavedInstructions(value.content); setInstructionsLoaded(true) } }).catch(err => { if (active) setError((err as Error).message) })
+    api<{ content: string; updated_at?: string }>(`/cuts/${cutId}/brief-instructions`).then(value => { if (active) { setHumanInstructions(value.content); setSavedInstructions(value.content); setSavedUpdatedAt(value.updated_at); setInstructionsLoaded(true) } }).catch(err => { if (active) setError((err as Error).message) })
     return () => { active = false }
   }, [cutId])
   const savedRef = useRef(savedInstructions)
   savedRef.current = savedInstructions
   useEffect(() => {
     const reload = () => {
-      api<{ content: string }>(`/cuts/${cutId}/brief-instructions`).then(value => {
+      api<{ content: string; updated_at?: string }>(`/cuts/${cutId}/brief-instructions`).then(value => {
         const previous = savedRef.current
         setSavedInstructions(value.content)
+        setSavedUpdatedAt(value.updated_at)
         setHumanInstructions(current => current === previous ? value.content : current)
       }).catch(() => {})
     }
@@ -75,7 +78,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
   }, [cutId])
   async function saveInstructions() {
     setSavingInstructions(true); setInstructionsError('')
-    try { const value = await api<{ content: string }>(`/cuts/${cutId}/brief-instructions`, { method: 'PUT', body: JSON.stringify({ content: humanInstructions }) }); setSavedInstructions(value.content); window.dispatchEvent(new Event('framewise:cut-timeline-changed')) }
+    try { const value = await api<{ content: string; updated_at?: string }>(`/cuts/${cutId}/brief-instructions`, { method: 'PUT', body: JSON.stringify({ content: humanInstructions }) }); setSavedInstructions(value.content); setSavedUpdatedAt(value.updated_at); window.dispatchEvent(new Event('framewise:cut-timeline-changed')) }
     catch (err) { setInstructionsError((err as Error).message) } finally { setSavingInstructions(false) }
   }
   const [error, setError] = useState('')
@@ -106,11 +109,12 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
     if (!instructionsLoaded) return
     let active = true
     Promise.all([api<{ job_id: string | null; content: string; stale_reason?: string | null }>(`/cuts/${cutId}/review-answers`),
-      api<{ content: string }>(`/cuts/${cutId}/brief-instructions`)]).then(([draft, saved]) => {
+      api<{ content: string; updated_at?: string }>(`/cuts/${cutId}/brief-instructions`)]).then(([draft, saved]) => {
       if (!active) return
       setReviewDraft(draft)
       const previous = savedRef.current
       setSavedInstructions(saved.content)
+      setSavedUpdatedAt(saved.updated_at)
       setHumanInstructions(current => current === previous ? saved.content : current)
     }).catch(err => { if (active) setReviewError((err as Error).message) })
     return () => { active = false }
@@ -192,7 +196,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
   return <div role="group" aria-label="Review, answers and Cut summary" className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] gap-4 pt-3 lg:grid-cols-2 lg:grid-rows-[minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
     <div className="grid min-h-0 grid-rows-[minmax(0,1fr)] lg:col-start-1 lg:row-start-1">{typeof review === 'function' ? review({ text: humanInstructions, onChange: setHumanInstructions, ready: instructionsLoaded && !savingInstructions }) : review}</div>
     <div className="scrollbar flex flex-col gap-4 lg:col-start-2 lg:row-start-1 lg:-mt-3 lg:min-h-0 lg:overflow-y-auto lg:pt-3 2xl:contents">
-      <StepPanel className="2xl:col-start-2 2xl:row-start-1" step={2} kind="review_answers" title="Your answers" subtitle="Decisions and checks" tag={answersChip}
+      <StepPanel className="2xl:col-start-2 2xl:row-start-1" step={2} kind="review_answers" title="Your answers" subtitle="Decisions and checks" updated={savedUpdatedAt ? `last saved ${formatAgo(savedUpdatedAt)}` : undefined} tag={answersChip}
         actions={<ActionButton compact icon={<Wand2 size={13} aria-hidden />} pending={reviewWorking} disabled={!instructionsLoaded || disabled} onClick={generateAnswers} title="Draft answers from the current review and transcript">Draft with AI</ActionButton>}>
         <div className="flex min-h-[15rem] flex-1 flex-col gap-2">
           <label htmlFor={`answers-${cutId}`} className="label !mb-0">Answers to suggested checks and production decisions</label>
@@ -222,7 +226,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
         <div className="shrink-0"><SummaryRequestEditor textProvider={textProvider} cutId={cutId} disabled={disabled} onStarted={onStarted} /></div>
       </StepPanel>
 
-      <StepPanel className="2xl:col-start-3 2xl:row-start-1" step={3} kind="cut_summary" title="Cut summary" subtitle="Final production brief" tag={summaryChip}
+      <StepPanel className="2xl:col-start-3 2xl:row-start-1" step={3} kind="cut_summary" title="Cut summary" subtitle="Final production brief" updated={current?.created_at ? formatAgo(current.created_at) : undefined} tag={summaryChip}
         actions={<>
           <div role="group" aria-label="Summary view" className="flex rounded-lg border hairline p-0.5 text-[11px] font-semibold">
             <button type="button" aria-pressed={reading} disabled={!draft.content.trim()} onClick={() => chooseView('read')} title={draft.content.trim() ? 'Read the summary formatted' : 'Nothing to read yet'} className={`inline-flex items-center gap-1 rounded-md px-2 py-1 ${reading ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}><BookOpen size={12} aria-hidden /> Read</button>

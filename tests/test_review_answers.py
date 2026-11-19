@@ -180,6 +180,15 @@ class ReviewAnswersTest(unittest.TestCase):
         self.run_draft(job_id)
         self.assertEqual(self.client.get('/api/cuts/c1/brief-instructions').json()['content'], '')
 
+    def test_saved_answers_report_the_last_saved_time(self):
+        self.seed(cuts=('c1',))
+        self.assertEqual(self.client.get('/api/cuts/c1/brief-instructions').json()['updated_at'], None)
+        saved = self.client.put('/api/cuts/c1/brief-instructions', json={'content': 'Coat is green'})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        stamp = saved.json()['updated_at']
+        self.assertTrue(isinstance(stamp, str) and stamp)
+        self.assertEqual(self.client.get('/api/cuts/c1/brief-instructions').json()['updated_at'], stamp)
+
     def test_empty_answer_is_rejected(self):
         with self.assertRaises(ValueError):
             review_answers.validate_answers('  ')
