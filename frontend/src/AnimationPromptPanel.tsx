@@ -79,7 +79,10 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
   async function saveInstructions() {
     setSavingInstructions(true); setInstructionsError('')
     try { const value = await api<{ content: string; updated_at?: string }>(`/cuts/${cutId}/brief-instructions`, { method: 'PUT', body: JSON.stringify({ content: humanInstructions }) }); setSavedInstructions(value.content); setSavedUpdatedAt(value.updated_at); window.dispatchEvent(new Event('framewise:cut-timeline-changed')) }
-    catch (err) { setInstructionsError((err as Error).message) } finally { setSavingInstructions(false) }
+    catch (err) { setInstructionsError((err as Error).message); setSavingInstructions(false); return }
+    setSavingInstructions(false)
+    // The summary is written from the saved answers, so saving them is what starts it. A cut with analysis off keeps just the save.
+    if (!disabled) await start('regenerate')
   }
   const [error, setError] = useState('')
   const [saveError, setSaveError] = useState('')
@@ -209,7 +212,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
           {previousAnswers !== null && <button type="button" className="inline-flex items-center gap-1 self-start text-[11px] text-[#c3aeff] underline" onClick={() => { setHumanInstructions(previousAnswers); setPreviousAnswers(null) }}><Undo2 size={12} aria-hidden /> Restore previous answers</button>}
           {(reviewError || reviewFailure) && <p role="alert" className="text-xs text-[#ff9fa7]">{reviewError || reviewFailure}</p>}
           {instructionsError && <p role="alert" className="text-xs text-[#ff9fa7]">{instructionsError}</p>}
-          <ActionButton variant={answersDirty ? 'primary' : 'quiet'} icon={<Save size={14} aria-hidden />} pending={savingInstructions} disabled={!instructionsLoaded || !answersDirty} onClick={saveInstructions} className="w-full">{savingInstructions ? 'Saving answers…' : 'Save answers'}</ActionButton>
+          <ActionButton variant={answersDirty ? 'primary' : 'quiet'} icon={<Save size={14} aria-hidden />} pending={savingInstructions} disabled={!instructionsLoaded || !answersDirty} onClick={saveInstructions} className="w-full">{savingInstructions ? 'Saving answers…' : disabled ? 'Save answers' : 'Save answers and queue summary'}</ActionButton>
         </div>
         <div className="shrink-0 space-y-2.5 rounded-lg border hairline bg-[#171c25] p-3">
           <h4 className="flex items-center gap-1.5 text-xs font-semibold"><Sparkles size={14} className="text-[#e5d25a]" aria-hidden /> Generate the Cut summary</h4>

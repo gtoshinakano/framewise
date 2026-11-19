@@ -133,12 +133,13 @@ export function localTime(value: string | null | undefined, now = Date.now()) {
   if (day(date) === day(new Date(now - 86_400_000))) return `Yesterday ${time}`
   return `${date.getDate()} ${date.toLocaleString('en', { month: 'short' })} ${time}`
 }
-/** When something happened, read back to the viewer: "just now", "5 minutes ago", "3 days ago", older than a month as a date. */
+/** When something happened, read back to the viewer: "just now", "30 seconds ago", "5 minutes ago", "3 days ago", older than a month as a date. */
 export function formatAgo(value: string | null | undefined, now = Date.now()): string {
   const at = parseUtc(value)
   if (!Number.isFinite(at)) return ''
   const seconds = Math.max(0, (now - at) / 1000)
-  if (seconds < 45) return 'just now'
+  if (seconds < 5) return 'just now'
+  if (seconds < 60) return `${Math.floor(seconds)} seconds ago`
   const minutes = Math.round(seconds / 60)
   if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`
   const hours = Math.round(seconds / 3600)

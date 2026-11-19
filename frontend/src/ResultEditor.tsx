@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { AlignLeft, AudioLines, BoxSelect, Captions, Drama, FileText, GalleryHorizontal, History, Image as ImageIcon, Layers3, LayoutTemplate, ListTree, Plus, RotateCcw, Save, Sparkles, StickyNote, Trash2, Video, WandSparkles, X, type LucideIcon } from 'lucide-react'
 import { api, type AnalysisContext, type AnalysisResult, type ResultKind } from './api'
 import { resultAccent, StaleChip } from './RunUi'
+import { formatAgo } from './queueView'
 
 const kinds: { value: ResultKind; label: string }[] = [
   { value: 'first_frame', label: 'First frame' },
@@ -115,6 +116,7 @@ export default function ResultEditor({ cutId, refreshKey, onLoaded, onChanged, e
         <button type="button" onClick={() => setDraft(result)} title={`${name} · ${look.label}${result.superseded_by ? ' · earlier revision' : ''}`} aria-current={selected || undefined} className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-xs ${selected ? 'bg-[#322a48] ring-1 ring-[#a58ae8]' : 'hover:bg-[#262d3a]'} ${result.superseded_by ? 'opacity-60' : ''}`}>
           <Icon size={14} style={{ color: look.color }} className="shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate">{name}</span>
+          {result.created_at && <span className="shrink-0 text-[10px] tabular-nums text-[#9aa0a8]" title={`Generated ${result.created_at} UTC`}>{formatAgo(result.created_at)}</span>}
           {!result.superseded_by && result.stale_reason && <StaleChip reason={result.stale_reason} />}
           {result.superseded_by && <span className="shrink-0 rounded bg-white/5 px-1 text-[9px] uppercase tracking-wide text-[#929aa9]">older</span>}
         </button>

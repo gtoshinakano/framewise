@@ -194,6 +194,25 @@ class BeatsTest(unittest.TestCase):
         self.assertEqual(retry.status_code, 200, retry.text)
         self.assertEqual(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (retry.json()['job_id'],))['payload_json'])['cut_id'], 'c1')
 
+    def test_review_rerun_queues_beats_first_and_the_review_waits_for_them(self):
+        self.seed()
+        response = self.client.post('/api/cuts/c1/consistency-summary?with_beats=true')
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body['beats_job_id'])
+        self.assertEqual(db.one('SELECT pipeline FROM jobs WHERE id=?', (body['beats_job_id'],))['pipeline'], 'performance_beats')
+        depends = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (body['job_id'],))['payload_json'])['depends_on']
+        self.assertIn(body['beats_job_id'], depends)
+        # A beats job already waiting is reused, never duplicated.
+        again = self.client.post('/api/cuts/c1/consistency-summary?with_beats=true').json()
+        self.assertEqual(again['beats_job_id'], body['beats_job_id'])
+        self.assertEqual(db.one("SELECT COUNT(*) AS n FROM jobs WHERE pipeline='performance_beats'")['n'], 1)
+
+    def test_review_rerun_without_keyframes_only_queues_the_review(self):
+        body = self.client.post('/api/cuts/c1/consistency-summary?with_beats=true').json()
+        self.assertIsNone(body['beats_job_id'])
+        self.assertIsNone(db.one("SELECT id FROM jobs WHERE pipeline='performance_beats'"))
+
 
 class ChainTest(unittest.TestCase):
     setUp = analysis_tests.AnalysisTest.setUp

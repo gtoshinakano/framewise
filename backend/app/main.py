@@ -2075,17 +2075,31 @@ def queue_performance_beats(cut_id: str):
 
 
 @app.post('/api/cuts/{cut_id}/consistency-summary')
-def queue_consistency_summary(cut_id: str):
-    """Queue a summary of the evidence available when work starts."""
-    from . import summary_queue
+def queue_consistency_summary(cut_id: str, with_beats: bool = False):
+    """Queue a summary of the evidence available when work starts.
+
+    With ``with_beats`` the cut's performance beats are queued first (an already waiting or running job is reused) and the
+    summary waits for them, so the review reads the beats written from the current keyframes. A cut without keyframe
+    analysis, or one that no visual job will analyse, has no beats to write and only gets the summary.
+    """
+    from . import performance_beats, summary_queue
     cut, config = analysis_config_for_cut(cut_id)
     if not cut['active']:
         raise HTTPException(400, 'Only active cuts can be summarized')
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        job_id = summary_queue.insert(conn, cut['episode_id'], {'cut_id': cut_id, 'config': config.model_dump()})
+        parents = []
+        if with_beats:
+            by_type = {item['type']: item for item in structured_results.list_results(cut_id, conn=conn)}
+            visual = worker.pending_jobs(conn, cut['episode_id'], ('analyze',), [cut_id])
+            beats = performance_beats.pending_job(conn, cut_id)
+            if beats or visual or 'keyframe_analysis' in by_type:
+                beats = beats or performance_beats.insert(conn, cut['episode_id'], cut_id,
+                    {key: getattr(config, key) for key in ('text_provider', 'local_thinking', 'openrouter_model')})
+                parents = [beats]
+        job_id = summary_queue.insert(conn, cut['episode_id'], {'cut_id': cut_id, 'config': config.model_dump(), 'depends_on': parents})
         worker.sync_episode_status(conn, cut['episode_id'])
-    return {'job_id': job_id}
+    return {'job_id': job_id, 'beats_job_id': parents[0] if parents else None}
 
 
 @app.post('/api/episodes/{episode_id}/consistency-summaries')

@@ -60,7 +60,8 @@ test('a refreshed first page keeps the older pages already loaded', () => {
 test('result times read back as minutes, hours and days', () => {
   const now = Date.parse('2026-11-19T12:00:00Z')
   assert.equal(formatAgo(null, now), '')
-  assert.equal(formatAgo('2026-11-19 11:59:30', now), 'just now')
+  assert.equal(formatAgo('2026-11-19 11:59:58', now), 'just now')
+  assert.equal(formatAgo('2026-11-19 11:59:30', now), '30 seconds ago')
   assert.equal(formatAgo('2026-11-19 11:59:00', now), '1 minute ago')
   assert.equal(formatAgo('2026-11-19 11:58:00', now), '2 minutes ago')
   assert.equal(formatAgo('2026-11-19 10:00:00', now), '2 hours ago')

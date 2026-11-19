@@ -134,11 +134,12 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
   async function queue() {
     setWorking(true); setMessage('')
     try {
-      await api(`/cuts/${cutId}/consistency-summary`, { method: 'POST' })
-      setMessage('Consistency summary queued.'); await onStarted()
+      // The beats are rewritten first and the review waits for them, so it reads the current acting plan.
+      await api(`/cuts/${cutId}/consistency-summary?with_beats=true`, { method: 'POST' })
+      setMessage('Performance beats and consistency summary queued.'); await onStarted()
     } catch (error) { setMessage((error as Error).message) } finally { setWorking(false) }
   }
-  const rerun = <ActionButton compact icon={<RefreshCw size={13} aria-hidden />} pending={working} disabled={disabled} onClick={() => void queue()} title="Queue a new consistency summary for this cut">{result ? 'Re-run' : 'Queue'}</ActionButton>
+  const rerun = <ActionButton compact icon={<RefreshCw size={13} aria-hidden />} pending={working} disabled={disabled} onClick={() => void queue()} title="Rewrite the performance beats, then write a new consistency summary for this cut">{result ? 'Re-run' : 'Queue'}</ActionButton>
   const pictures = typeof result?.settings?.pictures === 'number' ? result.settings.pictures : 0
   // Only reviews written since pictures were offered record `vision`; older ones say nothing about it.
   const sight = !result || typeof result.settings?.vision !== 'boolean' ? null
@@ -149,7 +150,6 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
   const quiet = !!view && (view.format === 'questions' ? view.questions.length === 0 : view.sections.human_review.none && view.sections.recommended_checks.none)
   const allClear = !!view && quiet && !view.conflicts
   return <StepPanel step={1} kind="consistency_summary" title="Review" subtitle="Consistency summary · read first" updated={result?.created_at ? formatAgo(result.created_at) : undefined} tag={status} actions={rerun}>
-    {lead}
     {!loaded ? <div className="space-y-3" aria-busy="true" aria-label="Loading consistency summary"><Skeleton className="h-9" /><Skeleton className="h-28" /><Skeleton className="h-28" /><Skeleton className="h-20" /></div>
       : !result || !view ? <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-10 text-center">
         <ScanSearch size={28} className="text-[#b496ff]" aria-hidden />
@@ -177,6 +177,7 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
         <p className="muted text-[11px] leading-4">To edit this result or see earlier versions, use Analysis fields below.</p>
       </>}
     {message && <p role="status" className="text-xs text-[#c3aeff]">{message}</p>}
+    {lead}
     {extra}
   </StepPanel>
 }

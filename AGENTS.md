@@ -135,11 +135,21 @@ Capture inputs with `job_inputs.JobInputs`. Publish each checkpoint with `snapsh
 
 ## Verification
 
-Run `docker compose build`, `docker compose up -d`, check `/api/health`, import a short video, wait for preparation, run hard-cut detection, seek a cut, save a note, and restart the container to confirm persistence. Verify a no-audio video and an invalid upload when changing media handling.
+Run `docker compose build`, `docker compose up -d` (the built images, not the dev override), check `/api/health`, import a short video, wait for preparation, run hard-cut detection, seek a cut, save a note, and restart the container to confirm persistence. Verify a no-audio video and an invalid upload when changing media handling.
+
+## Reload the service after every change
+
+When you work from the host machine (the user's Ubuntu box with Docker), a change is not finished until the running service runs it. After the tests pass, rebuild and recreate only what the change touched, then check `curl http://192.168.0.6:8080/api/health` (the address in `.env` `APP_BIND_IP`):
+
+- `frontend/`, `backend/app` API code, `Dockerfile`: `docker compose build video-analyzer && docker compose up -d video-analyzer`.
+- Worker files (anything the notes above say needs "restart the inference worker", including `backend/app` code the inference worker imports): `docker compose build inference-worker && docker compose up -d inference-worker`. The audio worker is the same with `audio-worker` and `--profile audio`. A change in a shared module (`db.py`, `worker.py`, `job_kinds.py`, ...) rebuilds every service that imports it.
+- Dependencies, Dockerfiles or compose files: rebuild every affected service.
+
+Before recreating a worker, check that no job is `running` (read the `jobs` table read-only, or the queue drawer's API: `GET /api/episodes/{id}/queue`). Jobs survive a restart (lease, three-attempt interruption limit) but a restart wastes a GPU run in progress, so if one is running, say so, finish everything else, and recreate that worker once it is idle. A queued job of a newer pipeline is ignored by an old process, so never leave a changed worker unrestarted without telling the user. Run `scripts/docker-cleanup.sh` after builds. Persistent volumes (`framewise_data`, `framewise_models`) are never removed: do not use `docker compose down -v`. If you cannot reach Docker (for example, the agent runs somewhere else), say that the service was not reloaded and give the commands.
 
 ## This Ubuntu host
 
 As of 2026-10-27, `/etc/systemd/system/framewise.service` is installed, enabled, and starts the Compose app. The ignored local `.env` binds port 8080 to `192.168.0.6`; update `APP_BIND_IP` if this host's LAN address changes. The service restart exercised Compose stop and start while keeping `framewise_data` and `framewise_models`. A container-backed import, preparation, cut detection, browser playback, and persistence check passed; test projects were removed afterward. Docker access was available in the development environment on 2026-10-30; use Cockpit or a privileged terminal if host permissions prevent service changes. Read-only checks include `systemctl status framewise.service`, `journalctl -u framewise.service`, and `curl http://192.168.0.6:8080/api/health`.
 
 - Disk hygiene: on this development host a full disk makes SQLite fail with `disk I/O error` and the API restart-loops. Run `scripts/docker-cleanup.sh` after builds (or install `deploy/framewise-cleanup.timer`); it prunes dangling images and old build cache, never volumes.
-- Fast development loop: `compose.dev.yml` bind-mounts `backend/app` and `frontend/dist`, runs uvicorn with `--reload`, and serves the frontend with Vite in a node container. Python changes in the API apply automatically; restart affected inference or audio workers after worker changes. Rebuild images only when dependencies or Dockerfiles change.
+- **Build images, not dev mode (2026-11-19).** The stack runs from built images: `COMPOSE_FILE=compose.yml:compose.inference.rocm.yml:compose.audio.rocm.yml` (with `COMPOSE_PROFILES=inference,audio` if the workers should come up with `docker compose up -d`), never with `compose.dev.yml`. `compose.dev.yml` (bind mounts, `uvicorn --reload`, Vite) is kept only for a quick experiment the user asks for; remove it from the local `.env` `COMPOSE_FILE` before relying on the build. Code changes reach the running service only through a rebuild, so "Reload the service after every change" (above) is part of finishing any change.
