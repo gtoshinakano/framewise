@@ -494,6 +494,10 @@ def init_db():
             ("started_at", "TEXT"),
             ("finished_at", "TEXT"),
             ("retry_of", "TEXT REFERENCES jobs(id) ON DELETE SET NULL"),
+            ("priority_class", "TEXT NOT NULL DEFAULT 'batch' CHECK (priority_class IN ('chat','interactive','batch'))"),
+            ("request_key", "TEXT"),
+            ("not_before", "REAL NOT NULL DEFAULT 0"),
+            ("restart_input_json", "TEXT"),
         ):
             if column not in job_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
@@ -504,6 +508,7 @@ def init_db():
             # Failures from before the queue tracked them would otherwise all ask for attention at once.
             db.execute("UPDATE jobs SET dismissed_at=CURRENT_TIMESTAMP WHERE status='failed' AND COALESCE(finished_at,updated_at) < datetime('now','-1 day')")
         db.execute('CREATE INDEX IF NOT EXISTS jobs_episode_created_idx ON jobs(episode_id,created_at)')
+        db.execute('CREATE INDEX IF NOT EXISTS jobs_request_idx ON jobs(episode_id,pipeline,request_key) WHERE request_key IS NOT NULL')
         # 2026-11-18: Qwen3.6 with its vision projector became the default of every visual role (visual_models.py). A saved
         # 'qwen35-27b' was the old default being restored from the Visual engine dialog, so it would keep the new default
         # from ever applying; drop those rows once. Choices of any other model, and later choices of Qwen3.5, stay.
@@ -656,12 +661,16 @@ def init_db():
         db.commit()
 
 
-def one(sql, args=()):
-    with connect() as db:
-        row = db.execute(sql, args).fetchone()
-        return dict(row) if row else None
+def one(sql, args=(), *, conn=None):
+    if conn is None:
+        with connect() as conn:
+            return one(sql, args, conn=conn)
+    row = conn.execute(sql, args).fetchone()
+    return dict(row) if row else None
 
 
-def all_rows(sql, args=()):
-    with connect() as db:
-        return [dict(row) for row in db.execute(sql, args).fetchall()]
+def all_rows(sql, args=(), *, conn=None):
+    if conn is None:
+        with connect() as conn:
+            return all_rows(sql, args, conn=conn)
+    return [dict(row) for row in conn.execute(sql, args).fetchall()]

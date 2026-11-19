@@ -56,7 +56,7 @@ SLIM = ("CASE WHEN json_valid(payload_json) THEN json_object("
           " THEN json_extract(payload_json,'$.sequence.id') END)"
         + ") ELSE '{}' END")
 
-COLUMNS = ('rowid AS seq,id,episode_id,pipeline,status,stage,error,created_at,started_at,finished_at,updated_at,retry_of,'
+COLUMNS = ('rowid AS seq,id,episode_id,pipeline,status,stage,error,created_at,started_at,finished_at,updated_at,retry_of,priority_class,'
            f'lease_owner,lease_until,dismissed_at,{SLIM} AS slim')
 
 
@@ -225,7 +225,7 @@ def describe(conn, rows, now=None):
         retry = row['status'] in ('failed', 'cancelled') and kind.retry(payload)
         runs.append({
             'id': row['id'], 'seq': row['seq'], 'kind': row['pipeline'], 'label': label, 'group': f"{row['pipeline']}:{label}", 'gpu': kind.gpu,
-            'status': status, 'stage': row['stage'], 'error': row['error'],
+            'status': status, 'stage': row['stage'], 'error': row['error'], 'priority_class': row['priority_class'],
             'cuts': listed[:LISTED_CUTS], 'cut_count': len(listed),
             'cut_span': {'first': min(numbers), 'last': max(numbers)} if (numbers := [cut['number'] for cut in listed if cut['number'] is not None]) else None,
             'sequence': {'id': sequence['id'], 'title': sequence['title'], 'step': payload.get('step'), 'shot_key': payload.get('shot_key'),

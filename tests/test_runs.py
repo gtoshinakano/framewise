@@ -4,9 +4,10 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import tests.test_analysis as analysis_tests
-from app import db, job_kinds, runs, worker
+from app import db, job_inputs, job_kinds, runs, worker
 
 
 def add_job(job_id, pipeline, status='queued', payload=None, episode='e', created=None, finished=None, **columns):
@@ -188,6 +189,8 @@ class RunsTest(unittest.TestCase):
         self.assertEqual(self.client.post('/api/jobs/boxes/cancel').status_code, 200)
         inference_worker.fail_job('boxes', owner, 'e', RuntimeError('lease lost'))  # a worker noticing too late writes nothing
         self.assertEqual(db.one("SELECT status FROM jobs WHERE id='boxes'")['status'], 'cancelled')
+        self.assertIsNone(worker.claim_job(('character_detect',)))
+        worker.release_lease('boxes', owner)
         older, _ = worker.claim_job(('character_detect',))
         self.assertEqual(older, 'older')
         self.assertEqual(self.client.post('/api/jobs/older/cancel').status_code, 409)  # the older workflow cannot stop midway
@@ -238,6 +241,56 @@ class RunsTest(unittest.TestCase):
         stored = db.one("SELECT payload_json FROM jobs WHERE id='resume'")['payload_json']
         self.assertEqual(json.loads(stored), {'cut_id': 'c1', 'depends_on': ['answers', 'consistency', 'selection']})
         self.assertEqual(worker.claim_job(('regen',))[0], 'resume')
+
+    def test_registered_kind_can_gather_publish_invalidate_and_restart(self):
+        def gather(conn, job):
+            return conn.execute("SELECT content FROM context_items WHERE id='ctx'").fetchone()['content']
+
+        def invalidate(conn, job):
+            conn.execute("UPDATE chunks SET notes='Stale: context changed' WHERE episode_id=?", (job['episode_id'],))
+
+        kind = job_kinds.Kind('dummy', 'Test job', False, resources=frozenset({'cpu_media'}),
+                             scope=lambda payload: job_kinds.Scope(frozenset({'context'}), frozenset({'results'})),
+                             priority_class=lambda payload: 'interactive',
+                             inputs=lambda conn, job: job_inputs.fingerprint(gather(conn, job)),
+                             gather=gather, invalidates=invalidate)
+        with patch.dict(job_kinds.KINDS, {'dummy': kind}), patch('app.worker.time.time', return_value=100) as clock:
+            with db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                conn.execute("INSERT INTO chunks(id,episode_id,chunk_index,start_time,end_time) VALUES ('test-chunk','e',0,0,4)")
+                job_id = worker.insert_job(conn, 'e', kind.pipeline, {})
+                self.assertEqual(worker.insert_job(conn, 'e', kind.pipeline, {}), job_id)
+                conn.execute("UPDATE context_items SET content='At claim' WHERE id='ctx'")
+            queued = self.queue()['waiting'][0]
+            self.assertEqual((queued['id'], queued['priority_class']), (job_id, 'interactive'))
+            _, owner = worker.claim_job((kind.pipeline,))
+            with db.connect() as conn:
+                snapshot = job_inputs.JobInputs(conn, dict(conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()), owner)
+                self.assertEqual(snapshot.data, 'At claim')
+                conn.execute("UPDATE context_items SET content='During generation' WHERE id='ctx'")
+            with self.assertRaisesRegex(worker.LeaseLost, job_inputs.RESTART_STAGE):
+                with snapshot.publish():
+                    self.fail('A stale result reached publication')
+            worker.release_lease(job_id, owner)
+            state = db.one('SELECT status,attempt_count,stage FROM jobs WHERE id=?', (job_id,))
+            self.assertEqual(state, {'status': 'queued', 'attempt_count': 0, 'stage': job_inputs.RESTART_STAGE})
+            self.assertIsNone(worker.claim_job((kind.pipeline,)))
+            self.assertEqual(db.one("SELECT notes FROM chunks WHERE id='test-chunk'")['notes'], '')
+            with db.connect() as conn:
+                conn.execute("UPDATE context_items SET content='Latest edit' WHERE id='ctx'")
+            clock.return_value = 103
+            self.assertIsNone(worker.claim_job((kind.pipeline,)))
+            self.assertEqual(db.one('SELECT not_before FROM jobs WHERE id=?', (job_id,))['not_before'], 106)
+            clock.return_value = 106
+            _, owner = worker.claim_job((kind.pipeline,))
+            with db.connect() as conn:
+                snapshot = job_inputs.JobInputs(conn, dict(conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()), owner)
+            with snapshot.publish() as conn:
+                conn.execute("UPDATE cuts SET notes=? WHERE id='c1'", (snapshot.data,))
+                conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+            self.assertEqual(db.one("SELECT notes FROM cuts WHERE id='c1'")['notes'], 'Latest edit')
+            self.assertEqual(db.one("SELECT notes FROM chunks WHERE id='test-chunk'")['notes'], 'Stale: context changed')
+            self.assertEqual(len(db.all_rows('SELECT id FROM jobs')), 1)
 
     def test_episode_queue_cancel_by_group_and_with_running(self):
         for index in range(3):

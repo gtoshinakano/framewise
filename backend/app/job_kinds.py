@@ -142,6 +142,14 @@ def _analysis_keys(payload, cut_ids):
 
 
 @dataclass(frozen=True)
+class Scope:
+    """Data read and written within an episode. None covers all cuts."""
+    reads: frozenset[str] = frozenset()
+    writes: frozenset[str] = frozenset()
+    cut_ids: frozenset[str] | None = None
+
+
+@dataclass(frozen=True)
 class Kind:
     """How the queue describes and handles one pipeline."""
     pipeline: str
@@ -163,6 +171,13 @@ class Kind:
     # Failures of these kinds ask for the user's attention; downloads requested by other apps do not.
     attention: bool = True
     description: str = field(default='')
+    resources: frozenset[str] = frozenset()
+    scope: Callable[[dict], Scope] | None = None
+    priority_class: Callable[[dict], str] | None = None
+    inputs: Callable | None = None
+    gather: Callable | None = None
+    on_inputs_changed: str = 'requeue'
+    invalidates: Callable | None = None
 
     def name(self, payload):
         return self.label(payload) if self.label else self.title
@@ -176,6 +191,11 @@ class Kind:
         if self.stage_units:
             return max(1, len(self.cuts(payload)) * max(1, len(stages_of(payload))))
         return 1
+
+    def priority(self, payload):
+        if self.priority_class:
+            return self.priority_class(payload)
+        return 'interactive' if len(self.cuts(payload)) == 1 else 'batch'
 
 
 def _always(payload):

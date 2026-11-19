@@ -14,6 +14,7 @@ export type RunCut = { id: string; number: number | null; title: string; archive
 export type Run = {
   /** Cursor of the history pages (newest first). */
   id: string; seq: number; kind: string; label: string; group: string; gpu: boolean; status: RunStatus; stage: string; error: string | null
+  priority_class: 'chat' | 'interactive' | 'batch'
   cuts: RunCut[]; cut_count: number; cut_span: { first: number; last: number } | null
   sequence: { id: string; title: string; step: string | null; shot_key: string | null; shot_number: number | null } | null
   range: { start: number; end: number } | null

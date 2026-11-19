@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 from pathlib import Path
 
-from . import cut_history, db, media
+from . import cut_history, db, job_inputs, job_kinds, media
 
 log = logging.getLogger(__name__)
 worker_thread: threading.Thread | None = None
@@ -62,6 +62,22 @@ def sync_chunks(episode_id: str, duration: float, chunk_duration: int):
         conn.executemany("INSERT INTO chunks (id,episode_id,chunk_index,start_time,end_time,title,notes) VALUES (?,?,?,?,?,?,?)", values)
 
 
+def insert_job(conn, episode_id, pipeline, payload, *, priority_class=None, retry_of=None, stage='queued'):
+    """Queue a request inside the caller's transaction, reusing an identical active request."""
+    kind = job_kinds.KINDS[pipeline]
+    choice = {key: value for key, value in payload.items() if key != 'depends_on'}
+    request_key = job_inputs.fingerprint({'payload': choice, 'retry_of': retry_of})
+    existing = conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline=? AND request_key=?
+        AND status IN ('queued','running')""", (episode_id, pipeline, request_key)).fetchone()
+    if existing:
+        return existing['id']
+    job_id = str(uuid.uuid4())
+    conn.execute("""INSERT INTO jobs(id,episode_id,pipeline,payload_json,stage,priority_class,retry_of,request_key)
+        VALUES (?,?,?,?,?,?,?,?)""", (job_id, episode_id, pipeline, json.dumps(payload, ensure_ascii=False), stage,
+                                      priority_class or kind.priority(payload), retry_of, request_key))
+    return job_id
+
+
 def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
     try:
         with db.connect() as conn:
@@ -88,9 +104,8 @@ def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
                     raise ValueError('The cuts do not share a boundary')
                 extra = {**extra, 'cut_start': cut['start_time'], 'cut_end': cut['end_time'], 'cut_last': cut['last_frame_time'],
                          'next_cut_id': next_cut['id'], 'next_end': next_cut['end_time']}
-            job_id = str(uuid.uuid4())
-            payload = json.dumps({"settings": json.loads(episode["settings_json"]), **(extra or {})})
-            conn.execute("INSERT INTO jobs (id, episode_id, pipeline, payload_json) VALUES (?,?,?,?)", (job_id, episode_id, pipeline, payload))
+            payload = {"settings": json.loads(episode["settings_json"]), **(extra or {})}
+            job_id = insert_job(conn, episode_id, pipeline, payload)
             conn.execute("UPDATE episodes SET status='queued', stage=? , error=NULL WHERE id=?", (pipeline, episode_id))
     except sqlite3.IntegrityError as exc:
         raise ValueError("An analysis job is already running for this episode") from exc
@@ -163,11 +178,11 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
             LEFT JOIN jobs dep ON dep.id=parent.value
             WHERE dep.id IS NULL OR dep.status IN ('failed','cancelled'))""", (now,)).fetchall()
         cancelled = cancel_jobs(conn, orphans, WAITED_FOR_FAILED)
-        job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}){routing} AND
-            (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
+        candidates = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}){routing} AND
+            status IN ('queued','running') AND COALESCE(lease_until,0)<=? AND not_before<=?
             AND NOT EXISTS (SELECT 1 FROM json_each(jobs.payload_json,'$.depends_on') parent
                 LEFT JOIN jobs dep ON dep.id=parent.value WHERE dep.id IS NULL OR dep.status!='done')
-            AND (jobs.pipeline='brief_export' OR NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status='running' AND other.id!=jobs.id AND other.pipeline!='brief_export'
+            AND (jobs.pipeline='brief_export' OR NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status IN ('queued','running','cancelled') AND other.id!=jobs.id AND other.pipeline!='brief_export'
                 -- Only a job with a live lease holds the episode. Interrupted jobs (lease
                 -- expired) must not block each other: a bulk batch leaves many at once.
                 AND other.lease_until>?
@@ -176,16 +191,19 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
                 AND NOT ((jobs.pipeline='cutframes' AND other.pipeline IN ('analyze','regen')) OR (other.pipeline='cutframes' AND jobs.pipeline IN ('analyze','regen'))))
             )
             ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
-                     CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid LIMIT 1""", (*pipelines, *remote_only, now, now)).fetchone()
+                     CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid""", (*pipelines, *remote_only, now, now, now))
         claimed = None
-        if job:
+        for job in candidates:
+            if job_inputs.change_wait(conn, dict(job), now):
+                continue
             owner = (REMOTE_OWNER if remote_lane else '') + str(uuid.uuid4())
-            conn.execute("UPDATE jobs SET status='running',stage=?,error=NULL,lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            conn.execute("UPDATE jobs SET status='running',stage=?,error=NULL,lease_owner=?,lease_until=?,attempt_count=attempt_count+1,not_before=0,restart_input_json=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                          ("Resuming" if job["status"] == "running" else "Starting", owner, now + LEASE_SECONDS, job["id"]))
             if job['pipeline'] not in ('brief_export', 'composition_compact'):
                 conn.execute("UPDATE episodes SET status='processing',stage=?,error=NULL WHERE id=?",
                              ("Resuming" if job["status"] == "running" else "Starting", job["episode_id"]))
             claimed = job["id"], owner
+            break
     for old_job in exhausted:
         cleanup_voice_upload(old_job)
     after_cancel(cancelled)
@@ -232,7 +250,7 @@ def cancel_jobs(conn, jobs, reason=None):
             continue
         running = current['status'] == 'running'
         message = why or ('Cancelled during processing' if running else 'Cancelled before processing')
-        lease = '' if running else ',lease_owner=NULL,lease_until=NULL'
+        lease = '' if current['lease_owner'] and (current['lease_until'] or 0) > now else ',lease_owner=NULL,lease_until=NULL'
         conn.execute(f"UPDATE jobs SET status='cancelled',stage='Cancelled',error=?{lease},updated_at=CURRENT_TIMESTAMP WHERE id=?", (message, current['id']))
         conn.execute("UPDATE analysis_job_stages SET status='cancelled',finished_at=?,error=? WHERE job_id=? AND status='running'", (now, message, current['id']))
         changed.append(current)
@@ -284,7 +302,7 @@ def sweep_character_frames(episode_ids):
 def release_lease(job_id: str, owner: str):
     """The worker has let go of a job: a cancelled job stops showing as stopping."""
     with db.connect() as conn:
-        conn.execute("UPDATE jobs SET lease_owner=NULL,lease_until=NULL WHERE id=? AND lease_owner=? AND status NOT IN ('queued','running')", (job_id, owner))
+        conn.execute("UPDATE jobs SET lease_owner=NULL,lease_until=NULL WHERE id=? AND lease_owner=? AND status!='running'", (job_id, owner))
 
 
 def sync_episode_status(conn, episode_id: str, error: str | None = None):
@@ -346,7 +364,7 @@ def heartbeat(job_id: str, owner: str, done: threading.Event):
         while not done.wait(HEARTBEAT_SECONDS):
             try:
                 with db.connect() as conn:
-                    changed = conn.execute("UPDATE jobs SET lease_until=? WHERE id=? AND status IN ('running','cancelled') AND lease_owner=?",
+                    changed = conn.execute("UPDATE jobs SET lease_until=? WHERE id=? AND status IN ('queued','running','cancelled') AND lease_owner=?",
                                            (time.time() + LEASE_SECONDS, job_id, owner)).rowcount
                     if changed:
                         conn.execute("UPDATE analysis_job_stages SET last_seen_at=? WHERE job_id=? AND status='running'", (time.time(), job_id))
