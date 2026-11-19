@@ -92,6 +92,36 @@ class RunsTest(unittest.TestCase):
                 if kind.lane == 'text':
                     self.assertIsNotNone(kind.handler)
 
+    def test_edit_marks_existing_derivatives_stale_without_queueing_work(self):
+        with db.connect() as conn:
+            conn.executemany("INSERT INTO analysis_results(id,cut_id,kind,title,content,settings_json) VALUES (?,?,?,?,?,?)", [
+                ('opening', 'c1', 'first_frame', 'Initial frame description', '{}', json.dumps({'structured_type': 'initial_frame'})),
+                ('review', 'c1', 'cut_description', 'Consistency summary', '{}', json.dumps({'structured_type': 'consistency_summary'})),
+                ('summary', 'c1', 'cut_description', 'Cut summary', 'My summary', '{}'),
+                ('other', 'c2', 'cut_description', 'Cut summary', 'Neighbor', '{}'),
+            ])
+            conn.execute("INSERT INTO cut_review_drafts(cut_id,job_id,content) VALUES ('c1','old','Draft')")
+        response = self.client.put('/api/cuts/c1', json={'notes': 'Details added to this cut.'})
+        self.assertEqual(response.status_code, 200, response.text)
+        stale = {row['id']: row['stale_reason'] for row in db.all_rows('SELECT id,stale_reason FROM analysis_results')}
+        self.assertEqual(stale, {'opening': None, 'review': 'Cut notes or details changed', 'summary': 'Cut notes or details changed', 'other': None})
+        self.assertEqual(db.one("SELECT stale_reason FROM cut_review_drafts WHERE cut_id='c1'")['stale_reason'], 'Cut notes or details changed')
+        self.assertEqual(db.all_rows('SELECT id FROM jobs'), [])
+
+    def test_new_pending_prerequisite_is_not_merged_into_running_work(self):
+        with db.connect() as conn:
+            first = worker.insert_job(conn, 'e', 'subtitles', {'language': 'Japanese'})
+        lease = worker.claim_job(('subtitles',))
+        self.assertEqual(lease[0], first)
+        with db.connect() as conn:
+            transcribe = worker.insert_job(conn, 'e', 'transcribe', {})
+            request = {'language': 'Japanese', 'depends_on': [transcribe]}
+            waiting = worker.insert_job(conn, 'e', 'subtitles', request)
+            self.assertNotEqual(waiting, first)
+            self.assertEqual(worker.insert_job(conn, 'e', 'subtitles', request), waiting)
+        self.assertIsNone(worker.claim_job(('subtitles',)))
+        self.assertEqual(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (waiting,))['payload_json'])['depends_on'], [transcribe])
+
     def test_boundary_writes_wait_for_cut_readers_but_previews_can_build(self):
         add_job('visual', 'analyze', payload=visual('c1'))
         add_job('preview', 'cutframes', payload={'cut_ids': ['c1']})

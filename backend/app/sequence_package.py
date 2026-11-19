@@ -418,7 +418,7 @@ def document(sequence_id, conn=None):
         full['bible']['voices'] = [pack(voice) for voice in full['bible'].get('voices') or []]
         full['bible']['characters'] = [pack(person) for person in full['bible'].get('characters') or []]
     review = store.loads(current['review_row']['content'], {}) if current['review_row'] else None
-    full['review'] = pack({'verdict': review.get('verdict')}) if review else None
+    full['review'] = pack({'verdict': review.get('verdict'), 'stale_reason': current['review_row']['stale_reason']}) if review else None
     rows = {'bible': current['bible_row'], 'plan': current['plan_row'], 'compilation': current['compilation_row'], 'review': current['review_row']}
     full['provenance'] = pack({**{key: revisions.get(row['id']) for key, row in rows.items() if row},
                                'shots': {str(shot['index']): revisions[shot['result']['id']] for shot in views if shot['result'] and shot['result']['id'] in revisions}})
@@ -531,6 +531,8 @@ def sequence_issues(full, current, bible, review, references, built):
         issues.append({'severity': 'error', 'kind': 'plan_problem', 'text': problem})
     for question in bible.get('open_questions') or []:
         issues.append({'severity': 'warning', 'kind': 'open_question', 'text': question})
+    if (reason := (current['review_row'] or {}).get('stale_reason')):
+        issues.append({'severity': 'warning', 'kind': 'stale_review', 'text': reason})
     shots = {shot['index'] for shot in full['shots']}
     for item in (review or {}).get('issues') or []:
         if item.get('dismissed'):

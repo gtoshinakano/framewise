@@ -71,8 +71,17 @@ def insert_job(conn, episode_id, pipeline, payload, *, priority_class=None, retr
     if choice.get('upload_hash'):
         choice.pop('upload_id', None)
     request_key = job_inputs.fingerprint({'payload': choice, 'retry_of': retry_of})
-    existing = conn.execute("""SELECT id,status,payload_json FROM jobs WHERE episode_id=? AND pipeline=? AND request_key=?
-        AND status IN ('queued','running')""", (episode_id, pipeline, request_key)).fetchone()
+    active = """SELECT id,status,payload_json FROM jobs WHERE episode_id=? AND pipeline=? AND request_key=?
+        AND status IN ('queued','running')"""
+    existing = conn.execute(active, (episode_id, pipeline, request_key)).fetchone()
+    if existing and existing['status'] == 'running' and payload.get('depends_on'):
+        known = set(json.loads(existing['payload_json']).get('depends_on') or [])
+        new = set(payload['depends_on']) - known
+        pending = [parent for parent in sorted(new) if not conn.execute("SELECT 1 FROM jobs WHERE id=? AND status='done'", (parent,)).fetchone()]
+        if pending:
+            # Work already executing cannot pick up a prerequisite it began without.
+            request_key = job_inputs.fingerprint({'request': request_key, 'new_prerequisites': pending})
+            existing = conn.execute(active, (episode_id, pipeline, request_key)).fetchone()
     if existing:
         if existing['status'] == 'queued' and payload.get('depends_on'):
             add_dependencies(conn, existing, payload['depends_on'])

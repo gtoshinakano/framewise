@@ -85,9 +85,13 @@ def state(cut_id, conn=None):
         result['max_boxes'] = frame_capacity(slots, bool(run['cast_locked']))
         candidates = json.loads(run['candidates_json'])
         detections = [target_reviews.box_row(box) for box in boxes]
+        stale = key is None or run['selection_key'] != key or run['cut_start'] != cut['start_time'] or run['cut_end'] != cut['end_time']
+        stale_reason = 'Cut timing or target frame selection changed' if stale else None
+        if not stale and bool(run['cast_locked']) != locked:
+            stale_reason = 'Opening cast setting changed'
         result['run'] = {
             'id': run['id'], 'selection_key': run['selection_key'],
-            'stale': key is None or run['selection_key'] != key or run['cut_start'] != cut['start_time'] or run['cut_end'] != cut['end_time'],
+            'stale': stale, 'stale_reason': stale_reason,
             'frames': target_reviews.visible_reviews(json.loads(run['frames_json']), slots, detections, candidates),
             'slots': [{**slot, 'ignored': bool(slot['ignored'])} for slot in slots],
             'detections': detections, 'candidates': candidates,

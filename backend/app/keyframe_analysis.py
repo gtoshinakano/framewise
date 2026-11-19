@@ -124,7 +124,7 @@ def target_run(cut_id, key, cut, conn=None):
         return None
     state = target_characters.state(cut_id, conn)
     detail = (state or {}).get('run')
-    if not detail or detail['id'] != run['id'] or detail['stale']:
+    if not detail or detail['id'] != run['id'] or detail.get('stale_reason') or detail['stale']:
         return None
     if not detail['detections'] and not detail.get('review_version'):
         return None

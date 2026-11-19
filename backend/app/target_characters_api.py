@@ -139,8 +139,11 @@ def set_cast_lock(cut_id: str, body: CastLock):
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT 1 FROM cuts WHERE id=? AND active=1', (cut_id,)).fetchone():
             raise HTTPException(404, 'Active cut not found')
+        old = conn.execute('SELECT locked FROM target_cast_settings WHERE cut_id=?', (cut_id,)).fetchone()
         conn.execute('''INSERT INTO target_cast_settings(cut_id,locked) VALUES (?,?)
                         ON CONFLICT(cut_id) DO UPDATE SET locked=excluded.locked''', (cut_id, body.locked))
+        if bool(old and old['locked']) != body.locked:
+            structured_results.invalidate_detections(conn, cut_id, target=True, reason='Opening cast setting changed')
     return {'locked': body.locked}
 
 

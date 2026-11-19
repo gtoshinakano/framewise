@@ -107,4 +107,6 @@ def inputs(conn, job):
 
 
 def invalidate(conn, job):
-    """Sequence readers assess whether the evidence used by their saved shots has changed."""
+    from .structured_results import invalidate_sequence_reviews
+    cut_id = json.loads(job['payload_json'])['cut_id']
+    invalidate_sequence_reviews(conn, [cut_id], 'Cut summary changed')

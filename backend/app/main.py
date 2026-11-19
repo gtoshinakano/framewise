@@ -428,7 +428,11 @@ def get_project(project_id: str):
 def update_project(project_id: str, body: ProjectInput):
     require_project(project_id)
     with db.connect() as conn:
-        conn.execute("UPDATE projects SET title=?, synopsis=? WHERE id=?", (body.title.strip(), body.synopsis, project_id))
+        title = body.title.strip()
+        changed = conn.execute('UPDATE projects SET title=?,synopsis=? WHERE id=? AND (title!=? OR synopsis!=?)',
+                               (title, body.synopsis, project_id, title, body.synopsis))
+        if changed.rowcount:
+            structured_results.invalidate_context(conn, project_id, None, 'Project title or synopsis changed')
     return require_project(project_id)
 
 
@@ -569,9 +573,11 @@ def get_episode_status(episode_id: str):
 
 @app.patch("/api/episodes/{episode_id}")
 def update_episode(episode_id: str, body: EpisodeInput):
-    require_episode(episode_id)
+    episode = require_episode(episode_id)
     with db.connect() as conn:
-        conn.execute("UPDATE episodes SET title=? WHERE id=?", (body.title.strip(), episode_id))
+        title = body.title.strip()
+        if conn.execute('UPDATE episodes SET title=? WHERE id=? AND title!=?', (title, episode_id, title)).rowcount:
+            structured_results.invalidate_context(conn, episode['project_id'], episode_id, 'Episode title changed')
     return episode_response(episode_id)
 
 
@@ -615,8 +621,11 @@ def update_cut(cut_id: str, body: CutInput):
     if not db.one("SELECT id FROM cuts WHERE id=?", (cut_id,)):
         raise HTTPException(404, "Cut not found")
     with db.connect() as conn:
-        conn.execute("UPDATE cuts SET title=?, description=?, notes=?, results_json=? WHERE id=?",
-                     (body.title, body.description, body.notes, json.dumps(body.results), cut_id))
+        fields = (body.title, body.description, body.notes, json.dumps(body.results))
+        changed = conn.execute('''UPDATE cuts SET title=?,description=?,notes=?,results_json=? WHERE id=?
+            AND (title!=? OR description!=? OR notes!=? OR results_json!=?)''', (*fields, cut_id, *fields))
+        if changed.rowcount:
+            structured_results.invalidate_notes(conn, [cut_id], 'Cut notes or details changed')
     return serialize_cut(db.one("SELECT * FROM cuts WHERE id=?", (cut_id,)))
 
 
@@ -850,7 +859,12 @@ def update_chunk(chunk_id: str, body: ChunkInput):
     if not db.one("SELECT id FROM chunks WHERE id=?", (chunk_id,)):
         raise HTTPException(404, "Chunk not found")
     with db.connect() as conn:
-        conn.execute("UPDATE chunks SET title=?, notes=? WHERE id=?", (body.title, body.notes, chunk_id))
+        chunk = conn.execute('''UPDATE chunks SET title=?,notes=? WHERE id=? AND (title!=? OR notes!=?)
+            RETURNING episode_id,start_time,end_time''', (body.title, body.notes, chunk_id, body.title, body.notes)).fetchone()
+        if chunk:
+            ids = [row['id'] for row in conn.execute('''SELECT id FROM cuts WHERE episode_id=? AND active=1
+                AND start_time<? AND end_time>?''', (chunk['episode_id'], chunk['end_time'], chunk['start_time']))]
+            structured_results.invalidate_notes(conn, ids, 'Chunk notes changed')
     return db.one("SELECT * FROM chunks WHERE id=?", (chunk_id,))
 
 
@@ -876,6 +890,8 @@ def create_analysis_result(cut_id: str, body: ResultCreate):
     with db.connect() as conn:
         conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content) VALUES (?,?,?,?,?)",
                      (result_id, cut_id, body.kind, body.title, body.content))
+        if body.title == 'Cut summary':
+            structured_results.invalidate_sequence_reviews(conn, [cut_id], 'Cut summary changed')
     return serialize_result(db.one("SELECT * FROM analysis_results WHERE id=?", (result_id,)))
 
 
@@ -908,6 +924,8 @@ def revise_analysis_result(result_id: str, body: ResultUpdate):
             conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,parent_id) VALUES (?,?,?,?,?,?,?)",
                          (new_id, old["cut_id"], old["kind"], body.title, body.content, "manual_edit", result_id))
         conn.execute("UPDATE analysis_results SET superseded_by=? WHERE id=?", (new_id, result_id))
+        if 'Cut summary' in (old['title'], body.title):
+            structured_results.invalidate_sequence_reviews(conn, [old['cut_id']], 'Cut summary changed')
     return serialize_result(db.one("SELECT * FROM analysis_results WHERE id=?", (new_id,)))
 
 
@@ -1064,7 +1082,7 @@ def prepare_episode(episode_id: str, body: SubtitleRunInput):
 
         subtitles = subtitle_store.current_run(episode_id, conn)
         subtitle_jobs = []
-        if not subtitles or subtitles['language'] != language:
+        if not subtitles or subtitles['language'] != language or subtitles.get('stale_reason') or audio_jobs:
             subtitle_jobs = [queue_subtitles(conn, episode_id, language, depends_on)]
         record('subtitles', subtitle_jobs)
 
@@ -2251,14 +2269,7 @@ def put_brief_instructions(cut_id: str, body: BriefInstructionsInput):
     analysis_config_for_cut(cut_id)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        if review_answers.saved_answers(conn, cut_id) != body.content:
-            review_answers.save_answers(conn, cut_id, body.content)
-            review_answers.invalidate_saved_brief(conn, cut_id)
-            conn.execute("""UPDATE cut_review_drafts SET stale_reason='Production decisions edited' WHERE cut_id=? AND content!=?""",
-                         (cut_id, body.content))
-            conn.execute("""UPDATE jobs SET input_json=json_set(COALESCE(input_json,'{}'),'$.keep_saved_answers',json('true'))
-                WHERE pipeline='review_answers' AND status IN ('queued','running')
-                AND json_extract(payload_json,'$.cut_id')=? AND json_extract(payload_json,'$.auto_save')=1""", (cut_id,))
+        review_answers.save_hand_answers(conn, cut_id, body.content)
     return {"content": body.content}
 
 
@@ -2482,12 +2493,17 @@ def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
 def delete_current_results(conn, ids: list[str]):
     """Hard-delete current revisions; a deleted revision's parent becomes current again."""
     for result_id in ids:
-        row = conn.execute("SELECT a.parent_id,c.episode_id FROM analysis_results a JOIN cuts c ON c.id=a.cut_id WHERE a.id=?", (result_id,)).fetchone()
+        row = conn.execute('''SELECT a.parent_id,a.cut_id,a.title,a.settings_json,c.episode_id
+            FROM analysis_results a JOIN cuts c ON c.id=a.cut_id WHERE a.id=?''', (result_id,)).fetchone()
         if not row:
             continue
         if row["parent_id"]:
             conn.execute("UPDATE analysis_results SET superseded_by=NULL WHERE id=? AND superseded_by=?", (row["parent_id"], result_id))
         conn.execute("DELETE FROM analysis_results WHERE id=?", (result_id,))
+        if result_type := structured_results.structured_type(row['settings_json']):
+            structured_results.invalidate_text(conn, row['cut_id'], result_type)
+        if row['title'] == 'Cut summary':
+            structured_results.invalidate_sequence_reviews(conn, [row['cut_id']], 'Cut summary changed')
         episode = conn.execute("SELECT project_id FROM episodes WHERE id=?", (row["episode_id"],)).fetchone()
         (media.episode_dir(episode["project_id"], row["episode_id"]) / "analysis" / f"{result_id}.jpg").unlink(missing_ok=True)
 

@@ -13,6 +13,25 @@ KINDS = {
     'consistency_summary': ('cut_description', 'Consistency summary'),
 }
 
+TEXT_DERIVATIVES = ('performance_beats', 'consistency_summary')
+
+
+def invalidate_sequence_reviews(conn, cut_ids, reason):
+    if cut_ids:
+        conn.execute('''UPDATE sequence_results SET stale_reason=? WHERE superseded_by IS NULL AND type='review'
+            AND sequence_id IN (SELECT s.id FROM sequences s, json_each(s.cuts_json) span, json_each(?) cut
+                WHERE json_extract(span.value,'$.id')=cut.value)''', (reason, json.dumps(list(cut_ids))))
+
+
+def invalidate_notes(conn, cut_ids, reason):
+    if not cut_ids:
+        return
+    targets = json.dumps(list(cut_ids))
+    conn.execute("""UPDATE analysis_results SET stale_reason=? WHERE cut_id IN (SELECT value FROM json_each(?)) AND superseded_by IS NULL
+        AND (title='Cut summary' OR json_extract(settings_json,'$.structured_type') IN (?,?))""", (reason, targets, *TEXT_DERIVATIVES))
+    conn.execute('UPDATE cut_review_drafts SET stale_reason=? WHERE cut_id IN (SELECT value FROM json_each(?))', (reason, targets))
+    invalidate_sequence_reviews(conn, cut_ids, reason)
+
 
 def structured_type(settings):
     try:
@@ -59,6 +78,7 @@ def invalidate_text(conn, cut_id, evidence):
          OR (? IN ('initial_frame','keyframe_analysis') AND json_extract(settings_json,'$.structured_type')='performance_beats'))""",
         (reason, cut_id, evidence, evidence))
     conn.execute('UPDATE cut_review_drafts SET stale_reason=? WHERE cut_id=?', (reason, cut_id))
+    invalidate_sequence_reviews(conn, [cut_id], reason)
 
 
 def invalidate_detections(conn, cut_id, *, target=False, reason=None):
@@ -70,6 +90,8 @@ def invalidate_detections(conn, cut_id, *, target=False, reason=None):
     marks = ','.join('?' for _ in types)
     conn.execute(f"""UPDATE analysis_results SET stale_reason=? WHERE cut_id=? AND superseded_by IS NULL
         AND (json_extract(settings_json,'$.structured_type') IN ({marks}) OR title='Cut summary')""", (reason, cut_id, *types))
+    conn.execute('UPDATE cut_review_drafts SET stale_reason=? WHERE cut_id=?', (reason, cut_id))
+    invalidate_sequence_reviews(conn, [cut_id], reason)
 
 
 def opening_box_edited(conn, run_id, position):
@@ -86,22 +108,20 @@ def invalidate_cut_timing(conn, cut_ids):
     conn.executemany("""UPDATE analysis_results SET stale_reason='Cut timing changed' WHERE cut_id=?
         AND superseded_by IS NULL AND (origin='model' OR title='Cut summary'
         OR json_extract(settings_json,'$.structured_type') IS NOT NULL)""", [(cut_id,) for cut_id in cut_ids])
+    conn.executemany("UPDATE cut_review_drafts SET stale_reason='Cut timing changed' WHERE cut_id=?", [(cut_id,) for cut_id in cut_ids])
+    invalidate_sequence_reviews(conn, cut_ids, 'Cut timing changed')
 
 
 def invalidate_transcript(conn, episode_id, start=0, end=None, reason='Transcript changed'):
-    conn.execute("""UPDATE analysis_results SET stale_reason=? WHERE superseded_by IS NULL
-        AND cut_id IN (SELECT id FROM cuts WHERE episode_id=? AND end_time>? AND (? IS NULL OR start_time<?))
-        AND (json_extract(settings_json,'$.structured_type') IN ('performance_beats','consistency_summary') OR title='Cut summary')""",
-        (reason, episode_id, start, end, end))
+    ids = [row['id'] for row in conn.execute('''SELECT id FROM cuts WHERE episode_id=? AND active=1 AND end_time>?
+        AND (? IS NULL OR start_time<?)''', (episode_id, start, end, end))]
+    invalidate_notes(conn, ids, reason)
 
 
 def invalidate_context(conn, project_id, episode_id, reason='Series context changed'):
-    scope = '''SELECT c.id FROM cuts c JOIN episodes e ON e.id=c.episode_id
-        WHERE c.active=1 AND e.project_id=? AND (? IS NULL OR e.id=?)'''
-    values = (reason, project_id, episode_id, episode_id)
-    conn.execute(f"""UPDATE analysis_results SET stale_reason=? WHERE superseded_by IS NULL AND cut_id IN ({scope})
-        AND (title='Cut summary' OR json_extract(settings_json,'$.structured_type') IN ('performance_beats','consistency_summary'))""", values)
-    conn.execute(f'UPDATE cut_review_drafts SET stale_reason=? WHERE cut_id IN ({scope})', values)
+    ids = [row['id'] for row in conn.execute('''SELECT c.id FROM cuts c JOIN episodes e ON e.id=c.episode_id
+        WHERE c.active=1 AND e.project_id=? AND (? IS NULL OR e.id=?)''', (project_id, episode_id, episode_id))]
+    invalidate_notes(conn, ids, reason)
 
 
 def save_generated(conn, cut_id, job_id, owner, result_type, content, model_id, prompt, settings, context, *, expected_current=...):

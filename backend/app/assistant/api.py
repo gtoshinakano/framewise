@@ -440,8 +440,8 @@ def apply_proposal(proposal_id: str):
                 raise HTTPException(409, str(exc)) from exc
             conn.execute('UPDATE assistant_proposals SET payload_json=? WHERE id=?', (json.dumps({**json.loads(proposal['payload_json']), 'applied_segment_ids': created}), proposal_id))
         elif proposal['target'] == 'review_answers':
-            conn.execute('INSERT INTO cut_brief_instructions(cut_id,content) VALUES (?,?) ON CONFLICT(cut_id) DO UPDATE SET content=excluded.content,updated_at=CURRENT_TIMESTAMP',
-                         (proposal['cut_id'], proposal['content']))
+            from .. import review_answers
+            review_answers.save_hand_answers(conn, proposal['cut_id'], proposal['content'])
         elif proposal['target'] in tools.SEQUENCE_TARGETS:
             # A revision of a sequence result, validated and (for a shot) rendered again exactly like a hand edit.
             payload = json.loads(proposal['payload_json'])
@@ -468,6 +468,9 @@ def apply_proposal(proposal_id: str):
             if structured:
                 from .. import structured_results
                 structured_results.invalidate_text(conn, proposal['cut_id'], proposal['target'])
+            elif proposal['title'] == 'Cut summary':
+                from .. import structured_results
+                structured_results.invalidate_sequence_reviews(conn, [proposal['cut_id']], 'Cut summary changed')
         conn.execute("UPDATE assistant_proposals SET status='applied',applied_result_id=?,resolved_at=CURRENT_TIMESTAMP WHERE id=?", (applied_id, proposal_id))
         if proposal['turn_id']:
             store.bump(conn, proposal['turn_id'])

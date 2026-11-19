@@ -176,8 +176,10 @@ def invalidate(conn, job):
 
 
 def invalidate_saved_brief(conn, cut_id):
+    from .structured_results import invalidate_sequence_reviews
     conn.execute("""UPDATE analysis_results SET stale_reason='Production decisions changed'
         WHERE cut_id=? AND superseded_by IS NULL AND title='Cut summary'""", (cut_id,))
+    invalidate_sequence_reviews(conn, [cut_id], 'Production decisions changed')
 
 
 def generate(config, evidence, progress=None, cancel_check=None, usage_out=None):
@@ -196,6 +198,17 @@ def save_draft(conn, cut_id, job_id, content, model_id):
 
 def save_answers(conn, cut_id, content):
     conn.execute('INSERT INTO cut_brief_instructions(cut_id,content) VALUES (?,?) ON CONFLICT(cut_id) DO UPDATE SET content=excluded.content,updated_at=CURRENT_TIMESTAMP', (cut_id, content))
+
+
+def save_hand_answers(conn, cut_id, content):
+    if saved_answers(conn, cut_id) == content:
+        return
+    save_answers(conn, cut_id, content)
+    invalidate_saved_brief(conn, cut_id)
+    conn.execute("UPDATE cut_review_drafts SET stale_reason='Production decisions edited' WHERE cut_id=? AND content!=?", (cut_id, content))
+    conn.execute("""UPDATE jobs SET input_json=json_set(COALESCE(input_json,'{}'),'$.keep_saved_answers',json('true'))
+        WHERE pipeline='review_answers' AND status IN ('queued','running')
+        AND json_extract(payload_json,'$.cut_id')=? AND json_extract(payload_json,'$.auto_save')=1""", (cut_id,))
 
 
 def get_draft(cut_id):

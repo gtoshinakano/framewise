@@ -6,7 +6,7 @@ export type TargetCandidate = { id: string; frame_ordinal: number; tag: 'unmatch
 export type TargetReview = { score: number | null; flags: Record<string, unknown>; reviewed?: boolean }
 /** `mirror`: the first frame as the user left it in Characters in this cut, copied rather than detected, so it is read only here. */
 export type TargetFrameInfo = { ordinal: number; time: number; relative_time: number; image_size: [number, number]; mirror?: boolean; review?: TargetReview }
-export type TargetRun = { id: string; selection_key: string; stale: boolean; frames: TargetFrameInfo[]; slots: TargetSlot[]; detections: TargetBox[]; candidates?: TargetCandidate[]; unmatched_count?: number; cast_locked?: boolean; review_version?: number }
+export type TargetRun = { id: string; selection_key: string; stale: boolean; stale_reason?: string | null; frames: TargetFrameInfo[]; slots: TargetSlot[]; detections: TargetBox[]; candidates?: TargetCandidate[]; unmatched_count?: number; cast_locked?: boolean; review_version?: number }
 export type TargetJob = { id: string; status: string; stage: string; error: string | null }
 export type TargetDetections = { evaluation: 'current' | 'missing'; selection_key: string | null; max_boxes: number; run: TargetRun | null; job: TargetJob | null; cast_locked?: boolean }
 

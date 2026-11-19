@@ -5,7 +5,7 @@ import { api, type ContextItem, type KeyframeAnalysis, type KeyframeAnalysisStat
 import { BoxEditor, type EditorBox } from './BoxEditor'
 import { boxColor } from './boxColors'
 import { cachedCharacters, loadCharacters } from './runCache'
-import { ActionButton, StatusChip } from './RunUi'
+import { ActionButton, StaleChip, StatusChip } from './RunUi'
 import { boxesInFrame, canDraw, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, REVIEW_LABELS, slotChip, slotName, type Box, type TargetBox, type TargetCandidate, type TargetDetections, type TargetFrameInfo, type TargetRun } from './targetView'
 
 type TargetFrame = { source_frame_index: number; relative_timestamp_seconds: number; reason: string }
@@ -191,7 +191,7 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
   }
   return <section aria-label="Target frames" className="space-y-3 rounded-xl border hairline bg-[#171c25] p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <h3 className="text-sm font-semibold">Target frames</h3>
+      <div className="flex items-center gap-2"><h3 className="text-sm font-semibold">Target frames</h3>{run?.stale_reason && <StaleChip reason={run.stale_reason} />}</div>
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={!!data?.cast_locked} disabled={!data || saving > 0} onChange={event => cast(event.target.checked)} /> Lock opening cast</label>
         <ActionButton compact icon={<ScanFace size={13} />} pending={queueing} disabled={saving > 0} title={live ? 'Track again using your edits as anchors' : 'Find the people using the cut’s target frames'} onClick={() => void detect()}>{!evaluated ? 'Evaluate and detect' : live ? 'Detect again' : 'Detect characters'}</ActionButton>
@@ -211,7 +211,6 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
       {selection.result.coverage_limited && <p className="text-xs text-[#e6c58b]">Some detected changes may not be represented in the selected frames.</p>}
       {data?.job?.status === 'failed' && <p role="alert" className="flex items-start gap-2 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]"><XCircle size={14} className="mt-0.5 shrink-0" aria-hidden />{data.job.error || 'Detection failed.'}</p>}
       {run?.stale && <p className="rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#e6c58b]">The cut's timing or evaluation changed since these people were found. Detect characters again; evaluating different frames removes them.</p>}
-      {live && !!live.cast_locked !== !!data?.cast_locked && <p className="muted text-xs">Detect again to apply the cast setting.</p>}
       {!run && !active && data && <p className="muted rounded-lg border border-dashed hairline px-3 py-3 text-center text-xs">No people found on these frames yet. Press Detect characters. The first frame's boxes set the order and the colours.</p>}
       {live && <div className="space-y-1.5 rounded-lg border hairline p-2" role="group" aria-label="People in this cut">
         <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs text-[#d5dbe5]">People · {visibleSlots.length}</strong>
