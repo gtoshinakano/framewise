@@ -169,7 +169,7 @@ class BatchQueueingTest(unittest.TestCase):
         self.assertEqual({p['phase'] for p in payloads}, {'full'})
         self.assertEqual([p['cut_id'] for p in payloads], ['c1', 'c3'])
         self.assertEqual(len({p['batch_id'] for p in payloads}), 1)
-        self.assertEqual(main.queue_all_character_detection('e')['queued'], 0)
+        self.assertEqual(main.queue_all_character_detection('e')['job_ids'], result['job_ids'])
 
     def process_with_fake_models(self, job_id, owner, events, describe=None):
         """Run a queued analysis job through the real worker with stand-ins for the GPU models."""

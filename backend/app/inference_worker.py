@@ -960,18 +960,21 @@ def process(job_id, owner):
 
 def process_character_detection(job_id, owner):
     """Detect boundary people as a leased, restart-safe inference job."""
-    from . import character_detection, single_cut_pipeline
+    from . import anime_bulk, character_detection, job_inputs, single_cut_pipeline
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
         return
     try:
-        payload = json.loads(job['payload_json'])
-        cut = payload['cut']
-        episode = db.one('SELECT * FROM episodes WHERE id=?', (job['episode_id'],))
-        current = db.one('SELECT start_time,end_time,active FROM cuts WHERE id=? AND episode_id=?', (cut['id'], episode['id']))
-        if not current or not current['active'] or current['start_time'] != cut['start_time'] or current['end_time'] != cut['end_time']:
-            raise RuntimeError('Cut boundaries changed; run character detection again')
-        if not db.one('SELECT id FROM character_detection_runs WHERE job_id=?', (job_id,)):
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            worker.require_lease(conn, job_id, owner)
+            inputs = job_inputs.JobInputs(conn, job, owner)
+        if inputs.data.get('skip'):
+            with inputs.publish(invalidate=False) as conn:
+                anime_bulk.finish(conn, job, f"Skipped · {inputs.data['skip']}")
+            return
+        cut, episode = inputs.data['cut'], inputs.data['episode']
+        if not inputs.data['saved']:
             original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
             with tempfile.TemporaryDirectory(prefix='framewise-character-detection-') as scratch:
                 try:
@@ -981,22 +984,20 @@ def process_character_detection(job_id, owner):
                 finally:
                     model = None
                     single_cut_pipeline.release_gpu_models()
-                with db.connect() as conn:
-                    conn.execute('BEGIN IMMEDIATE')
-                    worker.require_lease(conn, job_id, owner)
-                    current = conn.execute('SELECT start_time,end_time,active FROM cuts WHERE id=?', (cut['id'],)).fetchone()
-                    if not current or not current['active'] or current['start_time'] != cut['start_time'] or current['end_time'] != cut['end_time']:
-                        raise RuntimeError('Cut boundaries changed; run character detection again')
+                with inputs.publish() as conn:
+                    anime_bulk.preserve_checkpoint(conn, job_id)
                     run_id = str(uuid.uuid4())
-                    conn.execute('INSERT INTO character_detection_runs(id,cut_id,job_id,cut_start,cut_end,frames_json,model_id,model_revision) VALUES (?,?,?,?,?,?,?,?)',
-                        (run_id, cut['id'], job_id, cut['start_time'], cut['end_time'], json.dumps(frames, ensure_ascii=False), MODEL_ID, MODEL_REVISION))
+                    conn.execute("""INSERT INTO character_detection_runs(id,cut_id,job_id,cut_start,cut_end,frames_json,model_id,model_revision,input_json)
+                        VALUES (?,?,?,?,?,?,?,?,?)""", (run_id, cut['id'], job_id, cut['start_time'], cut['end_time'],
+                        json.dumps(frames, ensure_ascii=False), MODEL_ID, MODEL_REVISION, json.dumps({'boxes': {'fingerprint': inputs.stamp}})))
                     for frame in frames:
                         for box in frame['boxes']:
                             conn.execute('INSERT INTO character_detections(id,run_id,position,box_json) VALUES (?,?,?,?)',
                                          (str(uuid.uuid4()), run_id, frame['position'], json.dumps(box)))
-        references = payload.get('references', [])
-        run = db.one('SELECT * FROM character_detection_runs WHERE job_id=?', (job_id,))
-        pending = db.all_rows('SELECT * FROM character_detections WHERE run_id=? AND label_source IS NULL ORDER BY rowid', (run['id'],))
+                    inputs.capture(conn)
+        references, run = inputs.data['references'], inputs.data['saved']
+        pending = [box for box in inputs.data['detected'] if box['label_source'] is None]
+        assigned = []
         if references and pending:
             from . import frame_model, visual_models
             frames = json.loads(run['frames_json'])
@@ -1022,15 +1023,18 @@ def process_character_detection(job_id, owner):
                             if result and result['confidence'] == 'high' and result['character_id']:
                                 matches.append(result)
                         if len(matches) == 1:
-                            with db.connect() as conn:
-                                worker.require_lease(conn, job_id, owner)
-                                # A deleted character cannot be assigned by a stale queued snapshot.
-                                if conn.execute("SELECT 1 FROM context_items WHERE id=? AND project_id=? AND kind='character'", (matches[0]['character_id'], episode['project_id'])).fetchone():
-                                    conn.execute("UPDATE character_detections SET character_context_id=?,label_source='auto',match_reason=?,match_model_id=?,match_model_revision=? WHERE id=? AND label_source IS NULL", (matches[0]['character_id'], matches[0]['reason'][:2000], matcher.model_id, matcher.revision, detection['id']))
-        with db.connect() as conn:
-            worker.require_lease(conn, job_id, owner)
-            conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-            worker.sync_episode_status(conn, episode['id'])
+                            assigned.append((matches[0]['character_id'], matches[0]['reason'][:2000], matcher.model_id, matcher.revision, detection['id']))
+        with inputs.publish(invalidate=bool(assigned)) as conn:
+            conn.executemany("""UPDATE character_detections SET character_context_id=?,label_source='auto',match_reason=?,
+                match_model_id=?,match_model_revision=? WHERE id=? AND label_source IS NULL""", assigned)
+            provenance = {'fingerprint': inputs.stamp, 'reference_ids': [row['id'] for row in references],
+                          'detection_ids': [row['id'] for row in pending]}
+            conn.execute("UPDATE character_detection_runs SET input_json=json_set(input_json,'$.recognition',json(?)) WHERE id=?",
+                         (json.dumps(provenance), run['id']))
+            conn.execute('UPDATE jobs SET input_json=? WHERE id=?', (json.dumps(provenance), job_id))
+            anime_bulk.finish(conn, job)
+    except (worker.LeaseLost, SummaryCancelled):
+        return
     except Exception as exc:
         fail_job(job_id, owner, job['episode_id'], exc)
         log.exception('Character detection failed for job %s', job_id)

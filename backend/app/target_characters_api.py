@@ -7,10 +7,9 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import db, target_characters, target_reviews, target_tracking, worker
+from . import db, keyframes, structured_results, target_characters, target_reviews, target_tracking, worker
 
 router = APIRouter()
-PENDING = "SELECT 1 FROM jobs WHERE pipeline='character_detect' AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?"
 
 
 class TargetSlotLabel(BaseModel):
@@ -66,61 +65,38 @@ def get_target_detections(cut_id: str):
 
 
 def _queue(episode_id, cut_id=None, from_cut=None, only_missing=True):
-    """One job per cut with a current evaluation. A single cut is explicit; a batch skips cuts the user left out."""
-    if not db.one('SELECT id FROM episodes WHERE id=?', (episode_id,)):
-        raise HTTPException(404, 'Episode not found')
+    """Queue one request per cut. Each worker reads the current selection and anchors."""
     first_index = max(0, from_cut - 1) if from_cut else 0
-    cuts = db.all_rows('''SELECT id,episode_id,cut_index,title,start_time,end_time,analysis_enabled,no_characters FROM cuts
-                          WHERE episode_id=? AND active=1 AND cut_index>=? AND (? IS NULL OR id=?) ORDER BY cut_index''',
-                       (episode_id, first_index, cut_id, cut_id))
-    if cut_id and not cuts:
-        raise HTTPException(404, 'Active cut not found')
     skipped = {'not_evaluated': [], 'analysis_disabled': [], 'no_characters': [], 'up_to_date': [], 'already_queued': []}
-    ready = []
-    for cut in cuts:
-        number = cut['cut_index'] + 1
-        if not cut_id and not cut['analysis_enabled']:
-            skipped['analysis_disabled'].append(number)
-            continue
-        if not cut_id and cut['no_characters']:
-            skipped['no_characters'].append(number)
-            continue
-        if target_characters.pending_job(cut['id']):
-            if cut_id:
-                raise HTTPException(409, 'Character detection is already queued for this cut')
-            skipped['already_queued'].append(number)
-            continue
-        _, _, key, _ = target_characters.current_selection(cut['id'])
-        if not key:
-            if cut_id:
-                raise HTTPException(409, 'Evaluate this cut first: it has no current target frames')
-            skipped['not_evaluated'].append(number)
-            continue
-        run = target_characters.run_for(cut['id'], key)
-        if only_missing and not cut_id and run and run['cut_start'] == cut['start_time'] and run['cut_end'] == cut['end_time']:
-            cast = db.one('SELECT locked FROM target_cast_settings WHERE cut_id=?', (cut['id'],))
-            if run['review_version'] == target_characters.REVIEW_VERSION and bool(run['cast_locked']) == bool(cast and cast['locked']):
-                skipped['up_to_date'].append(number)
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
+            raise HTTPException(404, 'Episode not found')
+        cuts = conn.execute("""SELECT id,cut_index,analysis_enabled,no_characters FROM cuts
+            WHERE episode_id=? AND active=1 AND cut_index>=? AND (? IS NULL OR id=?) ORDER BY cut_index""",
+            (episode_id, first_index, cut_id, cut_id)).fetchall()
+        if cut_id and not cuts:
+            raise HTTPException(404, 'Active cut not found')
+        job_ids = []
+        for cut in cuts:
+            cid = cut['id']
+            if not cut_id and (not cut['analysis_enabled'] or cut['no_characters']):
+                reason = 'analysis_disabled' if not cut['analysis_enabled'] else 'no_characters'
+                skipped[reason].append(cut['cut_index'] + 1)
                 continue
-        ready.append((cut, key))
-    job_ids = []
-    if ready:
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline!='character_detect' AND status IN ('queued','running')", (episode_id,)).fetchone():
-                raise HTTPException(409, 'Wait for the current episode job to finish')
-            batch_id = str(uuid.uuid4())
-            for cut, key in ready:
-                if conn.execute(PENDING, (cut['id'],)).fetchone():
-                    skipped['already_queued'].append(cut['cut_index'] + 1)
-                    continue
-                snapshot = {name: cut[name] for name in ('id', 'episode_id', 'cut_index', 'title', 'start_time', 'end_time')}
-                payload = {'cut_id': cut['id'], 'cut': snapshot, 'workflow': target_characters.WORKFLOW, 'batch_id': batch_id, 'selection_key': key}
-                job_id = str(uuid.uuid4())
-                conn.execute('INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)', (job_id, episode_id, 'character_detect', json.dumps(payload)))
-                job_ids.append(job_id)
-            if job_ids:
-                worker.sync_episode_status(conn, episode_id)
+            deps = worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts'), [cid])
+            deps.extend(row['id'] for row in conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline='character_detect'
+                AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?
+                AND COALESCE(json_extract(payload_json,'$.workflow'),'')!=?""", (episode_id, cid, target_characters.WORKFLOW)))
+            deps.extend(keyframes.ensure_selection(conn, episode_id, [cid]))
+            payload = {'cut_id': cid, 'workflow': target_characters.WORKFLOW,
+                       **({'episode_batch': True, 'only_missing': only_missing} if cut_id is None else {})}
+            if deps:
+                payload['depends_on'] = list(dict.fromkeys(deps))
+            job_ids.append(worker.insert_job(conn, episode_id, 'character_detect', payload))
+        if job_ids:
+            worker.sync_episode_status(conn, episode_id)
+    worker.wake_event.set()
     return {'queued': len(job_ids), 'job_ids': job_ids, 'skipped': skipped}
 
 
@@ -131,14 +107,12 @@ def queue_cut(cut_id: str):
     if not cut:
         raise HTTPException(404, 'Active cut not found')
     result = _queue(cut['episode_id'], cut_id=cut_id)
-    if not result['job_ids']:
-        raise HTTPException(409, 'Character detection is already queued for this cut')
     return {'job_id': result['job_ids'][0], 'queued': 1}
 
 
 @router.post('/api/episodes/{episode_id}/target-detection')
 def queue_episode(episode_id: str, from_cut: int | None = None, only_missing: bool = True):
-    """Queue every evaluated cut (from cut ``from_cut``, the number shown in the editor). Cuts already done are skipped."""
+    """Queue enabled cuts from the given timeline number and evaluate missing target frames as needed."""
     return _queue(episode_id, from_cut=from_cut, only_missing=only_missing)
 
 
@@ -148,8 +122,7 @@ def _editable_run(conn, run_id):
     run = conn.execute('SELECT * FROM target_detection_runs WHERE id=?', (run_id,)).fetchone()
     if not run:
         raise HTTPException(404, 'Detection run not found')
-    if conn.execute(PENDING, (run['cut_id'],)).fetchone():
-        raise HTTPException(409, 'Wait for detection to finish before editing')
+    structured_results.invalidate_detections(conn, run['cut_id'], target=True, reason='Target frame edits changed')
     return run
 
 
@@ -160,8 +133,6 @@ def set_cast_lock(cut_id: str, body: CastLock):
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT 1 FROM cuts WHERE id=? AND active=1', (cut_id,)).fetchone():
             raise HTTPException(404, 'Active cut not found')
-        if conn.execute(PENDING, (cut_id,)).fetchone():
-            raise HTTPException(409, 'Wait for detection to finish before changing the cast')
         conn.execute('''INSERT INTO target_cast_settings(cut_id,locked) VALUES (?,?)
                         ON CONFLICT(cut_id) DO UPDATE SET locked=excluded.locked''', (cut_id, body.locked))
     return {'locked': body.locked}

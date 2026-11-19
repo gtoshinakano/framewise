@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import analysis_context, db, media, worker, cut_history, storage, frame_source, frame_cache, subtitle_store, audio_worker, prompt_context, job_kinds, runs
+from . import analysis_context, db, media, worker, cut_history, storage, frame_source, frame_cache, subtitle_store, audio_worker, prompt_context, job_kinds, runs, structured_results
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
@@ -1263,11 +1263,8 @@ def queue_character_detection(cut_id: str):
     cut = db.one('SELECT * FROM cuts WHERE id=?', (cut_id,))
     if not cut or not cut['active']:
         raise HTTPException(404, 'Active cut not found')
-    if db.one("""SELECT 1 FROM jobs WHERE pipeline='character_detect' AND status IN ('queued','running')
-                 AND json_extract(payload_json,'$.cut_id')=?""", (cut_id,)):
-        raise HTTPException(409, 'Character detection is already queued for this cut')
     result = _queue_bulk_character_jobs(cut['episode_id'], 'recognize', rerun=True, cut_id=cut_id)
-    if not result['queued']:
+    if not result['job_ids']:
         has_boxes = db.one('''SELECT 1 FROM character_detections d JOIN character_detection_runs r ON r.id=d.run_id
             WHERE r.cut_id=? AND r.cut_start=? AND r.cut_end=? AND r.rowid=(SELECT max(rowid) FROM character_detection_runs WHERE cut_id=?)
             AND d.position='first' ''',
@@ -1285,11 +1282,15 @@ class NoCharactersInput(BaseModel):
 def set_cut_no_characters(cut_id: str, body: NoCharactersInput):
     """Mark a cut as having no characters so batch detection skips it."""
     with db.connect() as conn:
-        cut = conn.execute('SELECT c.episode_id,e.project_id FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE c.id=?', (cut_id,)).fetchone()
+        conn.execute('BEGIN IMMEDIATE')
+        cut = conn.execute('SELECT c.episode_id,c.no_characters,e.project_id FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE c.id=?', (cut_id,)).fetchone()
         if not cut:
             raise HTTPException(404, 'Cut not found')
         conn.execute('UPDATE cuts SET no_characters=? WHERE id=?', (int(body.no_characters), cut_id))
-    if body.no_characters:
+        if bool(cut['no_characters']) != body.no_characters:
+            structured_results.invalidate_detections(conn, cut_id, reason='The cut’s character setting changed')
+        detect_pending = worker.pending_jobs(conn, cut['episode_id'], ('character_detect',), [cut_id])
+    if body.no_characters and not detect_pending:
         from . import anime_bulk
         anime_bulk.clear_cut_frames({'project_id': cut['project_id'], 'id': cut['episode_id']}, cut_id)
     return {'cut_id': cut_id, 'no_characters': body.no_characters}
@@ -1298,8 +1299,8 @@ def set_cut_no_characters(cut_id: str, body: NoCharactersInput):
 def _queue_bulk_character_jobs(episode_id: str, phase: str, rerun: bool = False, cut_id: str | None = None):
     """Queue one bulk job per cut. The gallery of confirmed labels is read live by the worker.
 
-    With rerun, recognition is redone for every cut that has boxes: automatic
-    labels and suggestions are cleared and the run goes back to 'boxes'.
+    With rerun, recognition is redone for every cut that has boxes. The new
+    labels replace old automatic labels and suggestions when the run publishes.
     Manual labels (and the boxes the user drew) are never touched, and a cut
     whose boxes are all manually labelled is skipped. Cuts without a current
     run get the full pass. With cut_id only that cut is considered, whatever
@@ -1310,53 +1311,8 @@ def _queue_bulk_character_jobs(episode_id: str, phase: str, rerun: bool = False,
         episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()
         if not episode:
             raise HTTPException(404, 'Episode not found')
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline!='character_detect' AND status IN ('queued','running')", (episode_id,)).fetchone():
-            raise HTTPException(409, 'Wait for the current episode job to finish')
-        # The latest run for the cut's current boundaries decides what is still missing.
-        latest = """(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id AND r2.cut_start=c.start_time AND r2.cut_end=c.end_time ORDER BY r2.rowid DESC LIMIT 1)"""
-        # Current detection runs save one frame. Older runs may still have both
-        # boundary frames, so completeness means the first frame is present.
-        incomplete_frames = "(CASE WHEN json_valid(r.frames_json) THEN NOT EXISTS (SELECT 1 FROM json_each(r.frames_json) f WHERE json_extract(f.value,'$.position')='first') ELSE 1 END)"
-        if rerun:
-            need = f"""AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND {incomplete_frames})
-                OR EXISTS (SELECT 1 FROM character_detections d WHERE d.run_id={latest}
-                AND d.position='first' AND (d.label_source IS NULL OR d.label_source!='manual')))"""
-        elif phase == 'boxes':
-            need = f"AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND {incomplete_frames}))"
-        elif phase == 'full':
-            # Boxes and recognition in one pass: anything without a finished run.
-            need = f"AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND (r.phase!='complete' OR {incomplete_frames})))"
-        else:
-            need = f"""AND EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND (r.phase!='complete' OR {incomplete_frames}))"""
-        scope = "AND c.id=?" if cut_id else "AND c.analysis_enabled=1 AND c.no_characters=0"
-        cuts = conn.execute(f"""SELECT c.*,{latest} AS current_run FROM cuts c WHERE c.episode_id=? AND c.active=1 {scope}
-            AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.episode_id=c.episode_id AND j.pipeline='character_detect'
-                AND j.status IN ('queued','running') AND json_extract(j.payload_json,'$.cut_id')=c.id)
-            {need} ORDER BY c.cut_index""", (episode_id, *([cut_id] if cut_id else []))).fetchall()
-        job_ids, batch_id = [], str(uuid.uuid4())
-        for row in cuts:
-            cut = dict(row)
-            run_id = cut.pop('current_run')
-            cut_phase = phase
-            partial_run = False
-            if run_id:
-                partial_run = bool(conn.execute('''SELECT CASE WHEN json_valid(frames_json)
-                                                                   THEN NOT EXISTS (SELECT 1 FROM json_each(frames_json) f WHERE json_extract(f.value,'$.position')='first') ELSE 1 END
-                                                      FROM character_detection_runs WHERE id=?''', (run_id,)).fetchone()[0])
-            if rerun:
-                cut_phase = 'recognize' if run_id and not partial_run else 'full'
-                if run_id and not partial_run:
-                    conn.execute("""UPDATE character_detections SET character_context_id=NULL,label_source=NULL,match_reason=NULL,
-                        match_model_id=NULL,match_model_revision=NULL,candidates_json=NULL WHERE run_id=? AND position='first' AND label_source='auto'""", (run_id,))
-                    conn.execute("UPDATE character_detections SET candidates_json=NULL WHERE run_id=? AND position='first' AND label_source IS NULL", (run_id,))
-                    conn.execute("UPDATE character_detection_runs SET phase='boxes' WHERE id=?", (run_id,))
-            elif phase == 'recognize' and partial_run:
-                # A missing first frame needs fresh boxes before recognition.
-                cut_phase = 'full'
-            job_id = str(uuid.uuid4())
-            payload = {'cut_id': cut['id'], 'cut': cut, 'workflow': 'anime_bulk_v1', 'phase': cut_phase, 'batch_id': batch_id}
-            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, 'character_detect', json.dumps(payload)))
-            job_ids.append(job_id)
+        from . import anime_bulk
+        job_ids = anime_bulk.enqueue(conn, episode_id, phase, rerun=rerun, cut_id=cut_id)
         if job_ids:
             worker.sync_episode_status(conn, episode_id)
     return {'queued': len(job_ids), 'job_ids': job_ids}
@@ -1405,9 +1361,6 @@ def remove_stale_character_frame(run_id: str, position: Literal['first', 'last']
                            (run_id,)).fetchone()
         if not run:
             raise HTTPException(404, 'Character detection run not found')
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running') AND pipeline NOT IN ('brief_export','composition_compact') LIMIT 1",
-                        (run['episode_id'],)).fetchone():
-            raise HTTPException(409, 'Wait for the current episode job to finish')
         boundary_changed = (run['cut_start'] != run['current_start'] if position == 'first'
                             else run['cut_end'] != run['current_end'])
         if not boundary_changed:
@@ -1427,8 +1380,9 @@ def remove_stale_character_frame(run_id: str, position: Literal['first', 'last']
         conn.execute("UPDATE character_detection_runs SET frames_json=?,phase='boxes' WHERE id=?",
                      (json.dumps(frames), run_id))
         episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (run['episode_id'],)).fetchone()
+        pending = worker.pending_jobs(conn, run['episode_id'], ('character_detect',), [run['cut_id']])
     cache_dir = db.DATA_DIR / 'projects' / episode['project_id'] / 'episodes' / run['episode_id'] / 'character-frames'
-    if not cache_dir.is_symlink():
+    if not pending and not cache_dir.is_symlink():
         frame_path = cache_dir / f"{run['cut_id']}-{position}.jpg"
         try:
             frame_path.unlink(missing_ok=True)
@@ -1442,7 +1396,7 @@ def remove_stale_character_frame(run_id: str, position: Literal['first', 'last']
 def label_character_detection(detection_id: str, body: CharacterDetectionLabelInput):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('''SELECT d.id,e.project_id FROM character_detections d
+        row = conn.execute('''SELECT d.id,d.run_id,d.position,e.project_id FROM character_detections d
                               JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id
                               JOIN episodes e ON e.id=c.episode_id WHERE d.id=?''', (detection_id,)).fetchone()
         if not row:
@@ -1452,6 +1406,7 @@ def label_character_detection(detection_id: str, body: CharacterDetectionLabelIn
         if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
             raise HTTPException(409, 'Remove the saved reference before changing this label')
         conn.execute("UPDATE character_detections SET character_context_id=?,label_source=?,match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (body.character_context_id, 'manual' if body.character_context_id else None, detection_id))
+        structured_results.opening_box_edited(conn, row['run_id'], row['position'])
     return {'ok': True}
 
 
@@ -1467,7 +1422,7 @@ def create_character_from_detection(detection_id: str, body: NewCharacterInput):
         raise HTTPException(400, 'Enter a character name')
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('''SELECT d.id,r.cut_start,r.cut_end,c.id AS cut_id,c.cut_index,c.title AS cut_title,c.start_time,c.end_time,
+        row = conn.execute('''SELECT d.id,d.run_id,d.position,r.cut_start,r.cut_end,c.id AS cut_id,c.cut_index,c.title AS cut_title,c.start_time,c.end_time,
                                      c.episode_id,e.project_id FROM character_detections d
                               JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id
                               JOIN episodes e ON e.id=c.episode_id WHERE d.id=?''', (detection_id,)).fetchone()
@@ -1484,6 +1439,7 @@ def create_character_from_detection(detection_id: str, body: NewCharacterInput):
         conn.execute("INSERT INTO context_items (id,project_id,episode_id,kind,title,content,is_main) VALUES (?,?,?,'character',?,?,?)",
                      (character_id, row['project_id'], row['episode_id'] if body.episode_only else None, title, body.content, int(body.is_main)))
         conn.execute("UPDATE character_detections SET character_context_id=?,label_source='manual',match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (character_id, detection_id))
+        structured_results.opening_box_edited(conn, row['run_id'], row['position'])
         cut = {'id': row['cut_id'], 'cut_index': row['cut_index'], 'title': row['cut_title'], 'start_time': row['start_time'], 'end_time': row['end_time']}
         from . import visual_models
         payload = {'detection_id': detection_id, 'character_context_id': character_id, 'cut_id': row['cut_id'], 'cut': cut,
@@ -1509,8 +1465,10 @@ def delete_character_detection(detection_id: str):
         conn.execute('BEGIN IMMEDIATE')
         if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
             raise HTTPException(409, 'Remove the saved reference before deleting this detection')
-        if not conn.execute('DELETE FROM character_detections WHERE id=?', (detection_id,)).rowcount:
+        removed = conn.execute('DELETE FROM character_detections WHERE id=? RETURNING run_id,position', (detection_id,)).fetchone()
+        if not removed:
             raise HTTPException(404, 'Detection not found')
+        structured_results.opening_box_edited(conn, removed['run_id'], removed['position'])
     return {'ok': True}
 
 
@@ -1617,6 +1575,7 @@ def add_character_detection_box(run_id: str, body: CharacterDetectionBoxInput):
             raise HTTPException(400, 'Box must fit inside the frame')
         box_id = str(uuid.uuid4())
         conn.execute('INSERT INTO character_detections(id,run_id,position,box_json) VALUES (?,?,?,?)', (box_id, run_id, body.position, json.dumps(body.box)))
+        structured_results.opening_box_edited(conn, run_id, body.position)
     return {'id': box_id}
 
 
@@ -1628,7 +1587,7 @@ class CharacterDetectionBoxUpdate(BaseModel):
 def resize_character_detection(detection_id: str, body: CharacterDetectionBoxUpdate):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('''SELECT d.position,r.frames_json FROM character_detections d
+        row = conn.execute('''SELECT d.position,d.run_id,r.frames_json FROM character_detections d
                               JOIN character_detection_runs r ON r.id=d.run_id WHERE d.id=?''', (detection_id,)).fetchone()
         if not row:
             raise HTTPException(404, 'Detection not found')
@@ -1643,6 +1602,7 @@ def resize_character_detection(detection_id: str, body: CharacterDetectionBoxUpd
             raise HTTPException(400, 'Box must fit inside the frame')
         conn.execute('UPDATE character_detections SET box_json=?,gallery_status=NULL,gallery_note=NULL WHERE id=?', (json.dumps(body.box), detection_id))
         conn.execute('DELETE FROM character_detection_embeddings WHERE detection_id=?', (detection_id,))
+        structured_results.opening_box_edited(conn, row['run_id'], row['position'])
     return {'ok': True}
 
 

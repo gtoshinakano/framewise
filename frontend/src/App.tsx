@@ -308,7 +308,7 @@ function Editor({ id }: { id: string }) {
   const cutsBusy = jobs.some(job => ['prepare', 'hardcuts'].includes(job.pipeline) && active(job))
   const cutQueueStates = analysisQueueStates(jobs)
   const analysisBusy = jobs.some(job => (['prepare', 'hardcuts', 'character_detect'].includes(job.pipeline) || job.workflow === 'boundary_frame') && active(job))
-  const characterBlock = bulkDetectionWorking ? 'Queuing…' : !episode?.cuts.length ? 'Detect hard cuts first.' : jobs.some(job => job.pipeline !== 'character_detect' && active(job)) ? 'Wait for the running jobs to finish.' : ''
+  const characterBlock = bulkDetectionWorking ? 'Queuing…' : !episode?.cuts.length ? 'Detect hard cuts first.' : ''
   const frameVersion = `${jobs[0]?.id || ''}-${jobs[0]?.status || ''}`
   const history = episode?.cut_history
   const activeSelected = selected?.active ? selected : undefined

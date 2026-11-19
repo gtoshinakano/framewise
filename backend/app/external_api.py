@@ -205,6 +205,7 @@ class JobDetail(BaseModel):
     retry_of: str | None = Field(description="Failed job copied for this retry, if any.")
     priority_class: Literal['chat', 'interactive', 'batch']
     payload: dict[str, Any] = Field(description="Queued settings, targets and prerequisites. Older runs can also contain stored inputs.")
+    inputs: dict[str, Any] = Field(default_factory=dict, description="Input provenance saved by the worker.")
     cut_evidence: list[JobCutEvidence] = Field(description="Stored intermediate analysis checkpoints, if any; may be incomplete.")
 
 
@@ -331,10 +332,11 @@ def voice_sample_detail(sample_id: str):
 
 @router.get("/jobs/{job_id}", response_model=JobDetail, summary="Get job provenance and saved analysis evidence")
 def job_detail(job_id: str):
-    row = db.one("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,priority_class,payload_json FROM jobs WHERE id=?", (job_id,))
+    row = db.one("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,priority_class,payload_json,input_json FROM jobs WHERE id=?", (job_id,))
     if not row:
         raise HTTPException(404, "Job not found")
     row["payload"] = json.loads(row.pop("payload_json"))
+    row["inputs"] = json.loads(row.pop("input_json"))
     row["cut_evidence"] = [{"cut_id": item["cut_id"], "completed": bool(item["completed"]), "evidence": json.loads(item["evidence_json"])}
                            for item in db.all_rows("SELECT cut_id,completed,evidence_json FROM analysis_job_cuts WHERE job_id=? ORDER BY cut_id", (job_id,))]
     return row

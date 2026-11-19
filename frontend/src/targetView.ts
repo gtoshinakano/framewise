@@ -51,15 +51,6 @@ export function slotChip(slot: TargetSlot): SlotChip {
   return { tone: 'blue', text: 'From first frame', title: 'Copied from the first-frame box of the same colour' }
 }
 
-/** Why detection cannot be queued now, or '' when it can. */
-export function detectReason(input: { evaluated: boolean; episodeBusy: boolean; pending: boolean; saving: boolean }) {
-  if (!input.evaluated) return 'Evaluate this cut first'
-  if (input.pending) return 'Detection is already queued for this cut'
-  if (input.saving) return 'Wait for your edit to save'
-  if (input.episodeBusy) return 'Another episode job is running'
-  return ''
-}
-
 export const isJobActive = (job: TargetJob | null | undefined) => job?.status === 'queued' || job?.status === 'running'
 
 export type TargetQueueResult = { queued: number; skipped: { not_evaluated: number[]; analysis_disabled: number[]; no_characters: number[]; up_to_date: number[]; already_queued: number[] } }

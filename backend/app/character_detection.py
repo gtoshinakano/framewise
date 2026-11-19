@@ -44,7 +44,7 @@ def detect_boundary_people(original, cut, scratch, model, on_frame=None):
 
 
 def reference_snapshots(conn, project_id, per_character_limit=2):
-    """Freeze references and source coordinates for a queued detection job."""
+    """Read references and their source coordinates from the caller's snapshot."""
     import json
     rows = conn.execute('''SELECT r.id,r.character_context_id,ci.title,d.position,d.box_json,
                                  run.frames_json,run.cut_start,run.cut_end,e.id AS episode_id,e.project_id,e.original_ext

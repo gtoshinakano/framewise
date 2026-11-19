@@ -175,8 +175,8 @@ class BulkDetectionTest(unittest.TestCase):
         self.assertNotIn('qwen', payload)
         self.assertNotIn('references', payload)
         reset = db.one("SELECT * FROM character_detections WHERE id='old-auto'")
-        self.assertEqual((reset['character_context_id'], reset['label_source'], reset['match_reason']), (None, None, None))
-        self.assertEqual(db.one("SELECT phase FROM character_detection_runs WHERE id='cur'")['phase'], 'boxes')
+        self.assertEqual((reset['character_context_id'], reset['label_source'], reset['match_reason']), ('ctx', 'auto', 'old Qwen'))
+        self.assertEqual(db.one("SELECT phase FROM character_detection_runs WHERE id='cur'")['phase'], 'complete')
         job_id, owner = worker.claim_job(('character_detect',))
         with patch.object(anime_bulk, '_extract_frames', return_value=(frames, [frame_image([(LEFT, RED), (RIGHT, BLUE)]), frame_image([(LEFT, RED)])])), \
              patch.object(anime_gallery, 'extract_crops', side_effect=self.fake_crops):
@@ -263,7 +263,7 @@ class BulkDetectionTest(unittest.TestCase):
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (response.json()['job_id'],))['payload_json'])
         self.assertEqual((payload['workflow'], payload['phase'], payload['cut_id']), ('anime_bulk_v1', 'recognize', 'c2'))
         self.assertEqual(len(db.all_rows("SELECT id FROM jobs WHERE pipeline='character_detect'")), 1)  # only this cut
-        self.assertEqual(self.client.post('/api/cuts/c2/character-detection').status_code, 409)
+        self.assertEqual(self.client.post('/api/cuts/c2/character-detection').json(), response.json())
         job_id, owner = worker.claim_job(('character_detect',))
         with patch.object(anime_bulk, '_extract_frames', return_value=(frames, [frame_image([(LEFT, RED), (RIGHT, BLUE)]), frame_image([])])), \
              patch.object(anime_gallery, 'extract_crops', side_effect=self.fake_crops):
@@ -285,7 +285,9 @@ class BulkDetectionTest(unittest.TestCase):
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET end_time=1.5 WHERE id='c1'")
         queued = self.client.post('/api/cuts/c1/character-detection').json()
-        self.assertEqual(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (queued['job_id'],))['payload_json'])['phase'], 'full')
+        job = db.one('SELECT * FROM jobs WHERE id=?', (queued['job_id'],))
+        with db.connect() as conn:
+            self.assertEqual(anime_bulk.gather(conn, job, json.loads(job['payload_json']))['mode'], 'full')
         self.assertEqual(self.client.post('/api/cuts/missing/character-detection').status_code, 404)
 
 

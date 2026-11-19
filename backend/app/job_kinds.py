@@ -215,6 +215,36 @@ def _visual_invalidates(conn, job):
     structured_results.invalidate_text(conn, job['unit_id'], job['result_type'])
 
 
+def _detection_scope(payload):
+    target = payload.get('workflow') == 'target_frames_v1'
+    domains = {'cut_boundaries', 'detections', 'context'}
+    if target:
+        domains.add('keyframes')
+    return Scope(frozenset(domains), frozenset({'target_detections' if target else 'detections'}),
+                 frozenset(ref['id'] for ref in _one_cut(payload)))
+
+
+def _detection_inputs(conn, job):
+    from .job_inputs import fingerprint
+    inputs = job.get('gathered') or _gather_detection(conn, job)
+    return fingerprint({key: value for key, value in inputs.items() if key != 'episode'})
+
+
+def _gather_detection(conn, job):
+    import json
+    from . import anime_bulk, target_characters
+    payload = json.loads(job['payload_json'])
+    gather = target_characters.gather if payload.get('workflow') == target_characters.WORKFLOW else anime_bulk.gather
+    return gather(conn, job, payload)
+
+
+def _detection_invalidates(conn, job):
+    import json
+    from . import structured_results
+    payload = json.loads(job['payload_json'])
+    structured_results.invalidate_detections(conn, payload['cut_id'], target=payload.get('workflow') == 'target_frames_v1')
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -224,7 +254,10 @@ KINDS = {kind.pipeline: kind for kind in (
          inputs=analysis_context.visual_fingerprint, gather=analysis_context.visual, invalidates=_visual_invalidates),
     Kind('character_detect', 'Character detection', True, label=_character_label, cuts=_one_cut, keys=_character_keys,
          # Bulk detection keeps one lease per cut and skips a cut whose lease is gone; the older workflow cannot stop midway.
-         cancel_running=lambda payload: payload.get('workflow') in ('anime_bulk_v1', 'target_frames_v1')),
+         cancel_running=lambda payload: payload.get('workflow') in ('anime_bulk_v1', 'target_frames_v1'),
+         resources=frozenset({'gpu'}), scope=_detection_scope,
+         priority_class=lambda payload: 'batch' if payload.get('episode_batch') else 'interactive',
+         inputs=_detection_inputs, gather=_gather_detection, invalidates=_detection_invalidates),
     # Describes one labelled box of a character created from it and appends the text to its Details.
     Kind('character_profile', 'Character description', True, cuts=_one_cut, cancel_running=_always, retry=_always,
          keys=lambda payload, cut_ids: [f"character_profile:{payload.get('character_context_id')}"]),

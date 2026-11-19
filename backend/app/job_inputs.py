@@ -40,6 +40,10 @@ class JobInputs:
         self.job = {**job, 'unit_id': unit_id}
         self.kind = job_kinds.KINDS[job['pipeline']]
         self.owner = owner
+        self.capture(conn)
+
+    def capture(self, conn):
+        """Refresh inputs after the job commits an intermediate checkpoint of its own."""
         self.data = self.kind.gather(conn, self.job)
         self.stamp = self.kind.inputs(conn, {**self.job, 'gathered': self.data})
 

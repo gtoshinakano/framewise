@@ -54,7 +54,7 @@ def box_problem(box, image_size):
     return None
 
 
-def exemplar_rows(project_id):
+def exemplar_rows(project_id, conn=None):
     """Confirmed boxes in each cut's latest run, plus saved references from any run."""
     return db.all_rows('''SELECT d.id,d.character_context_id,d.position,d.box_json,d.recognition_use,d.gallery_status,d.gallery_note,
             r.id AS run_id,r.frames_json,r.cut_start,r.cut_end,c.id AS cut_id,e.id AS episode_id,e.project_id,e.original_ext,
@@ -65,7 +65,17 @@ def exemplar_rows(project_id):
         WHERE e.project_id=? AND d.label_source='manual' AND (
             r.rowid=(SELECT max(r2.rowid) FROM character_detection_runs r2 WHERE r2.cut_id=r.cut_id)
             OR EXISTS(SELECT 1 FROM character_image_references x WHERE x.detection_id=d.id))
-        ORDER BY d.rowid''', (project_id,))
+        ORDER BY d.rowid''', (project_id,), conn=conn)
+
+
+def evidence(conn, project_id):
+    rows = exemplar_rows(project_id, conn)
+    for row in rows:
+        row.pop('gallery_status')
+        row.pop('gallery_note')
+    names = {row['id']: row['title'] for row in db.all_rows(
+        "SELECT id,title FROM context_items WHERE project_id=? AND kind='character'", (project_id,), conn=conn)}
+    return rows, names
 
 
 def extract_crops(rows, scratch, lease_check=None):
@@ -195,14 +205,17 @@ def judge(items, defaults, top_k=TOP_K):
     return verdicts
 
 
-def load(project_id, get_model, lease_check=None):
+def load(project_id, get_model, lease_check=None, inputs=None):
     """Embed (or read cached vectors for) the project's confirmed examples and return the usable Gallery.
 
     get_model is called only when there is something to embed or look up,
     so a project without confirmed labels never loads the embedder.
     """
-    rows = exemplar_rows(project_id)
-    names = {row['id']: row['title'] for row in db.all_rows("SELECT id,title FROM context_items WHERE project_id=? AND kind='character'", (project_id,))}
+    if inputs is None:
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            inputs = evidence(conn, project_id)
+    rows, names = inputs
     statuses, candidates = {}, []
     for row in rows:
         if row['recognition_use'] == 0:
@@ -231,7 +244,10 @@ def load(project_id, get_model, lease_check=None):
             raise RuntimeError('Character embedder returned an unexpected number of gallery vectors')
         fresh = {row['id']: vector for row, vector in zip(missing, computed)}
         with db.connect() as conn:
-            store_vectors(conn, fresh, model)
+            conn.execute('BEGIN IMMEDIATE')
+            valid = {row['id']: fresh[row['id']] for row in missing if conn.execute(
+                'SELECT 1 FROM character_detections WHERE id=? AND box_json=?', (row['id'], row['box_json'])).fetchone()}
+            store_vectors(conn, valid, model)
         vectors.update(fresh)
     items = [{'id': row['id'], 'character_id': row['character_context_id'], 'cut_id': row['cut_id'], 'vector': vectors[row['id']],
               'is_reference': bool(row['is_reference']), 'forced': row['recognition_use'] == 1, 'row': row} for row in candidates]
@@ -259,8 +275,9 @@ def _write_statuses(rows, statuses, names):
         if status is None:
             continue
         note = _note(status, rival, names)
-        if (row['gallery_status'], row['gallery_note']) != (status, note):
-            changes.append((status, note, row['id']))
+        changes.append((status, note, row['id'], row['box_json'], row['character_context_id'], row['recognition_use'], status, note))
     if changes:
         with db.connect() as conn:
-            conn.executemany('UPDATE character_detections SET gallery_status=?,gallery_note=? WHERE id=?', changes)
+            conn.executemany('''UPDATE character_detections SET gallery_status=?,gallery_note=?
+                WHERE id=? AND box_json=? AND character_context_id IS ? AND recognition_use IS ?
+                AND (gallery_status IS NOT ? OR gallery_note IS NOT ?)''', changes)

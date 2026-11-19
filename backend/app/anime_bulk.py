@@ -21,9 +21,10 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import anime_gallery, anime_matching, anime_models, db, media, worker
+from . import anime_gallery, anime_matching, anime_models, db, job_inputs, media, worker
 
 log = logging.getLogger('framewise.character_detect')
+WORKFLOW = 'anime_bulk_v1'
 PHASES = ('boxes', 'embeddings', 'complete')
 BATCH_SIZE = 16
 
@@ -71,6 +72,7 @@ class BulkRuntime:
         self.gallery = None
         self.gallery_project = None
         self.prepared_frames = {}
+        self.inputs = {}
 
     def get_detector(self):
         if self.detector is None:
@@ -84,18 +86,20 @@ class BulkRuntime:
             self.embedder = anime_models.create_embedder()
         return self.embedder
 
-    def get_gallery(self, project_id, lease_check=None, timings=None):
+    def get_gallery(self, project_id, lease_check=None, timings=None, evidence=None):
         """Confirmed examples for the project, reloaded once per batch so new labels count."""
-        if self.gallery is None or self.gallery_project != project_id:
+        key = (project_id, job_inputs.fingerprint(evidence) if evidence is not None else None)
+        if self.gallery is None or self.gallery_project != key:
             with timed('gallery', timings, project=project_id):
-                self.gallery = anime_gallery.load(project_id, self.get_embedder, lease_check)
-            self.gallery_project = project_id
+                self.gallery = anime_gallery.load(project_id, self.get_embedder, lease_check, evidence)
+            self.gallery_project = key
         return self.gallery
 
     def close(self):
         import gc
         self.detector = self.embedder = self.gallery = None
         self.prepared_frames.clear()
+        self.inputs.clear()
         gc.collect()
         try:
             import torch
@@ -103,13 +107,6 @@ class BulkRuntime:
                 torch.cuda.empty_cache()
         except ImportError:
             pass
-
-
-def _valid_cut(conn, job_id, owner, episode_id, cut):
-    worker.require_lease(conn, job_id, owner)
-    current = conn.execute('SELECT start_time,end_time,active FROM cuts WHERE id=? AND episode_id=?', (cut['id'], episode_id)).fetchone()
-    if not current or not current['active'] or current['start_time'] != cut['start_time'] or current['end_time'] != cut['end_time']:
-        raise RuntimeError('Cut boundaries changed; run character detection again')
 
 
 def _extract_frames(original, cut, cache, saved=None):
@@ -135,29 +132,149 @@ def _extract_frames(original, cut, cache, saved=None):
     return frames, images
 
 
-def _save_run(job, owner, episode, cut, frames, detector, timings):
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        _valid_cut(conn, job['id'], owner, episode['id'], cut)
+def _save_run(job, inputs, cut, frames, detector, timings):
+    with inputs.publish() as conn:
         run_id = str(uuid.uuid4())
-        conn.execute('INSERT INTO character_detection_runs(id,cut_id,job_id,cut_start,cut_end,frames_json,model_id,model_revision,phase,timings_json) VALUES (?,?,?,?,?,?,?,?,?,?)',
-            (run_id, cut['id'], job['id'], cut['start_time'], cut['end_time'], json.dumps(frames), anime_models.ANIREF_MODEL_ID, detector.revision, 'boxes', json.dumps(timings)))
+        preserve_checkpoint(conn, job['id'])
+        conn.execute('INSERT INTO character_detection_runs(id,cut_id,job_id,cut_start,cut_end,frames_json,model_id,model_revision,phase,timings_json,input_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            (run_id, cut['id'], job['id'], cut['start_time'], cut['end_time'], json.dumps(frames), anime_models.ANIREF_MODEL_ID,
+             detector.revision, 'boxes', json.dumps(timings), json.dumps({'boxes': {'fingerprint': inputs.stamp}})))
         for frame in frames:
             for box in frame['boxes']:
                 conn.execute('INSERT INTO character_detections(id,run_id,position,box_json) VALUES (?,?,?,?)',
                     (str(uuid.uuid4()), run_id, frame['position'], json.dumps(box)))
+        inputs.capture(conn)
     return run_id
 
 
-def _set_phase(job_id, owner, run_id, phase, timings):
+def preserve_checkpoint(conn, job_id):
+    # Old databases identify one current detection run per job. Keep an obsolete
+    # checkpoint tied to its original job in provenance when its boundary moves.
+    conn.execute("""UPDATE character_detection_runs SET job_id=NULL,input_json=json_set(input_json,'$.original_job_id',?)
+        WHERE job_id=?""", (job_id, job_id))
+
+
+def enqueue(conn, episode_id, phase, *, rerun=False, cut_id=None, depends_on=()):
+    # Episode-wide work after a boundary replacement must discover the new cuts.
+    media_jobs = worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts'), None if cut_id is None else [cut_id])
+    waits = list(dict.fromkeys([*depends_on, *media_jobs]))
+    if cut_id is None and waits:
+        payload = {'workflow': WORKFLOW, 'episode_batch': True, 'select_cuts': True,
+                   'phase': phase, 'rerun': rerun, 'depends_on': waits}
+        return [worker.insert_job(conn, episode_id, 'character_detect', payload)]
+    return _enqueue_cuts(conn, episode_id, phase, rerun=rerun, cut_id=cut_id, depends_on=waits)
+
+
+def _enqueue_cuts(conn, episode_id, phase, *, rerun, cut_id=None, depends_on=()):
+    # The latest run for the cut's current boundaries decides what is still missing.
+    latest = """(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id AND r2.cut_start=c.start_time AND r2.cut_end=c.end_time ORDER BY r2.rowid DESC LIMIT 1)"""
+    # Current detection runs save one frame. Older runs may still have both
+    # boundary frames, so completeness means the first frame is present.
+    incomplete_frames = "(CASE WHEN json_valid(r.frames_json) THEN NOT EXISTS (SELECT 1 FROM json_each(r.frames_json) f WHERE json_extract(f.value,'$.position')='first') ELSE 1 END)"
+    if rerun:
+        need = f"""AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND {incomplete_frames})
+            OR EXISTS (SELECT 1 FROM character_detections d WHERE d.run_id={latest}
+            AND d.position='first' AND (d.label_source IS NULL OR d.label_source!='manual')))"""
+    elif phase == 'boxes':
+        need = f"AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND {incomplete_frames}))"
+    elif phase == 'full':
+        # Boxes and recognition in one pass: anything without a finished run.
+        need = f"AND ({latest} IS NULL OR EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND (r.phase!='complete' OR {incomplete_frames})))"
+    else:
+        need = f"""AND (EXISTS (SELECT 1 FROM character_detection_runs r WHERE r.id={latest} AND (r.phase!='complete' OR {incomplete_frames}))
+            OR EXISTS (SELECT 1 FROM jobs j WHERE j.episode_id=c.episode_id AND j.pipeline='character_detect'
+                AND j.status IN ('queued','running') AND json_extract(j.payload_json,'$.cut_id')=c.id
+                AND json_extract(j.payload_json,'$.phase') IN ('boxes','full')))"""
+    scope = "AND c.id=?" if cut_id else "AND c.analysis_enabled=1 AND c.no_characters=0"
+    if cut_id and depends_on:
+        need = ''  # a cut producer can make its current evidence obsolete
+    cuts = conn.execute(f"""SELECT c.id FROM cuts c WHERE c.episode_id=? AND c.active=1 {scope}
+        {need} ORDER BY c.cut_index""", (episode_id, *([cut_id] if cut_id else []))).fetchall()
+    job_ids, batch_id = [], str(uuid.uuid4())
+    for row in cuts:
+        cid = row['id']
+        payload = {'cut_id': cid, 'workflow': WORKFLOW, 'phase': phase, 'batch_id': batch_id,
+                   **({'rerun': True} if rerun else {}), **({'episode_batch': True} if cut_id is None else {})}
+        deps = list(depends_on)
+        if phase == 'recognize':
+            deps.extend(row['id'] for row in conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline='character_detect'
+                AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?
+                AND json_extract(payload_json,'$.phase') IN ('boxes','full')""", (episode_id, cid)))
+        if deps:
+            payload['depends_on'] = list(dict.fromkeys(deps))
+        job_ids.append(worker.insert_job(conn, episode_id, 'character_detect', payload))
+    return job_ids
+
+
+def dispatch_episode(job, owner, payload):
     with db.connect() as conn:
-        worker.require_lease(conn, job_id, owner)
-        conn.execute('UPDATE character_detection_runs SET phase=?,timings_json=? WHERE id=?', (phase, json.dumps(timings), run_id))
+        conn.execute('BEGIN IMMEDIATE')
+        worker.require_lease(conn, job['id'], owner)
+        if payload.get('expanded'):
+            finish(conn, job)
+            return
+        children = _enqueue_cuts(conn, job['episode_id'], payload['phase'], rerun=payload.get('rerun', False))
+        if not children:
+            finish(conn, job, 'Complete · No matching cuts need character detection')
+            return
+        request = {**job, 'payload_json': json.dumps({**payload, 'expanded': True})}
+        worker.defer_for_dependencies(conn, request, owner, children, 'Waiting for cut detections')
 
 
-def latest_current_run(cut):
+def latest_current_run(cut, conn=None):
     return db.one('SELECT * FROM character_detection_runs WHERE cut_id=? AND cut_start=? AND cut_end=? ORDER BY rowid DESC LIMIT 1',
-                  (cut['id'], cut['start_time'], cut['end_time']))
+                  (cut['id'], cut['start_time'], cut['end_time']), conn=conn)
+
+
+def cut_evidence(conn, job, payload):
+    cut = db.one('SELECT id,active,start_time,end_time,cut_index,analysis_enabled,no_characters FROM cuts WHERE id=? AND episode_id=?',
+                 (payload['cut_id'], job['episode_id']), conn=conn)
+    if not cut or not cut['active']:
+        return {'skip': 'Cut archived or removed'}
+    if payload.get('episode_batch') and (not cut['analysis_enabled'] or cut['no_characters']):
+        return {'skip': 'Cut disabled or marked as having no characters'}
+    episode = db.one('SELECT id,project_id,original_ext FROM episodes WHERE id=?', (job['episode_id'],), conn=conn)
+    run = latest_current_run(cut, conn)
+    if run and not any(frame['position'] == 'first' for frame in json.loads(run['frames_json'])):
+        run = None
+    if run:
+        # Display notes and cached candidate scores are not read by the models.
+        run = {key: run[key] for key in ('id', 'frames_json', 'phase', 'timings_json')}
+        boxes = db.all_rows("""SELECT id,run_id,position,box_json,character_context_id,label_source FROM character_detections
+            WHERE run_id=? AND position='first' ORDER BY rowid""", (run['id'],), conn=conn)
+    else:
+        boxes = []
+    return {'cut': cut, 'episode': episode, 'run': run, 'boxes': boxes}
+
+
+def gather(conn, job, payload):
+    data = cut_evidence(conn, job, payload)
+    if 'skip' in data:
+        return data
+    if payload.get('workflow') != WORKFLOW:
+        from . import character_detection
+        cut = data['cut']
+        saved = db.one("""SELECT id,frames_json FROM character_detection_runs WHERE job_id=?
+            AND cut_start=? AND cut_end=?""", (job['id'], cut['start_time'], cut['end_time']), conn=conn)
+        detected = db.all_rows("""SELECT id,position,box_json,label_source,character_context_id
+            FROM character_detections WHERE run_id=? ORDER BY rowid""", (saved['id'],), conn=conn) if saved else []
+        return {**data, 'saved': saved, 'detected': detected,
+                'references': character_detection.reference_snapshots(conn, data['episode']['project_id'])}
+    phase = payload.get('phase', 'full')
+    data['mode'] = 'full' if payload.get('rerun') and not data['run'] else phase
+    if phase != 'boxes':
+        data['gallery'] = anime_gallery.evidence(conn, data['episode']['project_id'])
+    return data
+
+
+def job_snapshot(job, owner, runtime):
+    snapshots = runtime.inputs
+    if job['id'] not in snapshots:
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            worker.require_lease(conn, job['id'], owner)
+            snapshots[job['id']] = job_inputs.JobInputs(conn, job, owner)
+    return snapshots[job['id']]
 
 
 def _target_vectors(job_id, owner, detections, crops, model):
@@ -176,10 +293,11 @@ def _target_vectors(job_id, owner, detections, crops, model):
         if len(computed) != len(missing):
             raise RuntimeError('Character embedder returned an unexpected number of target embeddings')
         with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
             worker.require_lease(conn, job_id, owner)
             for index, vector in zip(missing, computed):
                 vectors[index] = vector
-                if conn.execute('SELECT 1 FROM character_detections WHERE id=?', (detections[index]['id'],)).fetchone():
+                if conn.execute('SELECT 1 FROM character_detections WHERE id=? AND box_json=?', (detections[index]['id'], detections[index]['box_json'])).fetchone():
                     anime_matching.write_cached_detection(conn, detections[index]['id'], model.model_id,
                         model.revision, model.preprocessing, vector)
     return vectors
@@ -190,165 +308,137 @@ def _detection_crop(images, detection):
     return _crop_jpeg(images[0], json.loads(detection['box_json']))
 
 
-def _finish(job_id, owner, episode_id, cut):
-    with db.connect() as conn:
-        _valid_cut(conn, job_id, owner, episode_id, cut)
-        conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-        worker.sync_episode_status(conn, episode_id)
+def finish(conn, job, stage='Complete'):
+    conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                 (stage, job['id']))
+    worker.sync_episode_status(conn, job['episode_id'])
 
 
-def _frame_size(frames, detection):
-    return next(frame['image_size'] for frame in frames if frame['position'] == detection['position'])
-
-
-class _Labeller:
-    """Assigns automatic labels to one cut's boxes without touching confirmed ones."""
-
-    def __init__(self, job_id, owner, episode, cut, detections):
-        self.job_id, self.owner, self.episode, self.cut = job_id, owner, episode, cut
-        self.detections = detections
-        # A character appears at most once per frame.
-        self.present = {'first': set()}
-        for detection in detections:
-            if detection['character_context_id']:
-                self.present[detection['position']].add(detection['character_context_id'])
-
-    def free(self, index, character_id):
-        detection = self.detections[index]
-        return detection['label_source'] is None and character_id not in self.present[detection['position']]
-
-    def assign(self, index, character_id, reason, model_id, revision):
-        detection = self.detections[index]
-        if not self.free(index, character_id):
-            return False
-        with db.connect() as conn:
-            _valid_cut(conn, self.job_id, self.owner, self.episode['id'], self.cut)
-            # Do not assign identities whose character was removed.
-            if not conn.execute("SELECT 1 FROM context_items WHERE id=? AND project_id=? AND kind='character'",
-                                (character_id, self.episode['project_id'])).fetchone():
-                return False
-            updated = conn.execute("UPDATE character_detections SET character_context_id=?,label_source='auto',match_reason=?,match_model_id=?,match_model_revision=? WHERE id=? AND label_source IS NULL",
-                (character_id, reason[:2000], model_id, revision, detection['id'])).rowcount
-        if updated:
-            detection['character_context_id'] = character_id
-            detection['label_source'] = 'auto'
-            self.present[detection['position']].add(character_id)
-        return bool(updated)
-
-def _store_candidates(job_id, owner, detections, candidates):
-    with db.connect() as conn:
-        worker.require_lease(conn, job_id, owner)
-        for index, ranked in candidates.items():
-            conn.execute("UPDATE character_detections SET candidates_json=? WHERE id=? AND (label_source IS NULL OR label_source='auto')",
-                         (json.dumps([{'character_id': cid, 'score': round(score, 3)} for cid, score in ranked[:3]]), detections[index]['id']))
-            detections[index]['candidates_json'] = json.dumps([{'character_id': cid, 'score': round(score, 3)} for cid, score in ranked[:3]])
-
-
-def _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings):
-    """Embed first-frame boxes and match them with the gallery."""
-    gallery = runtime.get_gallery(episode['project_id'], lease_check, timings)
-    # Older runs can still contain last-frame boxes. New recognition only spends
-    # time matching first-frame boxes; legacy boxes remain stored and viewable.
-    detections = [d for d in detections if d['position'] == 'first']
+def _recognize(inputs, runtime, frames, images, detections, lease_check, timings):
+    """Use the gallery captured at start and return candidates and proposed labels."""
+    job, owner = inputs.job, inputs.owner
+    gallery = runtime.get_gallery(inputs.data['episode']['project_id'], lease_check, timings, inputs.data['gallery'])
     if not len(gallery) or not detections:
-        return
+        return {}, []
     model = runtime.get_embedder()
     defaults = model.defaults
-    worker.stage(job_id, owner, episode['id'], f'Matching characters with {model.label}')
-    with timed('embeddings', timings, cut=cut.get('cut_index'), detections=len(detections)):
-        vectors = _target_vectors(job_id, owner, detections, [_detection_crop(images, d) for d in detections], model)
-    labeller = _Labeller(job_id, owner, episode, cut, detections)
+    worker.stage(job['id'], owner, job['episode_id'], f'Matching characters with {model.label}')
+    with timed('embeddings', timings, cut=inputs.data['cut']['cut_index'], detections=len(detections)):
+        vectors = _target_vectors(job['id'], owner, detections, [_detection_crop(images, d) for d in detections], model)
     threshold = anime_matching.env_fraction('ANIME_REID_MIN_SIMILARITY', defaults['similarity'])
     margin = anime_matching.env_fraction('ANIME_REID_MIN_MARGIN', defaults['margin'])
+    image_size = next(frame['image_size'] for frame in frames if frame['position'] == 'first')
     candidates, proposals = {}, []
     for index, detection in enumerate(detections):
         if detection['label_source'] is not None:
             continue
         lease_check()
         ranked = gallery.rank(vectors[index])
-        candidates[index] = ranked
-        if anime_gallery.box_problem(json.loads(detection['box_json']), _frame_size(frames, detection)):
-            continue  # too small to identify; keep only the suggestions
+        candidates[detection['id']] = [{'character_id': cid, 'score': round(score, 3)} for cid, score in ranked[:3]]
+        box = json.loads(detection['box_json'])
+        if anime_gallery.box_problem(box, image_size):
+            continue
         character_id = anime_matching.confident_match(ranked, threshold, margin)
         if not character_id and defaults.get('wide'):
             character_id = anime_matching.confident_match(ranked, *defaults['wide'])
         if character_id:
             runner_up = f", next {gallery.names.get(ranked[1][0], 'other')} {ranked[1][1]:.2f}" if len(ranked) > 1 else ''
-            proposals.append((ranked[0][1], index, character_id,
-                              f'{model.label} similarity {ranked[0][1]:.2f} to your confirmed labels{runner_up}'))
-    for score, index, character_id, reason in sorted(proposals, key=lambda item: -item[0]):
-        labeller.assign(index, character_id, reason, model.model_id, model.revision)
-    _store_candidates(job_id, owner, detections, candidates)
-    return
+            reason = f'{model.label} similarity {ranked[0][1]:.2f} to your confirmed labels{runner_up}'
+            proposals.append((ranked[0][1], detection['id'], character_id, reason, model.model_id, model.revision))
+    return candidates, sorted(proposals, key=lambda item: -item[0])
+
+
+def _save_recognition(inputs, candidates, proposals, timings, rerun):
+    run = inputs.data['run']
+    boxes = inputs.data['boxes']
+    previous = {box['id']: box['character_context_id'] for box in boxes}
+    present = {box['character_context_id'] for box in boxes if box['character_context_id'] and (not rerun or box['label_source'] != 'auto')}
+    assigned = {}
+    for _, box_id, character_id, reason, model, revision in proposals:
+        if character_id not in present:
+            assigned[box_id] = (character_id, reason, model, revision)
+            present.add(character_id)
+    changed = any(previous[box_id] != value[0] for box_id, value in assigned.items()) or (
+        rerun and any(box['label_source'] == 'auto' and box['id'] not in assigned for box in boxes))
+    with inputs.publish(invalidate=changed) as conn:
+        if rerun:
+            conn.execute("""UPDATE character_detections SET character_context_id=NULL,label_source=NULL,match_reason=NULL,
+                match_model_id=NULL,match_model_revision=NULL,candidates_json=NULL
+                WHERE run_id=? AND position='first' AND (label_source='auto' OR label_source IS NULL)""", (run['id'],))
+        for box_id, (character_id, reason, model, revision) in assigned.items():
+            conn.execute("""UPDATE character_detections SET character_context_id=?,label_source='auto',match_reason=?,
+                match_model_id=?,match_model_revision=? WHERE id=? AND label_source IS NULL""",
+                (character_id, reason[:2000], model, revision, box_id))
+        for box_id, ranked in candidates.items():
+            conn.execute("UPDATE character_detections SET candidates_json=? WHERE id=? AND (label_source IS NULL OR label_source='auto')",
+                         (json.dumps(ranked), box_id))
+        provenance = {'fingerprint': inputs.stamp, 'run_id': run['id'], 'boxes': list(previous),
+                      'exemplars': [row['id'] for row in inputs.data['gallery'][0]]}
+        conn.execute("""UPDATE character_detection_runs SET phase='complete',timings_json=?,
+            input_json=json_set(input_json,'$.recognition',json(?)) WHERE id=?""",
+            (json.dumps(timings), json.dumps(provenance), run['id']))
+        conn.execute("UPDATE jobs SET input_json=? WHERE id=?", (json.dumps(provenance), inputs.job['id']))
+        finish(conn, inputs.job)
 
 
 def process(job_id, owner, runtime):
-    """Process one restartable cut job. Phases: 'boxes' (AniRef only), 'recognize' (gallery matching), or 'full'."""
+    """Detect boxes and recognize people using the leased cut's current evidence."""
     from . import inference_worker
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
         return
     try:
-        payload = json.loads(job['payload_json'])
-        mode = payload.get('phase', 'full')
-        cut = payload['cut']
-        episode = db.one('SELECT * FROM episodes WHERE id=?', (job['episode_id'],))
-        started = time.perf_counter()
-        with db.connect() as conn:
-            _valid_cut(conn, job_id, owner, episode['id'], cut)
+        inputs = job_snapshot(job, owner, runtime)
+        data = inputs.data
+        if data.get('skip'):
+            with inputs.publish(invalidate=False) as conn:
+                finish(conn, job, f"Skipped · {data['skip']}")
+            return
+        rerun = json.loads(job['payload_json']).get('rerun', False)
+        cut, episode, run, mode = (data[key] for key in ('cut', 'episode', 'run', 'mode'))
+        if (mode == 'recognize' and not run) or (run and (mode == 'boxes' or (run['phase'] == 'complete' and not rerun))):
+            with inputs.publish(invalidate=False) as conn:
+                finish(conn, job, 'Skipped · Detect first-frame boxes first' if not run else 'Complete')
+            return
         original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
-        lease_check = lambda: inference_worker.check_summary_lease(job_id, owner)
         cache = frame_cache_dir(episode)
         cache.mkdir(parents=True, exist_ok=True)
-        label = f"cut={cut.get('cut_index')}"
-        run = db.one('SELECT * FROM character_detection_runs WHERE job_id=?', (job_id,))
-        if not run and mode == 'recognize':
-            run = latest_current_run(cut)
-            if not run:
-                raise RuntimeError('Run Detect Character Boxes for this cut first')
-        if run and mode == 'boxes':
-            _finish(job_id, owner, episode['id'], cut)  # boxes were saved by the batch step
-            return
         timings = json.loads(run['timings_json'] or '{}') if run else {}
-        loaded = []
-
-        def frames_and_images():
-            if not loaded:
-                prepared = runtime.prepared_frames.pop(job_id, None)
-                with timed('frames', timings if not run else None, cut=cut.get('cut_index')):
-                    loaded.append(prepared if prepared else _extract_frames(original, cut, cache, json.loads(run['frames_json']) if run else None))
-            return loaded[0]
-
+        ready = runtime.prepared_frames.pop(job_id, None)
         if not run:
-            frames, images = frames_and_images()
+            with timed('frames', timings, cut=cut['cut_index']):
+                ready = ready or _extract_frames(original, cut, cache)
+            frames, images = ready
             worker.stage(job_id, owner, episode['id'], 'Detecting characters with AniRef')
             detector = runtime.get_detector()
-            with timed('boxes', timings, cut=cut.get('cut_index')):
+            with timed('boxes', timings, cut=cut['cut_index']):
                 boxes = detector.detect(images)
             if len(boxes) != len(frames):
                 raise RuntimeError('AniRef returned an unexpected number of frames')
             for frame, frame_boxes in zip(frames, boxes):
                 frame['boxes'] = frame_boxes
-            run = db.one('SELECT * FROM character_detection_runs WHERE id=?', (_save_run(job, owner, episode, cut, frames, detector, timings),))
-            if mode == 'boxes':
-                _finish(job_id, owner, episode['id'], cut)
-                return
-        detections = db.all_rows('SELECT * FROM character_detections WHERE run_id=? ORDER BY rowid', (run['id'],))
-        phase = run['phase']
-        if phase == 'boxes':
-            if any(d['position'] == 'first' and d['label_source'] is None for d in detections):
-                frames, images = frames_and_images()
-                _recognize(job_id, owner, runtime, episode, cut, frames, images, detections, lease_check, timings)
-            _set_phase(job_id, owner, run['id'], 'embeddings', timings)
-            phase = 'embeddings'
-        if phase == 'embeddings':
-            _set_phase(job_id, owner, run['id'], 'complete', timings)
-        _finish(job_id, owner, episode['id'], cut)
+            _save_run(job, inputs, cut, frames, detector, timings)
+            run = inputs.data['run']
+        if mode == 'boxes':
+            with inputs.publish(invalidate=False) as conn:
+                finish(conn, job)
+            return
+        detections = [{**box, 'label_source': None, 'character_context_id': None} if rerun and box['label_source'] == 'auto' else box
+                      for box in inputs.data['boxes']]
+        candidates, proposals = {}, []
+        if any(box['label_source'] is None for box in detections):
+            frames, images = ready or _extract_frames(original, cut, cache, json.loads(run['frames_json']))
+            lease_check = lambda: inference_worker.check_summary_lease(job_id, owner)
+            candidates, proposals = _recognize(inputs, runtime, frames, images, detections, lease_check, timings)
+        _save_recognition(inputs, candidates, proposals, timings, rerun)
         clear_cut_frames(episode, cut['id'])
-        log.info('character-detect %s finished mode=%s total=%.2fs timings_ms=%s', label, mode, time.perf_counter() - started, timings)
+    except (worker.LeaseLost, inference_worker.SummaryCancelled):
+        return
     except Exception as exc:
         inference_worker.fail_job(job_id, owner, job['episode_id'], exc)
         inference_worker.log.exception('Bulk anime character detection failed for job %s', job_id)
+    finally:
+        runtime.inputs.pop(job_id, None)
 
 
 def _claim_batch(first_job, first_owner, limit=BATCH_SIZE):
@@ -362,16 +452,17 @@ def _claim_batch(first_job, first_owner, limit=BATCH_SIZE):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         worker.require_lease(conn, first_job['id'], first_owner)
-        candidates = conn.execute('''SELECT id FROM jobs WHERE episode_id=? AND pipeline='character_detect'
-            AND status='queued' AND json_extract(payload_json,'$.workflow')='anime_bulk_v1'
-            AND json_extract(payload_json,'$.batch_id')=? ORDER BY created_at,rowid LIMIT ?''',
-            (first_job['episode_id'], batch_id, limit - 1)).fetchall()
+        candidates = conn.execute(f'''SELECT * FROM jobs WHERE episode_id=? AND pipeline='character_detect'
+            AND status='queued' AND COALESCE(lease_until,0)<=? AND not_before<=?
+            AND json_extract(payload_json,'$.workflow')='anime_bulk_v1'
+            AND json_extract(payload_json,'$.batch_id')=? AND {worker.DEPENDENCIES_DONE}
+            ORDER BY created_at,rowid''', (first_job['episode_id'], now, now, batch_id)).fetchall()
         for row in candidates:
             owner = str(uuid.uuid4())
-            changed = conn.execute("UPDATE jobs SET status='running',stage='Starting',error=NULL,lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'",
-                                   (owner, now + worker.LEASE_SECONDS, row['id'])).rowcount
-            if changed:
+            if worker.lease_candidate(conn, row, owner, now):
                 claimed.append((row['id'], owner))
+            if len(claimed) >= limit:
+                break
     return claimed
 
 
@@ -383,22 +474,30 @@ def _prepare_frames(claimed, runtime):
         job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
         if not job:
             continue
-        payload = json.loads(job['payload_json'])
-        cut = payload['cut']
-        run = db.one('SELECT * FROM character_detection_runs WHERE job_id=?', (job_id,))
-        if not run and payload.get('phase') == 'recognize':
-            run = latest_current_run(cut)
-        if run and (payload.get('phase') == 'boxes' or run['phase'] == 'complete' or not db.one(
-                'SELECT 1 FROM character_detections WHERE run_id=? AND label_source IS NULL LIMIT 1', (run['id'],))):
-            continue  # nothing left to recognize in this cut
-        episode = db.one('SELECT * FROM episodes WHERE id=?', (job['episode_id'],))
+        try:
+            inputs = job_snapshot(job, owner, runtime)
+        except worker.LeaseLost:
+            continue
+        except Exception as exc:
+            inference_worker.fail_job(job_id, owner, job['episode_id'], exc)
+            continue
+        data = inputs.data
+        if 'skip' in data:
+            continue
+        run, mode, cut, episode = (data[key] for key in ('run', 'mode', 'cut', 'episode'))
+        rerun = json.loads(job['payload_json']).get('rerun', False)
+        if mode == 'recognize' and not run:
+            continue
+        if run and (mode == 'boxes' or (run['phase'] == 'complete' and not rerun)
+                    or not any(box['label_source'] is None or (rerun and box['label_source'] == 'auto') for box in data['boxes'])):
+            continue
         work.append((job, owner, cut, episode, run))
 
     def extract(item):
         job, owner, cut, episode, run = item
         try:
             with db.connect() as conn:
-                _valid_cut(conn, job['id'], owner, episode['id'], cut)
+                worker.require_lease(conn, job['id'], owner)
             cache = frame_cache_dir(episode)
             cache.mkdir(parents=True, exist_ok=True)
             original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
@@ -421,16 +520,14 @@ def _detect_batch(claimed, runtime):
     prepared = []
     for job_id, owner in claimed:
         job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
-        if not job or db.one('SELECT id FROM character_detection_runs WHERE job_id=?', (job_id,)):
+        if not job:
             continue
         try:
-            payload = json.loads(job['payload_json'])
-            if payload.get('phase') == 'recognize':
+            inputs = job_snapshot(job, owner, runtime)
+            data = inputs.data
+            if 'skip' in data or data['run'] or data['mode'] == 'recognize':
                 continue
-            cut = payload['cut']
-            episode = db.one('SELECT * FROM episodes WHERE id=?', (job['episode_id'],))
-            with db.connect() as conn:
-                _valid_cut(conn, job_id, owner, episode['id'], cut)
+            cut, episode = data['cut'], data['episode']
             worker.stage(job_id, owner, episode['id'], 'Preparing frames for AniRef batch')
             timings = {}
             ready = runtime.prepared_frames.pop(job_id, None)
@@ -441,7 +538,9 @@ def _detect_batch(claimed, runtime):
                     original = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
                     ready = _extract_frames(original, cut, cache)
             frames, images = ready
-            prepared.append((job, owner, cut, episode, frames, images, timings))
+            prepared.append((job, inputs, cut, episode, frames, images, timings))
+        except worker.LeaseLost:
+            continue
         except Exception as exc:
             inference_worker.fail_job(job_id, owner, job['episode_id'], exc)
             inference_worker.log.exception('Could not prepare cut for anime detection batch %s', job_id)
@@ -459,26 +558,32 @@ def _detect_batch(claimed, runtime):
     except Exception:
         # Retry cuts individually so a malformed frame does not fail the group.
         inference_worker.log.exception('AniRef batch failed; retrying cuts individually')
-        for job, owner, cut, episode, frames, images, timings in prepared:
+        for job, inputs, cut, episode, frames, images, timings in prepared:
             runtime.prepared_frames[job['id']] = (frames, images)
         return
     box_index = 0
-    for job, owner, cut, episode, frames, images, timings in prepared:
+    for job, inputs, cut, episode, frames, images, timings in prepared:
         try:
             for frame in frames:
                 frame['boxes'] = all_boxes[box_index]
                 box_index += 1
             timings['boxes'] = per_cut_ms
-            _save_run(job, owner, episode, cut, frames, detector, timings)
+            _save_run(job, inputs, cut, frames, detector, timings)
             if json.loads(job['payload_json']).get('phase') != 'boxes':
                 runtime.prepared_frames[job['id']] = (frames, images)
+        except worker.LeaseLost:
+            continue
         except Exception as exc:
-            inference_worker.fail_job(job['id'], owner, episode['id'], exc)
+            inference_worker.fail_job(job['id'], inputs.owner, episode['id'], exc)
             inference_worker.log.exception('Could not save anime detection batch result %s', job['id'])
 
 
 def process_batch(first_job, first_owner, runtime, batch_size=BATCH_SIZE):
     """Run several cut jobs with separate leases, one model at a time across all of them."""
+    payload = json.loads(first_job.get('payload_json') or '{}')
+    if payload.get('select_cuts'):
+        dispatch_episode(first_job, first_owner, payload)
+        return
     claimed = _claim_batch(first_job, first_owner, batch_size)
     extra_beats = []
     try:
@@ -496,6 +601,7 @@ def process_batch(first_job, first_owner, runtime, batch_size=BATCH_SIZE):
     finally:
         for job_id, _ in claimed:
             runtime.prepared_frames.pop(job_id, None)
+            runtime.inputs.pop(job_id, None)
         for done, _ in extra_beats:
             done.set()
         for _, thread in extra_beats:

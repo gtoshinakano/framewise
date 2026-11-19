@@ -462,6 +462,8 @@ def init_db():
             ('character_detection_runs', 'model_revision', 'TEXT'),
             ('character_detection_runs', 'phase', "TEXT NOT NULL DEFAULT 'complete'"),
             ('character_detection_runs', 'timings_json', 'TEXT'),
+            ('character_detection_runs', 'input_json', "TEXT NOT NULL DEFAULT '{}'"),
+            ('target_detection_runs', 'input_json', "TEXT NOT NULL DEFAULT '{}'"),
             ('cuts', 'no_characters', 'INTEGER NOT NULL DEFAULT 0'),
             ('text_generation_settings', 'local_model', "TEXT NOT NULL DEFAULT 'standard'"),
             ('local_text_model_state', 'variant', "TEXT NOT NULL DEFAULT ''"),
@@ -499,6 +501,7 @@ def init_db():
             ("request_key", "TEXT"),
             ("not_before", "REAL NOT NULL DEFAULT 0"),
             ("restart_input_json", "TEXT"),
+            ("input_json", "TEXT NOT NULL DEFAULT '{}'"),
         ):
             if column not in job_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")

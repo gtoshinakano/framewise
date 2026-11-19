@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_TARGET_BOXES, boxesInFrame, canDraw, detectReason, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, slotChip, slotName, targetQueueMessage, unknownSlots } from '../src/targetView.ts'
+import { MAX_TARGET_BOXES, boxesInFrame, canDraw, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, slotChip, slotName, targetQueueMessage, unknownSlots } from '../src/targetView.ts'
 
 const slot = (number, overrides = {}) => ({ slot: number, origin: 'first_frame', character_context_id: null, character_name: null, label_source: null, ...overrides })
 const box = (id, frame, slotNumber, source = 'auto') => ({ id, frame_ordinal: frame, slot: slotNumber, box: [0, 0, 10, 10], source })
@@ -46,13 +46,7 @@ test('a slot says where its name came from', () => {
   assert.equal(slotName(undefined), 'Unknown')
 })
 
-test('detection waits for an evaluation and for the cut to be free', () => {
-  const free = { evaluated: true, episodeBusy: false, pending: false, saving: false }
-  assert.equal(detectReason(free), '')
-  assert.match(detectReason({ ...free, evaluated: false }), /Evaluate/)
-  assert.match(detectReason({ ...free, pending: true }), /already queued/)
-  assert.match(detectReason({ ...free, saving: true }), /save/)
-  assert.match(detectReason({ ...free, episodeBusy: true }), /running/)
+test('job status stays visible while the controls are available', () => {
   assert.equal(isJobActive({ id: 'j', status: 'running', stage: '', error: null }), true)
   assert.equal(isJobActive({ id: 'j', status: 'done', stage: '', error: null }), false)
   assert.equal(isJobActive(null), false)

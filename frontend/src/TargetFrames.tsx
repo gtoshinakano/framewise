@@ -5,7 +5,7 @@ import { BoxEditor, type EditorBox } from './BoxEditor'
 import { boxColor } from './boxColors'
 import { cachedCharacters, loadCharacters } from './runCache'
 import { ActionButton, StatusChip } from './RunUi'
-import { boxesInFrame, canDraw, detectReason, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, REVIEW_LABELS, slotChip, slotName, type Box, type TargetBox, type TargetCandidate, type TargetDetections, type TargetFrameInfo, type TargetRun } from './targetView'
+import { boxesInFrame, canDraw, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, REVIEW_LABELS, slotChip, slotName, type Box, type TargetBox, type TargetCandidate, type TargetDetections, type TargetFrameInfo, type TargetRun } from './targetView'
 
 type TargetFrame = { source_frame_index: number; relative_timestamp_seconds: number; reason: string }
 export type Selection = { revision?: string | null; status: string; error?: string | null; result_status?: string; result: null | { shot_change_score: number; change_level: string; coverage_limited: boolean; selected_frames: TargetFrame[] } }
@@ -124,9 +124,9 @@ function PairChanges({ segment, slotOf }: { segment: KeyframeSegment; slotOf: (n
 
 const frameUrl = (cutId: string, ordinal: number, revision?: string | null) => `/api/cuts/${encodeURIComponent(cutId)}/keyframe-selection/frames/${ordinal}?revision=${encodeURIComponent(revision || '')}`
 
-export function TargetFrames({ cutId, selection, error, projectId, detections, episodeBusy, onChanged }: {
+export function TargetFrames({ cutId, selection, error, projectId, detections, onChanged }: {
   cutId: string; selection: Selection | null; error: string; projectId: string
-  detections: TargetDetectionState; episodeBusy: boolean; onChanged: () => void
+  detections: TargetDetectionState; onChanged: () => void
 }) {
   const { data, error: loadError, reload, setData } = detections
   const [characters, setCharacters] = useState<ContextItem[]>(() => cachedCharacters(projectId) ?? [])
@@ -147,8 +147,7 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, e
   const active = isJobActive(data?.job)
   const evaluated = !!selection?.result
   const live = run && !run.stale ? run : null
-  const locked = saving > 0 || active || !live
-  const reason = detectReason({ evaluated, episodeBusy, pending: active, saving: saving > 0 })
+  const locked = saving > 0 || !live
 
   /** One edit at a time, in order. Changes paint at once; the server's answer replaces them. */
   function edit(task: () => Promise<unknown>, paint?: (current: TargetRun) => TargetRun) {
@@ -205,10 +204,10 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, e
   return <section aria-label="Target frames" className="space-y-3 rounded-xl border hairline bg-[#171c25] p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h3 className="text-sm font-semibold">Target frames</h3>
-      {evaluated && <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={!!data?.cast_locked} disabled={!data || active || saving > 0 || queueing} onChange={event => cast(event.target.checked)} /> Lock opening cast</label>
-        <ActionButton compact icon={<ScanFace size={13} />} pending={queueing || active} disabled={!!reason} title={reason || (live ? 'Track again using your edits as anchors' : 'Find the people on these frames, in the order of the first frame')} onClick={() => void detect()}>{active ? 'Detecting' : live ? 'Detect again' : 'Detect characters'}</ActionButton>
-      </div>}
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={!!data?.cast_locked} disabled={!data || saving > 0} onChange={event => cast(event.target.checked)} /> Lock opening cast</label>
+        <ActionButton compact icon={<ScanFace size={13} />} pending={queueing} disabled={saving > 0} title={live ? 'Track again using your edits as anchors' : 'Find the people using the cut’s target frames'} onClick={() => void detect()}>{!evaluated ? 'Evaluate and detect' : live ? 'Detect again' : 'Detect characters'}</ActionButton>
+      </div>
     </div>
     {error && <p role="alert" className="text-xs text-[#ffb6bc]">{error}</p>}
     {!selection && !error && <p className="muted text-xs">Loading target frames…</p>}
@@ -217,12 +216,12 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, e
     {selection?.status === 'failed' && <p role="alert" className="text-xs text-[#ffb6bc]">Evaluation failed: {selection.error}</p>}
     {selection?.status === 'cancelled' && <p className="muted text-xs">Evaluation cancelled.</p>}
     {selection && !selection.result && selection.result_status === 'stale' && selection.status === 'done' && <p className="muted text-xs">Selection is stale. Evaluate the cut again.</p>}
+    {active && <p role="status" className="flex items-center gap-2 rounded-lg border border-[#4a4363] bg-[#221c33] px-3 py-2 text-xs text-[#c3aeff]"><Loader2 size={14} className="animate-spin" aria-hidden />{data?.job?.stage === 'Inputs changed, restarting' ? 'Restarting with your changes' : data?.job?.stage || 'Detection queued'}</p>}
+    {(editError || loadError) && <p role="alert" className="text-xs text-[#ff9fa7]">{editError || loadError}</p>}
     {selection?.result && <>
       <p className="muted text-xs">Change: {selection.result.change_level} ({selection.result.shot_change_score.toFixed(1)} / 100)</p>
       {selection.result.coverage_limited && <p className="text-xs text-[#e6c58b]">Some detected changes may not be represented in the selected frames.</p>}
-      {active && <p role="status" className="flex items-center gap-2 rounded-lg border border-[#4a4363] bg-[#221c33] px-3 py-2 text-xs text-[#c3aeff]"><Loader2 size={14} className="animate-spin" aria-hidden />{data?.job?.stage || 'Detection queued'}…</p>}
       {data?.job?.status === 'failed' && <p role="alert" className="flex items-start gap-2 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]"><XCircle size={14} className="mt-0.5 shrink-0" aria-hidden />{data.job.error || 'Detection failed.'}</p>}
-      {(editError || loadError) && <p role="alert" className="text-xs text-[#ff9fa7]">{editError || loadError}</p>}
       {run?.stale && <p className="rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#e6c58b]">The cut's timing or evaluation changed since these people were found. Detect characters again; evaluating different frames removes them.</p>}
       {live && !!live.cast_locked !== !!data?.cast_locked && <p className="muted text-xs">Detect again to apply the cast setting.</p>}
       {!run && !active && data && <p className="muted rounded-lg border border-dashed hairline px-3 py-3 text-center text-xs">No people found on these frames yet. Press Detect characters. The first frame's boxes set the order and the colours.</p>}

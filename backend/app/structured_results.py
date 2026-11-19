@@ -58,6 +58,27 @@ def invalidate_text(conn, cut_id, evidence):
         (reason, cut_id))
 
 
+def invalidate_detections(conn, cut_id, *, target=False, reason=None):
+    """Existing analyses of changed people remain available with a stale reason."""
+    reason = reason or ('Target frame detections changed' if target else 'First-frame detections changed')
+    types = ('keyframe_analysis', 'performance_beats', 'consistency_summary')
+    if not target:
+        types = ('initial_frame', *types)
+    marks = ','.join('?' for _ in types)
+    conn.execute(f"""UPDATE analysis_results SET stale_reason=? WHERE cut_id=? AND superseded_by IS NULL
+        AND (json_extract(settings_json,'$.structured_type') IN ({marks}) OR title='Cut summary')""", (reason, cut_id, *types))
+
+
+def opening_box_edited(conn, run_id, position):
+    if position != 'first':
+        return
+    row = conn.execute("""SELECT c.id FROM character_detection_runs r JOIN cuts c ON c.id=r.cut_id
+        WHERE r.id=? AND r.cut_start=c.start_time AND r.cut_end=c.end_time
+          AND r.rowid=(SELECT MAX(latest.rowid) FROM character_detection_runs latest WHERE latest.cut_id=c.id)""", (run_id,)).fetchone()
+    if row:
+        invalidate_detections(conn, row['id'], reason='First-frame boxes or labels were edited')
+
+
 def save_generated(conn, cut_id, job_id, owner, result_type, content, model_id, prompt, settings, context, *, expected_current=...):
     """Append a generated revision while holding the worker lease and transaction."""
     worker.require_lease(conn, job_id, owner)

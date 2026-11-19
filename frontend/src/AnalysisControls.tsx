@@ -117,8 +117,8 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const batchReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : !config ? 'Settings are still loading' : ''
   const textReason = pending ? 'Another action is being queued' : !cut.active ? 'Only active cuts can be queued' : ''
   const consistencyReason = pending ? 'Another action is being queued' : !enabled ? 'Analysis is disabled for this cut' : ''
-  const targetBatchReason = pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : ''
-  const targetCutReason = targetBatchReason || (!cut.active ? 'Only active cuts can be queued' : !targetFrames.selection?.result ? 'Evaluate this cut first' : '')
+  const targetBatchReason = pending ? 'Another action is being queued' : ''
+  const targetCutReason = targetBatchReason || (!cut.active ? 'Only active cuts can be queued' : '')
   const targetJob = targetPeople.data?.job
   const targetRun = targetPeople.data?.run && !targetPeople.data.run.stale ? targetPeople.data.run : null
   const targetState: StepState = isJobActive(targetJob) ? (targetJob!.status as StepState) : targetJob?.status === 'failed' ? 'failed' : targetRun ? 'done' : 'none'
@@ -351,8 +351,8 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
             cell(allTextReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('text-all')} disabled={disabled} title={title || 'All text steps: queue a consistency summary and then a Cut summary for every ready cut'} onClick={() => void queueAllText()}>All text</ActionButton>))}
           {row('Target-frame characters', 'Needs evaluated frames', targetState,
             cell(targetCutReason, (disabled, title) => <ActionButton compact icon={<Play size={13} />} pending={isPending('targets-cut')} disabled={disabled} title={title || 'Find and order the people on this cut’s evaluated frames. Run it again to keep your names and boxes and redo the rest.'} onClick={() => void queueTargets('cut')}>Run</ActionButton>),
-            cell(targetBatchReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('targets-from-here')} disabled={disabled} title={title || 'Queue this cut and every later cut that has evaluated frames and no detection yet. Cuts not evaluated, marked as having no characters or with analysis disabled are skipped and listed.'} onClick={() => void queueTargets('from-here')}>{batchLabel(counts.from)}</ActionButton>),
-            cell(targetBatchReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('targets-all')} disabled={disabled} title={title || 'Queue every cut with evaluated frames and no detection yet'} onClick={() => void queueTargets('all')}>All {counts.all}</ActionButton>))}
+            cell(targetBatchReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('targets-from-here')} disabled={disabled} title={title || 'Queue this cut and every later enabled cut. It evaluates missing frames and skips current detections. Cuts not evaluated, marked as having no characters or with analysis disabled are skipped and listed.'} onClick={() => void queueTargets('from-here')}>{batchLabel(counts.from)}</ActionButton>),
+            cell(targetBatchReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('targets-all')} disabled={disabled} title={title || 'Queue enabled cuts. Missing target frames are evaluated first'} onClick={() => void queueTargets('all')}>All {counts.all}</ActionButton>))}
           {row('All three text steps', 'Runs in order, each waits for the last', 'none',
             none,
             cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('chain-from')} disabled={disabled} title={title || 'For this cut and every later ready cut, queue a consistency summary, then production-decision answers from it, then a Cut summary from both. Each job starts only after the one before it finishes. Cuts that already have a Cut summary keep it. Cuts whose keyframes have no current performance beats get them written first. Cuts without an initial frame and keyframes (or an older video analysis), or with jobs already pending, are skipped and listed.'} onClick={() => void queueTextChain()}>{batchLabel(counts.from)}</ActionButton>),
@@ -384,7 +384,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
         ? <CharacterDetectionPanel cutId={cutId} cutStart={cut.start_time} cutEnd={cut.end_time} projectId={projectId} jobs={jobs} onStarted={onStarted} onSummary={setCharacters} noCharacters={!!cut.no_characters} boundaryKey={`${cut.start_time}:${cut.end_time}`} />
         : <div className="space-y-2 rounded-xl border hairline bg-[#171c25] p-3" aria-busy="true" aria-label="Loading characters"><Skeleton className="h-5 w-48" /><Skeleton className="aspect-video" /></div>}</div>
       {characterTab === 'targets' && (projectId
-        ? <TargetFrames cutId={cutId} selection={targetFrames.selection} error={targetFrames.error} projectId={projectId} detections={targetPeople} episodeBusy={busy} onChanged={() => void onStarted()} />
+        ? <TargetFrames cutId={cutId} selection={targetFrames.selection} error={targetFrames.error} projectId={projectId} detections={targetPeople} onChanged={() => void onStarted()} />
         : <div className="space-y-2 rounded-xl border hairline bg-[#171c25] p-3" aria-busy="true" aria-label="Loading target frames"><Skeleton className="h-5 w-48" /><Skeleton className="aspect-video" /></div>)}
     </div>, charactersTarget)}
     {children}

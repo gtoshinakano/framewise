@@ -294,7 +294,7 @@ class TargetCharactersTest(unittest.TestCase):
         self.assertEqual(layout[10], {0: [10, 10, 60, 70]})
         self.assertNotIn('old', {d['id'] for d in self.state()['run']['detections']})
 
-    def test_a_changed_evaluation_fails_the_job_and_changes_nothing(self):
+    def test_a_changed_evaluation_defers_for_a_new_selection(self):
         key = self.evaluate()
         self.first_frame('c1', [(A, 'ctx', 'manual')])
         self.assertEqual(self.detect([[(A, RED)]] * 3, first=[(A, RED)])['status'], 'done')
@@ -305,24 +305,22 @@ class TargetCharactersTest(unittest.TestCase):
         job_id, owner = worker.claim_job(('character_detect',))
         target_characters.process(job_id, owner, Runtime({}))
         job = db.one('SELECT status,error FROM jobs WHERE id=?', (job_id,))
-        self.assertEqual(job['status'], 'failed')
-        self.assertIn('evaluation', job['error'])
+        self.assertEqual(job['status'], 'queued')
+        self.assertIsNone(job['error'])
         self.assertEqual(self.state()['run']['detections'], before['detections'])
         self.assertTrue(self.state()['run']['stale'])
 
     # --- queueing -------------------------------------------------------------------------------------------
-    def test_one_cut_needs_an_evaluation_and_cannot_be_queued_twice(self):
-        self.assertEqual(self.client.post('/api/cuts/c1/target-detection').status_code, 409)
-        self.evaluate()
+    def test_one_cut_queues_before_evaluation_and_reuses_duplicates(self):
         first = self.client.post('/api/cuts/c1/target-detection')
         self.assertEqual(first.status_code, 200, first.text)
-        self.assertEqual(self.client.post('/api/cuts/c1/target-detection').status_code, 409)
+        self.assertEqual(self.client.post('/api/cuts/c1/target-detection').json(), first.json())
         job = db.one('SELECT * FROM jobs WHERE id=?', (first.json()['job_id'],))
         payload = json.loads(job['payload_json'])
         self.assertEqual((job['pipeline'], payload['workflow'], payload['cut_id']), ('character_detect', 'target_frames_v1', 'c1'))
         self.assertEqual(self.client.post('/api/cuts/missing/target-detection').status_code, 404)
 
-    def test_many_cuts_queue_the_evaluated_ones_and_report_the_rest(self):
+    def test_many_cuts_queue_with_or_without_evaluation(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO cuts(id,episode_id,cut_index,start_time,end_time,no_characters) VALUES ('c3','e',2,4,6,1)")
             conn.execute("INSERT INTO cuts(id,episode_id,cut_index,start_time,end_time,analysis_enabled) VALUES ('c4','e',3,6,8,0)")
@@ -330,10 +328,10 @@ class TargetCharactersTest(unittest.TestCase):
         self.evaluate('c3')
         self.evaluate('c4')
         result = self.client.post('/api/episodes/e/target-detection').json()
-        self.assertEqual(result['queued'], 1, result)
-        self.assertEqual(result['skipped'], {'not_evaluated': [2], 'analysis_disabled': [4], 'no_characters': [3], 'up_to_date': [], 'already_queued': []})
-        self.assertEqual(self.client.post('/api/episodes/e/target-detection').json()['skipped']['already_queued'], [1])
-        self.assertEqual(self.client.post('/api/episodes/e/target-detection?from_cut=2').json()['queued'], 0)
+        self.assertEqual(result['queued'], 2, result)
+        self.assertEqual(result['skipped'], {'not_evaluated': [], 'analysis_disabled': [4], 'no_characters': [3], 'up_to_date': [], 'already_queued': []})
+        self.assertEqual(self.client.post('/api/episodes/e/target-detection').json()['job_ids'], result['job_ids'])
+        self.assertEqual(self.client.post('/api/episodes/e/target-detection?from_cut=2').json()['job_ids'], result['job_ids'][1:])
         self.assertEqual(self.client.post('/api/episodes/missing/target-detection').status_code, 404)
         # Only an explicit request for the cut ignores the "no characters" mark.
         self.assertEqual(self.client.post('/api/cuts/c3/target-detection').status_code, 200)
@@ -342,14 +340,17 @@ class TargetCharactersTest(unittest.TestCase):
         self.evaluate()
         self.assertEqual(self.detect([[(A, RED)]] * 3)['status'], 'done')
         result = self.client.post('/api/episodes/e/target-detection').json()
-        self.assertEqual((result['queued'], result['skipped']['up_to_date']), (0, [1]))
-        self.assertEqual(self.client.post('/api/episodes/e/target-detection?only_missing=false').json()['queued'], 1)
+        self.assertEqual(result['queued'], 2)
+        job_id, owner = worker.claim_job(('character_detect',))
+        target_characters.process(job_id, owner, Runtime({}))
+        self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job_id,))['stage'], 'Skipped · Target detections are current')
+        self.assertEqual(self.client.post('/api/episodes/e/target-detection?only_missing=false').json()['queued'], 2)
 
-    def test_other_episode_work_holds_the_queue(self):
+    def test_other_episode_work_allows_queueing(self):
         self.evaluate()
         with db.connect() as conn:
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('busy','e','analyze','running')")
-        self.assertEqual(self.client.post('/api/cuts/c1/target-detection').status_code, 409)
+        self.assertEqual(self.client.post('/api/cuts/c1/target-detection').status_code, 200)
 
     # --- editing --------------------------------------------------------------------------------------------
     def detected(self):
@@ -441,8 +442,8 @@ class TargetCharactersTest(unittest.TestCase):
         self.assertEqual(merge(1, {'into': 6}), 404)
         self.assertEqual(merge(5, {'into': 0}), 404)
         self.client.post('/api/cuts/c1/target-detection')
-        self.assertEqual(merge(1, {'into': 0}), 409)   # a detection job of the cut is pending
-        self.assertEqual([s['slot'] for s in self.state()['run']['slots']], [0, 1])
+        self.assertEqual(merge(1, {'into': 0}), 200)   # pending detection reads the merged slots
+        self.assertEqual([s['slot'] for s in self.state()['run']['slots']], [0])
 
     def test_locked_cast_keeps_an_extra_unmatched_and_promotion_is_manual_on_rerun(self):
         self.evaluate()
@@ -529,11 +530,51 @@ class TargetCharactersTest(unittest.TestCase):
         self.assertNotIn(second['id'], {d['id'] for d in self.state()['run']['detections']})
         self.assertEqual(self.client.delete(f"/api/target-detections/{second['id']}").status_code, 404)
 
-    def test_nothing_is_edited_while_detection_is_pending(self):
+    def test_slots_and_boxes_can_be_edited_while_detection_is_pending(self):
         run = self.detected()
         self.client.post('/api/cuts/c1/target-detection')
-        self.assertEqual(self.client.put(f"/api/target-slots/{run['id']}/1", json={'character_context_id': 'ctx2'}).status_code, 409)
-        self.assertEqual(self.client.post(f"/api/target-runs/{run['id']}/boxes", json={'frame_ordinal': 10, 'box': [1, 1, 20, 20]}).status_code, 409)
+        self.assertEqual(self.client.put(f"/api/target-slots/{run['id']}/1", json={'character_context_id': 'ctx2'}).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/target-runs/{run['id']}/boxes", json={'frame_ordinal': 15, 'box': [1, 1, 20, 20]}).status_code, 200)
+
+    def test_box_edit_during_tracking_restarts_and_uses_the_manual_anchor(self):
+        from app import job_inputs
+        run = self.detected()
+        box = next(box for box in run['detections'] if box['slot'] == 0 and box['frame_ordinal'] == 15)
+        moved = [6, 6, 56, 76]
+        job_id = self.client.post('/api/cuts/c1/target-detection').json()['job_id']
+        frames = [scene([(A, RED), (B, BLUE)]) for _ in range(3)]
+        original_track = target_characters.track
+        calls = []
+
+        def track(runtime, model, frames, images, slots, manual, *args, **kwargs):
+            calls.append(manual)
+            if len(calls) == 1:
+                response = self.client.put(f"/api/target-detections/{box['id']}/box", json={'box': moved})
+                self.assertEqual(response.status_code, 200, response.text)
+                response = self.client.put('/api/cuts/c1/target-cast', json={'locked': True})
+                self.assertEqual(response.status_code, 200, response.text)
+            return original_track(runtime, model, frames, images, slots, manual, *args, **kwargs)
+
+        with patch('app.worker.time.time', return_value=100) as clock, \
+             patch.object(target_characters, 'track', side_effect=track), \
+             patch.object(target_characters, '_extract_frames', return_value=frames), \
+             patch.object(target_characters, '_first_frame_image', return_value=frames[0]), \
+             patch.object(anime_gallery, 'extract_crops', side_effect=lambda rows, *args: {row['id']: self.crop(RED) for row in rows}):
+            runtime = Runtime({id(frame): [A, B] for frame in frames})
+            claim = worker.claim_job(('character_detect',))
+            target_characters.process(*claim, runtime)
+            self.assertEqual(db.one('SELECT status,stage,attempt_count FROM jobs WHERE id=?', (job_id,)),
+                             {'status': 'queued', 'stage': job_inputs.RESTART_STAGE, 'attempt_count': 0})
+            worker.release_lease(*claim)
+            self.assertIsNone(worker.claim_job(('character_detect',)))
+            clock.return_value += job_inputs.QUIET_SECONDS
+            target_characters.process(*worker.claim_job(('character_detect',)), runtime)
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
+        result = self.state()['run']
+        self.assertTrue(result['cast_locked'])
+        saved = next(row for row in result['detections'] if row['id'] == box['id'])
+        self.assertEqual((saved['box'], saved['source']), (moved, 'manual'))
+        self.assertTrue(any(anchor['frame_ordinal'] == 15 and json.loads(anchor['box_json']) == moved for anchor in calls[1]))
 
     # --- what the rest of the app sees ---------------------------------------------------------------------
     def test_cuts_report_unknown_people_in_target_frames_for_the_timeline(self):

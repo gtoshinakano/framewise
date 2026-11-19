@@ -186,10 +186,10 @@ class CharacterDetectionAPITest(unittest.TestCase):
         self.assertEqual(response.json()['queued'], 2)
         jobs = db.all_rows("SELECT id,payload_json FROM jobs WHERE status='queued' ORDER BY rowid")
         self.assertEqual([json.loads(job['payload_json'])['cut_id'] for job in jobs], ['c2', 'c5'])
-        self.assertEqual(self.client.post('/api/episodes/e/character-detection-all').json()['queued'], 0)
+        self.assertEqual(self.client.post('/api/episodes/e/character-detection-all').json()['job_ids'], response.json()['job_ids'])
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET analysis_enabled=1 WHERE id='c3'")
-        self.assertEqual(self.client.post('/api/episodes/e/character-detection-all').json()['queued'], 1)
+        self.assertEqual(self.client.post('/api/episodes/e/character-detection-all').json()['queued'], 3)
         self.assertEqual(worker.claim_job(('character_detect',))[0], jobs[0]['id'])
         self.assertIsNone(worker.claim_job(('character_detect',)))
         response = self.client.get('/api/episodes/e')
@@ -202,22 +202,24 @@ class CharacterDetectionAPITest(unittest.TestCase):
         self.assertEqual(self.client.post('/api/episodes/e/character-detection').json(), {'queued': 0, 'job_ids': []})
         with db.connect() as conn:
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('busy','e','hardcuts','queued')")
-        self.assertEqual(self.client.post('/api/episodes/e/character-detection').status_code, 409)
+        response = self.client.post('/api/episodes/e/character-detection-all')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.client.get('/api/episodes/e/queue').json()['waiting'][-1]['waiting_for'], ['Hard-cut detection'])
 
     def test_bulk_detection_continues_after_failure_and_requeues_only_failed(self):
-        from app import character_detection, single_cut_pipeline
+        from app import anime_bulk
         response = self.client.post('/api/episodes/e/character-detection-all')
         self.assertEqual(response.status_code, 200, response.text)
         first, second = response.json()['job_ids']
-        frames = [{'position': pos, 'time': time, 'image_size': [100, 80], 'boxes': []} for pos, time in [('first', 2), ('last', 3.9)]]
-        with patch.object(inference_worker, 'get_model', return_value=object()), patch.object(single_cut_pipeline, 'release_gpu_models'), patch.object(character_detection, 'detect_boundary_people', side_effect=[RuntimeError('detection failed'), frames]):
+        frames = [{'position': 'first', 'time': 2, 'image_size': [100, 80]}]
+        runtime = anime_bulk.BulkRuntime()
+        detector = type('Detector', (), {'revision': 'test', 'detect': lambda _, images: [[] for _ in images]})()
+        with patch.object(anime_bulk, '_extract_frames', side_effect=[RuntimeError('detection failed'), (frames, [object()])]), \
+             patch.object(runtime, 'get_detector', return_value=detector):
             claimed, owner = worker.claim_job(('character_detect',))
             self.assertEqual(claimed, first)
-            inference_worker.process_character_detection(claimed, owner)
-            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (first,))['status'], 'failed')
-            claimed, owner = worker.claim_job(('character_detect',))
-            self.assertEqual(claimed, second)
-            inference_worker.process_character_detection(claimed, owner)
+            anime_bulk.process_batch(db.one('SELECT * FROM jobs WHERE id=?', (claimed,)), owner, runtime)
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (first,))['status'], 'failed')
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (second,))['status'], 'done')
         retry = self.client.post('/api/episodes/e/character-detection-all').json()
         self.assertEqual(retry['queued'], 1)
@@ -229,6 +231,6 @@ class CharacterDetectionAPITest(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(lambda _: self.client.post('/api/episodes/e/character-detection-all'), range(2)))
         self.assertEqual([response.status_code for response in responses], [200, 200])
-        self.assertEqual(sorted(response.json()['queued'] for response in responses), [0, 2])
+        self.assertEqual(responses[0].json()['job_ids'], responses[1].json()['job_ids'])
         jobs = db.all_rows("SELECT payload_json FROM jobs WHERE pipeline='character_detect' AND status='queued'")
         self.assertEqual(sorted(json.loads(job['payload_json'])['cut_id'] for job in jobs), ['c1', 'c2'])

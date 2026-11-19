@@ -65,7 +65,7 @@ def sync_chunks(episode_id: str, duration: float, chunk_duration: int):
 def insert_job(conn, episode_id, pipeline, payload, *, priority_class=None, retry_of=None, stage='queued'):
     """Queue a request inside the caller's transaction, reusing an identical active request."""
     kind = job_kinds.KINDS[pipeline]
-    choice = {key: value for key, value in payload.items() if key != 'depends_on'}
+    choice = {key: value for key, value in payload.items() if key not in ('depends_on', 'batch_id')}
     request_key = job_inputs.fingerprint({'payload': choice, 'retry_of': retry_of})
     existing = conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline=? AND request_key=?
         AND status IN ('queued','running')""", (episode_id, pipeline, request_key)).fetchone()
@@ -154,6 +154,8 @@ JOB_TEXT_PROVIDER_SQL = "COALESCE(json_extract(jobs.payload_json,'$.text_provide
 # subtitles, character detection, media preparation, hard cuts, ...) still holds the episode alone.
 REMOTE_OWNER = 'remote:'
 ALONGSIDE_REMOTE = ('analyze',)
+DEPENDENCIES_DONE = """NOT EXISTS (SELECT 1 FROM json_each(jobs.payload_json,'$.depends_on') parent
+    LEFT JOIN jobs dep ON dep.id=parent.value WHERE dep.id IS NULL OR dep.status!='done')"""
 
 
 def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), remote_only=(), local_provider_only=False, remote_lane=False):
@@ -194,8 +196,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
         cancelled = cancel_jobs(conn, orphans, WAITED_FOR_FAILED)
         candidates = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}){routing} AND
             status IN ('queued','running') AND COALESCE(lease_until,0)<=? AND not_before<=?
-            AND NOT EXISTS (SELECT 1 FROM json_each(jobs.payload_json,'$.depends_on') parent
-                LEFT JOIN jobs dep ON dep.id=parent.value WHERE dep.id IS NULL OR dep.status!='done')
+            AND {DEPENDENCIES_DONE}
             AND (jobs.pipeline='brief_export' OR NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status IN ('queued','running','cancelled') AND other.id!=jobs.id AND other.pipeline!='brief_export'
                 -- Only a job with a live lease holds the episode. Interrupted jobs (lease
                 -- expired) must not block each other: a bulk batch leaves many at once.
@@ -208,11 +209,9 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
                      CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid""", (*pipelines, *remote_only, now, now, now))
         claimed = None
         for job in candidates:
-            if job_inputs.change_wait(conn, dict(job), now):
-                continue
             owner = (REMOTE_OWNER if remote_lane else '') + str(uuid.uuid4())
-            conn.execute("UPDATE jobs SET status='running',stage=?,error=NULL,lease_owner=?,lease_until=?,attempt_count=attempt_count+1,not_before=0,restart_input_json=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                         ("Resuming" if job["status"] == "running" else "Starting", owner, now + LEASE_SECONDS, job["id"]))
+            if not lease_candidate(conn, job, owner, now):
+                continue
             if job['pipeline'] not in ('brief_export', 'composition_compact'):
                 conn.execute("UPDATE episodes SET status='processing',stage=?,error=NULL WHERE id=?",
                              ("Resuming" if job["status"] == "running" else "Starting", job["episode_id"]))
@@ -222,6 +221,17 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
         cleanup_voice_upload(old_job)
     after_cancel(cancelled)
     return claimed
+
+
+def lease_candidate(conn, job, owner, now):
+    """Start a dependency-ready candidate under the claim transaction."""
+    if job_inputs.change_wait(conn, dict(job), now):
+        return False
+    stage = 'Resuming' if job['status'] == 'running' else 'Starting'
+    conn.execute("""UPDATE jobs SET status='running',stage=?,error=NULL,lease_owner=?,lease_until=?,
+        attempt_count=attempt_count+1,not_before=0,restart_input_json=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+        (stage, owner, now + LEASE_SECONDS, job['id']))
+    return True
 
 
 def requeue_job(job_id, owner, stage='Waiting for a text worker'):

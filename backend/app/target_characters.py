@@ -125,18 +125,17 @@ def _first_frame_image(original, cut, frame):
     return image
 
 
-def _first_frame(job_id, owner, original, cut, model):
+def _first_frame(job_id, owner, original, cut, model, run, rows):
     """The first frame as the user left it: ``{'people': [...], 'size': [w, h]}``, or None when it was never detected.
 
     One entry per box in the order the first-frame editor shows them (the slots), with the box exactly as
     saved and its identity vector. A reviewed frame without people is a frame with no entries, not None.
     """
-    run = anime_bulk.latest_current_run(cut)
     frame = next((item for item in json.loads(run['frames_json']) if item['position'] == 'first'), None) if run else None
     if not run or not frame:
         return None
     # More than the palette has colours cannot be told apart; the editor's first boxes keep their numbers.
-    rows = db.all_rows("SELECT * FROM character_detections WHERE run_id=? AND position='first' ORDER BY rowid", (run['id'],))[:target_tracking.MAX_SLOTS]
+    rows = rows[:target_tracking.MAX_SLOTS]
     people = []
     if rows:
         image = _first_frame_image(original, cut, frame)
@@ -360,6 +359,26 @@ def _review_candidates(ordinal, raw, candidates, placed, unmatched, merges, slot
     return out
 
 
+def gather(conn, job, payload):
+    data = anime_bulk.cut_evidence(conn, job, payload)
+    if 'skip' in data:
+        return data
+    cut_id = data['cut']['id']
+    _, _, key, selection = current_selection(cut_id, conn)
+    cast = db.one('SELECT locked FROM target_cast_settings WHERE cut_id=?', (cut_id,), conn=conn)
+    locked = bool(cast and cast['locked'])
+    existing = run_for(cut_id, key, conn) if key else None
+    slots, boxes, removed, rejected = [], [], {}, {}
+    if existing:
+        existing = {key: existing[key] for key in ('id', 'frames_json', 'cut_start', 'cut_end', 'cast_locked', 'review_version')}
+        slots = db.all_rows('SELECT * FROM target_slots WHERE run_id=? ORDER BY slot', (existing['id'],), conn=conn)
+        boxes = db.all_rows('SELECT * FROM target_detections WHERE run_id=? ORDER BY rowid', (existing['id'],), conn=conn)
+        removed, rejected = target_reviews.decisions(conn, existing['id'])
+    return {**data, 'key': key, 'selection': selection, 'locked': locked, 'existing': existing,
+            'slots': slots, 'target_boxes': boxes, 'removed': removed, 'rejected': rejected,
+            'gallery': anime_gallery.evidence(conn, data['episode']['project_id'])}
+
+
 def process(job_id, owner, runtime):
     """Find and order the people on one cut's evaluated frames."""
     from . import inference_worker
@@ -368,15 +387,31 @@ def process(job_id, owner, runtime):
         return
     try:
         payload = json.loads(job['payload_json'])
-        cut = payload['cut']
-        episode = db.one('SELECT * FROM episodes WHERE id=?', (job['episode_id'],))
+        inputs = anime_bulk.job_snapshot(job, owner, runtime)
+        data = inputs.data
+        if data.get('skip'):
+            with inputs.publish(invalidate=False) as conn:
+                anime_bulk.finish(conn, job, f"Skipped · {data['skip']}")
+            return
+        cut, episode, key, result = (data[name] for name in ('cut', 'episode', 'key', 'selection'))
         started = time.perf_counter()
-        with db.connect() as conn:
-            anime_bulk._valid_cut(conn, job_id, owner, episode['id'], cut)
         lease_check = lambda: inference_worker.check_summary_lease(job_id, owner)
-        _, source, key, result = current_selection(cut['id'])
-        if key is None or key != payload.get('selection_key'):
-            raise RuntimeError('The evaluation of this cut changed; evaluate the cut and detect characters again')
+        if key is None:
+            from . import keyframes
+            with db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                worker.require_lease(conn, job_id, owner)
+                waits = keyframes.ensure_selection(conn, job['episode_id'], [cut['id']])
+                if waits:
+                    worker.defer_for_dependencies(conn, job, owner, waits, 'Waiting for keyframe selection')
+                    return
+            raise RuntimeError('No target frames could be evaluated for this cut')
+        existing = data['existing']
+        if payload.get('only_missing') and existing and existing['review_version'] == REVIEW_VERSION and bool(existing['cast_locked']) == data['locked']:
+            with inputs.publish(invalidate=False) as conn:
+                anime_bulk.finish(conn, job, 'Skipped · Target detections are current')
+            return
+        source = media.episode_dir(episode['project_id'], episode['id']) / f"original{episode['original_ext']}"
         frames = result['selected_frames']
         timings = {}
         worker.stage(job_id, owner, episode['id'], 'Extracting evaluated frames')
@@ -384,11 +419,9 @@ def process(job_id, owner, runtime):
             images = _extract_frames(source, cut, frames)
         lease_check()
         model = runtime.get_embedder()
-        existing = run_for(cut['id'], key)
-        existing_slots = db.all_rows('SELECT * FROM target_slots WHERE run_id=?', (existing['id'],)) if existing else []
-        existing_boxes = db.all_rows('SELECT * FROM target_detections WHERE run_id=?', (existing['id'],)) if existing else []
+        existing_slots, existing_boxes = data['slots'], data['target_boxes']
         worker.stage(job_id, owner, episode['id'], 'Reading the first frame order')
-        first = _first_frame(job_id, owner, source, cut, model)
+        first = _first_frame(job_id, owner, source, cut, model, data['run'], data['boxes'])
         people = first['people'] if first else []
         # The selector always keeps the cut's first frame first. Once the user has reviewed that frame, its
         # evaluated copy is theirs as they left it: no detection, no tracking, and no edits of its own.
@@ -402,12 +435,8 @@ def process(job_id, owner, runtime):
         slots, manual, renumbered = _seed_slots(people, existing_slots, existing_boxes)
         ignored = {slot['slot'] for slot in existing_slots if slot.get('ignored')}
         hidden = [item for item in existing_boxes if item['slot'] in ignored]
-        with db.connect() as conn:
-            cast = conn.execute('SELECT locked FROM target_cast_settings WHERE cut_id=?', (cut['id'],)).fetchone()
-            locked = bool(cast and cast['locked'])
-            removed, rejected = target_reviews.decisions(conn, existing['id']) if existing else ({}, {})
-        runtime.gallery = None
-        gallery = runtime.get_gallery(episode['project_id'], lease_check, timings)
+        locked, removed, rejected = (data[name] for name in ('locked', 'removed', 'rejected'))
+        gallery = runtime.get_gallery(episode['project_id'], lease_check, timings, data['gallery'])
         gallery = anime_gallery.Gallery([item for item in gallery.items if item['cut_id'] != cut['id']])
         mask = result.get('subtitle_mask') or {}
         band = mask if mask.get('source') == 'detected' else None
@@ -421,22 +450,28 @@ def process(job_id, owner, runtime):
                  'relative_time': frame['relative_timestamp_seconds'], 'image_size': list(image.size),
                  'review': reviews[frame['source_frame_index']],
                  **({'mirror': True} if mirrored and number == 0 else {})} for number, (frame, image) in enumerate(zip(frames, images))]
-        _save(job, owner, episode, cut, key, meta, slots, stored, renumbered, getattr(runtime.get_detector(), 'revision', None),
+        if existing:
+            reviewed = {frame['ordinal'] for frame in json.loads(existing['frames_json']) if (frame.get('review') or {}).get('reviewed')}
+            for frame in meta:
+                if frame['ordinal'] in reviewed and not frame.get('mirror'):
+                    frame['review']['reviewed'] = True
+        _save(inputs, meta, slots, stored, renumbered, getattr(runtime.get_detector(), 'revision', None),
               ordinal if mirrored else None, candidates, locked)
-        anime_bulk._finish(job_id, owner, episode['id'], cut)
         log.info('character-detect target frames cut=%s finished total=%.2fs boxes=%d slots=%d', cut.get('cut_index'), time.perf_counter() - started, len(stored), len(slots))
+    except (worker.LeaseLost, inference_worker.SummaryCancelled):
+        return
     except Exception as exc:
         inference_worker.fail_job(job_id, owner, job['episode_id'], exc)
         inference_worker.log.exception('Target frame detection failed for job %s', job_id)
+    finally:
+        runtime.inputs.pop(job_id, None)
 
 
-def _save(job, owner, episode, cut, key, frames, slots, stored, renumbered, revision, mirror_ordinal, candidates, locked):
+def _save(inputs, frames, slots, stored, renumbered, revision, mirror_ordinal, candidates, locked):
     from . import anime_models
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        anime_bulk._valid_cut(conn, job['id'], owner, episode['id'], cut)
-        if not conn.execute('SELECT 1 FROM keyframe_results WHERE cache_key=?', (key,)).fetchone():
-            raise RuntimeError('The evaluation of this cut changed; evaluate the cut and detect characters again')
+    job = inputs.job
+    cut, episode, key = (inputs.data[name] for name in ('cut', 'episode', 'key'))
+    with inputs.publish() as conn:
         run = conn.execute('SELECT id FROM target_detection_runs WHERE cut_id=? AND selection_key=?', (cut['id'], key)).fetchone()
         values = (json.dumps(frames), json.dumps(candidates), int(locked), REVIEW_VERSION)
         if run:
@@ -476,4 +511,10 @@ def _save(job, owner, episode, cut, key, frames, slots, stored, renumbered, revi
         for ordinal, slot, box, scores in stored:
             conn.execute('INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json,source,scores_json) VALUES (?,?,?,?,?,?,?)',
                          (str(uuid.uuid4()), run_id, ordinal, slot, json.dumps(list(box)), 'auto', json.dumps(scores) if scores else None))
+        provenance = {'fingerprint': inputs.stamp, 'selection_key': key, 'opening_boxes': [box['id'] for box in inputs.data['boxes']],
+                      'target_box_ids': [box['id'] for box in inputs.data['target_boxes']], 'cast_locked': locked,
+                      'exemplars': [row['id'] for row in inputs.data['gallery'][0]]}
+        conn.execute('UPDATE target_detection_runs SET input_json=? WHERE id=?', (json.dumps(provenance), run_id))
+        conn.execute('UPDATE jobs SET input_json=? WHERE id=?', (json.dumps(provenance), job['id']))
+        anime_bulk.finish(conn, job)
     return run_id
