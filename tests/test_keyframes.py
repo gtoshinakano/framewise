@@ -1,9 +1,12 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
-from app import keyframes
+from app import db, keyframes, media, worker
+import tests.test_analysis as analysis_tests
 
 
 class KeyframesTest(unittest.TestCase):
@@ -117,6 +120,34 @@ class KeyframesTest(unittest.TestCase):
             self.assertEqual(len(frames), 5)
             self.assertEqual([f[0] for f in frames], list(range(5)))
             self.assertAlmostEqual(frames[3][1], .6, places=3)
+
+
+class KeyframeQueueTest(unittest.TestCase):
+    setUp = analysis_tests.AnalysisTest.setUp
+    tearDown = analysis_tests.AnalysisTest.tearDown
+
+    def test_selection_reads_the_current_boundaries_after_queued_media(self):
+        (media.episode_dir('p', 'e') / 'original.mp4').write_bytes(b'movie')
+        predecessor = worker.enqueue('e', 'hardcuts')
+        response = self.client.post('/api/cuts/c1/keyframe-selection')
+        self.assertEqual(response.status_code, 200, response.text)
+        job_id = response.json()['job_id']
+        self.assertEqual(self.client.post('/api/cuts/c1/keyframe-selection').json()['job_id'], job_id)
+        payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,))['payload_json'])
+        self.assertEqual(payload['depends_on'], [predecessor])
+        self.assertNotIn('subtitle_mask', payload)
+        self.assertIsNone(worker.claim_job(('keyframes',)))
+        with db.connect() as conn:
+            conn.execute("UPDATE cuts SET end_time=1.5 WHERE id='c1'")
+            conn.execute("UPDATE jobs SET status='done' WHERE id=?", (predecessor,))
+        frames = [(index, index / 2, np.zeros((80, 80), dtype=np.uint8)) for index in range(5)]
+        with patch.object(media, 'probe', return_value={'width': 80, 'height': 80}), \
+             patch.object(keyframes, 'decoded', return_value=iter(frames)):
+            worker.process(*worker.claim_job(('keyframes',)))
+        result = self.client.get('/api/cuts/c1/keyframe-selection').json()
+        self.assertEqual(result['status'], 'done')
+        self.assertEqual(result['result']['end_timestamp_seconds'], 1.5)
+        self.assertEqual(result['result']['total_frames'], 3)
 
 
 class KeyframeJobTest(unittest.TestCase):

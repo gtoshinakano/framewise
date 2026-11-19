@@ -16,11 +16,7 @@ def enqueue_selection(episode_id: str, body: Request = Request()):
     if not db.one('SELECT id FROM episodes WHERE id=?', (episode_id,)): raise HTTPException(404, 'Episode not found')
     try:
         settings = keyframes.config(body.settings)
-        band = keyframes.mask_for(episode_id, settings)
-        cuts = [dict(c) for c in db.all_rows('SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 ORDER BY start_time', (episode_id,))]
-        if not cuts: raise ValueError('Detect hard cuts first')
-        if any(c['end_time'] <= c['start_time'] or (i and c['start_time'] < cuts[i-1]['end_time']) for i,c in enumerate(cuts)): raise ValueError('Cuts must have non-overlapping positive ranges')
-        return {'job_id': worker.enqueue(episode_id, 'keyframes', {'keyframe_settings': settings, 'subtitle_mask': band, 'cuts': cuts})}
+        return {'job_id': worker.enqueue(episode_id, 'keyframes', {'keyframe_settings': settings, 'all_cuts': True})}
     except ValueError as exc: raise HTTPException(422, str(exc)) from exc
 
 @router.get('/api/episodes/{episode_id}/keyframe-selection')
@@ -48,10 +44,8 @@ def enqueue_cut_selection(cut_id: str, body: Request = Request()):
     if not cut: raise HTTPException(404, 'Active cut not found')
     try:
         settings = keyframes.config(body.settings)
-        band = keyframes.mask_for(cut['episode_id'], settings)
-        snapshot = {key: cut[key] for key in ('id', 'start_time', 'end_time')}
-        return {'job_id': worker.enqueue(cut['episode_id'], 'keyframes', {'keyframe_settings': settings, 'subtitle_mask': band, 'cuts': [snapshot]})}
-    except ValueError as exc: raise HTTPException(409, str(exc)) from exc
+        return {'job_id': worker.enqueue(cut['episode_id'], 'keyframes', {'keyframe_settings': settings, 'cut_ids': [cut_id]})}
+    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
 
 
 def cut_selection(cut_id):
@@ -59,9 +53,8 @@ def cut_selection(cut_id):
     cut = db.one('''SELECT c.*,e.project_id,e.original_ext FROM cuts c JOIN episodes e ON e.id=c.episode_id
                     WHERE c.id=? AND c.active=1''', (cut_id,))
     if not cut: raise HTTPException(404, 'Active cut not found')
-    job = db.one('''SELECT j.id,j.status,j.error,j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='keyframes'
-                    AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') item WHERE json_extract(item.value,'$.id')=?)
-                    ORDER BY j.rowid DESC LIMIT 1''', (cut['episode_id'], cut_id))
+    with db.connect() as conn:
+        job = keyframes.latest_job(conn, cut['episode_id'], cut_id)
     if not job: return cut, None, {'status': 'missing', 'result': None}
     payload = json.loads(job['payload_json']); settings = payload['keyframe_settings']
     band = keyframes.mask_for(cut['episode_id'], settings)

@@ -6,7 +6,6 @@ import queue
 import re
 import subprocess
 import threading
-import uuid
 from collections import deque
 
 import cv2
@@ -62,9 +61,11 @@ def mask_for(episode_id, settings, conn=None):
 
 def latest_job(conn, episode_id, cut_id):
     """The newest ``keyframes`` job that covers the cut (any status), or None."""
-    return conn.execute('''SELECT j.id,j.status,j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='keyframes'
-                           AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') item WHERE json_extract(item.value,'$.id')=?)
-                           ORDER BY j.rowid DESC LIMIT 1''', (episode_id, cut_id)).fetchone()
+    return conn.execute('''SELECT j.id,j.status,j.error,j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='keyframes'
+                           AND (json_extract(j.payload_json,'$.all_cuts')=1
+                           OR EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cut_ids') WHERE value=?)
+                           OR EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') WHERE json_extract(value,'$.id')=?))
+                           ORDER BY j.rowid DESC LIMIT 1''', (episode_id, cut_id, cut_id)).fetchone()
 
 
 def current_selection(cut_id, conn=None):
@@ -103,7 +104,7 @@ def ensure_selection(conn, episode_id, cut_ids):
     settings of the cut's latest selection, else the defaults, so a selection the user tuned is not reset.
     Returns the ids of the keyframes jobs to wait for.
     """
-    from . import media
+    from . import media, worker
     episode = conn.execute('SELECT project_id,original_ext FROM episodes WHERE id=?', (episode_id,)).fetchone()
     source = media.episode_dir(episode['project_id'], episode_id) / f"original{episode['original_ext']}"
     if not source.is_file():
@@ -118,19 +119,17 @@ def ensure_selection(conn, episode_id, cut_ids):
             waits.append(job['id'])
             continue
         settings = json.loads(job['payload_json'])['keyframe_settings'] if job else config({})
-        band = mask_for(episode_id, settings)
+        band = mask_for(episode_id, settings, conn)
         try:
             key = cache_key(source, cut, settings, band)
         except OSError:
             key = None
         if key and conn.execute('SELECT 1 FROM keyframe_results WHERE cache_key=?', (key,)).fetchone():
             continue
-        group = groups.setdefault(json.dumps(settings, sort_keys=True), {'keyframe_settings': settings, 'subtitle_mask': band, 'cuts': []})
-        group['cuts'].append({name: cut[name] for name in ('id', 'start_time', 'end_time')})
+        group = groups.setdefault(json.dumps(settings, sort_keys=True), {'keyframe_settings': settings, 'cut_ids': []})
+        group['cut_ids'].append(cut_id)
     for payload in groups.values():
-        job_id = str(uuid.uuid4())
-        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'keyframes',?)", (job_id, episode_id, json.dumps(payload)))
-        waits.append(job_id)
+        waits.append(worker.enqueue_in(conn, episode_id, 'keyframes', payload))
     return list(dict.fromkeys(waits))
 
 
@@ -343,39 +342,88 @@ class Shot:
         return {'shot_id': self.cut['id'], 'start_timestamp_seconds': self.cut['start_time'], 'end_timestamp_seconds': self.cut['end_time'], 'duration_seconds': self.cut['end_time']-self.cut['start_time'], 'total_frames': self.count, 'shot_change_score': shot_score, 'change_level': 'low' if shot_score < 25 else 'moderate' if shot_score < 60 else 'high', 'coverage_limited': coverage_limited, 'detected_events': self.event_count, 'uncovered_events': uncovered_events, 'subtitle_mask': self.band, 'selected_frame_count': len(frames), 'selected_frames': frames}
 
 
+def gather(conn, job):
+    from . import db, media
+    payload = json.loads(job['payload_json'])
+    cut = db.one("""SELECT c.id,c.start_time,c.end_time,e.project_id,e.original_ext
+        FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE c.id=? AND c.episode_id=? AND c.active=1""",
+                 (job['unit_id'], job['episode_id']), conn=conn)
+    if not cut:
+        return {'skip': 'Cut archived or removed'}
+    source = media.episode_dir(cut.pop('project_id'), job['episode_id']) / f"original{cut.pop('original_ext')}"
+    settings = payload['keyframe_settings']
+    band = mask_for(job['episode_id'], settings, conn)
+    try:
+        key = cache_key(source, cut, settings, band)
+    except OSError:
+        return {'skip': 'Original video unavailable'}
+    return {'cut': cut, 'mask': band, 'cache_key': key}
+
+
+def inputs(conn, job):
+    from . import job_inputs
+    return job_inputs.fingerprint(job.get('gathered') or gather(conn, job))
+
+
+def invalidate(conn, job):
+    conn.execute("""UPDATE analysis_results SET stale_reason='Target frame selection changed'
+        WHERE cut_id=? AND superseded_by IS NULL AND
+        (json_extract(settings_json,'$.structured_type') IN ('keyframe_analysis','performance_beats','consistency_summary')
+         OR title='Cut summary')""", (job['unit_id'],))
+
+
 def process(job, owner, episode, payload, source):
-    from . import db, media, target_reviews, worker
-    settings, band, cuts = payload['keyframe_settings'], payload['subtitle_mask'], payload['cuts']
+    from . import db, job_inputs, media, target_reviews, worker
+    settings = payload['keyframe_settings']
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        active = conn.execute('SELECT id FROM cuts WHERE episode_id=? AND active=1 ORDER BY start_time', (episode['id'],)).fetchall()
+        requested = None if payload.get('all_cuts') else set(payload.get('cut_ids', [cut['id'] for cut in payload.get('cuts', [])]))
+        units = [job_inputs.JobInputs(conn, job, owner, row['id']) for row in active
+                 if requested is None or row['id'] in requested]
+        missing = [unit for unit in units if not unit.data.get('skip') and not conn.execute(
+            'SELECT 1 FROM keyframe_results WHERE cache_key=?', (unit.data['cache_key'],)).fetchone()]
+    if not missing:
+        if not units:
+            return 'Skipped · no active cuts'
+        if all(unit.data.get('skip') for unit in units):
+            return f"Skipped · {units[0].data['skip']}"
+        return 'Complete'
     info = media.probe(source)
-    for cut in cuts: cut['cache_key'] = cache_key(source, cut, settings, band)
-    missing = [cut for cut in cuts if not db.one('SELECT cache_key FROM keyframe_results WHERE cache_key=?', (cut['cache_key'],))]
-    if not missing: return
     worker.stage(job['id'], owner, episode['id'], 'Selecting keyframes')
-    index = 0; shot = None
-    def save(current, cut):
+    index, shot = 0, None
+
+    def save(current, unit):
         result = current.finish()
-        with db.connect() as conn:
-            worker.require_lease(conn, job['id'], owner)
-            fresh = conn.execute('SELECT start_time,end_time FROM cuts WHERE id=? AND episode_id=? AND active=1', (cut['id'], episode['id'])).fetchone()
-            if not fresh or fresh['start_time'] != cut['start_time'] or fresh['end_time'] != cut['end_time']:
-                raise RuntimeError('Cut changed while selecting keyframes')
-            if cache_key(source, cut, settings, band) != cut['cache_key']: raise RuntimeError('Original video changed during selection')
-            conn.execute('INSERT OR REPLACE INTO keyframe_results(cache_key,episode_id,cut_id,result_json) VALUES (?,?,?,?)', (cut['cache_key'], episode['id'], cut['id'], json.dumps(result)))
-            # People found on the previous selection's frames belong to frames that are no longer the cut's targets.
-            target_reviews.archive_selection(conn, cut['id'], cut['cache_key'])
-            conn.execute('DELETE FROM target_detection_runs WHERE cut_id=? AND selection_key!=?', (cut['id'], cut['cache_key']))
+        cut_id, key = unit.job['unit_id'], unit.data['cache_key']
+        with unit.publish() as conn:
+            conn.execute('INSERT INTO keyframe_results(cache_key,episode_id,cut_id,result_json) VALUES (?,?,?,?)',
+                         (key, episode['id'], cut_id, json.dumps({**result, 'input_fingerprint': unit.stamp, 'input_settings': settings})))
+            # Preserve the reviews of frames that no longer belong to the current selection.
+            target_reviews.archive_selection(conn, cut_id, key)
+            conn.execute('DELETE FROM target_detection_runs WHERE cut_id=? AND selection_key!=?', (cut_id, key))
+
     for ordinal, timestamp, frame in decoded(source, info['width'], info['height'], settings['longest_edge']):
         if ordinal % 128 == 0:
-            with db.connect() as conn: worker.require_lease(conn, job['id'], owner)
-        while index < len(missing) and timestamp >= missing[index]['end_time']:
-            if shot is None: raise RuntimeError('No decoded frames within cut')
-            save(shot, missing[index]); index += 1; shot = None
-        if index == len(missing): break
-        cut = missing[index]
+            with db.connect() as conn:
+                worker.require_lease(conn, job['id'], owner)
+        while index < len(missing) and timestamp >= missing[index].data['cut']['end_time']:
+            if shot is None:
+                raise RuntimeError('No decoded frames within cut')
+            save(shot, missing[index])
+            index += 1
+            shot = None
+        if index == len(missing):
+            break
+        unit = missing[index]
+        cut = unit.data['cut']
         if timestamp >= cut['start_time']:
-            if shot is None: shot = Shot(cut, settings, band)
+            if shot is None:
+                shot = Shot(cut, settings, unit.data['mask'])
             shot.add(ordinal, timestamp, frame)
+    if index < len(missing) and shot is not None:
+        save(shot, missing[index])
+        index += 1
     if index < len(missing):
-        if shot is None: raise RuntimeError('No decoded frames within cut')
-        save(shot, missing[index]); index += 1
-    if index < len(missing): raise RuntimeError('Video ended before all cuts were decoded')
+        raise RuntimeError('Video ended before all cuts were decoded')
+    return 'Complete'

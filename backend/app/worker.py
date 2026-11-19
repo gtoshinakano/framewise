@@ -120,13 +120,16 @@ def enqueue_in(conn, episode_id, pipeline, extra=None):
                 raise ValueError('There is no following cut at this boundary')
             payload['next_cut_id'] = following['id']
     deps = list(payload.get('depends_on', []))
-    if pipeline in ('hardcuts', 'cutframes', 'transcribe', 'voice_sample', 'subtitles'):
+    if pipeline in ('hardcuts', 'cutframes', 'transcribe', 'voice_sample', 'subtitles', 'keyframes'):
         deps.extend(pending_jobs(conn, episode_id, ('prepare',)))
     if (pipeline == 'hardcuts' and cut_id) or pipeline == 'cutframes':
         deps.extend(row['id'] for row in conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline='hardcuts'
             AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id') IS NULL ORDER BY rowid""", (episode_id,)))
     if pipeline == 'subtitles':
         deps.extend(pending_jobs(conn, episode_id, ('transcribe',)))
+    if pipeline == 'keyframes':
+        targets = None if payload.get('all_cuts') else [ref['id'] for ref in job_kinds.KINDS[pipeline].cuts(payload)]
+        deps.extend(pending_jobs(conn, episode_id, ('hardcuts', 'subtitles'), targets))
     if deps:
         payload['depends_on'] = list(dict.fromkeys(deps))
     job_id = insert_job(conn, episode_id, pipeline, payload)
@@ -478,10 +481,11 @@ def process(job_id: str, owner: str):
             return
         if job['pipeline'] == 'keyframes':
             from . import keyframes
-            keyframes.process(job, owner, episode, payload, original)
+            label = keyframes.process(job, owner, episode, payload, original)
             with db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
                 require_lease(conn, job_id, owner)
-                conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+                conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (label, job_id))
                 sync_episode_status(conn, episode_id)
             return
         from . import media_jobs

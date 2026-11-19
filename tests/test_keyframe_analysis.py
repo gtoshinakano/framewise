@@ -234,7 +234,7 @@ class QueueingTest(unittest.TestCase):
         [wait] = payload['depends_on']
         selection = db.one('SELECT pipeline,payload_json FROM jobs WHERE id=?', (wait,))
         self.assertEqual(selection['pipeline'], 'keyframes')
-        self.assertEqual([cut['id'] for cut in json.loads(selection['payload_json'])['cuts']], ['c1'])
+        self.assertEqual(json.loads(selection['payload_json'])['cut_ids'], ['c1'])
         self.assertIsNone(worker.claim_job(('analyze',)))  # held while the selection is queued
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='failed' WHERE id=?", (wait,))
@@ -248,7 +248,7 @@ class QueueingTest(unittest.TestCase):
         first = self.client.post('/api/episodes/e/visual-analysis').json()['job_ids'][0]
         wait = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (first,))['payload_json'])['depends_on']
         self.assertEqual(len(wait), 1)
-        self.assertEqual(len(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (wait[0],))['payload_json'])['cuts']), 2)
+        self.assertEqual(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (wait[0],))['payload_json'])['cut_ids'], ['c1', 'c2'])
         frame_only = self.client.post('/api/cuts/c1/analysis-stages/run', json={'stage': 'initial_frame'})
         self.assertEqual(frame_only.status_code, 200)
         frame_only = frame_only.json()['job_id']

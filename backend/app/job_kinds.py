@@ -45,7 +45,9 @@ def _analysis_cuts(payload):
 
 
 def _keyframe_cuts(payload):
-    return [_cut_ref(item['id'], item) for item in payload.get('cuts', []) if isinstance(item, dict) and isinstance(item.get('id'), str)]
+    if isinstance(payload.get('cut_ids'), list):
+        return [_cut_ref(cut_id) for cut_id in payload['cut_ids'] if isinstance(cut_id, str)]
+    return [_cut_ref(item['id'], item) for item in payload.get('cuts') or [] if isinstance(item, dict) and isinstance(item.get('id'), str)]
 
 
 def _frame_cuts(payload):
@@ -288,6 +290,27 @@ def _media_invalidates(conn, job):
     media_jobs.invalidate(conn, job)
 
 
+def _selection_scope(payload):
+    cuts = frozenset(ref['id'] for ref in _keyframe_cuts(payload))
+    return Scope(frozenset({'original', 'cut_boundaries', 'subtitles'}),
+                 frozenset({'keyframes', 'target_detections'}), cuts or None)
+
+
+def _selection_gather(conn, job):
+    from . import keyframes
+    return keyframes.gather(conn, job)
+
+
+def _selection_inputs(conn, job):
+    from . import keyframes
+    return keyframes.inputs(conn, job)
+
+
+def _selection_invalidates(conn, job):
+    from . import keyframes
+    keyframes.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -319,7 +342,10 @@ KINDS = {kind.pipeline: kind for kind in (
     Kind('voice_sample', 'Voice sample', True, audio_range=_voice_range, cancel_running=_always,
          keys=lambda payload, cut_ids: [f"voice_sample:{payload.get('character_context_id')}"]),
     # Media work runs on the CPU in the API process: listed, never counted, not cancellable while it runs.
-    Kind('keyframes', 'Keyframe selection', False, cuts=_keyframe_cuts, cancel_running=_always, retry=_always, keys=lambda payload, cut_ids: ['keyframes']),
+    Kind('keyframes', 'Keyframe selection', False, cuts=_keyframe_cuts, cancel_running=_always, retry=_always, keys=lambda payload, cut_ids: ['keyframes'],
+         resources=frozenset({'cpu_media'}), scope=_selection_scope,
+         priority_class=lambda payload: 'interactive' if len(_keyframe_cuts(payload)) == 1 else 'batch',
+         inputs=_selection_inputs, gather=_selection_gather, invalidates=_selection_invalidates),
     Kind('prepare', 'Prepare media', False, cancel_queued=False, keys=lambda payload, cut_ids: ['prepare'],
          resources=frozenset({'cpu_media'}),
          scope=lambda payload: Scope(frozenset({'original'}), frozenset({'proxy', 'prepared_audio', 'chunks', 'previews'})),
