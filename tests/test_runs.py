@@ -197,14 +197,47 @@ class RunsTest(unittest.TestCase):
 
     def test_cancelling_a_job_cancels_the_chain_waiting_for_it(self):
         add_job('consistency', 'consistency_summary', payload={'cut_id': 'c1'})
-        add_job('answers', 'review_answers', payload={'cut_id': 'c1', 'wait_for': 'consistency'})
-        add_job('summary', 'regen', payload={'cut_id': 'c1', 'wait_for': 'answers'})
+        add_job('answers', 'review_answers', payload={'cut_id': 'c1', 'depends_on': ['consistency']})
+        add_job('summary', 'regen', payload={'cut_id': 'c1', 'depends_on': ['answers']})
         add_job('unrelated', 'regen', payload={'cut_id': 'c2'})
         self.assertEqual(self.client.post('/api/jobs/consistency/cancel').status_code, 200)
         rows = {row['id']: (row['status'], row['error']) for row in db.all_rows('SELECT id,status,error FROM jobs')}
         self.assertEqual(rows['answers'], ('cancelled', worker.WAITED_FOR_FAILED))
         self.assertEqual(rows['summary'], ('cancelled', worker.WAITED_FOR_FAILED))
         self.assertEqual(rows['unrelated'][0], 'queued')
+
+    def test_all_dependencies_must_complete_across_worker_lanes(self):
+        add_job('prepare', 'prepare')
+        add_job('audio', 'transcribe', status='done')
+        add_job('subtitles', 'subtitles', payload={'depends_on': ['prepare', 'audio']})
+        self.assertIsNone(worker.claim_job(('subtitles',)))
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='done' WHERE id='prepare'")
+        self.assertEqual(worker.claim_job(('subtitles',))[0], 'subtitles')
+
+    def test_failing_a_leased_job_cancels_dependents_before_the_next_claim(self):
+        add_job('prepare', 'prepare')
+        add_job('audio', 'transcribe', payload={'depends_on': ['prepare']})
+        add_job('subtitles', 'subtitles', payload={'depends_on': ['audio']})
+        job_id, owner = worker.claim_job(('prepare',))
+        self.assertTrue(worker.fail_job(job_id, owner, 'e', RuntimeError('Probe failed')))
+        self.assertEqual({row['id']: row['status'] for row in db.all_rows('SELECT id,status FROM jobs')},
+                         {'prepare': 'failed', 'audio': 'cancelled', 'subtitles': 'cancelled'})
+
+    def test_legacy_dependencies_are_migrated_once_and_interrupted_work_resumes(self):
+        add_job('selection', 'keyframes', status='done')
+        add_job('consistency', 'consistency_summary', status='done')
+        add_job('answers', 'review_answers', status='done')
+        add_job('resume', 'regen', status='running', lease_owner='old', lease_until=0,
+                payload={'cut_id': 'c1', 'wait_for': 'answers', 'depends_on_consistency': 'consistency',
+                         'wait_for_keyframes': ['selection', 'answers']})
+        with db.connect() as conn:
+            conn.execute("DELETE FROM app_flags WHERE name='queue-dependencies-v1'")
+        db.init_db()
+        db.init_db()
+        stored = db.one("SELECT payload_json FROM jobs WHERE id='resume'")['payload_json']
+        self.assertEqual(json.loads(stored), {'cut_id': 'c1', 'depends_on': ['answers', 'consistency', 'selection']})
+        self.assertEqual(worker.claim_job(('regen',))[0], 'resume')
 
     def test_episode_queue_cancel_by_group_and_with_running(self):
         for index in range(3):

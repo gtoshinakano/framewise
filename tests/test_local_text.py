@@ -141,7 +141,7 @@ class LocalTextTest(unittest.TestCase):
         job_ids = response.json()['job_ids']
         batch = [db.one('SELECT * FROM jobs WHERE id=?', (job_id,)) for job_id in job_ids]
         self.assertEqual([job['pipeline'] for job in batch], ['consistency_summary','regen','consistency_summary','regen'])
-        self.assertEqual(json.loads(batch[1]['payload_json'])['depends_on_consistency'], job_ids[0])
+        self.assertEqual(json.loads(batch[1]['payload_json'])['depends_on'], [job_ids[0]])
         model = Mock(); model.ensure.return_value = 'http://127.0.0.1:1234'; model.variant = 'standard'
         model.request.side_effect = lambda cancel_check=None: contextlib.nullcontext(('http://127.0.0.1:1234', 'standard'))
         fields = {'summary':'summary','clear':'clear','confusing':'None identified.','questions':[]}

@@ -507,7 +507,7 @@ class AnalysisTest(unittest.TestCase):
         job_id = response.json()['job_id']
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,))['payload_json'])
         self.assertEqual(payload['workflow'], 'single_cut_v2')
-        self.assertNotIn('wait_for_keyframes', payload)  # the selection is current
+        self.assertNotIn('depends_on', payload)  # the selection is current
         frame = {'composition': 'wide', 'setting': 'room', 'lighting': 'soft', 'camera': 'level', 'mood': 'calm', 'visible_characters': [], 'background_people': 'none', 'props': 'none', 'notes': 'none', 'mode': 'full'}
         with patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
              patch.object(inference_worker, 'get_model', side_effect=AssertionError('subtitles are not extracted per cut')), \
@@ -528,7 +528,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(queued.status_code, 200, queued.text)
         summary = db.one("SELECT * FROM jobs WHERE pipeline='consistency_summary' AND episode_id='e'")
         summary_payload = json.loads(summary['payload_json'])
-        self.assertEqual((summary['status'], summary_payload['wait_for'], summary_payload['refresh_evidence']), ('queued', beats['id'], True))
+        self.assertEqual((summary['status'], summary_payload['depends_on'], summary_payload['refresh_evidence']), ('queued', [beats['id']], True))
         self.assertEqual(len(summary_payload['source_result_ids']), 2)
         evidence = summary_payload['evidence']['visual_evidence_text']
         self.assertIn('First frame:', evidence)

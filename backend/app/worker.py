@@ -123,8 +123,6 @@ JOB_TEXT_PROVIDER_SQL = "COALESCE(json_extract(jobs.payload_json,'$.text_provide
 # episode against visual analysis, and a running visual analysis does not hold it against a remote lane.
 # Remote lanes mark the jobs they hold with this lease-owner prefix; every other pipeline (transcription,
 # subtitles, character detection, media preparation, hard cuts, ...) still holds the episode alone.
-# Chained text jobs: held until the job named by ``payload.wait_for`` is done, cancelled when it cannot be.
-WAITING_PIPELINES = ('regen', 'review_answers', 'consistency_summary')
 REMOTE_OWNER = 'remote:'
 ALONGSIDE_REMOTE = ('analyze',)
 
@@ -148,7 +146,6 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
         routing += f" AND {JOB_TEXT_PROVIDER_SQL}='local'"
     placeholders = ",".join("?" for _ in pipelines)
     text = ",".join(f"'{name}'" for name in TEXT_PIPELINES)
-    waiting = ",".join(f"'{name}'" for name in WAITING_PIPELINES)
     alongside = ",".join(f"'{name}'" for name in ALONGSIDE_REMOTE)
     # Jobs of ``alongside`` pipelines are never held by a job a remote lane runs; a remote lane is never held by them.
     remote_free = f"AND NOT (jobs.pipeline IN ({alongside}) AND other.lease_owner LIKE '{REMOTE_OWNER}%')" + (f" AND other.pipeline NOT IN ({alongside})" if remote_lane else '')
@@ -159,22 +156,17 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
             conn.execute("UPDATE jobs SET status='failed',stage='Failed',error='Interrupted too many times; run the pipeline again',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
             if job['pipeline'] not in ('brief_export', 'composition_compact'):
                 sync_episode_status(conn, job["episode_id"], "Interrupted too many times; run the pipeline again")
-        # A chained text job (payload.wait_for) is held until the job it names is done. If that job
-        # failed, was cancelled or is gone, the waiting job can never run, so cancel it now.
-        while True:  # cancelling one job can orphan the next link of its chain
-            orphans = conn.execute(f"""SELECT id,episode_id FROM jobs WHERE status='queued' AND pipeline IN ({waiting}) AND pipeline IN ({placeholders})
-                AND json_extract(payload_json,'$.wait_for') IS NOT NULL
-                AND NOT EXISTS (SELECT 1 FROM jobs dep WHERE dep.id=json_extract(jobs.payload_json,'$.wait_for') AND dep.status IN ('queued','running','done'))""", pipelines).fetchall()
-            if not orphans:
-                break
-            cancel_jobs(conn, orphans, WAITED_FOR_FAILED)
+        # Sweep abandoned dependencies across lanes. cancel_jobs walks the rest of each chain.
+        orphans = conn.execute("""SELECT jobs.* FROM jobs
+            WHERE (status='queued' OR (status='running' AND COALESCE(lease_until,0)<=?)) AND EXISTS (
+            SELECT 1 FROM json_each(jobs.payload_json,'$.depends_on') parent
+            LEFT JOIN jobs dep ON dep.id=parent.value
+            WHERE dep.id IS NULL OR dep.status IN ('failed','cancelled'))""", (now,)).fetchall()
+        cancelled = cancel_jobs(conn, orphans, WAITED_FOR_FAILED)
         job = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}){routing} AND
             (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))
-            AND (jobs.pipeline NOT IN ({waiting}) OR json_extract(jobs.payload_json,'$.wait_for') IS NULL
-                 OR EXISTS (SELECT 1 FROM jobs dep WHERE dep.id=json_extract(jobs.payload_json,'$.wait_for') AND dep.status='done'))
-            -- A visual job waits for the keyframe selection its keyframe stage reads; a failed selection fails only that stage.
-            AND (jobs.pipeline!='analyze' OR NOT EXISTS (SELECT 1 FROM json_each(jobs.payload_json,'$.wait_for_keyframes') w
-                 JOIN jobs dep ON dep.id=w.value WHERE dep.status IN ('queued','running')))
+            AND NOT EXISTS (SELECT 1 FROM json_each(jobs.payload_json,'$.depends_on') parent
+                LEFT JOIN jobs dep ON dep.id=parent.value WHERE dep.id IS NULL OR dep.status!='done')
             AND (jobs.pipeline='brief_export' OR NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status='running' AND other.id!=jobs.id AND other.pipeline!='brief_export'
                 -- Only a job with a live lease holds the episode. Interrupted jobs (lease
                 -- expired) must not block each other: a bulk batch leaves many at once.
@@ -196,6 +188,7 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
             claimed = job["id"], owner
     for old_job in exhausted:
         cleanup_voice_upload(old_job)
+    after_cancel(cancelled)
     return claimed
 
 
@@ -223,7 +216,7 @@ def cancel_jobs(conn, jobs, reason=None):
     poll it (``inference_worker.check_summary_lease``). A running job keeps its lease owner: its worker
     holds the GPU until the job's next checkpoint, ``heartbeat`` keeps that lease alive meanwhile (the
     queue shows the job as stopping) and releases it when the worker lets go. Queued jobs that wait for a
-    cancelled job (``payload.wait_for``, ``depends_on_consistency``) can never run and are cancelled with it.
+    cancelled job (``payload.depends_on``) can never run and are cancelled with it.
     Call ``after_cancel`` with the returned rows once the transaction has committed.
     """
     pending = [(job, reason) for job in jobs]
@@ -245,14 +238,31 @@ def cancel_jobs(conn, jobs, reason=None):
         changed.append(current)
         if current['pipeline'] not in SIDE_PIPELINES:
             episodes.add(current['episode_id'])
-        for dependent in conn.execute("SELECT * FROM jobs WHERE status='queued' AND json_extract(payload_json,'$.wait_for')=?", (current['id'],)).fetchall():
+        for dependent in dependents(conn, current['id']):
             pending.append((dependent, WAITED_FOR_FAILED))
-        if current['pipeline'] == 'consistency_summary':
-            for dependent in conn.execute("SELECT * FROM jobs WHERE status='queued' AND pipeline='regen' AND json_extract(payload_json,'$.depends_on_consistency')=?", (current['id'],)).fetchall():
-                pending.append((dependent, 'Cancelled because the preceding consistency summary was cancelled'))
     for episode_id in episodes:
         sync_episode_status(conn, episode_id)
     return changed
+
+
+def dependents(conn, job_id):
+    return conn.execute("""SELECT jobs.* FROM jobs WHERE status='queued' AND EXISTS (
+        SELECT 1 FROM json_each(jobs.payload_json,'$.depends_on') parent WHERE parent.value=?)""", (job_id,)).fetchall()
+
+
+def fail_job(job_id, owner, episode_id, exc, *, keep_stage=False):
+    """Fail a leased job and cancel its dependents in the same transaction."""
+    message = str(exc)[-1800:]
+    stage = "CASE WHEN stage IN ('Queued','Starting') THEN 'Failed' ELSE 'Failed · ' || stage END" if keep_stage else "'Failed'"
+    with db.connect() as conn:
+        job = conn.execute(f"""UPDATE jobs SET status='failed',stage={stage},error=?,lease_owner=NULL,lease_until=NULL,
+            updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND lease_owner=? RETURNING pipeline""",
+            (message, job_id, owner)).fetchone()
+        cancelled = cancel_jobs(conn, dependents(conn, job_id), WAITED_FOR_FAILED) if job else []
+        if job and job['pipeline'] not in SIDE_PIPELINES:
+            sync_episode_status(conn, episode_id, message)
+    after_cancel(cancelled)
+    return bool(job)
 
 
 def after_cancel(jobs):
@@ -584,10 +594,5 @@ def process(job_id: str, owner: str):
             conn.execute("UPDATE jobs SET status='done', stage=?, error=NULL, lease_owner=NULL, lease_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (final_stage, job_id))
             sync_episode_status(conn, episode_id)
     except Exception as exc:
-        message = str(exc)[-1800:]
-        with db.connect() as conn:
-            changed = conn.execute("UPDATE jobs SET status='failed', stage='Failed', error=?, lease_owner=NULL, lease_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND lease_owner=?",
-                                   (message, job_id, owner)).rowcount
-            if changed and job['pipeline'] != 'brief_export':
-                sync_episode_status(conn, episode_id, message)
+        fail_job(job_id, owner, episode_id, exc)
         log.exception("Failed processing episode %s", episode_id)

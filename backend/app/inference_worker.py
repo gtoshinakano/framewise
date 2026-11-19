@@ -560,11 +560,7 @@ def synthesize(config, context, observations, progress=None, request_override=No
 
 
 def fail_job(job_id, owner, episode_id, exc):
-    message = str(exc)[-1800:]
-    with db.connect() as conn:
-        changed = conn.execute("UPDATE jobs SET status='failed',stage=CASE WHEN stage IN ('Queued','Starting') THEN 'Failed' ELSE 'Failed · ' || stage END,error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND lease_owner=?", (message, job_id, owner)).rowcount
-        if changed:
-            worker.sync_episode_status(conn, episode_id, message)
+    worker.fail_job(job_id, owner, episode_id, exc, keep_stage=True)
 
 
 PRODUCTION_BRIEF_SYSTEM = (Path(__file__).parent / "production_brief_prompt.txt").read_text(encoding="utf-8")
@@ -651,12 +647,6 @@ def process_regen(job_id, owner):
             # A chained summary reads the analysis as it is now (the performance beats were written after it was queued).
             rows = db.all_rows("SELECT id,kind,title,content,origin,context_json FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut_id,))
             payload['results'] = prompt_context.slim_results([row for row in rows if row['title'] != SUMMARY_TITLE], drop=(prompt_context.CONSISTENCY_TITLE,))
-        if payload.get('depends_on_consistency'):
-            dependency = db.one("SELECT status FROM jobs WHERE id=?", (payload['depends_on_consistency'],))
-            result = db.one("SELECT kind,title,content,origin FROM analysis_results WHERE job_id=? AND title='Consistency summary' ORDER BY rowid DESC LIMIT 1", (payload['depends_on_consistency'],))
-            if not dependency or dependency['status'] != 'done' or not result:
-                raise RuntimeError('The queued consistency summary did not complete; run text processing again')
-            payload['results'] = [r for r in payload['results'] if r['title'] != 'Consistency summary'] + [result]
         if payload.get('refresh_answers'):
             saved = db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,))
             payload['human_instructions'] = saved['content'] if saved else ''
@@ -820,7 +810,7 @@ def process_review_answers(job_id, owner):
     payload = json.loads(job['payload_json'])
     cut_id = payload['cut_id']
     try:
-        if payload.get('wait_for'):
+        if payload.get('depends_on'):
             from . import structured_results
             saved = db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,))
             review_answers.refresh(payload, structured_results.list_results(cut_id), saved['content'] if saved else '')

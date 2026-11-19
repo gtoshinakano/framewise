@@ -304,11 +304,7 @@ def process(job_id, owner):
         log.info('Audio job %s stopped: it was cancelled', job_id)
     except Exception as exc:
         log.exception('Audio job failed: %s', job_id)
-        with db.connect() as conn:
-            changed = conn.execute("UPDATE jobs SET status='failed',stage='Failed',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND lease_owner=?", (str(exc)[-1800:], job_id, owner)).rowcount
-            if changed:
-                worker.sync_episode_status(conn, episode['id'], str(exc)[-1800:])
-                terminal = True
+        terminal = worker.fail_job(job_id, owner, episode['id'], exc)
     finally:
         if uploaded and terminal:
             uploaded.unlink(missing_ok=True)

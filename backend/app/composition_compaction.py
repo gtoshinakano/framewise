@@ -314,6 +314,5 @@ def process(job_id, owner):
             from . import local_text_runtime
             local_text_runtime.cancel_local('Cancelled')
     except Exception as exc:
-        with db.connect() as conn:
-            conn.execute("UPDATE jobs SET status='failed',stage='Failed',error=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' AND lease_owner=?",(str(exc)[-1800:],job_id,owner))
+        worker.fail_job(job_id, owner, job['episode_id'], exc)
         inference_worker.log.exception('Composition compaction failed for job %s',job_id)

@@ -36,6 +36,25 @@ def remove_legacy_content_status(value):
     return value
 
 
+def migrate_queue_dependencies(conn):
+    flag = 'queue-dependencies-v1'
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    if conn.execute('SELECT 1 FROM app_flags WHERE name=?', (flag,)).fetchone():
+        return
+    rows = conn.execute("""SELECT id,payload_json FROM jobs
+        WHERE json_valid(payload_json) AND (json_type(payload_json,'$.wait_for') IS NOT NULL
+           OR json_type(payload_json,'$.wait_for_keyframes') IS NOT NULL
+           OR json_type(payload_json,'$.depends_on_consistency') IS NOT NULL)""").fetchall()
+    for row in rows:
+        payload = json.loads(row['payload_json'])
+        parents = [*(payload.get('depends_on') or []), payload.pop('wait_for', None),
+                   payload.pop('depends_on_consistency', None), *(payload.pop('wait_for_keyframes', None) or [])]
+        payload['depends_on'] = list(dict.fromkeys(parent for parent in parents if parent))
+        conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload, ensure_ascii=False), row['id']))
+    conn.execute('INSERT INTO app_flags(name) VALUES (?)', (flag,))
+
+
 def init_db():
     with connect() as db:
         db.execute("PRAGMA journal_mode=WAL")
@@ -478,6 +497,7 @@ def init_db():
         ):
             if column not in job_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+        migrate_queue_dependencies(db)
         # The queue lists failures that still need the user (runs.attention) until they are run again or dismissed.
         if 'dismissed_at' not in job_columns:
             db.execute('ALTER TABLE jobs ADD COLUMN dismissed_at TEXT')

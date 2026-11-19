@@ -1807,12 +1807,12 @@ RETIRED_STAGES = {'video_analysis': 'Video analysis was replaced by keyframe ana
 
 
 def keyframe_wait(conn, episode_id, cut_ids, stages):
-    """``payload.wait_for_keyframes`` for a visual job: the keyframe selection jobs its keyframe stage needs (queued here when missing)."""
+    """Find or queue the selection jobs a visual job depends on."""
     from . import keyframes
     if 'keyframe_analysis' not in set(stages or VISUAL_STAGES):
         return {}
     waits = keyframes.ensure_selection(conn, episode_id, cut_ids)
-    return {'wait_for_keyframes': waits} if waits else {}
+    return {'depends_on': waits} if waits else {}
 
 
 def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[str] | None = None):
@@ -1995,8 +1995,7 @@ def queue_episode_text_processing(episode_id: str, body: BatchTextInput):
                 skipped += 1; continue
             brief = summary_snapshot(conn, cut, config, 'regenerate', '')
             first = summary_queue.insert(conn, episode_id, consistency)
-            brief['depends_on_consistency'] = first
-            brief['wait_for'] = first
+            brief['depends_on'] = [first]
             second = str(uuid.uuid4())
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'regen',?)", (second, episode_id, json.dumps(brief, ensure_ascii=False)))
             job_ids.extend((first, second))
@@ -2197,7 +2196,7 @@ def queue_consistency_summary(cut_id: str):
             beats = performance_beats.pending_job(conn, cut_id)
             payload = summary_queue.payload_for(cut_id, config.model_dump(), context, results, pending_beats=bool(beats))
             if beats:
-                payload['wait_for'] = beats
+                payload['depends_on'] = [beats]
             job_id = summary_queue.insert(conn, cut['episode_id'], payload)
             worker.sync_episode_status(conn, cut['episode_id'])
     except ValueError as exc:
@@ -2336,7 +2335,7 @@ def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, only_
     """Queue consistency summary, production-decision answers and Cut summary for this cut and every later one.
 
     `from_cut` is the cut number shown in the editor (cut_index + 1). For each ready cut three jobs are queued
-    in order, and each waits for the one before it (`payload.wait_for`), so the answers are drafted from the
+    in order, and each waits for the one before it (`payload.depends_on`), so the answers are drafted from the
     new consistency summary and the Cut summary is written from both. Each later job reads those results again
     when it starts; nothing it needs is snapshotted before the earlier job has written it. A cut with a keyframe
     analysis whose performance beats are missing or older gets a beats job first (or waits for the one already
@@ -2365,13 +2364,13 @@ def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, only_
                 # A chain that is still running has no Cut summary step when it was queued with only_missing. With
                 # only_missing=false, add that step behind its answers job instead of holding the cut back.
                 tail = None if only_missing or pending & {'analyze', 'regen'} else conn.execute(
-                    "SELECT id,json_extract(payload_json,'$.wait_for') AS consistency_id FROM jobs WHERE episode_id=? AND pipeline='review_answers' AND status IN ('queued','running') "
-                    "AND json_extract(payload_json,'$.cut_id')=? AND json_extract(payload_json,'$.wait_for') IS NOT NULL", (episode_id, cut_id)).fetchone()
+                    "SELECT id FROM jobs WHERE episode_id=? AND pipeline='review_answers' AND status IN ('queued','running') "
+                    "AND json_extract(payload_json,'$.cut_id')=? AND json_array_length(payload_json,'$.depends_on')>0", (episode_id, cut_id)).fetchone()
                 if not tail:
                     blocked['busy'].append(number); continue
                 cut, config = analysis_config_for_cut(cut_id)
                 brief = summary_snapshot(conn, cut, config, 'regenerate', '')
-                brief.update({'depends_on_consistency': tail['consistency_id'], 'wait_for': tail['id'], 'refresh_answers': True})
+                brief.update({'depends_on': [tail['id']], 'refresh_answers': True})
                 summary_id = str(uuid.uuid4())
                 conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'regen',?)", (summary_id, episode_id, json.dumps(brief, ensure_ascii=False)))
                 job_ids.append(summary_id)
@@ -2391,18 +2390,18 @@ def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, only_
             except ValueError:
                 blocked['missing_results'].append(number); continue
             if beats_id:
-                consistency['wait_for'] = beats_id
+                consistency['depends_on'] = [beats_id]
                 job_ids.append(beats_id)
             consistency_id = summary_queue.insert(conn, episode_id, consistency)
             answers, _ = review_answers_payload(cut, config, auto_save=True, pending_review=True)
-            answers['wait_for'] = consistency_id
+            answers['depends_on'] = [consistency_id]
             answers_id = review_answers.insert(conn, episode_id, answers)
             job_ids.extend((consistency_id, answers_id))
             if only_missing and conn.execute("SELECT 1 FROM analysis_results WHERE cut_id=? AND title=? AND superseded_by IS NULL", (cut_id, SUMMARY_TITLE)).fetchone():
                 kept_summaries += 1
             else:
                 brief = summary_snapshot(conn, cut, config, 'regenerate', '')
-                brief.update({'depends_on_consistency': consistency_id, 'wait_for': answers_id, 'refresh_answers': True, 'refresh_results': True})
+                brief.update({'depends_on': [answers_id], 'refresh_answers': True, 'refresh_results': True})
                 summary_id = str(uuid.uuid4())
                 conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'regen',?)", (summary_id, episode_id, json.dumps(brief, ensure_ascii=False)))
                 job_ids.append(summary_id)
@@ -2697,7 +2696,7 @@ def regenerate_cut_summary(cut_id: str, body: PromptRegenInput):
             beats = performance_beats.pending_job(conn, cut_id)
             if beats and body.request_override is None:
                 # The summary is written from the beats being written now: it waits for them and reads the results when it starts.
-                payload.update({'wait_for': beats, 'refresh_results': True})
+                payload.update({'depends_on': [beats], 'refresh_results': True})
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (job_id, cut["episode_id"], "regen", json.dumps(payload), body.source_job_id))
             worker.sync_episode_status(conn, cut["episode_id"])
     except sqlite3.IntegrityError as exc:
@@ -2910,7 +2909,7 @@ def retry_analysis(job_id: str):
                         raise HTTPException(409, 'An overlapping analysis for this cut is already queued or running')
             retry_id = str(uuid.uuid4())
             retry_payload = json_object_or_empty(job['payload_json'])
-            retry_payload.pop('wait_for_keyframes', None)
+            retry_payload.pop('depends_on', None)
             if retry_payload.get('workflow') == 'single_cut_v2':
                 # Keyframe windows are checkpointed per run, not per job: the retry resumes them. Its selection may need queueing again.
                 retry_payload.update(keyframe_wait(conn, job['episode_id'], [item['cut_id'] for item in retry_payload['cuts']], retry_payload.get('stages')))

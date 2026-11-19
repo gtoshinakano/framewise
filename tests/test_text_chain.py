@@ -42,9 +42,9 @@ class TextChainTest(unittest.TestCase):
         consistency, answers, summary = self.jobs('consistency_summary'), self.jobs('review_answers'), self.jobs('regen')
         for cut in ('c1', 'c2'):
             a, r = self.payload(answers[cut]), self.payload(summary[cut])
-            self.assertEqual(a['wait_for'], consistency[cut])
+            self.assertEqual(a['depends_on'], [consistency[cut]])
             self.assertTrue(a['auto_save'])
-            self.assertEqual((r['wait_for'], r['depends_on_consistency'], r['refresh_answers']), (answers[cut], consistency[cut], True))
+            self.assertEqual((r['depends_on'], r['refresh_answers']), ([answers[cut]], True))
 
     def test_only_consistency_and_answers_when_a_cut_summary_is_kept(self):
         self.seed(consistency=False)
@@ -65,8 +65,8 @@ class TextChainTest(unittest.TestCase):
         body = self.chain(only_missing=False).json()
         self.assertEqual((body['queued'], body['attached'], len(body['job_ids']), body['blocked']['busy']), (0, 1, 1, [2]))  # c2's chain is complete
         brief = self.payload(self.jobs('regen')['c1'])
-        self.assertEqual((brief['wait_for'], brief['depends_on_consistency'], brief['refresh_answers'], brief['base_id']),
-                         (self.jobs('review_answers')['c1'], self.jobs('consistency_summary')['c1'], True, 's1'))
+        self.assertEqual((brief['depends_on'], brief['refresh_answers'], brief['base_id']),
+                         ([self.jobs('review_answers')['c1']], True, 's1'))
         self.assertEqual(self.chain(only_missing=False).json()['attached'], 0)  # not added twice
 
     def test_lists_cuts_that_are_busy_or_not_analysed(self):

@@ -231,21 +231,22 @@ class QueueingTest(unittest.TestCase):
         source.write_bytes(b'video')
         job_id = self.client.post('/api/cuts/c1/analysis-stages/run', json={'stage': 'keyframe_analysis'}).json()['job_id']
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,))['payload_json'])
-        [wait] = payload['wait_for_keyframes']
+        [wait] = payload['depends_on']
         selection = db.one('SELECT pipeline,payload_json FROM jobs WHERE id=?', (wait,))
         self.assertEqual(selection['pipeline'], 'keyframes')
         self.assertEqual([cut['id'] for cut in json.loads(selection['payload_json'])['cuts']], ['c1'])
         self.assertIsNone(worker.claim_job(('analyze',)))  # held while the selection is queued
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='failed' WHERE id=?", (wait,))
-        self.assertEqual(worker.claim_job(('analyze',))[0], job_id)  # a failed selection fails only the stage, not the job's other work
+        self.assertIsNone(worker.claim_job(('analyze',)))
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'cancelled')
 
     def test_a_pending_selection_is_reused_and_a_first_frame_only_job_waits_for_none(self):
         source = media.episode_dir('p', 'e') / 'original.mp4'
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_bytes(b'video')
         first = self.client.post('/api/episodes/e/visual-analysis').json()['job_ids'][0]
-        wait = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (first,))['payload_json'])['wait_for_keyframes']
+        wait = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (first,))['payload_json'])['depends_on']
         self.assertEqual(len(wait), 1)
         self.assertEqual(len(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (wait[0],))['payload_json'])['cuts']), 2)
         frame_only = self.client.post('/api/cuts/c1/analysis-stages/run', json={'stage': 'initial_frame'})
@@ -253,7 +254,7 @@ class QueueingTest(unittest.TestCase):
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='cancelled' WHERE id=?", (first,))
         frame_only = self.client.post('/api/cuts/c1/analysis-stages/run', json={'stage': 'initial_frame'}).json()['job_id']
-        self.assertNotIn('wait_for_keyframes', json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (frame_only,))['payload_json']))
+        self.assertNotIn('depends_on', json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (frame_only,))['payload_json']))
 
     def test_the_video_stage_is_gone(self):
         response = self.client.post('/api/cuts/c1/analysis-stages/run', json={'stage': 'video_analysis'})

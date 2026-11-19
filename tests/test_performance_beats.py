@@ -198,7 +198,7 @@ class ChainTest(unittest.TestCase):
         consistency = db.one("SELECT id FROM jobs WHERE pipeline='consistency_summary'")['id']
         summary = db.one("SELECT id FROM jobs WHERE pipeline='regen'")['id']
         payload = self.payload(consistency)
-        self.assertEqual((payload['wait_for'], payload['refresh_evidence']), (beats_job, True))
+        self.assertEqual((payload['depends_on'], payload['refresh_evidence']), ([beats_job], True))
         self.assertIn('Performance beats:\nNot written yet.', payload['evidence']['visual_evidence_text'])
         self.assertTrue(self.payload(summary)['refresh_results'])
         self.assertIsNone(worker.claim_job(('consistency_summary',)))  # held behind the beats
@@ -239,7 +239,7 @@ class ChainTest(unittest.TestCase):
         self.client.post('/api/episodes/e/text-chain?from_cut=1')
         self.assertIsNone(db.one("SELECT id FROM jobs WHERE pipeline='performance_beats'"))
         consistency = db.one("SELECT payload_json FROM jobs WHERE pipeline='consistency_summary'")
-        self.assertNotIn('wait_for', json.loads(consistency['payload_json']))
+        self.assertNotIn('depends_on', json.loads(consistency['payload_json']))
 
 
 if __name__ == '__main__':

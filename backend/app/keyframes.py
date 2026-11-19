@@ -96,7 +96,7 @@ def ensure_selection(conn, episode_id, cut_ids):
     """Queue keyframe selection for the cuts without a current one, inside the caller's transaction.
 
     The keyframe analysis needs the selection; the visual analysis job that runs it waits for the jobs returned
-    here (``payload.wait_for_keyframes``). A pending job that already covers a cut is reused. A new job uses the
+    here (``payload.depends_on``). A pending job that already covers a cut is reused. A new job uses the
     settings of the cut's latest selection, else the defaults, so a selection the user tuned is not reset.
     Returns the ids of the keyframes jobs to wait for.
     """
