@@ -1,3 +1,4 @@
+import { limitPlayback } from './playbackLimit'
 import { createContext, useCallback, useContext, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 
 export type PlayRange = { start: number; end: number }
@@ -34,10 +35,8 @@ export class SourcePlayer {
       if (video.currentTime < range.start - 0.002) video.currentTime = range.start
       else if (video.currentTime > range.end + 0.002) video.currentTime = range.end
     })
-    video.addEventListener('play', () => {
-      const range = this.range
-      if (range && video.currentTime >= range.end - 0.05) video.currentTime = range.start
-    })
+    // Stops on the last frame before the end of the playing interval, not a few frames after it.
+    limitPlayback(video, () => this.stopAt ?? this.range?.end ?? null, { restartAt: () => this.range?.start ?? null })
     video.addEventListener('pause', () => { this.stopAt = null })
     // While it plays, listeners hear about every frame; otherwise only when the playhead or the state changes.
     const tick = () => {
@@ -46,13 +45,6 @@ export class SourcePlayer {
     }
     const wake = () => { cancelAnimationFrame(this.frame); tick() }
     for (const name of ['play', 'playing', 'pause', 'ended', 'seeking', 'seeked', 'loadedmetadata', 'emptied'] as const) video.addEventListener(name, wake)
-    video.addEventListener('timeupdate', () => {
-      const limit = this.stopAt ?? this.range?.end
-      if (limit !== undefined && limit !== null && video.currentTime >= limit && !video.paused) {
-        video.pause()
-        if (video.currentTime > limit) video.currentTime = limit
-      }
-    })
   }
 
   /** Point the player at the proxy once; later calls with the same address do nothing, so nothing reloads. */

@@ -6,6 +6,7 @@ import AnalysisDialog from './AnalysisDialog'
 import { adjacentCut, nextNeedingAction, useCutFilters } from './cutFilters'
 import { analysisQueueStates } from './analysisQueueStates'
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { limitPlayback } from './playbackLimit'
 import { ArrowLeft, ArrowRight, ChevronRight, Clapperboard, Film, FolderOpen, Layers3, Merge, PanelLeftOpen, Pause, Play, Plus, Redo2, Save, Scissors, Trash2, Undo2, UploadCloud, Video, X } from 'lucide-react'
 import { api, jsonBody, mediaUrl, upload, type AudioSelection, type Chunk, type ContextItem, type Cut, type Episode, type EpisodeStatus, type EpisodeSummary, type Job, type Project, type TranscriptSegment, type Waveform } from './api'
 import { ArchivedCuts } from './ArchivedCuts'
@@ -306,7 +307,14 @@ function Editor({ id }: { id: string }) {
   function selectAudio(range: AudioSelection | null) { setAudioSelection(range); if (range) { setActiveTab('audio'); setAudioView('tools') } }
   function playRange(start: number, end: number) { const player = video.current; if (!player) return; player.currentTime = start; playbackEnd.current = end; void player.play().catch(err => toast({ message: (err as Error).message, tone: 'error' })) }
   function togglePlay() { const player = video.current; if (!player) return; if (player.paused) void player.play().catch(() => {}); else player.pause() }
-  function onVideoTimeUpdate(player: HTMLVideoElement) { const end = playbackEnd.current; if (!player.seeking && end !== null && player.currentTime >= end) { player.pause(); player.currentTime = end; playbackEnd.current = null }; setTime(player.currentTime) }
+  // Playing a range (a cut, a line) pauses on the last frame before its end, frame by frame.
+  useEffect(() => {
+    const player = video.current
+    if (!player) return
+    const limiter = limitPlayback(player, () => playbackEnd.current, { onStop: () => { playbackEnd.current = null } })
+    return () => limiter.dispose()
+  }, [episode?.proxy_ready])
+  function onVideoTimeUpdate(player: HTMLVideoElement) { setTime(player.currentTime) }
   const fail = (err: unknown) => toast({ message: (err as Error).message, tone: 'error' })
   const [mediaRequest, setMediaRequest] = useState(false)
   async function run(pipeline: 'prepare' | 'hardcuts') {
