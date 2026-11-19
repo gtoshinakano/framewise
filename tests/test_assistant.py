@@ -624,6 +624,15 @@ class StreamParserTest(unittest.TestCase):
 
 
 class RuntimeCoordinationTest(unittest.TestCase):
+    def setUp(self):
+        self.audio_requested = self.enterContext(patch('app.gpu_device.audio_requested', return_value=False))
+
+    def test_chat_can_route_away_from_an_audio_job(self):
+        runtime = self.runtime()
+        self.audio_requested.return_value = True
+        with self.assertRaises(local_text_runtime.GpuBusy), runtime.chat_session(wait=False):
+            self.fail('Local chat entered while the GPU was reserved for audio')
+
     def runtime(self):
         with patch.object(local_text_runtime.LocalTextRuntime, 'publish'):
             runtime = local_text_runtime.LocalTextRuntime()

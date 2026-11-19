@@ -66,14 +66,18 @@ class LocalTextTest(unittest.TestCase):
         job_thread.join.assert_called_once(); model_thread.join.assert_called_once()
         log_error.assert_not_called()
 
-    def test_text_jobs_of_one_episode_can_run_together_but_other_jobs_still_wait(self):
+    def test_independent_cuts_share_local_text_slots_and_hold_the_gpu(self):
         with db.connect() as conn:
-            for job_id, pipeline in (('t1', 'consistency_summary'), ('t2', 'review_answers'), ('t3', 'regen'), ('v1', 'analyze')):
-                conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,'e',?,'{}')", (job_id, pipeline))
+            for job_id, pipeline, payload in (
+                ('t1', 'regen', {'cut_id': 'c1', 'text_provider': 'local'}),
+                ('t2', 'regen', {'cut_id': 'c2', 'text_provider': 'local'}),
+                ('v1', 'analyze', {'workflow': 'single_cut_v2', 'cuts': [{'cut_id': 'c1'}]}),
+            ):
+                conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,'e',?,?)", (job_id, pipeline, json.dumps(payload)))
         first, _ = worker.claim_job(worker.TEXT_PIPELINES)
         second, _ = worker.claim_job(worker.TEXT_PIPELINES)
         self.assertEqual({first, second}, {'t1', 't2'})
-        self.assertIsNone(worker.claim_job(('analyze',)))  # a visual job still waits for the episode to be idle
+        self.assertIsNone(worker.claim_job(('analyze',)))
 
     def test_text_server_gets_one_slot_per_concurrent_job(self):
         with patch.dict(os.environ, {'TEXT_JOB_CONCURRENCY': '3'}):

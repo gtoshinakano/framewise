@@ -47,6 +47,7 @@ class VisionLaunchTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         folder = Path(self.tmp.name)
+        self.enterContext(patch('app.db.DATA_DIR', folder))
         self.server, self.model, self.mtp, self.projector = (folder / name for name in ('llama-server', 'standard.gguf', 'mtp.gguf', 'mmproj.gguf'))
         for path in (self.server, self.model, self.mtp, self.projector):
             path.touch()
@@ -58,6 +59,7 @@ class VisionLaunchTest(unittest.TestCase):
         with patch.object(local_text_runtime.LocalTextRuntime, 'publish'), patch.object(local_text_runtime.LocalTextRuntime, 'publish_variants'):
             self.runtime = local_text_runtime.LocalTextRuntime()
         self.runtime.publish = lambda *args: None
+        self.addCleanup(self.runtime.stop)
         self.variant = 'standard'
         self.runtime.target_variant = lambda: self.variant
         self.starts, self.exits, self.props = [], [], {'modalities': {'vision': True}}

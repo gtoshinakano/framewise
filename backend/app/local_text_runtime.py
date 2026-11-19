@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import db
+from . import db, gpu_device
 
 MODEL_ID = 'Qwen/Qwen3.6-35B-A3B:Q4_K_M'
 MODEL_REVISION = 'ggml-org:7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5'
@@ -132,6 +132,7 @@ class LocalTextRuntime:
         self.process = None
         self.log = None
         self.url = None
+        self.device = None
         self.failed = False
         # Cut Assistance streams from a second thread. The lock serialises
         # load/unload; chat_users keeps the server alive during a chat turn and
@@ -191,6 +192,7 @@ class LocalTextRuntime:
         """Keep the worker visible during long jobs without changing its state."""
         while not done.wait(5):
             try:
+                self.yield_to_audio()
                 with db.connect() as conn:
                     conn.execute('UPDATE local_text_model_state SET heartbeat=? WHERE id=1', (time.time(),))
             except Exception:
@@ -221,6 +223,9 @@ class LocalTextRuntime:
             self.process = None
         if self.log:
             self.log.close(); self.log = None
+        if self.device:
+            self.device.close()
+            self.device = None
         self.url = None
         self.variant = None
         self.vision = False
@@ -283,6 +288,16 @@ class LocalTextRuntime:
         with self.changed:
             self.gpu_busy = True
 
+    def yield_to_audio(self):
+        """Unload the idle model for a leased audio job after any current chat finishes."""
+        if self.device and gpu_device.audio_requested():
+            with self.changed:
+                if self.device and gpu_device.audio_requested():
+                    self.stop('Released for audio processing')
+
+    def device_busy(self):
+        return self.gpu_busy or gpu_device.audio_requested()
+
     def end_gpu_work(self):
         with self.changed:
             self.gpu_busy = False
@@ -295,11 +310,11 @@ class LocalTextRuntime:
         With ``wait=False`` a busy GPU raises ``GpuBusy`` at once, so the caller can answer elsewhere.
         """
         with self.changed:
-            if self.gpu_busy and not wait:
+            if self.device_busy() and not wait:
                 raise GpuBusy()
-            while self.gpu_busy:
+            while self.device_busy():
                 if on_wait:
-                    on_wait('Waiting for the GPU: visual analysis is running')
+                    on_wait('Waiting for the GPU')
                 self.changed.wait(0.5)
                 if cancel_check:
                     cancel_check()
@@ -363,6 +378,8 @@ class LocalTextRuntime:
                 logging.getLogger('framewise.text').warning('Qwen 3.6 did not start with its vision projector; starting it without: %s', str(exc)[-400:])
 
     def _launch(self, runtime, model, variant, with_vision, cancel_check, idle_load):
+        if idle_load and gpu_device.audio_requested():
+            return None
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0)); port = listener.getsockname()[1]
         self.log = tempfile.TemporaryFile(mode='w+t')
@@ -373,6 +390,7 @@ class LocalTextRuntime:
         loading = 'Loading Qwen 3.6 into GPU memory' + (f" ({', '.join(tags)})" if tags else '')
         self.publish('loading', loading)
         try:
+            self.device = gpu_device.acquire(cancel_check)
             self.process = subprocess.Popen([str(runtime), '-m', str(model), '--host', '127.0.0.1', '--port', str(port),
                 '--n-gpu-layers', '99', '--ctx-size', os.environ.get('QWEN36_CONTEXT_SIZE', '65536'), '--parallel', str(text_job_concurrency()), '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048'),
                 *(['--mmproj', str(projector_path())] if with_vision else []), *variant_args(variant)],
@@ -382,7 +400,7 @@ class LocalTextRuntime:
             while True:
                 if cancel_check:
                     cancel_check()
-                if idle_load and (not self.desired() or self.pending_nonlocal_work()):
+                if idle_load and (not self.desired() or gpu_device.audio_requested() or self.pending_nonlocal_work()):
                     self._stop('Waiting for queued work'); return None
                 if self.process.poll() is not None:
                     self.log.seek(0); raise ServerExited('Local model failed to start: ' + self.log.read()[-1000:])
@@ -420,6 +438,10 @@ class LocalTextRuntime:
 
     def _reconcile(self):
         self.publish_variants()
+        if gpu_device.audio_requested():
+            self.yield_to_audio()
+            self.publish('unloaded', 'GPU is processing audio')
+            return
         want = self.desired()
         if not want:
             self.failed = False

@@ -872,7 +872,7 @@ class CompositionApiTest(unittest.TestCase):
         mai = next(s for s in cut['end_state']['subjects'] if s['subject']==0)
         self.assertEqual(mai['expression'],'slight smile')
 
-    def test_export_can_run_alongside_analysis(self):
+    def test_export_waits_for_analysis_that_writes_its_inputs(self):
         cut = self.data['cut']
         with db.connect() as conn:
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status,payload_json,lease_owner,lease_until) VALUES('running','e','analyze','running','{}','owner',9999999999)")
@@ -883,6 +883,10 @@ class CompositionApiTest(unittest.TestCase):
         job=self.client.post('/api/v1/episodes/e/brief/exports?from=1&to=1&view=composition&include=last_frame').json()['job_id']
         self.client.post('/api/jobs/cancel-queued')
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?',(job,))['status'],'queued')
+        self.assertIsNone(worker.claim_job(('brief_export',)))
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='done' WHERE id='running'")
+        worker.release_lease('running', 'owner')
         claim=worker.claim_job(('brief_export',)); self.assertEqual(claim[0],job)
         samples=[]
         def extract(source, output, sample, start, end, **kwargs):

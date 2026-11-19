@@ -461,10 +461,10 @@ def _claim_batch(first_job, first_owner, limit=BATCH_SIZE):
             AND json_extract(payload_json,'$.workflow')='anime_bulk_v1'
             AND json_extract(payload_json,'$.batch_id')=? AND {worker.DEPENDENCIES_DONE}
             ORDER BY created_at,rowid''', (first_job['episode_id'], now, now, batch_id)).fetchall()
+        active = worker.job_scopes.active_leases(conn, now)
         for row in candidates:
-            owner = str(uuid.uuid4())
-            if worker.lease_candidate(conn, row, owner, now):
-                claimed.append((row['id'], owner))
+            if worker.lease_candidate(conn, row, first_owner, now, active):
+                claimed.append((row['id'], first_owner))
             if len(claimed) >= limit:
                 break
     return claimed

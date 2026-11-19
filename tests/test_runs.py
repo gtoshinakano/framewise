@@ -1,14 +1,12 @@
 import asyncio
 import json
-import re
 import threading
 import time
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import tests.test_analysis as analysis_tests
-from app import db, episode_events, job_inputs, job_kinds, runs, worker
+from app import db, episode_events, gpu_device, job_inputs, job_kinds, runs, worker
 
 
 def add_job(job_id, pipeline, status='queued', payload=None, episode='e', created=None, finished=None, **columns):
@@ -80,14 +78,56 @@ class RunsTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/episodes/missing/events').status_code, 404)
 
     def test_every_pipeline_a_worker_claims_has_a_kind(self):
-        source = Path(job_kinds.__file__).parent
-        claimed = set(worker.TEXT_PIPELINES)
-        for name in ('inference_worker.py', 'audio_worker.py', 'worker.py'):
-            text = (source / name).read_text()
-            for group in re.findall(r"(?:claim_job\(|main_pipelines = |def work_loop\(pipelines=|def claim_job\(pipelines=)\(([^)]*)\)", text):
-                claimed.update(re.findall(r"['\"]([a-z_]+)['\"]", group))
-        self.assertTrue({'analyze', 'transcribe', 'prepare', 'brief_export', 'subtitles'} <= claimed, claimed)
-        self.assertEqual(sorted(claimed - set(job_kinds.KINDS)), [])
+        lanes = ('media', 'export', 'audio', 'inference', 'text')
+        claimed = {name for lane in lanes for name in job_kinds.pipelines_for(lane)}
+        self.assertEqual(claimed, set(job_kinds.KINDS))
+        self.assertTrue({'analyze', 'transcribe', 'prepare', 'brief_export', 'subtitles'} <= claimed)
+        for name, kind in job_kinds.KINDS.items():
+            with self.subTest(pipeline=name):
+                self.assertTrue(kind.resources)
+                for field in ('scope', 'priority_class', 'inputs', 'gather', 'invalidates'):
+                    self.assertTrue(callable(getattr(kind, field)), field)
+                self.assertIn(kind.priority({}), ('chat', 'interactive', 'batch'))
+                self.assertEqual(kind.on_inputs_changed, 'requeue')
+                if kind.lane == 'text':
+                    self.assertIsNotNone(kind.handler)
+
+    def test_boundary_writes_wait_for_cut_readers_but_previews_can_build(self):
+        add_job('visual', 'analyze', payload=visual('c1'))
+        add_job('preview', 'cutframes', payload={'cut_ids': ['c1']})
+        add_job('move', 'cutframes', payload={'cut_id': 'c1', 'next_cut_id': 'c2', 'frame_step': 1})
+        add_job('detect', 'hardcuts')
+        first = worker.claim_job(('analyze',))
+        second = worker.claim_job(('cutframes',))
+        self.assertEqual((first[0], second[0]), ('visual', 'preview'))
+        self.assertIsNone(worker.claim_job(('hardcuts', 'cutframes')))
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='done' WHERE id IN ('visual','preview')")
+        worker.release_lease(*first)
+        worker.release_lease(*second)
+        self.assertEqual(worker.claim_job(('hardcuts', 'cutframes'))[0], 'move')
+
+    def test_gpu_is_exclusive_across_episodes_and_until_cancelled_job_releases(self):
+        with db.connect() as conn:
+            conn.execute("""INSERT INTO episodes(id,project_id,title,original_filename,original_ext,settings_json)
+                VALUES ('elsewhere','p','Elsewhere','other.mp4','.mp4','{}')""")
+        add_job('audio', 'transcribe')
+        add_job('visual', 'analyze', episode='elsewhere')
+        add_job('text', 'regen', episode='elsewhere', payload={'text_provider': 'local'})
+        audio = worker.claim_job(('transcribe',))
+        self.assertEqual(audio[0], 'audio')
+        self.assertTrue(gpu_device.audio_requested())
+        self.assertIsNone(worker.claim_job(('analyze', 'regen')))
+        remote = worker.claim_job(('regen',), local_provider_only=True, remote_lane=True)
+        self.assertEqual(remote[0], 'text')
+        self.assertEqual(self.client.post('/api/jobs/audio/cancel').status_code, 200)
+        self.assertIsNone(worker.claim_job(('analyze',)))
+        worker.release_lease(*audio)
+        self.assertFalse(gpu_device.audio_requested())
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='done' WHERE id='text'")
+        worker.release_lease(*remote)
+        self.assertEqual(worker.claim_job(('analyze',))[0], 'visual')
 
     def test_cancelling_is_not_a_failure(self):
         add_job('summary', 'regen', payload={'cut_id': 'c1'})
@@ -281,17 +321,32 @@ class RunsTest(unittest.TestCase):
         self.assertEqual(worker.claim_job(('regen',))[0], 'resume')
 
     def test_registered_kind_can_gather_publish_invalidate_and_restart(self):
+        read = []
+
         def gather(conn, job):
             return conn.execute("SELECT content FROM context_items WHERE id='ctx'").fetchone()['content']
 
         def invalidate(conn, job):
             conn.execute("UPDATE chunks SET notes='Stale: context changed' WHERE episode_id=?", (job['episode_id'],))
 
+        def handle(job_id, owner):
+            with db.connect() as conn:
+                conn.execute('BEGIN')
+                job = dict(conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
+                snapshot = job_inputs.JobInputs(conn, job, owner)
+            read.append(snapshot.data)
+            if len(read) == 1:
+                with db.connect() as conn:
+                    conn.execute("UPDATE context_items SET content='During generation' WHERE id='ctx'")
+            with snapshot.publish() as conn:
+                conn.execute("UPDATE cuts SET notes=? WHERE id='c1'", (snapshot.data,))
+                conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+
         kind = job_kinds.Kind('dummy', 'Test job', False, resources=frozenset({'cpu_media'}),
                              scope=lambda payload: job_kinds.Scope(frozenset({'context'}), frozenset({'results'})),
                              priority_class=lambda payload: 'interactive',
                              inputs=lambda conn, job: job_inputs.fingerprint(gather(conn, job)),
-                             gather=gather, invalidates=invalidate)
+                             gather=gather, invalidates=invalidate, handler=handle)
         with patch.dict(job_kinds.KINDS, {'dummy': kind}), patch('app.worker.time.time', return_value=100) as clock:
             with db.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
@@ -301,15 +356,10 @@ class RunsTest(unittest.TestCase):
                 conn.execute("UPDATE context_items SET content='At claim' WHERE id='ctx'")
             queued = self.queue()['waiting'][0]
             self.assertEqual((queued['id'], queued['priority_class']), (job_id, 'interactive'))
-            _, owner = worker.claim_job((kind.pipeline,))
-            with db.connect() as conn:
-                snapshot = job_inputs.JobInputs(conn, dict(conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()), owner)
-                self.assertEqual(snapshot.data, 'At claim')
-                conn.execute("UPDATE context_items SET content='During generation' WHERE id='ctx'")
-            with self.assertRaisesRegex(worker.LeaseLost, job_inputs.RESTART_STAGE):
-                with snapshot.publish():
-                    self.fail('A stale result reached publication')
-            worker.release_lease(job_id, owner)
+            lease = worker.claim_job()
+            worker.process(*lease)
+            self.assertEqual(read, ['At claim'])
+            worker.release_lease(*lease)
             state = db.one('SELECT status,attempt_count,stage FROM jobs WHERE id=?', (job_id,))
             self.assertEqual(state, {'status': 'queued', 'attempt_count': 0, 'stage': job_inputs.RESTART_STAGE})
             self.assertIsNone(worker.claim_job((kind.pipeline,)))
@@ -320,12 +370,8 @@ class RunsTest(unittest.TestCase):
             self.assertIsNone(worker.claim_job((kind.pipeline,)))
             self.assertEqual(db.one('SELECT not_before FROM jobs WHERE id=?', (job_id,))['not_before'], 106)
             clock.return_value = 106
-            _, owner = worker.claim_job((kind.pipeline,))
-            with db.connect() as conn:
-                snapshot = job_inputs.JobInputs(conn, dict(conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()), owner)
-            with snapshot.publish() as conn:
-                conn.execute("UPDATE cuts SET notes=? WHERE id='c1'", (snapshot.data,))
-                conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+            worker.process(*worker.claim_job())
+            self.assertEqual(read, ['At claim', 'Latest edit'])
             self.assertEqual(db.one("SELECT notes FROM cuts WHERE id='c1'")['notes'], 'Latest edit')
             self.assertEqual(db.one("SELECT notes FROM chunks WHERE id='test-chunk'")['notes'], 'Stale: context changed')
             self.assertEqual(len(db.all_rows('SELECT id FROM jobs')), 1)

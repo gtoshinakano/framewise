@@ -24,7 +24,7 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 
-from . import db
+from . import db, gpu_device
 
 MAX_LANES = 8
 DEFAULT_SLOT_CONTEXT = 32768
@@ -336,7 +336,7 @@ def pick_server(cfg=None):
     from . import local_text_runtime
     runtime = local_text_runtime.runtime
     candidates = {}
-    if runtime is not None and not runtime.gpu_busy and not runtime.switch_pending() and pool.free('local', cfg) > 0:
+    if runtime is not None and not runtime.gpu_busy and not gpu_device.audio_requested() and not runtime.switch_pending() and pool.free('local', cfg) > 0:
         candidates['local'] = ''
     if usable(cfg) and online() and pool.free('remote', cfg) > 0 and chat_model(cfg):
         candidates['remote'] = chat_model(cfg)

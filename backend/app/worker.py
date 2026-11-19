@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 from pathlib import Path
 
-from . import db, job_inputs, job_kinds, media
+from . import db, job_inputs, job_kinds, job_scopes, media
 
 log = logging.getLogger(__name__)
 worker_thread: threading.Thread | None = None
@@ -31,7 +31,7 @@ def start_worker():
     stop_event.clear()
     worker_thread = threading.Thread(target=work_loop, name="media-worker", daemon=True)
     worker_thread.start()
-    export_thread = threading.Thread(target=work_loop, args=(("brief_export",),), name="export-worker", daemon=True)
+    export_thread = threading.Thread(target=work_loop, args=(job_kinds.pipelines_for('export'),), name="export-worker", daemon=True)
     export_thread.start()
 
 
@@ -178,30 +178,24 @@ def cleanup_voice_upload(job):
         log.exception('Could not clean up voice upload for job %s', job['id'])
 
 
-# Local text jobs of one episode may run side by side (two llama-server slots); every other
-# pipeline still holds its episode alone.
-TEXT_PIPELINES = ('regen', 'consistency_summary', 'review_answers', 'sequence', 'performance_beats')
+TEXT_PIPELINES = job_kinds.pipelines_for('text')
 # The provider a text job was queued with: ``regen`` keeps it at the top of its payload, the others in ``config``.
 JOB_TEXT_PROVIDER_SQL = "COALESCE(json_extract(jobs.payload_json,'$.text_provider'), json_extract(jobs.payload_json,'$.config.text_provider'), 'openrouter')"
-# A text job run by a remote lane uses neither this host's GPU nor its media files, so it does not hold its
-# episode against visual analysis, and a running visual analysis does not hold it against a remote lane.
-# Remote lanes mark the jobs they hold with this lease-owner prefix; every other pipeline (transcription,
-# subtitles, character detection, media preparation, hard cuts, ...) still holds the episode alone.
-REMOTE_OWNER = 'remote:'
-ALONGSIDE_REMOTE = ('analyze',)
+REMOTE_OWNER = job_scopes.REMOTE_OWNER
 DEPENDENCIES_DONE = """NOT EXISTS (SELECT 1 FROM json_each(jobs.payload_json,'$.depends_on') parent
     LEFT JOIN jobs dep ON dep.id=parent.value WHERE dep.id IS NULL OR dep.status!='done')"""
 
 
-def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), remote_only=(), local_provider_only=False, remote_lane=False):
+def claim_job(pipelines=None, remote_only=(), local_provider_only=False, remote_lane=False, local_text_slot=True):
     """Lease the next runnable job of ``pipelines``; returns ``(job_id, owner)`` or ``None``.
 
     Routing to the remote text server (``remote_text``) only concerns jobs queued with the local provider:
     ``remote_only`` names pipelines whose local-provider jobs this caller leaves to the remote lanes,
     and ``local_provider_only`` (a remote lane) skips every job that was not queued for the local model.
-    ``remote_lane`` marks the lease as a remote lane's and lets the job start while ``ALONGSIDE_REMOTE``
-    jobs of its episode run.
+    Remote lanes do not acquire the local GPU. Every lane checks the kind's data footprint.
     """
+    if pipelines is None:
+        pipelines = (*job_kinds.pipelines_for('media'), *job_kinds.pipelines_for('export'))
     if not pipelines:
         return None
     now = time.time()
@@ -211,16 +205,14 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
     if local_provider_only:
         routing += f" AND {JOB_TEXT_PROVIDER_SQL}='local'"
     placeholders = ",".join("?" for _ in pipelines)
-    text = ",".join(f"'{name}'" for name in TEXT_PIPELINES)
-    alongside = ",".join(f"'{name}'" for name in ALONGSIDE_REMOTE)
-    # Jobs of ``alongside`` pipelines are never held by a job a remote lane runs; a remote lane is never held by them.
-    remote_free = f"AND NOT (jobs.pipeline IN ({alongside}) AND other.lease_owner LIKE '{REMOTE_OWNER}%')" + (f" AND other.pipeline NOT IN ({alongside})" if remote_lane else '')
+    order = ' '.join(f"WHEN '{name}' THEN {kind.claim_order}" for name, kind in job_kinds.KINDS.items() if kind.claim_order)
+    order_sql = f'CASE pipeline {order} ELSE 0 END,' if order else ''
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         exhausted = conn.execute(f"SELECT * FROM jobs WHERE pipeline IN ({placeholders}) AND status='running' AND (lease_until IS NULL OR lease_until<=?) AND attempt_count>=?", (*pipelines, now, MAX_ATTEMPTS)).fetchall()
         for job in exhausted:
             conn.execute("UPDATE jobs SET status='failed',stage='Failed',error='Interrupted too many times; run the pipeline again',lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
-            if job['pipeline'] not in ('brief_export', 'composition_compact'):
+            if job['pipeline'] not in SIDE_PIPELINES:
                 sync_episode_status(conn, job["episode_id"], "Interrupted too many times; run the pipeline again")
         # Sweep abandoned dependencies across lanes. cancel_jobs walks the rest of each chain.
         orphans = conn.execute("""SELECT jobs.* FROM jobs
@@ -232,22 +224,17 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
         candidates = conn.execute(f"""SELECT * FROM jobs WHERE pipeline IN ({placeholders}){routing} AND
             status IN ('queued','running') AND COALESCE(lease_until,0)<=? AND not_before<=?
             AND {DEPENDENCIES_DONE}
-            AND (jobs.pipeline='brief_export' OR NOT EXISTS (SELECT 1 FROM jobs other WHERE other.episode_id=jobs.episode_id AND other.status IN ('queued','running','cancelled') AND other.id!=jobs.id AND other.pipeline!='brief_export'
-                -- Only a job with a live lease holds the episode. Interrupted jobs (lease
-                -- expired) must not block each other: a bulk batch leaves many at once.
-                AND other.lease_until>?
-                {remote_free}
-                AND NOT (jobs.pipeline IN ({text}) AND other.pipeline IN ({text}))
-                AND NOT ((jobs.pipeline='cutframes' AND other.pipeline IN ('analyze','regen')) OR (other.pipeline='cutframes' AND jobs.pipeline IN ('analyze','regen'))))
-            )
             ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
-                     CASE pipeline WHEN 'composition_compact' THEN 1 ELSE 0 END, created_at, rowid""", (*pipelines, *remote_only, now, now, now))
+                     {order_sql} created_at, rowid""", (*pipelines, *remote_only, now, now))
+        active = job_scopes.active_leases(conn, now)
+        owner = (REMOTE_OWNER if remote_lane else '') + str(uuid.uuid4())
         claimed = None
         for job in candidates:
-            owner = (REMOTE_OWNER if remote_lane else '') + str(uuid.uuid4())
-            if not lease_candidate(conn, job, owner, now):
+            if not local_text_slot and 'text' in job_kinds.kind_of(job['pipeline']).resources and job_scopes.text_provider(json.loads(job['payload_json'])) == 'local':
                 continue
-            if job['pipeline'] not in ('brief_export', 'composition_compact'):
+            if not lease_candidate(conn, job, owner, now, active):
+                continue
+            if job['pipeline'] not in SIDE_PIPELINES:
                 conn.execute("UPDATE episodes SET status='processing',stage=?,error=NULL WHERE id=?",
                              ("Resuming" if job["status"] == "running" else "Starting", job["episode_id"]))
             claimed = job["id"], owner
@@ -258,14 +245,18 @@ def claim_job(pipelines=("prepare", "hardcuts", "cutframes", "brief_export"), re
     return claimed
 
 
-def lease_candidate(conn, job, owner, now):
+def lease_candidate(conn, job, owner, now, active):
     """Start a dependency-ready candidate under the claim transaction."""
+    scope = job_scopes.footprint(conn, job, owner)
+    if any(job_scopes.conflict(scope, held) for held in active.values()):
+        return False
     if job_inputs.change_wait(conn, dict(job), now):
         return False
     stage = 'Resuming' if job['status'] == 'running' else 'Starting'
     conn.execute("""UPDATE jobs SET status='running',stage=?,error=NULL,lease_owner=?,lease_until=?,
         attempt_count=attempt_count+1,not_before=0,restart_input_json=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
         (stage, owner, now + LEASE_SECONDS, job['id']))
+    active[job['id']] = scope
     return True
 
 
@@ -293,7 +284,7 @@ def defer_for_dependencies(conn, job, owner, dependencies, stage):
 
 WAITED_FOR_FAILED = 'Cancelled because a job it waited for did not finish'
 # Pipelines that never move the episode's own status (exports and the composition cache).
-SIDE_PIPELINES = ('brief_export', 'composition_compact')
+SIDE_PIPELINES = tuple(name for name, kind in job_kinds.KINDS.items() if not kind.affects_episode)
 
 
 def cancel_jobs(conn, jobs, reason=None):
@@ -359,11 +350,12 @@ def after_cancel(jobs):
     sweep_character_frames({job['episode_id'] for job in jobs if job['pipeline'] == 'character_detect'})
 
 
-def sweep_character_frames(episode_ids):
+def sweep_character_frames(episode_ids, *, include_stopping=True):
     """Remove the temporary first frames of bulk character detection once an episode has no pending detection."""
     for episode_id in episode_ids:
         row = db.one('SELECT project_id FROM episodes WHERE id=?', (episode_id,))
-        if row and not db.one("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='character_detect' AND (status IN ('queued','running') OR (status='cancelled' AND lease_owner IS NOT NULL))", (episode_id,)):
+        if row and not db.one("""SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='character_detect'
+            AND (status IN ('queued','running') OR (? AND status='cancelled' AND lease_owner IS NOT NULL))""", (episode_id, include_stopping)):
             from . import anime_bulk
             anime_bulk.clear_episode_frames(row['project_id'], episode_id)
 
@@ -376,7 +368,9 @@ def release_lease(job_id: str, owner: str):
 
 def sync_episode_status(conn, episode_id: str, error: str | None = None):
     """Reflect remaining work after a job finishes without hiding its history."""
-    pending = conn.execute("SELECT status,stage FROM jobs WHERE episode_id=? AND pipeline NOT IN ('brief_export','composition_compact') AND status IN ('queued','running') ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,created_at,rowid LIMIT 1", (episode_id,)).fetchone()
+    side = ','.join('?' for _ in SIDE_PIPELINES)
+    pending = conn.execute(f"""SELECT status,stage FROM jobs WHERE episode_id=? AND pipeline NOT IN ({side}) AND status IN ('queued','running')
+        ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,created_at,rowid LIMIT 1""", (episode_id, *SIDE_PIPELINES)).fetchone()
     if pending:
         conn.execute("UPDATE episodes SET status=?,stage=?,error=NULL WHERE id=?", ('processing' if pending['status'] == 'running' else 'queued', pending['stage'], episode_id))
     elif error:
@@ -400,7 +394,8 @@ def stage(job_id: str, owner: str, episode_id: str, label: str):
         conn.execute("BEGIN IMMEDIATE")
         require_lease(conn, job_id, owner)
         conn.execute("UPDATE jobs SET stage=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (label, job_id))
-        conn.execute("UPDATE episodes SET status='processing', stage=?, error=NULL WHERE id=? AND (SELECT pipeline FROM jobs WHERE id=?) NOT IN ('brief_export','composition_compact')", (label, episode_id, job_id))
+        side = ','.join('?' for _ in SIDE_PIPELINES)
+        conn.execute(f"UPDATE episodes SET status='processing', stage=?, error=NULL WHERE id=? AND (SELECT pipeline FROM jobs WHERE id=?) NOT IN ({side})", (label, episode_id, job_id, *SIDE_PIPELINES))
 
 
 @contextmanager
@@ -449,10 +444,10 @@ def heartbeat(job_id: str, owner: str, done: threading.Event):
             log.exception('Could not release job lease: %s', job_id)
 
 
-def work_loop(pipelines=("prepare", "hardcuts", "cutframes", "keyframes")):
+def work_loop(pipelines=None):
     while not stop_event.is_set():
         try:
-            claimed = claim_job(pipelines)
+            claimed = claim_job(job_kinds.pipelines_for('media') if pipelines is None else pipelines)
             if claimed:
                 job_id, owner = claimed
                 done = threading.Event()
@@ -493,6 +488,10 @@ def process(job_id: str, owner: str):
     payload = json.loads(job["payload_json"])
     settings = payload.get("settings") or json.loads(episode["settings_json"])
     try:
+        kind = job_kinds.kind_of(job['pipeline'])
+        if kind.handler:
+            kind.run(job_id, owner)
+            return
         if job['pipeline'] == 'cutframes':
             from . import cut_previews
             cut_previews.process(job, owner, payload, path)

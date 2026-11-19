@@ -10,7 +10,7 @@ import uuid
 import wave
 from pathlib import Path
 
-from . import db, job_inputs, media, worker
+from . import db, gpu_device, job_inputs, job_kinds, media, worker
 from .audio_matching import assign_words, match_voices, overlap_index, reconcile_speakers, restore_aligned_text
 
 log = logging.getLogger(__name__)
@@ -428,7 +428,7 @@ def main():
     db.init_db()
     while True:
         try:
-            claimed = worker.claim_job(('transcribe', 'voice_sample'))
+            claimed = worker.claim_job(job_kinds.pipelines_for('audio'))
             if not claimed:
                 time.sleep(2)
                 continue
@@ -437,11 +437,25 @@ def main():
             beat = threading.Thread(target=worker.heartbeat, args=(job_id, owner, done), daemon=True)
             beat.start()
             try:
-                process(job_id, owner)
+                def check():
+                    with db.connect() as conn:
+                        worker.require_lease(conn, job_id, owner)
+
+                with gpu_device.hold(check):
+                    try:
+                        pipeline = db.one('SELECT pipeline FROM jobs WHERE id=?', (job_id,))['pipeline']
+                        kind = job_kinds.KINDS[pipeline]
+                        if kind.handler:
+                            kind.run(job_id, owner)
+                        else:
+                            process(job_id, owner)
+                    finally:
+                        release_gpu()
+            except worker.LeaseLost:
+                pass
             finally:
                 done.set()
                 beat.join(timeout=1)
-                release_gpu()
         except Exception:
             log.exception('Audio worker error')
             time.sleep(2)

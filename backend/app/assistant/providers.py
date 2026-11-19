@@ -90,8 +90,9 @@ class LocalQwen(Provider):
     def describe(self):
         from .. import local_text_runtime
         info = super().describe()
-        info.update(managed=True, context_limit=self.context_limit(), busy=bool(local_text_runtime.runtime and local_text_runtime.runtime.gpu_busy))
         runtime = local_text_runtime.runtime
+        from .. import gpu_device
+        info.update(managed=True, context_limit=self.context_limit(), busy=bool(runtime and (runtime.gpu_busy or gpu_device.audio_requested())))
         variant = runtime.target_variant() if runtime else local_text_runtime.DEFAULT_VARIANT
         info['vision'], info['vision_detail'] = local_text_runtime.vision_status(runtime, variant)
         info['models'] = [{'id': local_text_runtime.MODEL_ID, 'label': local_text_runtime.VARIANTS[variant]['label'], 'context': self.context_limit()}]

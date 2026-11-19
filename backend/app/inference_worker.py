@@ -1,5 +1,6 @@
 """Separate leased worker for per-cut visual analysis and prompt synthesis."""
 import base64
+import contextlib
 import json
 import logging
 import math
@@ -14,7 +15,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from . import db, media, worker, frame_source, prompt_context, local_text_runtime, remote_text
+from . import db, gpu_device, job_kinds, job_scopes, media, worker, frame_source, prompt_context, local_text_runtime, remote_text
 
 log = logging.getLogger(__name__)
 MODEL_ID = "tencent/WeVisOne-VL-4B"
@@ -1107,14 +1108,10 @@ def text_lane(name):
     generate at once. A lane holds a chat session while it works: visual jobs wait for it before
     they release the GPU, and the lane claims nothing while visual work owns the GPU.
     """
-    import contextlib
-    from . import performance_beats, sequence_pipeline
-    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers, 'sequence': sequence_pipeline.process,
-                'performance_beats': performance_beats.process}
     runtime = local_text_runtime.runtime
     while True:
         try:
-            if runtime.gpu_busy or runtime.switch_pending():  # a model switch waits for running jobs, so claim no new one
+            if runtime.device_busy() or runtime.switch_pending():  # a model switch waits for running jobs, so claim no new one
                 time.sleep(2)
                 continue
             cfg = remote_text.config()
@@ -1136,13 +1133,13 @@ def text_lane(name):
             try:
                 row = db.one("SELECT pipeline,payload_json FROM jobs WHERE id=?", (job_id,))
                 payload = json.loads(row['payload_json'])
-                provider = payload.get('text_provider') if row['pipeline'] == 'regen' else (payload.get('config') or {}).get('text_provider')
+                provider = job_scopes.text_provider(payload)
                 if provider != 'local':
                     remote_text.pool.release_job('local')  # OpenRouter jobs use no slot of this server
                     slot_held = False
                 guard = runtime.chat_session(cancel_check=lambda: check_summary_lease(job_id, owner)) if provider == 'local' else contextlib.nullcontext()
                 with guard:
-                    handlers[row['pipeline']](job_id, owner)
+                    job_kinds.KINDS[row['pipeline']].run(job_id, owner)
             finally:
                 if slot_held:
                     remote_text.pool.release_job('local')
@@ -1170,7 +1167,7 @@ def _server_free(server, cfg):
     """``server`` could start a text job right now (used to let the preferred server claim first)."""
     if server == 'local':
         runtime = local_text_runtime.runtime
-        if not runtime or runtime.gpu_busy or runtime.switch_pending():
+        if not runtime or runtime.device_busy() or runtime.switch_pending():
             return False
     elif not (remote_text.usable(cfg) and remote_text.online()):
         return False
@@ -1184,9 +1181,6 @@ def remote_lane(index):
     handler bound to the route's model. It never holds a chat session or waits for the local GPU. A job
     whose server stopped answering goes back to the queue, where a local lane can take it if routing allows.
     """
-    from . import performance_beats, sequence_pipeline
-    handlers = {'regen': process_regen, 'consistency_summary': process_consistency_summary, 'review_answers': process_review_answers, 'sequence': sequence_pipeline.process,
-                'performance_beats': performance_beats.process}
     while True:
         try:
             cfg = remote_text.config()
@@ -1213,7 +1207,7 @@ def remote_lane(index):
             try:
                 log.info('Remote lane %s runs %s job %s on %s', index, pipeline, job_id, model)
                 with remote_text.bind(cfg, model) as binding:
-                    handlers[pipeline](job_id, owner)
+                    job_kinds.KINDS[pipeline].run(job_id, owner)
             finally:
                 remote_text.pool.release_job('remote')
                 _remote_count(-1)
@@ -1267,16 +1261,14 @@ def main():
     for number in range(1, local_text_runtime.text_job_concurrency()):
         threading.Thread(target=text_lane, args=(f'text-{number}',), daemon=True, name=f'text-lane-{number}').start()
     start_remote_text()
-    anime_runtime = None
-    anime_batch_id = None
     while True:
         try:
             main_cfg = remote_text.config()
             # Text jobs need one of this host's job slots (and no chat waiting); visual and other jobs are claimed regardless.
             text_slot = remote_text.pool.try_job('local', main_cfg)
-            main_pipelines = ("analyze", "character_detect", "character_profile", "composition_compact", "subtitles") + (worker.TEXT_PIPELINES if text_slot else ())
+            main_pipelines = (*job_kinds.pipelines_for('inference'), *worker.TEXT_PIPELINES)
             try:
-                claimed = worker.claim_job(main_pipelines, remote_only=remote_text.remote_only(main_cfg))
+                claimed = worker.claim_job(main_pipelines, remote_only=remote_text.remote_only(main_cfg), local_text_slot=text_slot)
             except Exception:
                 if text_slot:
                     remote_text.pool.release_job('local')
@@ -1296,53 +1288,39 @@ def main():
                     kind = db.one("SELECT pipeline FROM jobs WHERE id=?", (job_id,))["pipeline"]
                     job_payload = db.one("SELECT payload_json FROM jobs WHERE id=?", (job_id,))
                     payload = json.loads(job_payload['payload_json'])
-                    kind_provider = payload.get('text_provider') if kind == 'regen' else (payload.get('config') or {}).get('text_provider')
-                    if slot_held and not (kind in worker.TEXT_PIPELINES and kind_provider == 'local'):
-                        remote_text.pool.release_job('local')  # not a local-model text job: it uses no slot of this server
+                    kind_entry = job_kinds.KINDS[kind]
+                    uses_local_text = 'text' in kind_entry.resources and job_scopes.text_provider(payload) == 'local'
+                    if slot_held and not uses_local_text:
+                        remote_text.pool.release_job('local')
                         slot_held = False
-                    text_only = kind == 'analyze' and payload.get('text_only', False)
+                    cancel_check = lambda: check_summary_lease(job_id, owner)
+                    use_gpu = 'gpu' in kind_entry.resources and not payload.get('text_only')
                     job_episode = db.one('SELECT episode_id FROM jobs WHERE id=?', (job_id,))['episode_id']
-                    anime_batch = kind == 'character_detect' and payload.get('workflow') in ('anime_bulk_v1', 'target_frames_v1')
-                    if anime_runtime and (not anime_batch or payload.get('batch_id') != anime_batch_id):
-                        anime_runtime.close()
-                        anime_runtime = None
-                        anime_batch_id = None
-                    if kind in ('character_detect', 'character_profile', 'subtitles') or (kind == 'analyze' and not text_only):
-                        local_text_runtime.runtime.begin_gpu_work()
-                        local_text_runtime.runtime.stop('Released for visual analysis')
-                    if kind == 'composition_compact':
-                        from . import composition_compaction
-                        composition_compaction.process(job_id, owner)
-                    elif kind == 'subtitles':
-                        from . import subtitle_pipeline
-                        subtitle_pipeline.process(job_id, owner)
-                    elif kind == 'character_profile':
-                        from . import character_profile
-                        character_profile.process(job_id, owner)
-                    elif kind == 'sequence':
-                        from . import sequence_pipeline
-                        sequence_pipeline.process(job_id, owner)
-                    elif kind == 'performance_beats':
-                        from . import performance_beats
-                        performance_beats.process(job_id, owner)
-                    elif anime_batch:
-                        from . import anime_bulk
-                        if anime_runtime is None:
+                    with contextlib.ExitStack() as devices:
+                        if use_gpu:
+                            local_text_runtime.runtime.begin_gpu_work()
+                            local_text_runtime.runtime.stop('Released for visual analysis')
+                            devices.enter_context(gpu_device.hold(cancel_check))
+                        elif uses_local_text:
+                            devices.enter_context(local_text_runtime.runtime.chat_session(cancel_check=cancel_check))
+                        if kind_entry.handler:
+                            kind_entry.run(job_id, owner)
+                        elif kind == 'character_detect' and payload.get('workflow') in ('anime_bulk_v1', 'target_frames_v1'):
+                            from . import anime_bulk
                             anime_runtime = anime_bulk.BulkRuntime()
-                            anime_batch_id = payload.get('batch_id')
-                        if payload.get('workflow') == 'target_frames_v1':
-                            from . import target_characters
-                            target_characters.process(job_id, owner, anime_runtime)
+                            try:
+                                if payload.get('workflow') == 'target_frames_v1':
+                                    from . import target_characters
+                                    target_characters.process(job_id, owner, anime_runtime)
+                                else:
+                                    anime_bulk.process_batch(db.one('SELECT * FROM jobs WHERE id=?', (job_id,)), owner, anime_runtime)
+                            finally:
+                                anime_runtime.close()
+                                worker.sweep_character_frames({job_episode}, include_stopping=False)
                         else:
-                            anime_bulk.process_batch(db.one('SELECT * FROM jobs WHERE id=?', (job_id,)), owner, anime_runtime)
-                        remaining = db.one("SELECT id FROM jobs WHERE pipeline='character_detect' AND status IN ('queued','running') AND json_extract(payload_json,'$.workflow') IN ('anime_bulk_v1','target_frames_v1') AND json_extract(payload_json,'$.batch_id')=? LIMIT 1", (anime_batch_id,))
-                        if not remaining:
-                            anime_bulk.clear_episode_frames(db.one('SELECT project_id FROM episodes WHERE id=?', (job_episode,))['project_id'], job_episode)
-                            anime_runtime.close()
-                            anime_runtime = None
-                            anime_batch_id = None
-                    else:
-                        (process_regen if kind == "regen" else process_consistency_summary if kind == 'consistency_summary' else process_review_answers if kind == 'review_answers' else process_character_detection if kind == 'character_detect' else process)(job_id, owner)
+                            (process_character_detection if kind == 'character_detect' else process)(job_id, owner)
+                except (SummaryCancelled, worker.LeaseLost):
+                    log.info('Inference job %s stopped before its next checkpoint', job_id)
                 finally:
                     if slot_held:
                         remote_text.pool.release_job('local')
@@ -1353,22 +1331,11 @@ def main():
                     if local_text_runtime.runtime.process and local_text_runtime.runtime.process.poll() is None:
                         local_text_runtime.runtime.publish('loaded', 'Ready')
             else:
-                if anime_runtime is not None:
-                    anime_runtime.close()
-                    anime_runtime = None
-                    anime_batch_id = None
                 local_text_runtime.runtime.reconcile()
                 visual_models.publish()
                 time.sleep(2)
         except Exception:
             log.exception("Inference worker error")
-            if anime_runtime is not None:
-                try:
-                    anime_runtime.close()
-                except Exception:
-                    log.exception('Could not release bulk anime models')
-                anime_runtime = None
-                anime_batch_id = None
             time.sleep(2)
 
 

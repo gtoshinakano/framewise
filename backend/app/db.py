@@ -543,6 +543,7 @@ def init_db():
         BEGIN UPDATE jobs SET finished_at=CURRENT_TIMESTAMP WHERE id=NEW.id; END;
         """)
         db.execute("CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status,lease_until,created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS jobs_leases_idx ON jobs(lease_until) WHERE lease_owner IS NOT NULL")
         db.execute("CREATE INDEX IF NOT EXISTS transcript_active_idx ON transcript_segments(episode_id,start_time) WHERE superseded_by IS NULL")
         # Incremental composition reads need a watermark for edits as well as
         # new revisions. SQLite's millisecond clock is used consistently here.

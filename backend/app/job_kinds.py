@@ -9,6 +9,7 @@ database (current cut numbers, sequence titles, finished stages).
 A new pipeline needs one entry in ``KINDS`` (``tests/test_runs.py`` checks every pipeline a worker claims).
 """
 from dataclasses import dataclass, field
+from importlib import import_module
 from typing import Callable
 
 from . import analysis_context
@@ -151,6 +152,10 @@ class Scope:
     reads: frozenset[str] = frozenset()
     writes: frozenset[str] = frozenset()
     cut_ids: frozenset[str] | None = None
+    adjacent_reads: frozenset[str] = frozenset()
+    sequence_id: str | None = None
+    # Zero-based inclusive cut numbers. These are resolved in the claim transaction.
+    cut_range: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +187,11 @@ class Kind:
     gather: Callable | None = None
     on_inputs_changed: str = 'requeue'
     invalidates: Callable | None = None
+    lane: str = 'media'
+    # Preserve the existing ordering for background cache work and its episode-status behavior.
+    claim_order: int = 0
+    affects_episode: bool = True
+    handler: str | Callable | None = None
 
     def name(self, payload):
         return self.label(payload) if self.label else self.title
@@ -201,15 +211,28 @@ class Kind:
             return self.priority_class(payload)
         return 'interactive' if len(self.cuts(payload)) == 1 else 'batch'
 
+    def run(self, job_id, owner):
+        handler = self.handler
+        if isinstance(handler, str):
+            module, name = handler.rsplit('.', 1)
+            handler = getattr(import_module('.' + module, __package__), name)
+        return handler(job_id, owner)
+
 
 def _always(payload):
     return True
 
 
 def _visual_scope(payload):
-    return Scope(frozenset({'cut_boundaries', 'detections', 'subtitles', 'context', 'keyframes'}),
-                 frozenset(f'results:{stage}' for stage in stages_of(payload)),
-                 frozenset(ref['id'] for ref in _analysis_cuts(payload)))
+    stages = stages_of(payload)
+    writes = {f'results:{stage}' for stage in stages}
+    reads = {'original', 'cut_boundaries', 'detections', 'subtitles', 'context', 'keyframes'}
+    if 'keyframe_analysis' in stages:
+        reads.add('target_detections')
+    if payload.get('workflow') != 'single_cut_v2':
+        reads.update({'transcript', 'chunks', 'results'})
+        writes.add('results')
+    return Scope(frozenset(reads), frozenset(writes), frozenset(ref['id'] for ref in _analysis_cuts(payload)) or None)
 
 
 def _visual_invalidates(conn, job):
@@ -219,11 +242,11 @@ def _visual_invalidates(conn, job):
 
 def _detection_scope(payload):
     target = payload.get('workflow') == 'target_frames_v1'
-    domains = {'cut_boundaries', 'detections', 'context'}
+    domains = {'original', 'cut_boundaries', 'detections', 'context'}
     if target:
         domains.add('keyframes')
     return Scope(frozenset(domains), frozenset({'target_detections' if target else 'detections'}),
-                 frozenset(ref['id'] for ref in _one_cut(payload)))
+                 frozenset(ref['id'] for ref in _one_cut(payload)) or None)
 
 
 def _detection_inputs(conn, job):
@@ -264,8 +287,9 @@ def _profile_invalidates(conn, job):
 
 def _preview_scope(payload):
     ids = frozenset(ref['id'] for ref in _frame_cuts(payload))
-    return Scope(frozenset({'cut_boundaries'}), frozenset({'cut_boundaries' if payload.get('frame_step') else 'previews'}),
-                 None if payload.get('frame_step') else ids or None)
+    moves_boundary = bool(payload.get('frame_step'))
+    return Scope(frozenset({'proxy', 'cut_boundaries'}), frozenset({'cut_boundaries', 'previews'} if moves_boundary else {'previews'}),
+                 None if moves_boundary and not payload.get('next_cut_id') else ids or None)
 
 
 def _preview_gather(conn, job):
@@ -426,9 +450,17 @@ def _summary_invalidates(conn, job):
 
 
 def _sequence_scope(payload):
-    domain = f"sequence:{payload.get('sequence_id')}"
+    sequence_id, step = payload.get('sequence_id'), payload.get('step')
+    domain = f'sequence:{sequence_id}'
     reads = {'cut_boundaries', 'prepared_audio', 'transcript', 'subtitles', 'results', 'context', 'decisions'}
-    return Scope(frozenset({*reads, domain}), frozenset({domain}))
+    if step == 'shot':
+        output = f"{domain}:shot:{payload.get('shot_key')}"
+        reads.update({f'{domain}:shot', f'{domain}:bible', f'{domain}:plan', f'{domain}:compilation'})
+        writes = {output}
+    else:
+        reads.add(domain)
+        writes = {domain}
+    return Scope(frozenset(reads), frozenset(writes), sequence_id=sequence_id)
 
 
 def _compaction_gather(conn, job):
@@ -451,7 +483,9 @@ def _export_scope(payload):
     if payload.get('kind') == 'sequence':
         sequence_id = payload.get('sequence_id') or (payload.get('sequence') or {}).get('id')
         reads.update({f'sequence:{sequence_id}', 'context', 'voices'})
-    return Scope(frozenset(reads), frozenset({'exports'}))
+        return Scope(frozenset(reads), sequence_id=sequence_id)
+    span = (payload['from'] - 1, payload['to'] - 1) if 'from' in payload and 'to' in payload else None
+    return Scope(frozenset(reads), cut_range=span)
 
 
 def _export_gather(conn, job):
@@ -484,72 +518,80 @@ def _sequence_invalidates(conn, job):
     sequence_pipeline.invalidate(conn, job)
 
 
+def _cut_scope(payload, reads, writes, adjacent_reads=()):
+    cut_id = payload.get('cut_id')
+    return Scope(frozenset(reads), frozenset(writes), frozenset({cut_id}) if cut_id else None, frozenset(adjacent_reads))
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
          cancel_running=lambda payload: payload.get('workflow') == 'single_cut_v2' or payload.get('text_only') is True,
-         retry=_always, resources=frozenset({'gpu'}), scope=_visual_scope,
+         retry=_always, lane='inference', resources=frozenset({'gpu'}), scope=_visual_scope,
          priority_class=lambda payload: 'batch' if payload.get('batch') else 'interactive',
          inputs=analysis_context.visual_fingerprint, gather=analysis_context.visual, invalidates=_visual_invalidates),
     Kind('character_detect', 'Character detection', True, label=_character_label, cuts=_one_cut, keys=_character_keys,
          # Bulk detection keeps one lease per cut and skips a cut whose lease is gone; the older workflow cannot stop midway.
          cancel_running=lambda payload: payload.get('workflow') in ('anime_bulk_v1', 'target_frames_v1'),
-         resources=frozenset({'gpu'}), scope=_detection_scope,
+         lane='inference', resources=frozenset({'gpu'}), scope=_detection_scope,
          priority_class=lambda payload: 'batch' if payload.get('episode_batch') else 'interactive',
          inputs=_detection_inputs, gather=_gather_detection, invalidates=_detection_invalidates),
     # Describes one labelled box of a character created from it and appends the text to its Details.
     Kind('character_profile', 'Character description', True, cuts=_one_cut, cancel_running=_always, retry=_always,
          keys=lambda payload, cut_ids: [f"character_profile:{payload.get('character_context_id')}"],
-         resources=frozenset({'gpu'}),
+         lane='inference', handler='character_profile.process', resources=frozenset({'gpu'}),
          scope=lambda payload: Scope(frozenset({'original', 'cut_boundaries', 'detections', 'context'}),
                                      frozenset({f"context:{payload.get('character_context_id')}"}),
                                      frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
          priority_class=lambda payload: 'interactive', inputs=_profile_inputs, gather=_profile_gather, invalidates=_profile_invalidates),
     # The timed acting plan a text model compiles from the keyframe analysis (performance_beats.py).
     Kind('performance_beats', 'Performance beats', True, cuts=_one_cut, keys=_cut_keys('performance_beats'), cancel_running=_always, retry=_always,
-         resources=frozenset({'text'}),
+         lane='text', handler='performance_beats.process', resources=frozenset({'text'}),
          scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results:initial_frame', 'results:keyframe_analysis', 'transcript', 'context', 'chunks'}),
                                      frozenset({'results:performance_beats'}), frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
          priority_class=lambda payload: 'interactive', inputs=_beats_inputs, gather=_beats_gather, invalidates=_beats_invalidates),
     Kind('consistency_summary', 'Consistency summary', True, cuts=_one_cut, keys=_cut_keys('consistency_summary'), cancel_running=_always,
-         resources=frozenset({'text'}),
-         scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results', 'transcript', 'context', 'chunks', 'detections', 'target_detections', 'subtitles'}),
-                                     frozenset({'results:consistency_summary'})),
+         lane='text', handler='inference_worker.process_consistency_summary', resources=frozenset({'text'}),
+         scope=lambda payload: _cut_scope(payload,
+             {'original', 'cut_boundaries', 'results:initial_frame', 'results:last_frame', 'results:video_analysis',
+              'results:keyframe_analysis', 'results:performance_beats', 'results:consistency_summary', 'results:subtitle_ocr',
+              'transcript', 'context', 'chunks', 'detections', 'target_detections', 'subtitles'}, {'results:consistency_summary'},
+             {'cut_boundaries', 'results:initial_frame', 'results:keyframe_analysis', 'results:performance_beats', 'results:consistency_summary'}),
          priority_class=lambda payload: 'batch' if payload.get('batch') else 'interactive',
          inputs=_consistency_inputs, gather=_consistency_gather, invalidates=_consistency_invalidates),
     Kind('review_answers', 'Production decisions draft', True, cuts=_one_cut, keys=_cut_keys('review_answers'), cancel_running=_always,
-         resources=frozenset({'text'}),
-         scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results', 'transcript', 'subtitles', 'decisions'}),
-             frozenset({'decision_drafts', 'decisions'} if payload.get('auto_save') else {'decision_drafts'}),
-             frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
+         lane='text', handler='inference_worker.process_review_answers', resources=frozenset({'text'}),
+         scope=lambda payload: _cut_scope(payload, {'cut_boundaries', 'results', 'transcript', 'subtitles', 'decisions', 'decision_drafts'},
+             {'decision_drafts', 'decisions'} if payload.get('auto_save') else {'decision_drafts'},
+             {'cut_boundaries', 'results:consistency_summary'}),
          priority_class=lambda payload: 'batch' if payload.get('auto_save') else 'interactive',
          inputs=_review_inputs, gather=_review_gather, invalidates=_review_invalidates),
     Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always,
-         resources=frozenset({'text'}),
-         scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results', 'decisions', 'context', 'chunks', 'detections'}),
-             frozenset({'results:summary'}), frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
+         lane='text', handler='inference_worker.process_regen', resources=frozenset({'text'}),
+         scope=lambda payload: _cut_scope(payload, {'original', 'cut_boundaries', 'results', 'decisions', 'context', 'chunks', 'detections', 'transcript', 'subtitles'},
+             {'results:summary'}, {'cut_boundaries', 'results:consistency_summary'}),
          priority_class=lambda payload: 'interactive', inputs=_summary_inputs, gather=_summary_gather, invalidates=_summary_invalidates),
     Kind('composition_compact', 'Composition brief', True, cuts=_one_cut, keys=_cut_keys('composition_compact'), cancel_running=_always,
-         retry=_always, attention=False, resources=frozenset({'text'}),
+         retry=_always, attention=False, lane='inference', handler='composition_compaction.process', affects_episode=False, claim_order=1, resources=frozenset({'text'}),
          scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results', 'detections'}), frozenset({'composition_cache'}),
                                      frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
          priority_class=lambda payload: 'batch', inputs=_compaction_inputs, gather=_compaction_gather, invalidates=_compaction_invalidates),
     Kind('sequence', 'Sequence', True, label=_sequence_label, cancel_running=_always,
          keys=lambda payload, cut_ids: [f"sequence:{payload.get('sequence_id')}:{payload.get('step')}:{payload.get('shot_key') or ''}"],
-         resources=frozenset({'text'}), scope=_sequence_scope,
+         lane='text', handler='sequence_pipeline.process', resources=frozenset({'text'}), scope=_sequence_scope,
          priority_class=lambda payload: 'interactive' if payload.get('shot_key') and not payload.get('batch') else 'batch',
          inputs=_sequence_inputs, gather=_sequence_gather, invalidates=_sequence_invalidates),
     Kind('subtitles', 'Subtitle extraction', True, cancel_running=_always,
-         keys=lambda payload, cut_ids: [f"subtitles:{payload.get('language') or ''}"], resources=frozenset({'gpu'}),
+         keys=lambda payload, cut_ids: [f"subtitles:{payload.get('language') or ''}"], lane='inference', handler='subtitle_pipeline.process', resources=frozenset({'gpu'}),
          scope=lambda payload: Scope(frozenset({'original', 'proxy', 'transcript'}), frozenset({'subtitles'})),
          priority_class=lambda payload: 'batch', inputs=_subtitle_inputs, gather=_subtitle_gather, invalidates=_subtitle_invalidates),
     Kind('transcribe', 'Transcription', True, audio_range=_transcribe_range, cancel_running=_always,
-         keys=lambda payload, cut_ids: [_transcribe_key(payload)], resources=frozenset({'gpu', 'audio'}),
+         keys=lambda payload, cut_ids: [_transcribe_key(payload)], lane='audio', resources=frozenset({'gpu', 'audio'}),
          scope=_transcription_scope, priority_class=lambda payload: 'interactive' if payload.get('range') else 'batch',
          inputs=_audio_inputs, gather=_audio_gather, invalidates=_audio_invalidates),
     Kind('voice_sample', 'Voice sample', True, audio_range=_voice_range, cancel_running=_always,
          keys=lambda payload, cut_ids: [f"voice_sample:{payload.get('character_context_id')}"],
-         resources=frozenset({'gpu', 'audio'}), scope=_voice_scope, priority_class=lambda payload: 'interactive',
+         lane='audio', resources=frozenset({'gpu', 'audio'}), scope=_voice_scope, priority_class=lambda payload: 'interactive',
          inputs=_audio_inputs, gather=_audio_gather, invalidates=_audio_invalidates),
     # Media work runs on the CPU in the API process: listed, never counted, not cancellable while it runs.
     Kind('keyframes', 'Keyframe selection', False, cuts=_keyframe_cuts, cancel_running=_always, retry=_always, keys=lambda payload, cut_ids: ['keyframes'],
@@ -571,7 +613,7 @@ KINDS = {kind.pipeline: kind for kind in (
          priority_class=lambda payload: 'interactive' if payload.get('frame_step') else 'batch',
          inputs=_preview_inputs, gather=_preview_gather, invalidates=_preview_invalidates),
     Kind('brief_export', 'Download', False, label=_export_label, cuts=_export_cuts, cancel_queued=False, attention=False,
-         resources=frozenset({'cpu_media'}), scope=_export_scope, priority_class=lambda payload: 'batch',
+         lane='export', affects_episode=False, resources=frozenset({'cpu_media'}), scope=_export_scope, priority_class=lambda payload: 'batch',
          inputs=_export_inputs, gather=_export_gather, invalidates=_export_invalidates),
 )}
 
@@ -584,3 +626,7 @@ def kind_of(pipeline):
 
 
 GPU_PIPELINES = tuple(name for name, kind in KINDS.items() if kind.gpu)
+
+
+def pipelines_for(lane):
+    return tuple(name for name, kind in KINDS.items() if kind.lane == lane)
