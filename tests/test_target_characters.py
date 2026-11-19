@@ -226,7 +226,8 @@ class TargetCharactersTest(unittest.TestCase):
         slots = {s['slot']: s for s in state['run']['slots']}
         self.assertEqual((slots[0]['origin'], slots[0]['character_context_id'], slots[0]['label_source']), ('first_frame', 'ctx', 'inherited'))
         self.assertEqual((slots[1]['origin'], slots[1]['character_context_id'], slots[1]['label_source']), ('appeared', 'ctx2', 'manual'))
-        self.assertEqual(self.layout(state)[20], {0: A, 1: [70, 10, 110, 70]})
+        self.assertEqual(self.layout(state)[10], {0: A})
+        self.assertEqual(self.layout(state)[20], {1: [70, 10, 110, 70]})  # the user removed A from this frame
         self.assertEqual([(d['frame_ordinal'], d['slot']) for d in state['run']['detections'] if d['source'] == 'manual'], [(20, 1)])
 
     # --- the first frame, exactly as the user left it ---------------------------------------------------------
@@ -370,10 +371,10 @@ class TargetCharactersTest(unittest.TestCase):
         self.assertEqual(db.one("SELECT character_context_id FROM character_detections WHERE id='fd-c1-0'")['character_context_id'], 'ctx')
 
     def split(self):
-        """One person the tracker took for two: the red person in the first frame turns up looking blue in frame 20."""
+        """A person reappears across the frame and looks different enough to get a second slot."""
         self.evaluate()
         self.first_frame('c1', [(A, 'ctx', 'manual')])
-        self.assertEqual(self.detect([[(A, RED)], [(A, RED)], [(A, BLUE)]], first=[(A, RED)])['status'], 'done')
+        self.assertEqual(self.detect([[(A, RED)], [(A, RED)], [(B, BLUE)]], first=[(A, RED)])['status'], 'done')
         state = self.state()
         self.assertEqual([(s['slot'], s['origin']) for s in state['run']['slots']], [(0, 'first_frame'), (1, 'appeared')])
         return state['run']
@@ -384,7 +385,7 @@ class TargetCharactersTest(unittest.TestCase):
         self.assertEqual((merged.status_code, merged.json()), (200, {'moved': 1, 'dropped': 0}))
         state = self.state()
         self.assertEqual([s['slot'] for s in state['run']['slots']], [0])
-        self.assertEqual(self.layout(state)[20], {0: A})
+        self.assertEqual(self.layout(state)[20], {0: B})
         self.assertEqual({d['slot'] for d in state['run']['detections']}, {0})
         self.assertEqual([(d['frame_ordinal'], d['source']) for d in state['run']['detections'] if d['source'] == 'manual'], [(20, 'manual')])
         # Nobody is left without a name on the timeline.
@@ -393,10 +394,10 @@ class TargetCharactersTest(unittest.TestCase):
     def test_a_merge_survives_detecting_again(self):
         run = self.split()
         self.client.post(f"/api/target-slots/{run['id']}/1/merge", json={'into': 0})
-        self.assertEqual(self.detect([[(A, RED)], [(A, RED)], [(A, BLUE)]], first=[(A, RED)])['status'], 'done')
+        self.assertEqual(self.detect([[(A, RED)], [(A, RED)], [(B, BLUE)]], first=[(A, RED)])['status'], 'done')
         state = self.state()
         self.assertEqual([s['slot'] for s in state['run']['slots']], [0])
-        self.assertEqual(self.layout(state)[20], {0: A})
+        self.assertEqual(self.layout(state)[20], {0: B})
 
     def test_where_both_colours_have_a_box_in_a_frame_one_stays(self):
         self.evaluate()
@@ -442,6 +443,70 @@ class TargetCharactersTest(unittest.TestCase):
         self.client.post('/api/cuts/c1/target-detection')
         self.assertEqual(merge(1, {'into': 0}), 409)   # a detection job of the cut is pending
         self.assertEqual([s['slot'] for s in self.state()['run']['slots']], [0, 1])
+
+    def test_locked_cast_keeps_an_extra_unmatched_and_promotion_is_manual_on_rerun(self):
+        self.evaluate()
+        self.first_frame('c1', [(A, 'ctx', 'manual')])
+        self.assertEqual(self.client.put('/api/cuts/c1/target-cast', json={'locked': True}).status_code, 200)
+        frames = [[(A, RED)], [(A, RED), (B, BLUE)], [(A, RED), (B, BLUE)]]
+        self.assertEqual(self.detect(frames, first=[(A, RED)])['status'], 'done')
+        run = self.state()['run']
+        self.assertTrue(run['cast_locked'])
+        self.assertEqual(run['unmatched_count'], 2)
+        self.assertEqual(self.layout(self.state())[15], {0: A})
+        review = run['frames'][1]['review']
+        self.assertIn('unmatched', review['flags'])
+        candidate = next(item for item in run['candidates'] if item['frame_ordinal'] == 15)
+        promoted = self.client.post(f"/api/target-runs/{run['id']}/candidates/{candidate['id']}", json={'action': 'promote'})
+        self.assertEqual(promoted.status_code, 200, promoted.text)
+        manual_id, = promoted.json()['boxes']
+        self.assertEqual(self.detect(frames, first=[(A, RED)])['status'], 'done')
+        rows = [row for row in self.state()['run']['detections'] if row['id'] == manual_id]
+        self.assertEqual([(row['slot'], row['box'], row['source']) for row in rows], [(1, B, 'manual')])
+
+    def test_ignore_and_swap_survive_detection_and_keep_the_opening_mirror(self):
+        run = self.detected()
+        swap = self.client.post(f"/api/target-slots/{run['id']}/0/swap-from", json={'other': 1, 'frame_ordinal': 15})
+        self.assertEqual((swap.status_code, swap.json()), (200, {'swapped': 4}))
+        ignore = f"/api/target-slots/{run['id']}/1/ignored"
+        self.assertEqual(self.client.put(ignore, json={'ignored': True}).status_code, 200)
+        frames = [[(A, RED), (B, BLUE)]] * 3
+        self.assertEqual(self.detect(frames, first=frames[0])['status'], 'done')
+        self.assertEqual(self.layout(self.state()), {10: {0: A}, 15: {0: B}, 20: {0: B}})
+        self.assertEqual(self.client.put(ignore, json={'ignored': False}).status_code, 200)
+        self.assertEqual(self.layout(self.state()), {10: {0: A, 1: B}, 15: {0: B, 1: A}, 20: {0: B, 1: A}})
+        history = db.all_rows('SELECT action,before_json,after_json FROM target_corrections ORDER BY id')
+        self.assertEqual([item['action'] for item in history], ['swap', 'ignore', 'restore'])
+        before = json.loads(history[0]['before_json'])
+        after = json.loads(history[0]['after_json'])
+        self.assertEqual({(a['slot'], b['slot']) for a, b in zip(before, after)}, {(0, 1), (1, 0)})
+        self.assertTrue(all(item['scores'] is not None for item in before))
+
+    def test_rejected_candidate_and_review_marker_are_backed_by_the_run(self):
+        self.evaluate()
+        self.first_frame('c1', [(A, 'ctx', 'manual')])
+        self.client.put('/api/cuts/c1/target-cast', json={'locked': True})
+        frames = [[(A, RED)], [(A, RED), (B, BLUE)], [(A, RED)]]
+        self.assertEqual(self.detect(frames, first=frames[0])['status'], 'done')
+        run = self.state()['run']
+        candidate, = run['candidates']
+        self.assertEqual(self.client.put(f"/api/target-runs/{run['id']}/frames/15/reviewed", json={'reviewed': True}).status_code, 200)
+        self.assertTrue(self.state()['run']['frames'][1]['review']['reviewed'])
+        self.assertEqual(self.client.post(f"/api/target-runs/{run['id']}/candidates/{candidate['id']}", json={'action': 'reject'}).status_code, 200)
+        self.assertEqual(self.detect(frames, first=frames[0])['status'], 'done')
+        self.assertEqual(self.state()['run']['candidates'], [])
+
+    def test_accepting_a_split_cannot_overwrite_a_manual_box(self):
+        run = self.detected()
+        selected = next(box for box in run['detections'] if box['frame_ordinal'] == 15 and box['slot'] == 0)
+        self.client.put(f"/api/target-detections/{selected['id']}/box", json={'box': A})
+        candidate = {'id': 'merge', 'tag': 'merge', 'box': [5, 5, 115, 75], 'frame_ordinal': 15, 'source': 'tracker',
+                     'parts': [{'slot_hint': 0, 'box': A}, {'slot_hint': 1, 'box': B}]}
+        with db.connect() as conn:
+            conn.execute('UPDATE target_detection_runs SET candidates_json=? WHERE id=?', (json.dumps([candidate]), run['id']))
+        response = self.client.post(f"/api/target-runs/{run['id']}/candidates/merge", json={'action': 'split'})
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIsNotNone(db.one("SELECT id FROM target_detections WHERE id=? AND source='manual'", (selected['id'],)))
 
     def test_drawing_moving_swapping_and_removing_boxes(self):
         run = self.detected()

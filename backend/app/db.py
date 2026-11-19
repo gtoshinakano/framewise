@@ -310,21 +310,33 @@ def init_db():
             selection_key TEXT NOT NULL, cut_start REAL NOT NULL, cut_end REAL NOT NULL,
             job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL, frames_json TEXT NOT NULL,
             model_id TEXT, model_revision TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            candidates_json TEXT NOT NULL DEFAULT '[]', cast_locked INTEGER, review_version INTEGER NOT NULL DEFAULT 0,
             UNIQUE(cut_id, selection_key)
         );
         CREATE TABLE IF NOT EXISTS target_slots (
             run_id TEXT NOT NULL REFERENCES target_detection_runs(id) ON DELETE CASCADE,
             slot INTEGER NOT NULL, origin TEXT NOT NULL,
             character_context_id TEXT REFERENCES context_items(id) ON DELETE SET NULL,
-            label_source TEXT,
+            label_source TEXT, ignored INTEGER NOT NULL DEFAULT 0, first_detection_id TEXT,
             PRIMARY KEY(run_id, slot)
         );
         CREATE TABLE IF NOT EXISTS target_detections (
             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES target_detection_runs(id) ON DELETE CASCADE,
             frame_ordinal INTEGER NOT NULL, slot INTEGER NOT NULL, box_json TEXT NOT NULL,
-            source TEXT NOT NULL DEFAULT 'auto'
+            source TEXT NOT NULL DEFAULT 'auto', scores_json TEXT
         );
         CREATE INDEX IF NOT EXISTS target_detections_run_idx ON target_detections(run_id, frame_ordinal);
+        CREATE TABLE IF NOT EXISTS target_cast_settings (
+            cut_id TEXT PRIMARY KEY REFERENCES cuts(id) ON DELETE CASCADE, locked INTEGER NOT NULL
+        );
+        -- User correction history stays available after the keyframe selection and its run are replaced.
+        CREATE TABLE IF NOT EXISTS target_corrections (
+            id INTEGER PRIMARY KEY, cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE,
+            run_id TEXT NOT NULL, selection_key TEXT NOT NULL, action TEXT NOT NULL,
+            before_json TEXT NOT NULL DEFAULT '[]', after_json TEXT NOT NULL DEFAULT '[]',
+            details_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS target_corrections_run_idx ON target_corrections(run_id, action, id);
         -- Keyframe analysis (keyframe_analysis.py): Qwen3.5 on the keyframes plus DWPose keypoints and the camera measured
         -- from pixels. One run per cut, keyframe selection and inputs (input_hash); its windows are the checkpoint, so a
         -- run that is not complete is reused by the next job with the same inputs (as subtitle runs are). The merged
@@ -391,6 +403,16 @@ def init_db():
         # metadata. The migration and snapshot cleanup commit as one unit.
         db.commit()
         db.execute("BEGIN IMMEDIATE")
+        target_columns = {
+            'target_detection_runs': {'candidates_json': "TEXT NOT NULL DEFAULT '[]'", 'cast_locked': 'INTEGER', 'review_version': 'INTEGER NOT NULL DEFAULT 0'},
+            'target_slots': {'ignored': 'INTEGER NOT NULL DEFAULT 0', 'first_detection_id': 'TEXT'},
+            'target_detections': {'scores_json': 'TEXT'},
+        }
+        for table, fields in target_columns.items():
+            have = {row['name'] for row in db.execute(f'PRAGMA table_info({table})')}
+            for name, definition in fields.items():
+                if name not in have:
+                    db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
         result_columns = {row["name"] for row in db.execute("PRAGMA table_info(analysis_results)")}
         columns = {row["name"] for row in db.execute("PRAGMA table_info(transcript_segments)")}
         migrating = "status" in result_columns or "status" in columns

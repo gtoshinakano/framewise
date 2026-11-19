@@ -341,7 +341,7 @@ class Shot:
 
 
 def process(job, owner, episode, payload, source):
-    from . import db, media, worker
+    from . import db, media, target_reviews, worker
     settings, band, cuts = payload['keyframe_settings'], payload['subtitle_mask'], payload['cuts']
     info = media.probe(source)
     for cut in cuts: cut['cache_key'] = cache_key(source, cut, settings, band)
@@ -359,6 +359,7 @@ def process(job, owner, episode, payload, source):
             if cache_key(source, cut, settings, band) != cut['cache_key']: raise RuntimeError('Original video changed during selection')
             conn.execute('INSERT OR REPLACE INTO keyframe_results(cache_key,episode_id,cut_id,result_json) VALUES (?,?,?,?)', (cut['cache_key'], episode['id'], cut['id'], json.dumps(result)))
             # People found on the previous selection's frames belong to frames that are no longer the cut's targets.
+            target_reviews.archive_selection(conn, cut['id'], cut['cache_key'])
             conn.execute('DELETE FROM target_detection_runs WHERE cut_id=? AND selection_key!=?', (cut['id'], cut['cache_key']))
     for ordinal, timestamp, frame in decoded(source, info['width'], info['height'], settings['longest_edge']):
         if ordinal % 128 == 0:

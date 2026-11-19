@@ -14,9 +14,10 @@ const MIN_SIDE = 8
  * detector missed. Coordinates are image pixels (`size`), whatever size the frame is shown at. Changes are
  * reported when the pointer is released; the caller saves them.
  */
-export function BoxEditor({ size, boxes, editable, drawing, onDrawn, onChange, onRemove, label }: {
+export function BoxEditor({ size, boxes, editable, drawing, onDrawn, onChange, onRemove, label, selectedId, onSelect }: {
   size: [number, number]; boxes: EditorBox[]; editable: boolean; drawing: boolean
   onDrawn: (box: Box) => void; onChange: (id: string, box: Box) => void; onRemove: (id: string) => void; label: string
+  selectedId?: string; onSelect?: (id: string) => void
 }) {
   const svg = useRef<SVGSVGElement>(null)
   const [drag, setDrag] = useState<Drag | null>(null)
@@ -48,7 +49,8 @@ export function BoxEditor({ size, boxes, editable, drawing, onDrawn, onChange, o
   function endDrag() {
     const value = drag
     setDrag(null)
-    if (value) onChange(value.id, value.box.map(Math.round) as Box)
+    const original = value && boxes.find(item => item.id === value.id)?.box
+    if (value && original && value.box.some((coordinate, index) => coordinate !== original[index])) onChange(value.id, value.box.map(Math.round) as Box)
   }
   function endDrawing(event: PointerEvent) {
     if (!start) return
@@ -67,9 +69,9 @@ export function BoxEditor({ size, boxes, editable, drawing, onDrawn, onChange, o
       const movable = editable && !drawing
       const r = Math.max(9, size[0] / 70)
       return <g key={item.id}>
-        <rect x={box[0]} y={box[1]} width={box[2] - box[0]} height={box[3] - box[1]} fill={item.color} fillOpacity=".12" stroke={item.color} strokeWidth="3"
+        <rect x={box[0]} y={box[1]} width={box[2] - box[0]} height={box[3] - box[1]} fill={item.color} fillOpacity={selectedId === item.id ? '.24' : '.12'} stroke={item.color} strokeWidth={selectedId === item.id ? 5 : 3}
           style={movable ? { pointerEvents: 'all', cursor: 'move', touchAction: 'none' } : undefined}
-          onPointerDown={movable ? event => grab(event, { id: item.id, handle: 'move', box: [...item.box] as Box, from: point(event), orig: [...item.box] as Box }) : undefined}
+          onPointerDown={movable ? event => { onSelect?.(item.id); grab(event, { id: item.id, handle: 'move', box: [...item.box] as Box, from: point(event), orig: [...item.box] as Box }) } : undefined}
           onPointerMove={movable ? moveDrag : undefined} onPointerUp={movable ? endDrag : undefined} onPointerCancel={movable ? () => setDrag(null) : undefined} />
         <text x={box[0] + 4} y={Math.max(20, box[1] - 4)} fill={item.color} stroke="black" strokeWidth="3" paintOrder="stroke" fontSize="20" fontWeight="700">{item.label}</text>
         {movable && HANDLES.map(([handle, fx, fy]) => <rect key={handle} x={box[0] + (box[2] - box[0]) * fx - handleSize / 2} y={box[1] + (box[3] - box[1]) * fy - handleSize / 2} width={handleSize} height={handleSize}

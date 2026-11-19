@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_TARGET_BOXES, boxesInFrame, canDraw, detectReason, framesPerSlot, isJobActive, mergeTargets, slotChip, slotName, targetQueueMessage, unknownSlots } from '../src/targetView.ts'
+import { MAX_TARGET_BOXES, boxesInFrame, canDraw, detectReason, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, slotChip, slotName, targetQueueMessage, unknownSlots } from '../src/targetView.ts'
 
 const slot = (number, overrides = {}) => ({ slot: number, origin: 'first_frame', character_context_id: null, character_name: null, label_source: null, ...overrides })
 const box = (id, frame, slotNumber, source = 'auto') => ({ id, frame_ordinal: frame, slot: slotNumber, box: [0, 0, 10, 10], source })
@@ -22,6 +22,14 @@ test('unknown slots are the unnamed ones that have a box', () => {
   assert.deepEqual(unknownSlots(run).map(item => item.slot), [1, 2])
   assert.deepEqual(unknownSlots({ ...run, detections: [box('a', 10, 0)] }), [])
   assert.deepEqual(unknownSlots(null), [])
+  assert.deepEqual(unknownSlots({ ...run, slots: [run.slots[0], { ...run.slots[1], ignored: true }, run.slots[2]] }).map(item => item.slot), [2])
+})
+
+test('the exception filter shows flagged frames until the user reviews them', () => {
+  assert.equal(frameNeedsReview(undefined), false)
+  assert.equal(frameNeedsReview({ review: { score: 1, flags: {} } }), false)
+  assert.equal(frameNeedsReview({ review: { score: .72, flags: { suspected_merge: ['m'] } } }), true)
+  assert.equal(frameNeedsReview({ review: { reviewed: true, score: .72, flags: { suspected_merge: ['m'] } } }), false)
 })
 
 test('each slot knows in how many frames it appears', () => {

@@ -1,16 +1,24 @@
 /** What the Target frames tab knows about the people on a cut's evaluated frames, and the pure helpers that read it. */
 export type Box = [number, number, number, number]
-export type TargetSlot = { slot: number; origin: 'first_frame' | 'appeared'; character_context_id: string | null; character_name: string | null; label_source: 'inherited' | 'auto' | 'manual' | null }
+export type TargetSlot = { slot: number; origin: 'first_frame' | 'appeared'; character_context_id: string | null; character_name: string | null; label_source: 'inherited' | 'auto' | 'manual' | null; ignored?: boolean }
 export type TargetBox = { id: string; frame_ordinal: number; slot: number; box: Box; source: 'auto' | 'manual' }
+export type TargetCandidate = { id: string; frame_ordinal: number; tag: 'unmatched' | 'merge'; box: Box; source: 'tracker'; suggested_slot?: number | null; parts?: { box: Box; slot_hint: number | null }[] }
+export type TargetReview = { score: number | null; flags: Record<string, unknown>; reviewed?: boolean }
 /** `mirror`: the first frame as the user left it in Characters in this cut, copied rather than detected, so it is read only here. */
-export type TargetFrameInfo = { ordinal: number; time: number; relative_time: number; image_size: [number, number]; mirror?: boolean }
-export type TargetRun = { id: string; selection_key: string; stale: boolean; frames: TargetFrameInfo[]; slots: TargetSlot[]; detections: TargetBox[] }
+export type TargetFrameInfo = { ordinal: number; time: number; relative_time: number; image_size: [number, number]; mirror?: boolean; review?: TargetReview }
+export type TargetRun = { id: string; selection_key: string; stale: boolean; frames: TargetFrameInfo[]; slots: TargetSlot[]; detections: TargetBox[]; candidates?: TargetCandidate[]; unmatched_count?: number; cast_locked?: boolean; review_version?: number }
 export type TargetJob = { id: string; status: string; stage: string; error: string | null }
-export type TargetDetections = { evaluation: 'current' | 'missing'; selection_key: string | null; max_boxes: number; run: TargetRun | null; job: TargetJob | null }
+export type TargetDetections = { evaluation: 'current' | 'missing'; selection_key: string | null; max_boxes: number; run: TargetRun | null; job: TargetJob | null; cast_locked?: boolean }
 
 export const MAX_TARGET_BOXES = 3
 
 export const boxesInFrame = (run: TargetRun, ordinal: number) => run.detections.filter(item => item.frame_ordinal === ordinal)
+export const frameNeedsReview = (frame: TargetFrameInfo | undefined) => !!frame?.review && !frame.review.reviewed && Object.keys(frame.review.flags).length > 0
+
+export const REVIEW_LABELS: Record<string, string> = {
+  low_match: 'Low match', count_changed: 'Cast count changed', unmatched: 'Unmatched crop',
+  suspected_merge: 'Possible merged box', jump: 'Position jump', duplicate_character: 'Duplicate character',
+}
 
 /** A frame holds at most three boxes: drawing another needs one removed first. */
 export const canDraw = (run: TargetRun, ordinal: number, limit = MAX_TARGET_BOXES) => boxesInFrame(run, ordinal).length < limit
@@ -21,7 +29,7 @@ export const slotName = (slot: TargetSlot | undefined) => slot?.character_name |
 export function unknownSlots(run: TargetRun | null) {
   if (!run) return []
   const used = new Set(run.detections.map(item => item.slot))
-  return run.slots.filter(slot => used.has(slot.slot) && !slot.character_context_id)
+  return run.slots.filter(slot => !slot.ignored && used.has(slot.slot) && !slot.character_context_id)
 }
 
 /** In how many evaluated frames each slot has a box. */
@@ -79,5 +87,5 @@ export function targetQueueMessage(result: TargetQueueResult, firstCut: number):
 export function mergeTargets(run: TargetRun, slot: number) {
   const mirrored = new Set(run.frames.filter(frame => frame.mirror).map(frame => frame.ordinal))
   if (run.detections.some(item => item.slot === slot && mirrored.has(item.frame_ordinal))) return []
-  return run.slots.filter(item => item.slot !== slot)
+  return run.slots.filter(item => item.slot !== slot && !item.ignored)
 }

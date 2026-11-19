@@ -19,18 +19,20 @@ everything in one transaction at the end, so an interrupted job leaves the previ
 """
 import json
 import logging
+import os
 import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import anime_bulk, anime_gallery, anime_matching, db, frame_cache, media, target_tracking, worker
+from . import anime_bulk, anime_gallery, anime_matching, db, frame_cache, frame_confidence, keyframe_camera, keyframe_pose, media, target_candidates, target_reviews, target_tracking, worker
 
 log = logging.getLogger('framewise.character_detect')
 WORKFLOW = 'target_frames_v1'
 FRAME_WIDTH = 1280
 MAX_BOXES = target_tracking.MAX_BOXES
+REVIEW_VERSION = 1
 
 
 def is_target_job(payload):
@@ -58,23 +60,39 @@ def run_for(cut_id, key):
     return db.one('SELECT * FROM target_detection_runs WHERE cut_id=? AND selection_key=?', (cut_id, key))
 
 
+def frame_capacity(slots, locked=False):
+    """Keep the open-cast cap, with room for every reviewed opening colour on a locked cut."""
+    opening = sum(slot['origin'] == 'first_frame' and not slot.get('ignored') for slot in slots)
+    return max(MAX_BOXES, opening) if locked else MAX_BOXES
+
+
 def state(cut_id):
     """What the Target frames tab shows: the evaluation, the latest run with its slots and boxes, and the job."""
     cut, _, key, _ = current_selection(cut_id)
     if not cut:
         return None
     run = db.one('SELECT * FROM target_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1', (cut_id,))
-    result = {'evaluation': 'current' if key else 'missing', 'selection_key': key, 'max_boxes': MAX_BOXES, 'run': None, 'job': latest_job(cut_id)}
+    cast = db.one('SELECT locked FROM target_cast_settings WHERE cut_id=?', (cut_id,))
+    locked = bool((cast or {}).get('locked'))
+    result = {'evaluation': 'current' if key else 'missing', 'selection_key': key, 'max_boxes': MAX_BOXES,
+              'cast_locked': locked, 'run': None, 'job': latest_job(cut_id)}
     if run:
-        slots = db.all_rows('''SELECT s.slot,s.origin,s.character_context_id,s.label_source,c.title AS character_name
+        slots = db.all_rows('''SELECT s.slot,s.origin,s.character_context_id,s.label_source,s.ignored,c.title AS character_name
                                FROM target_slots s LEFT JOIN context_items c ON c.id=s.character_context_id
                                WHERE s.run_id=? ORDER BY s.slot''', (run['id'],))
-        boxes = db.all_rows('SELECT id,frame_ordinal,slot,box_json,source FROM target_detections WHERE run_id=? ORDER BY rowid', (run['id'],))
+        boxes = db.all_rows('''SELECT d.* FROM target_detections d JOIN target_slots s ON s.run_id=d.run_id AND s.slot=d.slot
+                              WHERE d.run_id=? AND s.ignored=0 ORDER BY d.rowid''', (run['id'],))
+        result['max_boxes'] = frame_capacity(slots, bool(run['cast_locked']))
+        candidates = json.loads(run['candidates_json'])
+        detections = [target_reviews.box_row(box) for box in boxes]
         result['run'] = {
             'id': run['id'], 'selection_key': run['selection_key'],
             'stale': key is None or run['selection_key'] != key or run['cut_start'] != cut['start_time'] or run['cut_end'] != cut['end_time'],
-            'frames': json.loads(run['frames_json']), 'slots': slots,
-            'detections': [{'id': box['id'], 'frame_ordinal': box['frame_ordinal'], 'slot': box['slot'], 'box': json.loads(box['box_json']), 'source': box['source']} for box in boxes],
+            'frames': target_reviews.visible_reviews(json.loads(run['frames_json']), slots, detections, candidates),
+            'slots': [{**slot, 'ignored': bool(slot['ignored'])} for slot in slots],
+            'detections': detections, 'candidates': candidates,
+            'unmatched_count': sum(candidate['tag'] == 'unmatched' for candidate in candidates),
+            'review_version': run['review_version'], 'cast_locked': bool(run['cast_locked']),
         }
     return result
 
@@ -136,28 +154,42 @@ def _seed_slots(first, existing_slots, existing_boxes):
     ``renumbered`` maps the old number to the new one for the boxes.
     """
     saved = {row['slot']: row for row in existing_slots}
-    slots = []
+    opening = {row['first_detection_id']: row for row in existing_slots if row.get('first_detection_id') and row['origin'] == 'first_frame'}
+    slots, renumbered, inherited = [], {}, set()
     for number, person in enumerate(first):
-        mine = saved.get(number)
-        if mine and mine['origin'] == 'first_frame' and mine['label_source'] == 'manual':
+        original = person['row']
+        mine = opening.get(original['id'])
+        if not mine:
+            old = saved.get(number)
+            if old and old['origin'] == 'first_frame' and not old.get('first_detection_id'):
+                mine = old  # old runs only have the first-frame order
+        if mine:
+            inherited.add(mine['slot'])
+            renumbered[mine['slot']] = number
+        if mine and mine['label_source'] == 'manual':
             character_id, label = mine['character_context_id'], 'manual'
         else:
-            character_id = person['row']['character_context_id']
+            character_id = original['character_context_id']
             label = 'inherited' if character_id else None
-        slots.append(target_tracking.Slot(number, 'first_frame', character_id, label, person['box'], person['vector']))
+        slot = target_tracking.Slot(number, 'first_frame', character_id, label, person['box'], person['vector'])
+        slot.first_detection_id = original['id']
+        slot.ignored = bool(mine and mine.get('ignored'))
+        slots.append(slot)
     manual = [dict(row) for row in existing_boxes if row['source'] == 'manual']
-    renumbered = {}
     for row in sorted(existing_slots, key=lambda item: item['slot']):
-        if row['origin'] == 'first_frame' and row['slot'] < len(first):
+        if row['slot'] in inherited:
             continue  # the first frame still has this person
         kept_label = row['label_source'] == 'manual'
-        if not kept_label and not any(box['slot'] == row['slot'] for box in manual):
+        if not kept_label and not row.get('ignored') and not any(box['slot'] == row['slot'] for box in manual):
             continue
         number = row['slot'] if not any(slot.number == row['slot'] for slot in slots) else target_tracking.free_number(slots)
         if number is None:
-            continue
+            raise RuntimeError('The first-frame cast and your manual edits use more colours than fit. Finish the first-frame review before detecting again.')
         renumbered[row['slot']] = number
-        slots.append(target_tracking.Slot(number, 'appeared', row['character_context_id'] if kept_label else None, 'manual' if kept_label else None))
+        slot = target_tracking.Slot(number, 'appeared', row['character_context_id'] if kept_label or row.get('ignored') else None,
+                                    row['label_source'] if kept_label or row.get('ignored') else None)
+        slot.ignored = bool(row.get('ignored'))
+        slots.append(slot)
     numbers = {slot.number for slot in slots}
     kept = []
     for box in manual:
@@ -168,13 +200,11 @@ def _seed_slots(first, existing_slots, existing_boxes):
     return slots, kept, renumbered
 
 
-def _gallery_labels(runtime, episode, slots, lease_check, timings, model):
+def _gallery_labels(gallery, slots, model):
     """Name people who are not in the first frame by the user's labelled boxes (read only, never added to)."""
     todo = sorted((slot for slot in slots if slot.origin == 'appeared' and slot.label_source != 'manual' and slot.first is not None), key=lambda slot: slot.number)
     if not todo:
         return
-    runtime.gallery = None  # labels confirmed since the last job count
-    gallery = runtime.get_gallery(episode['project_id'], lease_check, timings)
     if not len(gallery):
         return
     defaults = model.defaults
@@ -191,12 +221,24 @@ def _gallery_labels(runtime, episode, slots, lease_check, timings, model):
             taken.add(character_id)
 
 
-def track(runtime, model, frames, images, slots, manual, lease_check, same_person, mirror=None):
-    """Detect people on the frames after the first and place them in slots. Returns the stored boxes as ``(ordinal, slot, box)``.
+def _pose_model(runtime):
+    if not hasattr(runtime, 'target_pose'):
+        folder = keyframe_pose.MODEL_DIR
+        available = all((folder / name).is_file() for name in (keyframe_pose.DETECTOR, keyframe_pose.POSE))
+        runtime.target_pose = None
+        if available:
+            try:
+                runtime.target_pose = keyframe_pose.DWPose(threads=int(os.environ.get('DWPOSE_THREADS') or 3))
+            except Exception:
+                log.exception('Target pose models could not be loaded; continuing with predicted boxes')
+    return runtime.target_pose
 
-    ``mirror`` is the first frame's boxes as ``(ordinal, slot, box)`` when the first evaluated frame is the first
-    frame: they are stored as they are and that frame is neither detected nor edited.
-    """
+
+def track(runtime, model, frames, images, slots, manual, lease_check, same_person, mirror=None, *, gallery,
+          band=None, locked=False, removed=None, rejected=None, hidden=()):
+    """Detect and globally assign once per non-mirrored frame, with manual anchors held fixed."""
+    import numpy as np
+
     detector = runtime.get_detector()
     skip = {0} if mirror is not None else set()
     todo = [number for number in range(len(images)) if number not in skip]
@@ -206,13 +248,14 @@ def track(runtime, model, frames, images, slots, manual, lease_check, same_perso
     all_boxes = [[] for _ in images]
     for number, boxes in zip(todo, answered):
         all_boxes[number] = boxes
-    detections = [[{'box': box, 'small': bool(anime_gallery.box_problem(box, image.size)), 'vector': None} for box in boxes]
+    detections = [[{'box': box, 'rank': rank, 'raw_index': rank, 'small': bool(anime_gallery.box_problem(box, image.size)),
+                    'vector': None, 'gallery': {}} for rank, box in enumerate(boxes)]
                   for boxes, image in zip(all_boxes, images)]
     index = {frame['source_frame_index']: number for number, frame in enumerate(frames)}
     manual_here = {number: [] for number in range(len(frames))}
     for box in manual:
         number = index.get(box['frame_ordinal'])
-        if number is not None and number not in skip:
+        if number is not None and number not in skip and not any(slot.number == box['slot'] and slot.ignored for slot in slots):
             manual_here[number].append({**box, 'small': bool(anime_gallery.box_problem(box['box'], images[number].size)), 'vector': None})
     owners, crops = [], []
     for number, image in enumerate(images):
@@ -227,24 +270,94 @@ def track(runtime, model, frames, images, slots, manual, lease_check, same_perso
             raise RuntimeError('Character embedder returned an unexpected number of target embeddings')
         for item, vector in zip(owners, vectors):
             item['vector'] = vector
-    by_number = lambda: {slot.number: slot for slot in slots}
-    stored = []
+            if len(gallery):
+                item['gallery'] = dict(gallery.rank(vector))
+    bgr = [np.asarray(image)[:, :, ::-1].copy() for image in images]
+    grays = [keyframe_camera.gray(image) for image in bgr]
+    masked = [list(boxes) for boxes in all_boxes]
+    if mirror is not None:
+        masked[0] = [item[2] for item in mirror]
+    cameras = [None, *keyframe_camera.pair_cameras(grays, band, masked, [image.size for image in images])]
+    pose = _pose_model(runtime)
+    frozen = {slot.number for slot in slots if slot.ignored}
+    manual_slots = {box['slot'] for box in manual}
+    active = [slot for slot in slots if slot.number not in frozen and (not locked or slot.origin == 'first_frame' or slot.label_source == 'manual' or slot.number in manual_slots)]
+    first_count = sum(slot.origin == 'first_frame' for slot in active)
+    limit = max(MAX_BOXES, first_count) if locked else MAX_BOXES
+    verified = {slot.number for slot in active if slot.box}
+    hidden_by_frame = {}
+    for item in hidden:
+        hidden_by_frame.setdefault(item['frame_ordinal'], []).append(json.loads(item['box_json']))
+    stored, reviews, review_candidates = [], {}, []
     for number, frame in enumerate(frames):
         lease_check()
+        ordinal = frame['source_frame_index']
         if number in skip:
-            stored.extend(mirror)
+            stored.extend((*item, None) for item in mirror)
+            reviews[ordinal] = {'score': 1., 'flags': {}}
             continue
         placed_by_user = manual_here[number]
+        by_number = {slot.number: slot for slot in active}
         for item in placed_by_user:
-            slot = by_number().get(item['slot'])
+            slot = by_number.get(item['slot'])
             if slot:
-                slot.seen(item['box'], item['vector'])
-        auto = [item for item in detections[number]
-                if not any(target_tracking.iou(item['box'], other['box']) >= target_tracking.IOU_ACCEPT for other in placed_by_user)]
-        placed = target_tracking.assign_frame(slots, auto, same_person, max_boxes=MAX_BOXES - len(placed_by_user),
-                                              blocked={item['slot'] for item in placed_by_user})
-        stored.extend((frame['source_frame_index'], item['slot'], auto[item['detection']]['box']) for item in placed)
-    return stored
+                slot.anchor(item['box'], item['vector'])
+        skeletons = []
+        if pose:
+            rgb = bgr[number][:, :, ::-1]
+            for box in pose.detect(bgr[number]):
+                points = pose.keypoints(rgb, box)
+                if keyframe_pose.body_usable(points):
+                    skeletons.append({'box': box[:4], 'points': points[:17]})
+        blocked = {item['slot'] for item in placed_by_user} | frozen | ({slot.number for slot in slots} - set(by_number))
+        protected = [item['box'] for item in placed_by_user]
+        excluded = protected + list((removed or {}).get(ordinal, ())) + hidden_by_frame.get(ordinal, [])
+        candidates, predicted, merges = target_candidates.prepare(detections[number], [slot for slot in active if slot.number not in blocked],
+            images[number].size, cameras[number], band, skeletons, split=True, previous=grays[number - 1] if number else None,
+            current=grays[number], verified=verified, suppressed=excluded, protected=protected)
+        placed, unmatched = target_tracking.assign_global(slots, candidates, same_person, predicted, locked=locked,
+                                                          max_boxes=limit - len(placed_by_user), blocked=blocked)
+        if not number and not first_count:
+            first_count = len(placed) + len(placed_by_user)
+        active = [slot for slot in slots if not slot.ignored and (not locked or slot.number in by_number)]
+        verified = {item['slot'] for item in placed} | {item['slot'] for item in placed_by_user}
+        for slot in active:
+            if slot.number not in verified and slot.number in predicted:
+                slot.box = predicted[slot.number]
+        stored.extend((ordinal, entry['slot'], candidates[entry['detection']]['box'], entry['scores']) for entry in placed)
+        combined = [*candidates, *placed_by_user]
+        anchors = [{'detection': len(candidates) + i, 'slot': item['slot'], 'new': False} for i, item in enumerate(placed_by_user)]
+        items = _review_candidates(ordinal, detections[number], candidates, [*placed, *anchors], unmatched, merges, active, predicted,
+                                   same_person, (rejected or {}).get(ordinal, ()))
+        review_candidates.extend(items)
+        reviews[ordinal] = frame_confidence.review([*placed, *anchors], combined,
+            [item['id'] for item in items if item['tag'] == 'unmatched'], active, first_count, predicted, images[number].size,
+            [item['id'] for item in items if item['tag'] == 'merge'])
+    return stored, reviews, review_candidates
+
+
+def _review_candidates(ordinal, raw, candidates, placed, unmatched, merges, slots, predicted, same_person, rejected):
+    """Keep unmatched crops and split proposals independently of the coloured boxes."""
+    out = []
+    taken = {entry['slot'] for entry in placed}
+
+    def add(tag, box, **extra):
+        if not any(tag == kind and target_tracking.iou(box, old) >= .50 for kind, old in rejected):
+            out.append({'id': str(uuid.uuid4()), 'frame_ordinal': ordinal, 'tag': tag, 'box': box, 'source': 'tracker', **extra})
+
+    merged_indexes = {item['raw_index'] for item in merges}
+    for index in unmatched:
+        item = candidates[index]
+        if item['raw_index'] is None or item['raw_index'] in merged_indexes:
+            continue
+        scores = [(target_tracking.match_evidence(slot, item, predicted.get(slot.number), same_person), slot.number)
+                  for slot in slots if slot.number not in taken]
+        evidence, slot = min(scores, key=lambda pair: pair[0]['cost'], default=({}, None))
+        add('unmatched', item['box'], suggested_slot=slot if evidence.get('cost', 2) < target_tracking.UNMATCHED_COST + .07 else None,
+            scores=evidence or None)
+    for item in merges:
+        add('merge', raw[item['raw_index']]['box'], parts=item['parts'], method=item['source'])
+    return out
 
 
 def process(job_id, owner, runtime):
@@ -287,15 +400,29 @@ def process(job_id, owner, runtime):
             existing_boxes = [box for box in existing_boxes if box['frame_ordinal'] != ordinal]
         mirror = [(ordinal, number, person['box']) for number, person in enumerate(people)] if mirrored else None
         slots, manual, renumbered = _seed_slots(people, existing_slots, existing_boxes)
+        ignored = {slot['slot'] for slot in existing_slots if slot.get('ignored')}
+        hidden = [item for item in existing_boxes if item['slot'] in ignored]
+        with db.connect() as conn:
+            cast = conn.execute('SELECT locked FROM target_cast_settings WHERE cut_id=?', (cut['id'],)).fetchone()
+            locked = bool(cast and cast['locked'])
+            removed, rejected = target_reviews.decisions(conn, existing['id']) if existing else ({}, {})
+        runtime.gallery = None
+        gallery = runtime.get_gallery(episode['project_id'], lease_check, timings)
+        gallery = anime_gallery.Gallery([item for item in gallery.items if item['cut_id'] != cut['id']])
+        mask = result.get('subtitle_mask') or {}
+        band = mask if mask.get('source') == 'detected' else None
         worker.stage(job_id, owner, episode['id'], 'Finding people on the evaluated frames')
         same_person = anime_matching.env_fraction('TARGET_SAME_PERSON_SIMILARITY', model.defaults['track'])
         with anime_bulk.timed('target_detect', timings, cut=cut.get('cut_index'), frames=len(frames)):
-            stored = track(runtime, model, frames, images, slots, manual, lease_check, same_person, mirror)
-        _gallery_labels(runtime, episode, slots, lease_check, timings, model)
+            stored, reviews, candidates = track(runtime, model, frames, images, slots, manual, lease_check, same_person, mirror,
+                gallery=gallery, band=band, locked=locked, removed=removed, rejected=rejected, hidden=hidden)
+        _gallery_labels(gallery, slots, model)
         meta = [{'ordinal': frame['source_frame_index'], 'time': frame['timestamp_seconds'],
                  'relative_time': frame['relative_timestamp_seconds'], 'image_size': list(image.size),
+                 'review': reviews[frame['source_frame_index']],
                  **({'mirror': True} if mirrored and number == 0 else {})} for number, (frame, image) in enumerate(zip(frames, images))]
-        _save(job, owner, episode, cut, key, meta, slots, stored, renumbered, getattr(runtime.get_detector(), 'revision', None), ordinal if mirrored else None)
+        _save(job, owner, episode, cut, key, meta, slots, stored, renumbered, getattr(runtime.get_detector(), 'revision', None),
+              ordinal if mirrored else None, candidates, locked)
         anime_bulk._finish(job_id, owner, episode['id'], cut)
         log.info('character-detect target frames cut=%s finished total=%.2fs boxes=%d slots=%d', cut.get('cut_index'), time.perf_counter() - started, len(stored), len(slots))
     except Exception as exc:
@@ -303,7 +430,7 @@ def process(job_id, owner, runtime):
         inference_worker.log.exception('Target frame detection failed for job %s', job_id)
 
 
-def _save(job, owner, episode, cut, key, frames, slots, stored, renumbered, revision, mirror_ordinal=None):
+def _save(job, owner, episode, cut, key, frames, slots, stored, renumbered, revision, mirror_ordinal, candidates, locked):
     from . import anime_models
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -311,33 +438,42 @@ def _save(job, owner, episode, cut, key, frames, slots, stored, renumbered, revi
         if not conn.execute('SELECT 1 FROM keyframe_results WHERE cache_key=?', (key,)).fetchone():
             raise RuntimeError('The evaluation of this cut changed; evaluate the cut and detect characters again')
         run = conn.execute('SELECT id FROM target_detection_runs WHERE cut_id=? AND selection_key=?', (cut['id'], key)).fetchone()
+        values = (json.dumps(frames), json.dumps(candidates), int(locked), REVIEW_VERSION)
         if run:
             run_id = run['id']
-            conn.execute('UPDATE target_detection_runs SET cut_start=?,cut_end=?,job_id=?,frames_json=?,model_id=?,model_revision=? WHERE id=?',
-                         (cut['start_time'], cut['end_time'], job['id'], json.dumps(frames), anime_models.ANIREF_MODEL_ID, revision, run_id))
-            # The mirrored first frame is replaced whole; everywhere else the user's own boxes stay.
-            conn.execute("DELETE FROM target_detections WHERE run_id=? AND (source='auto' OR frame_ordinal=?)", (run_id, mirror_ordinal))
+            conn.execute('''UPDATE target_detection_runs SET cut_start=?,cut_end=?,job_id=?,model_id=?,model_revision=?,
+                         frames_json=?,candidates_json=?,cast_locked=?,review_version=? WHERE id=?''',
+                         (cut['start_time'], cut['end_time'], job['id'], anime_models.ANIREF_MODEL_ID, revision, *values, run_id))
+            # F1 is always a fresh mirror. Archive any manual rows left on it by the older editable implementation.
+            retired = [target_reviews.box_row(row) for row in conn.execute('''SELECT * FROM target_detections
+                WHERE run_id=? AND frame_ordinal=? AND source='manual' ''', (run_id, mirror_ordinal))]
+            if retired:
+                target_reviews.record(conn, {'id': run_id, 'cut_id': cut['id'], 'selection_key': key}, 'mirror_migrated', retired)
+            # Keep manual and hidden rows elsewhere, including their stable IDs.
+            conn.execute('''DELETE FROM target_detections WHERE run_id=? AND (frame_ordinal=? OR (source!='manual'
+                         AND slot NOT IN (SELECT slot FROM target_slots WHERE run_id=? AND ignored=1)))''', (run_id, mirror_ordinal, run_id))
             conn.execute('DELETE FROM target_slots WHERE run_id=?', (run_id,))
             for old, new in renumbered.items():
                 if old != new:
-                    conn.execute("UPDATE target_detections SET slot=? WHERE run_id=? AND source='manual' AND slot=?", (-1 - new, run_id, old))
+                    conn.execute('UPDATE target_detections SET slot=? WHERE run_id=? AND slot=?', (-1 - new, run_id, old))
             conn.execute("UPDATE target_detections SET slot=-1-slot WHERE run_id=? AND slot<0", (run_id,))
         else:
             run_id = str(uuid.uuid4())
-            conn.execute('INSERT INTO target_detection_runs(id,cut_id,selection_key,cut_start,cut_end,job_id,frames_json,model_id,model_revision) VALUES (?,?,?,?,?,?,?,?,?)',
-                         (run_id, cut['id'], key, cut['start_time'], cut['end_time'], job['id'], json.dumps(frames), anime_models.ANIREF_MODEL_ID, revision))
+            conn.execute('''INSERT INTO target_detection_runs(id,cut_id,selection_key,cut_start,cut_end,job_id,model_id,model_revision,
+                         frames_json,candidates_json,cast_locked,review_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                         (run_id, cut['id'], key, cut['start_time'], cut['end_time'], job['id'], anime_models.ANIREF_MODEL_ID, revision, *values))
         numbers = set()
         for slot in sorted(slots, key=lambda item: item.number):
             character_id = slot.character_id
             if character_id and not conn.execute("SELECT 1 FROM context_items WHERE id=? AND project_id=? AND kind='character'", (character_id, episode['project_id'])).fetchone():
                 character_id = None
-            conn.execute('INSERT INTO target_slots(run_id,slot,origin,character_context_id,label_source) VALUES (?,?,?,?,?)',
-                         (run_id, slot.number, slot.origin, character_id, slot.label_source if character_id else None))
+            label_source = slot.label_source if character_id or slot.label_source == 'manual' else None
+            conn.execute('''INSERT INTO target_slots(run_id,slot,origin,character_context_id,label_source,ignored,first_detection_id)
+                            VALUES (?,?,?,?,?,?,?)''', (run_id, slot.number, slot.origin, character_id, label_source, int(slot.ignored), slot.first_detection_id))
             numbers.add(slot.number)
-        # The user's own boxes outlive a slot only when the slot does.
-        # ``IN (NULL)`` would match nothing, so an empty list is spelled with a number no slot has.
-        conn.execute(f"DELETE FROM target_detections WHERE run_id=? AND source='manual' AND slot NOT IN ({','.join('?' * len(numbers)) or '-1'})", (run_id, *numbers))
-        for ordinal, slot, box in stored:
-            conn.execute('INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json,source) VALUES (?,?,?,?,?,?)',
-                         (str(uuid.uuid4()), run_id, ordinal, slot, json.dumps(list(box)), 'auto'))
+        if any(row['slot'] not in numbers for row in conn.execute('SELECT slot FROM target_detections WHERE run_id=?', (run_id,))):
+            raise RuntimeError('Detecting again would orphan a user edit. The previous run was kept.')
+        for ordinal, slot, box, scores in stored:
+            conn.execute('INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json,source,scores_json) VALUES (?,?,?,?,?,?,?)',
+                         (str(uuid.uuid4()), run_id, ordinal, slot, json.dumps(list(box)), 'auto', json.dumps(scores) if scores else None))
     return run_id

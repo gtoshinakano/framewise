@@ -1,0 +1,69 @@
+{
+  "summary": {
+    "legacy": {
+      "manual": 43,
+      "recovered": 1,
+      "flagged": 50,
+      "proposed_splits": 0,
+      "tp": 68,
+      "fp": 54,
+      "fn": 49,
+      "reviewed_frames": 62,
+      "corrections": 72,
+      "precision": 0.5573770491803278,
+      "recall": 0.5811965811965812,
+      "f1": 0.5690376569037657
+    },
+    "global": {
+      "manual": 43,
+      "recovered": 18,
+      "flagged": 46,
+      "proposed_splits": 0,
+      "tp": 90,
+      "fp": 9,
+      "fn": 27,
+      "reviewed_frames": 62,
+      "corrections": 28,
+      "precision": 0.9090909090909091,
+      "recall": 0.7692307692307693,
+      "f1": 0.8333333333333334
+    },
+    "split": {
+      "manual": 43,
+      "recovered": 24,
+      "flagged": 46,
+      "proposed_splits": 10,
+      "tp": 96,
+      "fp": 7,
+      "fn": 21,
+      "reviewed_frames": 62,
+      "corrections": 22,
+      "precision": 0.9320388349514563,
+      "recall": 0.8205128205128205,
+      "f1": 0.8727272727272727
+    },
+    "flow": {
+      "manual": 43,
+      "recovered": 29,
+      "flagged": 41,
+      "proposed_splits": 10,
+      "tp": 101,
+      "fp": 7,
+      "fn": 16,
+      "reviewed_frames": 62,
+      "corrections": 17,
+      "precision": 0.9351851851851852,
+      "recall": 0.8632478632478633,
+      "f1": 0.8977777777777778
+    }
+  },
+  "splitter": {
+    "tp": 4,
+    "fp": 6,
+    "fn": 8,
+    "precision": 0.4,
+    "recall": 0.3333333333333333,
+    "f1": 0.36363636363636365
+  },
+  "user_actions": {}
+}
