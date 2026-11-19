@@ -126,6 +126,19 @@ class KeyframeQueueTest(unittest.TestCase):
     setUp = analysis_tests.AnalysisTest.setUp
     tearDown = analysis_tests.AnalysisTest.tearDown
 
+    def test_failed_selection_retry_deduplicates_and_waits_for_current_producers(self):
+        initial = self.client.post('/api/cuts/c1/keyframe-selection').json()['job_id']
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='failed' WHERE id=?", (initial,))
+        hardcuts = worker.enqueue('e', 'hardcuts')
+        retry = self.client.post(f'/api/jobs/{initial}/retry')
+        self.assertEqual(retry.status_code, 200, retry.text)
+        self.assertEqual(self.client.post(f'/api/jobs/{initial}/retry').json(), retry.json())
+        job = db.one('SELECT * FROM jobs WHERE id=?', (retry.json()['job_id'],))
+        self.assertEqual(json.loads(job['payload_json'])['depends_on'], [hardcuts])
+        self.assertEqual(job['priority_class'], 'interactive')
+        self.assertIsNone(worker.claim_job(('keyframes',)))
+
     def test_selection_reads_the_current_boundaries_after_queued_media(self):
         (media.episode_dir('p', 'e') / 'original.mp4').write_bytes(b'movie')
         predecessor = worker.enqueue('e', 'hardcuts')

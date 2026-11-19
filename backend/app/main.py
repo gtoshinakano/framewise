@@ -2633,11 +2633,14 @@ def retry_analysis(job_id: str):
                 retry_id = composition_compaction.insert(conn, job['episode_id'], payload['cut_id'], choices, retry_of=job_id)
                 return {'job_id': retry_id}
             if job['pipeline'] == 'keyframes' and job['status'] in ('failed', 'cancelled'):
-                if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running') AND pipeline NOT IN ('brief_export','composition_compact')", (job['episode_id'],)).fetchone():
-                    raise HTTPException(409, 'An episode job is already running')
-                retry_id = str(uuid.uuid4())
-                conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
-                worker.sync_episode_status(conn, job['episode_id'])
+                from . import job_kinds
+                payload = json_object_or_empty(job['payload_json'])
+                choices = {'keyframe_settings': payload['keyframe_settings']}
+                if payload.get('all_cuts'):
+                    choices['all_cuts'] = True
+                else:
+                    choices['cut_ids'] = [ref['id'] for ref in job_kinds.KINDS['keyframes'].cuts(payload)]
+                retry_id = worker.enqueue_in(conn, job['episode_id'], 'keyframes', choices, retry_of=job_id)
                 worker.wake_event.set()
                 return {'job_id': retry_id}
             if job['pipeline'] == 'performance_beats' and job['status'] in ('failed', 'cancelled'):

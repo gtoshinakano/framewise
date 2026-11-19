@@ -125,7 +125,7 @@ def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
     return job_id
 
 
-def enqueue_in(conn, episode_id, pipeline, extra=None):
+def enqueue_in(conn, episode_id, pipeline, extra=None, *, retry_of=None):
     """Record settings and prerequisites in a transaction already held by the caller."""
     episode = conn.execute("SELECT settings_json FROM episodes WHERE id=?", (episode_id,)).fetchone()
     if not episode:
@@ -157,7 +157,7 @@ def enqueue_in(conn, episode_id, pipeline, extra=None):
         deps.extend(pending_jobs(conn, episode_id, ('hardcuts', 'subtitles'), targets))
     if deps:
         payload['depends_on'] = list(dict.fromkeys(deps))
-    job_id = insert_job(conn, episode_id, pipeline, payload)
+    job_id = insert_job(conn, episode_id, pipeline, payload, retry_of=retry_of)
     sync_episode_status(conn, episode_id)
     return job_id
 
