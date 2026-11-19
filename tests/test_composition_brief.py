@@ -909,11 +909,12 @@ class CompositionApiTest(unittest.TestCase):
         request = {'episode_id':'e','cut_id':record['id'],'values':values,'names':names,
                    'input_hash':composition_compaction.input_hash(values,names)}
         job = composition_compaction.enqueue([request])[0]
-        self.assertEqual(composition_compaction.enqueue([request]),[])
+        self.assertEqual(composition_compaction.enqueue([request]),[job])
         claim = worker.claim_job(('composition_compact',))
         output = json.dumps({'values':values},ensure_ascii=False)
         with patch.object(inference_worker,'chat_json',return_value=(output,'test/model')):
             composition_compaction.process(*claim)
+        worker.release_lease(*claim)
         cached = db.one('SELECT * FROM composition_compactions WHERE cut_id=?',(record['id'],))
         self.assertEqual((cached['input_hash'],cached['model_id'],cached['job_id']),(request['input_hash'],'test/model',job))
         self.assertIn('condense visual facts',cached['prompt'])
@@ -927,20 +928,28 @@ class CompositionApiTest(unittest.TestCase):
         self.assertEqual(compact['subjects'][0]['hands'],shortened['subjects.0.hands'])
         self.assertEqual(compact['subjects'][0]['character_context_id'],record['subjects'][0]['character_context_id'])
 
-        # A new source revision while another result is queued must never be
-        # overwritten by the old job, even if a model returns valid JSON.
-        altered = dict(values)
-        altered['setting'] += ' changed'
-        new_request = {**request,'values':altered,'input_hash':composition_compaction.input_hash(altered,names)}
-        failed = composition_compaction.enqueue([new_request])[0]
-        composition_compaction.process(*worker.claim_job(('composition_compact',)))
-        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?',(failed,))['status'],'failed')
-        self.assertEqual(db.one('SELECT input_hash FROM composition_compactions WHERE cut_id=?',(record['id'],))['input_hash'],request['input_hash'])
         frame_id = next(item['id'] for item in self.data['results'] if item['type']=='initial_frame')
-        with db.connect() as conn:
-            frame = json.loads(conn.execute('SELECT content FROM analysis_results WHERE id=?',(frame_id,)).fetchone()['content'])
-            frame['visible_characters'][0]['pose'] = 'Sitting. Her right hand holds a green apple.'
-            conn.execute('UPDATE analysis_results SET content=? WHERE id=?',(json.dumps(frame),frame_id))
+
+        def change_pose(object_name):
+            with db.connect() as conn:
+                frame = json.loads(conn.execute('SELECT content FROM analysis_results WHERE id=?',(frame_id,)).fetchone()['content'])
+                frame['visible_characters'][0]['pose'] = f'Sitting. Her right hand holds a {object_name}.'
+                conn.execute('UPDATE analysis_results SET content=? WHERE id=?',(json.dumps(frame),frame_id))
+
+        restarted = composition_compaction.enqueue([request])[0]
+        change_pose('green pear')
+
+        def answer(model, system, body, *args, **kwargs):
+            self.assertIn('pear', body)
+            change_pose('green apple')
+            return body, 'test/model'
+
+        claim = worker.claim_job(('composition_compact',))
+        with patch.object(inference_worker, 'chat_json', side_effect=answer):
+            composition_compaction.process(*claim)
+        worker.release_lease(*claim)
+        self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (restarted,))['stage'], 'Inputs changed, restarting')
+        self.assertEqual(db.one('SELECT input_hash FROM composition_compactions WHERE cut_id=?',(record['id'],))['input_hash'],request['input_hash'])
         refreshed = self.client.get(self.path).json()['cuts'][0]
         self.assertIn('apple',refreshed['subjects'][0]['hands'])
         self.assertNotIn('carrot',refreshed['subjects'][0]['hands'])
@@ -967,7 +976,7 @@ class CompositionApiTest(unittest.TestCase):
         retry = self.client.post('/api/jobs/'+job+'/retry')
         self.assertEqual(retry.status_code,200,retry.text)
         self.assertEqual(db.one('SELECT retry_of FROM jobs WHERE id=?',(retry.json()['job_id'],))['retry_of'],job)
-        self.assertEqual(self.client.post('/api/jobs/'+job+'/retry').status_code,409)
+        self.assertEqual(self.client.post('/api/jobs/'+job+'/retry').json(), retry.json())
 
     def test_completed_job_can_be_regenerated_if_its_cache_disappears(self):
         record = self.client.get(self.path).json()['cuts'][0]

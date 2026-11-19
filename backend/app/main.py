@@ -2629,17 +2629,8 @@ def retry_analysis(job_id: str):
             if job['pipeline'] == 'composition_compact' and job['status'] in ('failed', 'cancelled'):
                 from . import composition_compaction
                 payload = json_object_or_empty(job['payload_json'])
-                try:
-                    current = composition_compaction._current_record(conn, job['episode_id'], payload['cut_id'])
-                    digest = composition_compaction.input_hash(composition_compaction.text_fields(current), composition_compaction.names_for(current))
-                except (KeyError, ValueError, RuntimeError) as exc:
-                    raise HTTPException(409, 'The composition evidence is no longer ready') from exc
-                if digest != payload.get('input_hash'):
-                    raise HTTPException(409, 'Composition evidence changed; request a fresh brief')
-                if conn.execute("SELECT 1 FROM jobs WHERE pipeline='composition_compact' AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=? AND json_extract(payload_json,'$.input_hash')=?", (payload['cut_id'],digest)).fetchone():
-                    raise HTTPException(409, 'Compaction is already queued or running')
-                retry_id = str(uuid.uuid4())
-                conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job['episode_id'], job['pipeline'], job['payload_json'], job_id))
+                choices = {key: payload[key] for key in ('text_provider', 'model', 'local_thinking') if key in payload}
+                retry_id = composition_compaction.insert(conn, job['episode_id'], payload['cut_id'], choices, retry_of=job_id)
                 return {'job_id': retry_id}
             if job['pipeline'] == 'keyframes' and job['status'] in ('failed', 'cancelled'):
                 if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running') AND pipeline NOT IN ('brief_export','composition_compact')", (job['episode_id'],)).fetchone():

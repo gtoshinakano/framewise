@@ -431,6 +431,21 @@ def _sequence_scope(payload):
     return Scope(frozenset({*reads, domain}), frozenset({domain}))
 
 
+def _compaction_gather(conn, job):
+    from . import composition_compaction
+    return composition_compaction.gather(conn, job)
+
+
+def _compaction_inputs(conn, job):
+    from . import composition_compaction
+    return composition_compaction.inputs(conn, job)
+
+
+def _compaction_invalidates(conn, job):
+    from . import composition_compaction
+    composition_compaction.invalidate(conn, job)
+
+
 def _sequence_gather(conn, job):
     from . import sequence_pipeline
     return sequence_pipeline.gather(conn, job)
@@ -492,7 +507,10 @@ KINDS = {kind.pipeline: kind for kind in (
              frozenset({'results:summary'}), frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
          priority_class=lambda payload: 'interactive', inputs=_summary_inputs, gather=_summary_gather, invalidates=_summary_invalidates),
     Kind('composition_compact', 'Composition brief', True, cuts=_one_cut, keys=_cut_keys('composition_compact'), cancel_running=_always,
-         retry=_always, attention=False),
+         retry=_always, attention=False, resources=frozenset({'text'}),
+         scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results', 'detections'}), frozenset({'composition_cache'}),
+                                     frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
+         priority_class=lambda payload: 'batch', inputs=_compaction_inputs, gather=_compaction_gather, invalidates=_compaction_invalidates),
     Kind('sequence', 'Sequence', True, label=_sequence_label, cancel_running=_always,
          keys=lambda payload, cut_ids: [f"sequence:{payload.get('sequence_id')}:{payload.get('step')}:{payload.get('shot_key') or ''}"],
          resources=frozenset({'text'}), scope=_sequence_scope,

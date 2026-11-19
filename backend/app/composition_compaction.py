@@ -226,93 +226,128 @@ def apply_cached(conn, cut_id, record):
     return candidate if size(candidate) < size(record) else record
 
 
-def enqueue(requests, *, retry_failed=False):
-    """Queue text-only projections once per evidence hash, after the read snapshot."""
-    import uuid
+def insert(conn, episode_id, cut_id, choices, *, retry_of=None):
+    from . import worker
+    payload = {'cut_id': cut_id, **choices}
+    waiting = worker.pending_jobs(conn, episode_id, ('hardcuts', 'analyze', 'performance_beats'), [cut_id])
+    if waiting:
+        payload['depends_on'] = waiting
+    return worker.insert_job(conn, episode_id, 'composition_compact', payload, retry_of=retry_of)
+
+
+def enqueue(requests):
+    """Queue compaction for each active cut and return the accepted job IDs."""
     from . import db, worker
-    if not requests: return []
     queued = []
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         settings = conn.execute('SELECT * FROM text_generation_settings WHERE id=1').fetchone()
+        choices = {'text_provider': settings['text_provider'] if settings else 'openrouter',
+                   'local_thinking': bool(settings['local_thinking']) if settings else False,
+                   'model': settings['openrouter_model'] if settings else 'openrouter/free'}
         for request in requests:
-            cut_id, digest = request['cut_id'], request['input_hash']
-            if not conn.execute('SELECT 1 FROM cuts WHERE id=? AND episode_id=? AND active=1', (cut_id,request['episode_id'])).fetchone():
-                continue
-            cached = conn.execute('SELECT 1 FROM composition_compactions WHERE cut_id=? AND input_hash=?', (cut_id,digest)).fetchone()
-            if cached: continue
-            existing = conn.execute("""SELECT status FROM jobs WHERE pipeline='composition_compact'
-                AND json_valid(payload_json) AND json_extract(payload_json,'$.cut_id')=?
-                AND json_extract(payload_json,'$.input_hash')=? ORDER BY rowid DESC LIMIT 1""", (cut_id,digest)).fetchone()
-            if existing and (existing['status'] in ('queued','running') or (existing['status'] in ('failed','cancelled') and not retry_failed)):
-                continue
-            provider = settings['text_provider'] if settings else 'openrouter'
-            payload = {**request, 'text_provider':provider, 'local_thinking':bool(settings['local_thinking']) if settings else False,
-                       'model':settings['openrouter_model'] if settings else 'openrouter/free'}
-            job_id = str(uuid.uuid4())
-            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES(?,?,'composition_compact',?)",
-                         (job_id,request['episode_id'],json.dumps(payload,ensure_ascii=False)))
-            queued.append(job_id)
-    if queued: worker.wake_event.set()
+            cut_id, episode_id = request['cut_id'], request['episode_id']
+            if conn.execute('SELECT 1 FROM cuts WHERE id=? AND episode_id=? AND active=1', (cut_id, episode_id)).fetchone():
+                queued.append(insert(conn, episode_id, cut_id, choices))
+    if queued:
+        worker.wake_event.set()
     return queued
 
 
 def _current_record(conn, episode_id, cut_id):
     from . import composition_brief
     cut = conn.execute('SELECT cut_index FROM cuts WHERE id=? AND episode_id=? AND active=1', (cut_id,episode_id)).fetchone()
-    if not cut: raise RuntimeError('The cut is no longer active')
+    if not cut:
+        raise CompactionUnavailable('The cut is no longer active')
     number = cut['cut_index'] + 1
     body = composition_brief._make_composition_brief(conn, episode_id, number, number, apply_compaction=False)
     record = body['cuts'][0]
-    if not record['ready']: raise RuntimeError('Visual evidence is no longer ready')
+    if not record['ready']:
+        raise CompactionUnavailable('Visual evidence is no longer ready')
     return record
 
 
-def process(job_id, owner):
-    """Condense a queued immutable text snapshot, never a frame or source file."""
-    import time
-    from . import db, inference_worker, worker
-    job = db.one("SELECT * FROM jobs WHERE id=? AND pipeline='composition_compact' AND status='running' AND lease_owner=?", (job_id,owner))
-    if not job: return
+def gather(conn, job):
+    cut_id = json.loads(job['payload_json'])['cut_id']
     try:
-        payload = json.loads(job['payload_json'])
-        source, names = payload['values'], payload.get('names', [])
-        digest = input_hash(source, names)
-        if digest != payload['input_hash']: raise ValueError('Compaction snapshot hash is invalid')
+        record = _current_record(conn, job['episode_id'], cut_id)
+    except CompactionUnavailable as exc:
+        return {'skip': str(exc)}
+    return {'cut_id': cut_id, 'values': text_fields(record), 'names': names_for(record)}
+
+
+class CompactionUnavailable(RuntimeError):
+    pass
+
+
+def inputs(conn, job):
+    from .job_inputs import fingerprint
+    data = job.get('gathered') or gather(conn, job)
+    if data.get('skip'):
+        return fingerprint(data)
+    return input_hash(data['values'], data['names'])
+
+
+def invalidate(conn, job):
+    """Compaction is an optional projection of the same facts and has no derivatives."""
+
+
+def finish(conn, job_id, stage):
+    conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
+
+
+def process(job_id, owner):
+    """Read the current deterministic projection and condense its text fields."""
+    import time
+    from . import db, inference_worker, job_inputs, worker
+    job = db.one("SELECT * FROM jobs WHERE id=? AND pipeline='composition_compact' AND status='running' AND lease_owner=?", (job_id, owner))
+    if not job:
+        return
+    payload = json.loads(job['payload_json'])
+    try:
         with db.connect() as conn:
-            current = _current_record(conn, job['episode_id'], payload['cut_id'])
-            if input_hash(text_fields(current), names_for(current)) != digest:
-                raise RuntimeError('Visual evidence changed while compaction was queued')
+            conn.execute('BEGIN')
+            live = job_inputs.JobInputs(conn, job, owner)
+            cached = conn.execute('SELECT 1 FROM composition_compactions WHERE cut_id=? AND input_hash=?',
+                                  (payload['cut_id'], live.stamp)).fetchone()
+        if live.data.get('skip') or cached:
+            with live.publish(invalidate=False) as conn:
+                stage = 'Skipped · ' + live.data['skip'] if live.data.get('skip') else 'Complete · Cache is current'
+                finish(conn, job_id, stage)
+            return
+        source, names = live.data['values'], live.data['names']
         provider, model = payload.get('text_provider', 'openrouter'), payload.get('model', 'openrouter/free')
-        worker.stage(job_id,owner,job['episode_id'],'Condensing composition facts')
+        worker.stage(job_id, owner, job['episode_id'], 'Condensing composition facts')
+
         def valid(raw):
-            return json.dumps({'values':validate_response(raw,source,names)},ensure_ascii=False,separators=(',',':'))
+            return json.dumps({'values': validate_response(raw, source, names)}, ensure_ascii=False, separators=(',', ':'))
+
         started = time.monotonic()
         telemetry = {}
-        raw, actual_model = inference_worker.chat_json(model,SYSTEM,json.dumps({'values':source},ensure_ascii=False),[],
-            max_tokens=4096,plain_text=True,text_validator=valid,provider=provider,thinking=payload.get('local_thinking',False),usage_out=telemetry,
-            cancel_check=lambda: inference_worker.check_summary_lease(job_id,owner),
-            progress=lambda attempt,total: worker.stage(job_id,owner,job['episode_id'],f'Condensing composition facts ({attempt}/{total})'))
+        raw, actual_model = inference_worker.chat_json(
+            model, SYSTEM, json.dumps({'values': source}, ensure_ascii=False), [], max_tokens=4096,
+            plain_text=True, text_validator=valid, provider=provider, thinking=payload.get('local_thinking', False), usage_out=telemetry,
+            cancel_check=lambda: inference_worker.check_summary_lease(job_id, owner),
+            progress=lambda attempt, total: worker.stage(job_id, owner, job['episode_id'], f'Condensing composition facts ({attempt}/{total})'))
         values = validate_response(raw, source, names)
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            worker.require_lease(conn,job_id,owner)
-            current = _current_record(conn,job['episode_id'],payload['cut_id'])
-            if input_hash(text_fields(current), names_for(current)) != digest:
-                raise RuntimeError('Visual evidence changed during compaction')
-            settings = {'provider':provider,'model':actual_model,'thinking':payload.get('local_thinking',False) if provider=='local' else None,
-                        'generation_seconds':time.monotonic()-started,'usage':telemetry}
+        with live.publish() as conn:
+            settings = {'provider': provider, 'model': actual_model, 'thinking': payload.get('local_thinking', False) if provider == 'local' else None,
+                        'generation_seconds': time.monotonic() - started, 'usage': telemetry}
             conn.execute('''INSERT INTO composition_compactions(cut_id,input_hash,values_json,model_id,job_id,prompt,settings_json,input_json,created_at)
                 VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(cut_id) DO UPDATE SET input_hash=excluded.input_hash,
                 values_json=excluded.values_json,model_id=excluded.model_id,job_id=excluded.job_id,prompt=excluded.prompt,
                 settings_json=excluded.settings_json,input_json=excluded.input_json,created_at=excluded.created_at''',
-                (payload['cut_id'],digest,json.dumps(values,ensure_ascii=False,separators=(',',':')),actual_model,job_id,SYSTEM,
-                 json.dumps(settings,ensure_ascii=False),json.dumps({'values':source,'names':names},ensure_ascii=False)))
-            conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",(job_id,))
+                (payload['cut_id'], live.stamp, json.dumps(values, ensure_ascii=False, separators=(',', ':')), actual_model, job_id, SYSTEM,
+                 json.dumps(settings, ensure_ascii=False), json.dumps({'values': source, 'names': names}, ensure_ascii=False)))
+            conn.execute('UPDATE jobs SET input_json=? WHERE id=?',
+                         (json.dumps({'fingerprint': live.stamp, 'cut_id': payload['cut_id']}), job_id))
+            finish(conn, job_id, 'Complete')
     except inference_worker.SummaryCancelled:
         if payload.get('text_provider') == 'local':
             from . import local_text_runtime
             local_text_runtime.cancel_local('Cancelled')
+    except worker.LeaseLost:
+        return
     except Exception as exc:
         worker.fail_job(job_id, owner, job['episode_id'], exc)
-        inference_worker.log.exception('Composition compaction failed for job %s',job_id)
+        inference_worker.log.exception('Composition compaction failed for job %s', job_id)
