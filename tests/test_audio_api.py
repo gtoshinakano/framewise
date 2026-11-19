@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from app import db, media, inference_worker
+from app import db, media, inference_worker, worker
 from app.main import app
 from tests.test_analysis import visual_inputs
 
@@ -66,11 +66,12 @@ class AudioApiTests(unittest.TestCase):
         job = db.one('SELECT * FROM jobs WHERE id=?', (response.json()['job_id'],))
         payload = json.loads(job['payload_json'])
         self.assertEqual((job['pipeline'], payload['range'], payload['replace_manual']), ('transcribe', {'start_time': 2, 'end_time': 10}, True))
-        # One audio job per episode at a time, and a queued one can be cancelled.
-        self.assertEqual(self.client.post(endpoint, json={'start_time': 1, 'end_time': 3}).status_code, 409)
-        self.assertEqual(self.client.post('/api/jobs/' + job['id'] + '/cancel').status_code, 200)
+        # An identical range reuses its job, and a different range can wait in the queue.
+        self.assertEqual(self.client.post(endpoint, json={'start_time': 2, 'end_time': 10.1, 'replace_manual': True}).json()['job_id'], job['id'])
         response = self.client.post(endpoint, json={'start_time': 1, 'end_time': 3})
         self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(response.json()['job_id'], job['id'])
+        self.assertEqual(self.client.post('/api/jobs/' + job['id'] + '/cancel').status_code, 200)
         self.assertFalse(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (response.json()['job_id'],))['payload_json'])['replace_manual'])
 
     def test_multiple_ranges_and_upload_validation(self):
@@ -92,8 +93,23 @@ class AudioApiTests(unittest.TestCase):
         job = db.one('SELECT * FROM jobs WHERE id=?', (response.json()['job_id'],))
         upload = media.episode_dir('p', 'e') / 'voice-uploads' / json.loads(job['payload_json'])['upload_id']
         self.assertEqual(upload.read_bytes(), b'audio')
+        duplicate = self.client.post(endpoint + '/upload', data={'character_context_id': 'c'},
+                                     files={'file': ('voice.wav', b'audio', 'audio/wav')})
+        self.assertEqual(duplicate.json()['job_id'], job['id'])
+        self.assertEqual(list(upload.parent.iterdir()), [upload])
         self.client.post('/api/jobs/' + job['id'] + '/cancel')
         self.assertFalse(upload.exists())
+
+    def test_transcription_accepts_a_request_while_media_is_preparing(self):
+        with db.connect() as conn:
+            conn.execute("UPDATE episodes SET has_audio=NULL,duration=NULL WHERE id='e'")
+        prepare = worker.enqueue('e', 'prepare')
+        response = self.client.post('/api/episodes/e/transcribe')
+        self.assertEqual(response.status_code, 200, response.text)
+        job_id = response.json()['job_id']
+        job = db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,))
+        self.assertEqual(json.loads(job['payload_json'])['depends_on'], [prepare])
+        self.assertIsNone(worker.claim_job(('transcribe',)))
 
     def test_interrupted_upload_is_kept_until_attempts_are_exhausted(self):
         from app import worker

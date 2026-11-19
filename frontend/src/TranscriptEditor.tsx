@@ -109,6 +109,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
   const [page, setPage] = useState(0)
   const [historySegments, setHistorySegments] = useState<TranscriptSegment[]>([])
   const [busy, setBusy] = useState(false)
+  const preparing = jobs.some(job => job.pipeline === 'prepare' && (job.status === 'queued' || job.status === 'running'))
   const [error, setError] = useState('')
   const [voiceSamples, setVoiceSamples] = useState<VoiceSample[]>([])
   const [voiceCharacter, setVoiceCharacter] = useState('')
@@ -247,11 +248,11 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
       {view === 'tools' && <>
         <Section id="audio.transcribe" title="Transcribe whole episode" icon={AudioLines} accent={accent} badge={transcribing ? <span className="ml-1 text-[10px] normal-case tracking-normal text-[#f5c678]">{transcribing.status === 'queued' ? 'queued' : 'running'}</span> : null}>
           <p className="muted text-[11px] leading-4">Extracts the audio and transcribes all speech with speaker labels. Lines you edited by hand stay in the history.</p>
-          <button disabled={busy || processing || !hasAudio} onClick={() => queueAudio('/transcribe')} className="btn btn-primary mt-3 w-full !py-2"><AudioLines size={14} /> Transcribe whole episode</button>
-          {!hasAudio && <p className="muted mt-2 text-[11px]">This video has no audio track.</p>}
+          <button disabled={busy || (!hasAudio && !preparing)} onClick={() => queueAudio('/transcribe')} className="btn btn-primary mt-3 w-full !py-2"><AudioLines size={14} /> Transcribe whole episode</button>
+          {!hasAudio && !preparing && <p className="muted mt-2 text-[11px]">{duration > 0 ? 'This video has no audio track.' : 'Prepare the video first.'}</p>}
         </Section>
         <Section id="audio.redo" title="Redo part of the transcript" icon={RefreshCw} accent={accent} defaultOpen={false} openSignal={audioSelection ? `${audioSelection.start}-${audioSelection.end}` : null}>
-          <TranscribeRangePanel episodeId={episodeId} duration={duration} currentTime={currentTime} segments={segments} selection={audioSelection} onSelectionChange={onAudioSelection} playRange={playRange} hasAudio={hasAudio} busy={processing} jobs={jobs} onQueued={onSaved} />
+          <TranscribeRangePanel episodeId={episodeId} duration={duration} currentTime={currentTime} segments={segments} selection={audioSelection} onSelectionChange={onAudioSelection} playRange={playRange} hasAudio={hasAudio} jobs={jobs} onQueued={onSaved} />
         </Section>
         <Section id="audio.subtitles" title="Burned-in subtitles" icon={Captions} accent={accent} defaultOpen={false} badge={subtitling ? <span className="ml-1 text-[10px] normal-case tracking-normal text-[#f5c678]">running</span> : null}>
           <SubtitlePanel episodeId={episodeId} ready={duration > 0} busy={processing} savedLanguage={subtitleLanguage} run={subtitleRun} jobs={jobs} onChanged={onSaved} />
@@ -268,12 +269,12 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
             <button onClick={() => playRange(range.start_time, range.end_time)} aria-label={`Play excerpt ${index + 1}`} className="!text-[#e89aab]"><Play size={11} /></button>{formatTimecode(range.start_time, { precision: 1 })}–{formatTimecode(range.end_time, { precision: 1 })}
             <button onClick={() => setVoiceRanges(voiceRanges.filter((_, i) => i !== index))} aria-label={`Remove excerpt ${index + 1}`}><X size={11} /></button></span>)}</div>}
           {voiceRanges.length > 0 && <div className="mt-3 space-y-2"><ExcerptPreview key={episodeId + JSON.stringify(voiceRanges)} episodeId={episodeId} ranges={voiceRanges} />
-            <button className="btn btn-primary w-full !py-1.5 !text-xs" disabled={busy || processing || !hasAudio || !voiceCharacter || totalVoiceDuration < 2 || totalVoiceDuration > 60} onClick={saveVoiceRanges} title={!voiceCharacter ? 'Choose a character first' : undefined}><Save size={13} /> Save {voiceRanges.length} excerpt{voiceRanges.length === 1 ? '' : 's'} ({totalVoiceDuration.toFixed(1)}s)</button></div>}
+            <button className="btn btn-primary w-full !py-1.5 !text-xs" disabled={busy || !hasAudio || !voiceCharacter || totalVoiceDuration < 2 || totalVoiceDuration > 60} onClick={saveVoiceRanges} title={!voiceCharacter ? 'Choose a character first' : undefined}><Save size={13} /> Save {voiceRanges.length} excerpt{voiceRanges.length === 1 ? '' : 's'} ({totalVoiceDuration.toFixed(1)}s)</button></div>}
         </div>
         <div className="rounded-lg border hairline p-3">
           <label className="block"><span className="mb-2 block text-xs font-semibold">Or upload a recording <span className="muted font-normal">· 2–60 s, up to 25 MB</span></span><input key={voiceFileKey} type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" className="field !py-1.5 text-xs" onChange={event => setVoiceFile(event.target.files?.[0] || null)} /></label>
           {voiceFile && <div className="mt-2"><UploadedPreview file={voiceFile} /></div>}
-          <button className="btn btn-quiet mt-2 w-full !py-1.5 !text-xs" disabled={busy || processing || !voiceCharacter || !voiceFile} onClick={uploadVoice}>Upload voice</button>
+          <button className="btn btn-quiet mt-2 w-full !py-1.5 !text-xs" disabled={busy || !voiceCharacter || !voiceFile} onClick={uploadVoice}>Upload voice</button>
         </div>
         <div>
           <p className="mb-2 text-xs font-semibold">Saved references <span className="muted font-normal">{voiceSamples.length}</span></p>

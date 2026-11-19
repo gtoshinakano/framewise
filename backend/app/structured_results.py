@@ -85,6 +85,13 @@ def invalidate_cut_timing(conn, cut_ids):
         OR json_extract(settings_json,'$.structured_type') IS NOT NULL)""", [(cut_id,) for cut_id in cut_ids])
 
 
+def invalidate_transcript(conn, episode_id, start=0, end=None, reason='Transcript changed'):
+    conn.execute("""UPDATE analysis_results SET stale_reason=? WHERE superseded_by IS NULL
+        AND cut_id IN (SELECT id FROM cuts WHERE episode_id=? AND end_time>? AND (? IS NULL OR start_time<?))
+        AND (json_extract(settings_json,'$.structured_type') IN ('performance_beats','consistency_summary') OR title='Cut summary')""",
+        (reason, episode_id, start, end, end))
+
+
 def save_generated(conn, cut_id, job_id, owner, result_type, content, model_id, prompt, settings, context, *, expected_current=...):
     """Append a generated revision while holding the worker lease and transaction."""
     worker.require_lease(conn, job_id, owner)

@@ -365,6 +365,7 @@ COLUMNS = '(id,episode_id,start_time,end_time,text,speaker_label,character_conte
 
 def apply(conn, payload_json):
     """Write the plan as ``assistant_edit`` revisions; returns the new segment ids."""
+    from ..structured_results import invalidate_transcript
     plan = parse(payload_json)
     check_current(conn, plan)
     created = []
@@ -373,6 +374,7 @@ def apply(conn, payload_json):
         if op['op'] == 'insert':
             conn.execute(f'INSERT INTO transcript_segments {COLUMNS} VALUES (?,?,?,?,?,?,?,0,?,NULL,NULL,NULL)',
                          (new_id, plan['episode_id'], op['start_time'], op['end_time'], op['text'], op['speaker_label'], op['character_context_id'], ORIGIN))
+            invalidate_transcript(conn, plan['episode_id'], op['start_time'], op['end_time'])
         else:
             old = conn.execute('SELECT * FROM transcript_segments WHERE id=?', (op['id'],)).fetchone()
             fields = old if op['op'] == 'delete' else op
@@ -380,5 +382,8 @@ def apply(conn, payload_json):
                          (new_id, plan['episode_id'], fields['start_time'], fields['end_time'], fields['text'], fields['speaker_label'], fields['character_context_id'],
                           int(op['op'] == 'delete'), ORIGIN, old['model_id'], old['job_id'], old['id']))
             conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (new_id, old['id']))
+            invalidate_transcript(conn, plan['episode_id'], old['start_time'], old['end_time'])
+            if (old['start_time'], old['end_time']) != (fields['start_time'], fields['end_time']):
+                invalidate_transcript(conn, plan['episode_id'], fields['start_time'], fields['end_time'])
         created.append(new_id)
     return created

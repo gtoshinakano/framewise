@@ -11,7 +11,7 @@ function inside(segment: TranscriptSegment, selection: AudioSelection) {
   return middle >= selection.start && middle < selection.end
 }
 
-export default function TranscribeRangePanel({ episodeId, duration, currentTime, segments, selection, onSelectionChange, playRange, hasAudio, busy, jobs, onQueued }: {
+export default function TranscribeRangePanel({ episodeId, duration, currentTime, segments, selection, onSelectionChange, playRange, hasAudio, jobs, onQueued }: {
   episodeId: string
   duration: number
   currentTime: number
@@ -20,7 +20,6 @@ export default function TranscribeRangePanel({ episodeId, duration, currentTime,
   onSelectionChange: (selection: AudioSelection | null) => void
   playRange: (start: number, end: number) => void
   hasAudio: boolean
-  busy: boolean
   jobs: Job[]
   onQueued: () => Promise<void>
 }) {
@@ -50,7 +49,7 @@ export default function TranscribeRangePanel({ episodeId, duration, currentTime,
     } catch (err) { setError((err as Error).message) }
     finally { setWorking(false) }
   }
-  const reason = !hasAudio ? 'This video has no audio track.' : !duration ? 'Prepare the video first.' : busy ? 'Another job is running for this episode.' : ''
+  const reason = !duration ? 'Prepare the video first.' : !hasAudio ? 'This video has no audio track.' : ''
   return <div className="space-y-3">
     <p className="muted text-[11px] leading-4">Shift-drag on the waveform to choose the audio, or type the times. Only this part is transcribed and its speakers identified again; replaced lines stay in the history.</p>
     <TimeRangeInput compact start={selection ? selection.start : null} end={selection ? selection.end : null} min={0} max={duration} playhead={currentTime} onChange={edit} onPlay={hasAudio ? playRange : undefined} />

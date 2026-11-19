@@ -242,6 +242,39 @@ class RangeRerunTests(AudioWorkerCase):
         self.assertIsNotNone(db.one("SELECT superseded_by FROM transcript_segments WHERE id='hand'")['superseded_by'])
         self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job,))['stage'], 'Complete · 2 new, 2 replaced')
 
+    def test_range_restarts_and_preserves_a_revision_made_while_running(self):
+        job_id = worker.enqueue('e', 'transcribe', {'range': {'start_time': 4, 'end_time': 8}, 'replace_manual': True})
+        initial = worker.claim_job(('transcribe',))
+        words = [{'start_time': 4.5, 'end_time': 5, 'text': 'New word', 'speaker': 'SPEAKER_00'},
+                 {'start_time': 6.5, 'end_time': 7, 'text': 'Overwrite', 'speaker': 'SPEAKER_00'}]
+
+        def edit_during_generation(*_args):
+            with db.connect() as conn:
+                conn.execute("""INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,origin,parent_id)
+                    VALUES ('new-manual','e',6.5,7,'Keep the new edit','manual_edit','hand')""")
+                conn.execute("UPDATE transcript_segments SET superseded_by='new-manual' WHERE id='hand'")
+            return words
+
+        with patch.object(audio_worker.media, 'episode_dir', return_value=self.path), \
+             patch.object(audio_worker, 'clip_audio'), patch.object(audio_worker, 'diarize', return_value=self.output), \
+             patch.object(audio_worker, 'load_asr', return_value=self.model), \
+             patch.object(audio_worker, 'transcribe_window', side_effect=edit_during_generation):
+            audio_worker.process(*initial)
+        worker.release_lease(*initial)
+        saved = db.one('SELECT status,stage,attempt_count FROM jobs WHERE id=?', (job_id,))
+        self.assertEqual(saved, {'status': 'queued', 'stage': 'Inputs changed, restarting', 'attempt_count': 0})
+        self.assertIsNone(worker.claim_job(('transcribe',)))
+        with db.connect() as conn:
+            conn.execute('UPDATE jobs SET not_before=0 WHERE id=?', (job_id,))
+        with patch.object(audio_worker.media, 'episode_dir', return_value=self.path), \
+             patch.object(audio_worker, 'clip_audio'), patch.object(audio_worker, 'diarize', return_value=self.output), \
+             patch.object(audio_worker, 'load_asr', return_value=self.model), \
+             patch.object(audio_worker, 'transcribe_window', return_value=words):
+            audio_worker.process(*worker.claim_job(('transcribe',)))
+        current = self.current()
+        self.assertEqual(current['new-manual']['text'], 'Keep the new edit')
+        self.assertEqual({row['text'] for row in current.values() if row['job_id'] == job_id}, {'New word'})
+
     def test_too_short_range_fails_without_changing_the_transcript(self):
         job = worker.enqueue('e', 'transcribe', {'range': {'start_time': 4, 'end_time': 4.2}})
         claimed = worker.claim_job(('transcribe',))

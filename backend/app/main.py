@@ -1,6 +1,7 @@
-import json
 import asyncio
+import hashlib
 import io
+import json
 import math
 import mimetypes
 import os
@@ -924,13 +925,21 @@ def list_transcript(episode_id: str, history: bool = False):
 
 @app.post("/api/episodes/{episode_id}/transcribe")
 def transcribe_episode(episode_id: str):
-    episode = require_episode(episode_id)
-    if not episode["has_audio"] or not episode["duration"]:
-        raise HTTPException(400, "Prepare a video with audio first")
-    try:
-        return {"job_id": worker.enqueue(episode_id, "transcribe")}
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    with db.connect() as conn:
+        episode = audio_episode_for_queue(conn, episode_id)
+        job_id = worker.enqueue_in(conn, episode['id'], 'transcribe')
+    worker.wake_event.set()
+    return {'job_id': job_id}
+
+
+def audio_episode_for_queue(conn, episode_id):
+    conn.execute('BEGIN IMMEDIATE')
+    episode = db.one('SELECT * FROM episodes WHERE id=?', (episode_id,), conn=conn)
+    if not episode:
+        raise HTTPException(404, 'Episode not found')
+    if (not episode['has_audio'] or not episode['duration']) and not worker.pending_jobs(conn, episode_id, ('prepare',)):
+        raise HTTPException(400, 'Prepare a video with audio first')
+    return episode
 
 
 @app.post("/api/episodes/{episode_id}/transcribe-range")
@@ -941,18 +950,17 @@ def transcribe_episode_range(episode_id: str, body: TranscribeRangeInput):
     new segments are appended, so the earlier text stays in history. Speakers in the interval
     are named after the labels the neighbouring speech already uses.
     """
-    episode = require_episode(episode_id)
-    if not episode["has_audio"] or not episode["duration"]:
-        raise HTTPException(400, "Prepare a video with audio first")
-    if body.end_time > episode["duration"] + 0.2:
-        raise HTTPException(400, "The selected audio ends after the video")
-    start, end = body.start_time, min(body.end_time, episode["duration"])
-    if end - start < audio_worker.MIN_RANGE_SECONDS:
-        raise HTTPException(400, f"Select at least {audio_worker.MIN_RANGE_SECONDS:g} seconds of audio")
-    try:
-        job_id = worker.enqueue(episode_id, "transcribe", {"range": {"start_time": start, "end_time": end}, "replace_manual": body.replace_manual})
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    with db.connect() as conn:
+        episode = audio_episode_for_queue(conn, episode_id)
+        duration = episode['duration']
+        if duration and body.end_time > duration + .2:
+            raise HTTPException(400, 'The selected audio ends after the video')
+        start, end = body.start_time, min(body.end_time, duration) if duration else body.end_time
+        if end - start < audio_worker.MIN_RANGE_SECONDS:
+            raise HTTPException(400, f'Select at least {audio_worker.MIN_RANGE_SECONDS:g} seconds of audio')
+        job_id = worker.enqueue_in(conn, episode_id, 'transcribe',
+                                  {'range': {'start_time': start, 'end_time': end}, 'replace_manual': body.replace_manual})
+    worker.wake_event.set()
     return {"job_id": job_id, "start_time": start, "end_time": end}
 
 
@@ -1020,15 +1028,15 @@ def list_voice_samples(project_id: str):
     return samples
 
 
-def validate_voice_character(episode, character_id):
-    character = db.one("SELECT id FROM context_items WHERE id=? AND project_id=? AND kind='character'", (character_id, episode["project_id"]))
+def validate_voice_character(episode, character_id, conn=None):
+    character = db.one("SELECT id FROM context_items WHERE id=? AND project_id=? AND kind='character'", (character_id, episode["project_id"]), conn=conn)
     if not character:
         raise HTTPException(400, "Choose a character from this project")
 
 
 def validate_voice_ranges(episode, ranges, minimum=2):
     ordered = sorted(ranges, key=lambda r: r['start_time'])
-    if (any(r['end_time'] <= r['start_time'] or r['end_time'] > episode['duration'] for r in ranges)
+    if (any(r['end_time'] <= r['start_time'] or (episode['duration'] and r['end_time'] > episode['duration']) for r in ranges)
             or any(a['end_time'] > b['start_time'] for a, b in zip(ordered, ordered[1:]))
             or not minimum <= sum(r['end_time'] - r['start_time'] for r in ranges) <= 60):
         raise HTTPException(400, "Choose non-overlapping ranges within the video totaling at most 60 seconds" if minimum == 0 else "Choose non-overlapping ranges within the video totaling 2 to 60 seconds")
@@ -1059,21 +1067,19 @@ def preview_voice_sample(episode_id: str, body: VoicePreviewInput):
 
 @app.post("/api/episodes/{episode_id}/voice-samples")
 def create_voice_sample(episode_id: str, body: VoiceSampleInput):
-    episode = require_episode(episode_id)
-    if not episode["has_audio"] or not episode["duration"]:
-        raise HTTPException(400, "Prepare a video with audio first")
     if body.ranges is not None:
         ranges = [r.model_dump() for r in body.ranges]
     elif body.start_time is not None and body.end_time is not None:
         ranges = [{'start_time': body.start_time, 'end_time': body.end_time}]
     else:
         raise HTTPException(400, "Choose at least one audio range")
-    validate_voice_ranges(episode, ranges)
-    validate_voice_character(episode, body.character_context_id)
-    try:
-        return {"job_id": worker.enqueue(episode_id, "voice_sample", {'character_context_id': body.character_context_id, 'ranges': ranges})}
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    with db.connect() as conn:
+        episode = audio_episode_for_queue(conn, episode_id)
+        validate_voice_ranges(episode, ranges)
+        validate_voice_character(episode, body.character_context_id, conn)
+        job_id = worker.enqueue_in(conn, episode_id, 'voice_sample', {'character_context_id': body.character_context_id, 'ranges': ranges})
+    worker.wake_event.set()
+    return {'job_id': job_id}
 
 
 @app.post("/api/episodes/{episode_id}/voice-samples/upload")
@@ -1086,19 +1092,25 @@ async def upload_voice_sample(episode_id: str, character_context_id: str = Form(
     target = directory / upload_id
     try:
         total = 0
+        digest = hashlib.sha256()
         with target.open('wb') as output:
             while chunk := await file.read(1024 * 1024):
                 total += len(chunk)
                 if total > 25 * 1024 * 1024:
                     raise HTTPException(413, 'Voice audio must be 25 MB or smaller')
                 output.write(chunk)
+                digest.update(chunk)
         if not total:
             raise HTTPException(400, 'Voice audio file is empty')
-        try:
-            job_id = worker.enqueue(episode_id, 'voice_sample', {'character_context_id': character_context_id,
-                'upload_id': upload_id, 'source_filename': Path(file.filename or 'Audio upload').name[:200]})
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
+        with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            validate_voice_character(episode, character_context_id, conn)
+            job_id = worker.enqueue_in(conn, episode_id, 'voice_sample', {'character_context_id': character_context_id,
+                'upload_id': upload_id, 'upload_hash': digest.hexdigest(), 'source_filename': Path(file.filename or 'Audio upload').name[:200]})
+            saved = db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,), conn=conn)
+        if json.loads(saved['payload_json'])['upload_id'] != upload_id:
+            target.unlink(missing_ok=True)
+        worker.wake_event.set()
         return {'job_id': job_id}
     except Exception:
         target.unlink(missing_ok=True)
@@ -1142,6 +1154,7 @@ def create_transcript_segment(episode_id: str, body: TranscriptInput):
     with db.connect() as conn:
         conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id) VALUES (?,?,?,?,?,?,?)",
                      (segment_id, episode_id, body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id))
+        structured_results.invalidate_transcript(conn, episode_id, body.start_time, body.end_time)
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (segment_id,)))
 
 
@@ -1154,12 +1167,15 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
     validate_transcript(episode, body)
     new_id = str(uuid.uuid4())
     with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         current = conn.execute("SELECT superseded_by,deleted FROM transcript_segments WHERE id=?", (segment_id,)).fetchone()
-        if current["superseded_by"] or current["deleted"]:
+        if not current or current["superseded_by"] or current["deleted"]:
             raise HTTPException(409, "This transcript segment is deleted or has a newer revision")
         conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                      (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, "manual_edit", segment["model_id"], segment["job_id"], segment_id))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
+        structured_results.invalidate_transcript(conn, episode['id'], segment['start_time'], segment['end_time'])
+        structured_results.invalidate_transcript(conn, episode['id'], body.start_time, body.end_time)
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
 
 
@@ -1167,6 +1183,7 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
 def delete_transcript_segment(segment_id: str):
     new_id = str(uuid.uuid4())
     with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         old = conn.execute("SELECT * FROM transcript_segments WHERE id=?", (segment_id,)).fetchone()
         if not old:
             raise HTTPException(404, "Transcript segment not found")
@@ -1175,6 +1192,7 @@ def delete_transcript_segment(segment_id: str):
         conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,deleted,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                      (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], 1, "manual_edit", old["model_id"], old["job_id"], segment_id))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
+        structured_results.invalidate_transcript(conn, old['episode_id'], old['start_time'], old['end_time'])
     return {"ok": True}
 
 
@@ -1184,6 +1202,7 @@ def assign_voice(episode_id: str, body: AssignVoiceInput):
     episode = require_episode(episode_id)
     require_character(episode, body.character_context_id)
     with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         lines = conn.execute("""SELECT * FROM transcript_segments
             WHERE episode_id=? AND superseded_by IS NULL AND deleted=0
             AND coalesce(speaker_label,'')=? AND character_context_id IS NULL
@@ -1193,6 +1212,8 @@ def assign_voice(episode_id: str, body: AssignVoiceInput):
             conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                          (new_id, line["episode_id"], line["start_time"], line["end_time"], line["text"], line["speaker_label"], body.character_context_id, "manual_edit", line["model_id"], line["job_id"], line["id"]))
             conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, line["id"]))
+        if lines:
+            structured_results.invalidate_transcript(conn, episode_id)
     return {"updated": len(lines)}
 
 

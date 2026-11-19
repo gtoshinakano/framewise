@@ -68,6 +68,8 @@ def insert_job(conn, episode_id, pipeline, payload, *, priority_class=None, retr
     """Queue a request inside the caller's transaction, reusing an identical active request."""
     kind = job_kinds.KINDS[pipeline]
     choice = {key: value for key, value in payload.items() if key not in ('depends_on', 'batch_id')}
+    if choice.get('upload_hash'):
+        choice.pop('upload_id', None)
     request_key = job_inputs.fingerprint({'payload': choice, 'retry_of': retry_of})
     existing = conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline=? AND request_key=?
         AND status IN ('queued','running')""", (episode_id, pipeline, request_key)).fetchone()
@@ -107,7 +109,9 @@ def enqueue_in(conn, episode_id, pipeline, extra=None):
     episode = conn.execute("SELECT settings_json FROM episodes WHERE id=?", (episode_id,)).fetchone()
     if not episode:
         raise ValueError("Episode not found")
-    payload = {"settings": json.loads(episode["settings_json"]), **(extra or {})}
+    payload = dict(extra or {})
+    if pipeline in ('prepare', 'hardcuts', 'cutframes'):
+        payload['settings'] = json.loads(episode['settings_json'])
     cut_id = payload.get('cut_id')
     if cut_id and pipeline in ('hardcuts', 'cutframes'):
         cut = conn.execute('SELECT cut_index FROM cuts WHERE id=? AND episode_id=? AND active=1', (cut_id, episode_id)).fetchone()
@@ -120,7 +124,7 @@ def enqueue_in(conn, episode_id, pipeline, extra=None):
                 raise ValueError('There is no following cut at this boundary')
             payload['next_cut_id'] = following['id']
     deps = list(payload.get('depends_on', []))
-    if pipeline in ('hardcuts', 'cutframes', 'transcribe', 'voice_sample', 'subtitles', 'keyframes'):
+    if pipeline in ('hardcuts', 'cutframes', 'transcribe', 'subtitles', 'keyframes') or (pipeline == 'voice_sample' and not payload.get('upload_id')):
         deps.extend(pending_jobs(conn, episode_id, ('prepare',)))
     if (pipeline == 'hardcuts' and cut_id) or pipeline == 'cutframes':
         deps.extend(row['id'] for row in conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline='hardcuts'

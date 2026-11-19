@@ -311,6 +311,30 @@ def _selection_invalidates(conn, job):
     keyframes.invalidate(conn, job)
 
 
+def _transcription_scope(payload):
+    return Scope(frozenset({'prepared_audio', 'voices', 'transcript'}), frozenset({'transcript'}))
+
+
+def _voice_scope(payload):
+    reads = {'context', 'voice_upload'} if payload.get('upload_id') else {'context', 'prepared_audio'}
+    return Scope(frozenset(reads), frozenset({'voices'}))
+
+
+def _audio_gather(conn, job):
+    from . import audio_worker
+    return audio_worker.gather(conn, job)
+
+
+def _audio_inputs(conn, job):
+    from . import audio_worker
+    return audio_worker.inputs(conn, job)
+
+
+def _audio_invalidates(conn, job):
+    from . import audio_worker
+    audio_worker.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -338,9 +362,13 @@ KINDS = {kind.pipeline: kind for kind in (
          keys=lambda payload, cut_ids: [f"sequence:{payload.get('sequence_id')}:{payload.get('step')}:{payload.get('shot_key') or ''}"]),
     Kind('subtitles', 'Subtitle extraction', True, cancel_running=_always, keys=lambda payload, cut_ids: [f"subtitles:{payload.get('language') or ''}"]),
     Kind('transcribe', 'Transcription', True, audio_range=_transcribe_range, cancel_running=_always,
-         keys=lambda payload, cut_ids: [_transcribe_key(payload)]),
+         keys=lambda payload, cut_ids: [_transcribe_key(payload)], resources=frozenset({'gpu', 'audio'}),
+         scope=_transcription_scope, priority_class=lambda payload: 'interactive' if payload.get('range') else 'batch',
+         inputs=_audio_inputs, gather=_audio_gather, invalidates=_audio_invalidates),
     Kind('voice_sample', 'Voice sample', True, audio_range=_voice_range, cancel_running=_always,
-         keys=lambda payload, cut_ids: [f"voice_sample:{payload.get('character_context_id')}"]),
+         keys=lambda payload, cut_ids: [f"voice_sample:{payload.get('character_context_id')}"],
+         resources=frozenset({'gpu', 'audio'}), scope=_voice_scope, priority_class=lambda payload: 'interactive',
+         inputs=_audio_inputs, gather=_audio_gather, invalidates=_audio_invalidates),
     # Media work runs on the CPU in the API process: listed, never counted, not cancellable while it runs.
     Kind('keyframes', 'Keyframe selection', False, cuts=_keyframe_cuts, cancel_running=_always, retry=_always, keys=lambda payload, cut_ids: ['keyframes'],
          resources=frozenset({'cpu_media'}), scope=_selection_scope,
