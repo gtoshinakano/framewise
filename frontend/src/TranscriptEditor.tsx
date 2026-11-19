@@ -1,3 +1,4 @@
+import { useEpisodeEvents } from './episodeEvents'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { AudioLines, Captions, History, ListMusic, Mic, Play, Plus, RefreshCw, Save, Trash2, Wrench, X } from 'lucide-react'
 import { api, type AudioSelection, type ContextItem, type Job, type SubtitleRun, type TranscriptSegment } from './api'
@@ -83,7 +84,7 @@ function SegmentEditor({ draft, setDraft, characters, duration, currentTime, bus
   </div>
 }
 
-export default function TranscriptEditor({ episodeId, projectId, duration, currentTime, segments, selectedId, onSelect, onSaved, playRange, processing, hasAudio, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection, view, onViewChange }: {
+export default function TranscriptEditor({ episodeId, projectId, duration, currentTime, segments, selectedId, onSelect, onSaved, playRange, hasAudio, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection, view, onViewChange }: {
   episodeId: string
   projectId: string
   duration: number
@@ -93,7 +94,6 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
   onSelect: (id: string | null) => void
   onSaved: () => Promise<void>
   playRange: (start: number, end: number) => void
-  processing: boolean
   hasAudio: boolean
   subtitleLanguage: string | null
   subtitleRun: SubtitleRun | null
@@ -124,7 +124,8 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
       .then(items => setCharacters(items.filter(item => item.kind === 'character')))
       .catch(err => setError((err as Error).message))
   }, [projectId])
-  useEffect(() => { loadVoices().catch(err => setError((err as Error).message)) }, [projectId, processing])
+  useEffect(() => { loadVoices().catch(err => setError((err as Error).message)) }, [projectId])
+  useEpisodeEvents(change => { if (change.data && view === 'voices') void loadVoices().catch(err => setError((err as Error).message)) }, episodeId)
   useEffect(() => {
     const selected = segments.find(segment => segment.id === selectedId)
     if (selected) setDraft(current => current?.id === selected.id ? current : selected)
@@ -255,7 +256,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
           <TranscribeRangePanel episodeId={episodeId} duration={duration} currentTime={currentTime} segments={segments} selection={audioSelection} onSelectionChange={onAudioSelection} playRange={playRange} hasAudio={hasAudio} jobs={jobs} onQueued={onSaved} />
         </Section>
         <Section id="audio.subtitles" title="Burned-in subtitles" icon={Captions} accent={accent} defaultOpen={false} badge={subtitling ? <span className="ml-1 text-[10px] normal-case tracking-normal text-[#f5c678]">running</span> : null}>
-          <SubtitlePanel episodeId={episodeId} ready={duration > 0} busy={processing} savedLanguage={subtitleLanguage} run={subtitleRun} jobs={jobs} onChanged={onSaved} />
+          <SubtitlePanel episodeId={episodeId} ready={duration > 0 || preparing} savedLanguage={subtitleLanguage} run={subtitleRun} jobs={jobs} onChanged={onSaved} />
         </Section>
       </>}
       {view === 'voices' && <div className="space-y-4 p-4">

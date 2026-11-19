@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Captions } from 'lucide-react'
 import { api, type EpisodeSubtitles, type Job, type SubtitleLine, type SubtitleRun } from './api'
+import { StaleChip } from './RunUi'
 
 const LANGUAGES = ['Portuguese', 'Brazilian Portuguese', 'English', 'Spanish', 'French', 'German', 'Italian', 'Japanese', 'Korean', 'Chinese', 'Russian', 'Arabic', 'Hindi', 'Turkish', 'Indonesian']
 const PAGE = 40
@@ -10,10 +11,9 @@ function clock(seconds: number) {
   return `${minutes}:${(seconds - minutes * 60).toFixed(1).padStart(4, '0')}`
 }
 
-export default function SubtitlePanel({ episodeId, ready, busy, savedLanguage, run, jobs, onChanged }: {
+export default function SubtitlePanel({ episodeId, ready, savedLanguage, run, jobs, onChanged }: {
   episodeId: string
   ready: boolean
-  busy: boolean
   savedLanguage: string | null
   run: SubtitleRun | null
   jobs: Job[]
@@ -27,7 +27,7 @@ export default function SubtitlePanel({ episodeId, ready, busy, savedLanguage, r
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(0)
   const active = jobs.find(job => job.pipeline === 'subtitles' && ['queued', 'running'].includes(job.status))
-  const transcribing = jobs.some(job => ['transcribe', 'voice_sample'].includes(job.pipeline) && ['queued', 'running'].includes(job.status))
+  const transcribing = jobs.some(job => job.pipeline === 'transcribe' && ['queued', 'running'].includes(job.status))
   const latest = jobs.find(job => job.pipeline === 'subtitles')
   const failure = latest && latest.status === 'failed' ? latest.error : null
   useEffect(() => { if (savedLanguage) setLanguage(current => current || savedLanguage) }, [savedLanguage])
@@ -50,25 +50,26 @@ export default function SubtitlePanel({ episodeId, ready, busy, savedLanguage, r
   }
   const pageCount = Math.max(1, Math.ceil(lines.length / PAGE))
   const currentPage = Math.min(page, pageCount - 1)
-  const reason = !ready ? 'Prepare the video first.' : transcribing ? 'Wait for audio transcription to finish.' : busy && !active ? 'Another job is running for this episode.' : ''
+  const reason = !ready ? 'Prepare the video first.' : ''
   return <div className="space-y-3">
     <details className="text-[11px] leading-4"><summary className="muted cursor-pointer select-none hover:text-white">How it works</summary>
-      <p className="muted mt-1">Run this after transcription finishes. The whole video is read once, not cut by cut; each cut's analysis then sees the subtitle lines that overlap it. Every subtitle in the video must be in the one language you give, and the model is told so; separate-language tracks need separate videos.</p></details>
+      <p className="muted mt-1">When transcription is queued or running, extraction waits for it. Each cut sees the subtitle lines that overlap it. Choose the single language spoken by the burned-in subtitles.</p></details>
     <div className="flex items-end gap-2">
       <label className="min-w-0 flex-1"><span className="label !mb-1 !text-[10px]">Subtitle language · required</span>
-        <input className="field !py-2" list="subtitle-languages" value={language} maxLength={60} placeholder="e.g. Portuguese" disabled={working || !!active} onChange={event => setLanguage(event.target.value)} />
+        <input className="field !py-2" list="subtitle-languages" value={language} maxLength={60} placeholder="e.g. Portuguese" disabled={working} onChange={event => setLanguage(event.target.value)} />
         <datalist id="subtitle-languages">{LANGUAGES.map(name => <option key={name} value={name} />)}</datalist>
       </label>
-      <button className="btn btn-primary !py-2" disabled={working || !!reason || !!active || !language.trim()} onClick={() => void extract()} title={run ? 'Extract subtitles again for the entire video' : 'Extract subtitles for the entire video'}>
+      <button className="btn btn-primary !py-2" disabled={working || !!reason || !language.trim()} onClick={() => void extract()} title={run ? 'Extract subtitles again for the entire video' : 'Extract subtitles for the entire video'}>
         <Captions size={14} /> {run ? 'Extract again' : 'Extract'}
       </button>
     </div>
     {reason && <p className="muted text-[11px]">{reason}</p>}
-    {active && <p role="status" className="text-xs text-[#e89aab]">{active.status === 'queued' ? 'Queued for the inference worker.' : active.stage}</p>}
+    {active && <p role="status" className="text-xs text-[#e89aab]">{active.stage === 'Inputs changed, restarting' ? 'Restarting with your changes' : active.status === 'queued' ? transcribing ? 'Queued after transcription' : 'Queued for the inference worker' : active.stage}</p>}
     {failure && !active && <p role="alert" className="text-xs text-[#ff9fa7]">The last extraction stopped: {failure}</p>}
     {error && <p role="alert" className="text-xs text-[#ff9fa7]">{error}</p>}
     {run && <div className="space-y-1 text-[11px]">
       <p><strong>{run.line_count ?? lines.length} lines</strong> in {run.language}{run.finished_at ? ` · ${new Date(run.finished_at.replace(' ', 'T') + 'Z').toLocaleString()}` : ''}</p>
+      {run.stale_reason && <StaleChip reason={run.stale_reason} />}
       {typeof run.band?.top === 'number' && typeof run.band?.bottom === 'number' && <p className="muted">Subtitle strip at {(run.band.top * 100).toFixed(0)}–{(run.band.bottom * 100).toFixed(0)}% of the frame height{run.band.source === 'default' ? ' (no strip was detected, so the lower third was used)' : ''}.</p>}
       {run.diagnostics?.warning && <p role="alert" className="text-[#f2c879]">{run.diagnostics.warning}</p>}
       <button type="button" className="text-[#e89aab] hover:underline" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? 'Hide lines' : 'Review lines'}</button>

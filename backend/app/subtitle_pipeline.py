@@ -18,13 +18,42 @@ import os
 import time
 import uuid
 
-from . import db, frame_model, media, subtitle_reader, subtitle_scan, subtitle_store, visual_models, worker
+from . import db, frame_model, job_inputs, media, subtitle_reader, subtitle_scan, subtitle_store, visual_models, worker
 
 log = logging.getLogger('framewise.subtitles')
 
 PROBE_COUNT = 16
 DETECTOR_QUERY = ['subtitles']
 PROGRESS_SECONDS = 1.5
+
+
+def gather(conn, job):
+    episode = db.one('SELECT id,project_id,original_ext,duration,width,height FROM episodes WHERE id=?',
+                     (job['episode_id'],), conn=conn)
+    folder = media.episode_dir(episode['project_id'], episode['id'])
+    identities = {}
+    for name in (f"original{episode['original_ext']}", 'proxy.mp4'):
+        try:
+            stat = (folder / name).stat()
+            identities[name] = [stat.st_size, stat.st_mtime_ns]
+        except OSError:
+            pass
+    speech = db.all_rows("""SELECT id,start_time,end_time FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL
+        AND deleted=0 ORDER BY start_time,end_time,id""", (job['episode_id'],), conn=conn)
+    return {'episode': episode, 'media': identities, 'speech': speech}
+
+
+def inputs(conn, job):
+    values = job.get('gathered') or gather(conn, job)
+    # The detector uses speech times. Transcript spelling and speakers do not affect the strip.
+    return job_inputs.fingerprint({**values, 'speech': [(row['start_time'], row['end_time']) for row in values['speech']]})
+
+
+def invalidate(conn, job):
+    conn.execute("""UPDATE analysis_results SET stale_reason='Episode subtitles changed' WHERE superseded_by IS NULL
+        AND cut_id IN (SELECT id FROM cuts WHERE episode_id=? AND active=1)
+        AND (json_extract(settings_json,'$.structured_type') IN ('initial_frame','keyframe_analysis','performance_beats','consistency_summary')
+             OR title='Cut summary')""", (job['episode_id'],))
 
 
 def read_parallel():
@@ -35,19 +64,28 @@ def read_parallel():
 
 
 class Run:
-    def __init__(self, job, owner, episode, payload):
+    def __init__(self, snapshot, payload):
         from . import inference_worker
-        self.job, self.owner, self.episode, self.payload = job, owner, episode, payload
+        self.snapshot = snapshot
+        self.job, self.owner, self.episode, self.payload = snapshot.job, snapshot.owner, snapshot.data['episode'], payload
         self.language = subtitle_reader.resolve_language(payload.get('language'))
-        folder = media.episode_dir(episode['project_id'], episode['id'])
-        self.original = folder / f"original{episode['original_ext']}"
+        folder = media.episode_dir(self.episode['project_id'], self.episode['id'])
+        self.original = folder / f"original{self.episode['original_ext']}"
         self.proxy = folder / 'proxy.mp4'
         self.id = None
         self.band = None
         self.scan_diagnostics = {}
         self.timings = {}
         self._last_progress = 0.
-        self.cancel_check = lambda: inference_worker.check_summary_lease(job['id'], owner)
+        self.cancel_check = lambda: inference_worker.check_summary_lease(self.job['id'], self.owner)
+
+    def publish(self, *, invalidate=False):
+        return self.snapshot.publish(invalidate=invalidate, on_changed=self.interrupt)
+
+    def interrupt(self, conn):
+        if self.id:
+            conn.execute("UPDATE subtitle_runs SET status='interrupted',error='Subtitle inputs changed' WHERE id=? AND status='running'",
+                         (self.id,))
 
     # -- progress ----------------------------------------------------------------------------------
 
@@ -63,38 +101,37 @@ class Run:
         """Continue this episode's interrupted or failed run for the same language and prompt, or start a new one."""
         prompt = subtitle_reader.system_prompt(self.language)
         model = visual_models.general()
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            worker.require_lease(conn, self.job['id'], self.owner)
+        with self.publish() as conn:
             # Another model's readings are not continued: a run records one reader.
-            reusable = conn.execute("SELECT * FROM subtitle_runs WHERE episode_id=? AND status IN ('running','failed') AND language=? AND prompt=? AND model_id=? AND model_revision=? ORDER BY rowid DESC LIMIT 1",
-                                    (self.episode['id'], self.language['name'], prompt, model.model_id, model.revision)).fetchone()
-            conn.execute("UPDATE subtitle_runs SET status='failed',error=COALESCE(error,'Interrupted') WHERE episode_id=? AND status='running'", (self.episode['id'],))
-            conn.execute("DELETE FROM subtitle_readings WHERE run_id IN (SELECT id FROM subtitle_runs WHERE episode_id=? AND status!='complete' AND id!=?)",
-                         (self.episode['id'], reusable['id'] if reusable else ''))
+            reusable = conn.execute("""SELECT * FROM subtitle_runs WHERE episode_id=? AND status IN ('running','failed','interrupted')
+                AND language=? AND prompt=? AND model_id=? AND model_revision=? AND input_fingerprint=? ORDER BY rowid DESC LIMIT 1""",
+                (self.episode['id'], self.language['name'], prompt, model.model_id, model.revision, self.snapshot.stamp)).fetchone()
+            conn.execute("UPDATE subtitle_runs SET status='interrupted',error=COALESCE(error,'Interrupted') WHERE episode_id=? AND status='running'",
+                         (self.episode['id'],))
+            provenance = {'fingerprint': self.snapshot.stamp, 'media': self.snapshot.data['media'],
+                          'transcript_segment_ids': [row['id'] for row in self.snapshot.data['speech']]}
+            conn.execute('UPDATE jobs SET input_json=? WHERE id=?', (json.dumps(provenance), self.job['id']))
             if reusable:
                 self.id = reusable['id']
                 self.band = json.loads(reusable['band_json']) if reusable['band_json'] else None
                 conn.execute("UPDATE subtitle_runs SET status='running',job_id=?,error=NULL WHERE id=?", (self.job['id'], self.id))
             else:
                 self.id = str(uuid.uuid4())
-                conn.execute('''INSERT INTO subtitle_runs(id,episode_id,job_id,language,language_code,status,model_id,model_revision,prompt,settings_json)
-                                VALUES (?,?,?,?,?,'running',?,?,?,?)''',
+                conn.execute('''INSERT INTO subtitle_runs(id,episode_id,job_id,language,language_code,status,model_id,model_revision,prompt,settings_json,input_fingerprint)
+                                VALUES (?,?,?,?,?,'running',?,?,?,?,?)''',
                              (self.id, self.episode['id'], self.job['id'], self.language['name'], self.language['code'], model.model_id, model.revision, prompt,
                               json.dumps({'detector': 'tencent/WeVisOne-VL-4B', 'read_parallel': read_parallel(), 'scan_width': subtitle_scan.SCAN_WIDTH,
-                                          'language_input': self.payload.get('language')})))
+                                          'language_input': self.payload.get('language'), 'inputs': provenance}), self.snapshot.stamp))
 
     def update(self, **values):
-        with db.connect() as conn:
-            worker.require_lease(conn, self.job['id'], self.owner)
+        with self.publish() as conn:
             columns = ','.join(f'{key}=?' for key in values)
             conn.execute(f'UPDATE subtitle_runs SET {columns} WHERE id=?', (*values.values(), self.id))
 
     # -- stage 1: locate the strip -----------------------------------------------------------------
 
     def speech(self):
-        rows = db.all_rows('SELECT start_time,end_time FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 ORDER BY start_time', (self.episode['id'],))
-        return [(row['start_time'], row['end_time']) for row in rows]
+        return [(row['start_time'], row['end_time']) for row in self.snapshot.data['speech']]
 
     def locate(self):
         from . import inference_worker, single_cut_pipeline
@@ -133,7 +170,7 @@ class Run:
 
     def scan(self):
         started = time.monotonic()
-        source = self.proxy if self.proxy.is_file() else self.original
+        source = self.proxy if 'proxy.mp4' in self.snapshot.data['media'] else self.original
         info = media.probe(source)
         self.progress('Scanning for subtitle changes', force=True)
         result = subtitle_scan.scan_video(source, info['width'], info['height'], self.episode['duration'], self.band, self.cancel_check,
@@ -141,9 +178,7 @@ class Run:
         self.timings['scan_seconds'] = round(time.monotonic() - started, 1)
         events = result['events']
         digest = hashlib.sha1(json.dumps([[event['start_time'], event['end_time'], event['rep_time']] for event in events] + [self.band['top'], self.band['bottom'], bool(self.band.get('outlined'))]).encode()).hexdigest()
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            worker.require_lease(conn, self.job['id'], self.owner)
+        with self.publish() as conn:
             known = conn.execute('SELECT scan_hash FROM subtitle_runs WHERE id=?', (self.id,)).fetchone()['scan_hash']
             if known and known != digest:  # a different strip or video than the readings were made for
                 conn.execute('DELETE FROM subtitle_readings WHERE run_id=?', (self.id,))
@@ -169,8 +204,7 @@ class Run:
 
         def save(event, outcome, text, legible, detail):
             nonlocal finished
-            with db.connect() as conn:
-                worker.require_lease(conn, self.job['id'], self.owner)
+            with self.publish() as conn:
                 conn.execute('''INSERT INTO subtitle_readings(run_id,event_index,start_time,end_time,rep_time,outcome,text,legible,detail) VALUES (?,?,?,?,?,?,?,?,?)
                                 ON CONFLICT(run_id,event_index) DO UPDATE SET start_time=excluded.start_time,end_time=excluded.end_time,rep_time=excluded.rep_time,
                                 outcome=excluded.outcome,text=excluded.text,legible=excluded.legible,detail=excluded.detail''',
@@ -199,9 +233,7 @@ class Run:
         diagnostics = {**self.scan_diagnostics, 'events': len(events), 'readings': {outcome: sum(1 for row in rows if row['outcome'] == outcome) for outcome in ('text', 'empty', 'rejected')},
                        'lines': len(lines), 'rejected_examples': rejected[:20], 'timings': self.timings,
                        **({'warning': 'No subtitle text was found. Check the language and the detected strip.'} if not lines else {})}
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            worker.require_lease(conn, self.job['id'], self.owner)
+        with self.publish(invalidate=True) as conn:
             conn.execute('DELETE FROM subtitle_lines WHERE run_id=?', (self.id,))
             conn.executemany('INSERT INTO subtitle_lines(id,run_id,episode_id,line_index,start_time,end_time,text,confidence,readings) VALUES (?,?,?,?,?,?,?,?,?)',
                              [(str(uuid.uuid4()), self.id, self.episode['id'], line['line_index'], line['start_time'], line['end_time'], line['text'], line['confidence'], line['readings']) for line in lines])
@@ -224,12 +256,13 @@ def process(job_id, owner):
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
         return
-    episode = db.one('SELECT * FROM episodes WHERE id=?', (job['episode_id'],))
-    if not episode:
-        return
     run = None
     try:
-        run = Run(job, owner, episode, json.loads(job['payload_json']))
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            snapshot = job_inputs.JobInputs(conn, job, owner)
+        run = Run(snapshot, json.loads(job['payload_json']))
+        episode = run.episode
         validate(episode, run.original)
         run.open()
         if not run.band:
@@ -246,7 +279,7 @@ def process(job_id, owner):
     except Exception as exc:
         log.exception('Subtitle extraction failed for job %s', job_id)
         _mark_failed(run, str(exc)[-1800:])
-        inference_worker.fail_job(job_id, owner, episode['id'], exc)
+        inference_worker.fail_job(job_id, owner, job['episode_id'], exc)
 
 
 def _mark_failed(run, message):

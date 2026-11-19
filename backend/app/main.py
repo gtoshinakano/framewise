@@ -987,25 +987,29 @@ def extract_episode_subtitles(episode_id: str, body: SubtitleRunInput):
     """Queue one job that extracts the burned-in subtitles of the entire episode, independent of its cuts.
 
     The language is required: the whole video has one subtitle language and the model is told it as a fact.
-    Run this after audio transcription has finished; the speech times guide where the subtitle strip is looked for.
+    A pending transcription becomes a prerequisite. Speech times guide where the subtitle strip is located.
     """
     from . import subtitle_reader
-    episode = require_episode(episode_id)
     try:
         language = subtitle_reader.resolve_language(body.language)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    if not episode["duration"] or not episode["width"]:
-        raise HTTPException(400, "Prepare the video before extracting subtitles")
-    if db.one("SELECT 1 AS found FROM jobs WHERE episode_id=? AND pipeline IN ('transcribe','voice_sample') AND status IN ('queued','running')", (episode_id,)):
-        raise HTTPException(409, "Wait for audio transcription to finish, then extract the subtitles")
-    try:
-        job_id = worker.enqueue(episode_id, "subtitles", {"language": language["name"]})
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
     with db.connect() as conn:
-        conn.execute("UPDATE episodes SET subtitle_language=? WHERE id=?", (language["name"], episode_id))
+        conn.execute('BEGIN IMMEDIATE')
+        episode = db.one('SELECT duration,width FROM episodes WHERE id=?', (episode_id,), conn=conn)
+        if not episode:
+            raise HTTPException(404, 'Episode not found')
+        if (not episode['duration'] or not episode['width']) and not worker.pending_jobs(conn, episode_id, ('prepare',)):
+            raise HTTPException(400, 'Prepare the video before extracting subtitles')
+        job_id = queue_subtitles(conn, episode_id, language['name'])
+    worker.wake_event.set()
     return {"job_id": job_id, "language": language["name"]}
+
+
+def queue_subtitles(conn, episode_id, language, depends_on=()):
+    job_id = worker.enqueue_in(conn, episode_id, 'subtitles', {'language': language, 'depends_on': list(depends_on)})
+    conn.execute('UPDATE episodes SET subtitle_language=? WHERE id=?', (language, episode_id))
+    return job_id
 
 
 @app.get("/api/episodes/{episode_id}/subtitles", responses={200: {"model": EpisodeSubtitles}})
@@ -1155,6 +1159,7 @@ def create_transcript_segment(episode_id: str, body: TranscriptInput):
         conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id) VALUES (?,?,?,?,?,?,?)",
                      (segment_id, episode_id, body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id))
         structured_results.invalidate_transcript(conn, episode_id, body.start_time, body.end_time)
+        subtitle_store.invalidate_probes(conn, episode_id)
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (segment_id,)))
 
 
@@ -1175,7 +1180,9 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
                      (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, "manual_edit", segment["model_id"], segment["job_id"], segment_id))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
         structured_results.invalidate_transcript(conn, episode['id'], segment['start_time'], segment['end_time'])
-        structured_results.invalidate_transcript(conn, episode['id'], body.start_time, body.end_time)
+        if (segment['start_time'], segment['end_time']) != (body.start_time, body.end_time):
+            structured_results.invalidate_transcript(conn, episode['id'], body.start_time, body.end_time)
+            subtitle_store.invalidate_probes(conn, episode['id'])
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
 
 
@@ -1193,6 +1200,7 @@ def delete_transcript_segment(segment_id: str):
                      (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], 1, "manual_edit", old["model_id"], old["job_id"], segment_id))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
         structured_results.invalidate_transcript(conn, old['episode_id'], old['start_time'], old['end_time'])
+        subtitle_store.invalidate_probes(conn, old['episode_id'])
     return {"ok": True}
 
 

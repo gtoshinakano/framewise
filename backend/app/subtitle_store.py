@@ -26,7 +26,15 @@ def serialize_run(row, with_prompt=False):
     run.pop('scan_hash', None)
     if not with_prompt:
         run.pop('prompt', None)
+        run.pop('input_fingerprint', None)
+        run['settings'].pop('inputs', None)
     return run
+
+
+def invalidate_probes(conn, episode_id):
+    conn.execute("""UPDATE subtitle_runs SET stale_reason='Transcript timing changed' WHERE id=(
+        SELECT id FROM subtitle_runs WHERE episode_id=? AND status='complete' ORDER BY rowid DESC LIMIT 1)""",
+        (episode_id,))
 
 
 def current_run(episode_id, conn=None):

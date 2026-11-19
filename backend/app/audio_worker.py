@@ -168,6 +168,15 @@ def protected_deletions(rows):
     return [(row['start_time'], row['end_time']) for row in rows if row['deleted'] and row['origin'] != 'model']
 
 
+def invalidate_subtitles_if_timing_changed(conn, episode_id, previously):
+    from .subtitle_store import invalidate_probes
+    old = sorted((row['start_time'], row['end_time']) for row in previously)
+    new = [tuple(row) for row in conn.execute("""SELECT start_time,end_time FROM transcript_segments WHERE episode_id=?
+        AND superseded_by IS NULL AND deleted=0 ORDER BY start_time,end_time""", (episode_id,))]
+    if old != new:
+        invalidate_probes(conn, episode_id)
+
+
 def speech_windows(start, end, size=25.):
     """Split [start, end] into excerpts of at most ``size`` seconds without a tiny tail."""
     windows = []
@@ -253,6 +262,7 @@ def transcribe_range(snapshot, payload, audio, temp):
                 (str(uuid.uuid4()), episode['id'], word['start_time'], word['end_time'], word['text'], name['label'], name['character_id'], model_id, job_id))
             added += 1
         note = f', {kept} edited by hand kept' if kept else ''
+        invalidate_subtitles_if_timing_changed(conn, episode['id'], current)
         preserve_manual_base(conn)
         finish(conn, job_id, episode['id'], f'Complete · {added} new, {replaced} replaced{note}')
 
@@ -377,6 +387,7 @@ def process(job_id, owner):
                     character_id = matches.get(speaker, {}).get('character_id')
                     conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id) VALUES (?,?,?,?,?,?,?,'model',?,?)",
                         (str(uuid.uuid4()), episode['id'], word['start_time'], word['end_time'], word['text'], speaker, character_id, ASR + ' + ' + ALIGNER + ' + ' + DIARIZATION, job_id))
+                invalidate_subtitles_if_timing_changed(conn, episode['id'], current)
                 conn.execute('UPDATE jobs SET input_json=? WHERE id=?', (json.dumps(transcript_provenance(snapshot)), job_id))
                 finish(conn, job_id, episode['id'])
     except worker.LeaseLost:

@@ -83,6 +83,8 @@ def init_schema(conn):
                  _bump_local('data', f'id={row}.episode_id'))
     _trigger(conn, 'episode_events_stale', 'analysis_results', 'UPDATE', 'stale_reason',
              _bump_local('stale', 'id=(SELECT episode_id FROM cuts WHERE id=NEW.cut_id)'))
+    _trigger(conn, 'episode_events_subtitle_stale', 'subtitle_runs', 'UPDATE', 'stale_reason',
+             _bump_local('stale', 'id=NEW.episode_id'))
     for action, row in (('INSERT', 'NEW'), ('UPDATE', 'NEW'), ('DELETE', 'OLD')):
         _trigger(conn, f'episode_events_context_{action}', 'context_items', action, None,
                  _bump_local('data', f'project_id={row}.project_id AND ({row}.episode_id IS NULL OR id={row}.episode_id)'))

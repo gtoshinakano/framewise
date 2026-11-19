@@ -46,6 +46,8 @@ Replace placeholders with returned IDs. Quote URLs containing `&`. JSON errors u
 
 Clients using the episode editor API can subscribe to `GET /api/episodes/{episode_id}/events` for changes. This SSE stream sends a `changed` event containing a revision ID and the `queue`, `jobs`, `data`, and `stale` revisions. Compare revisions for equality and reload the relevant endpoints after a change. Reconnect with `Last-Event-ID` to resume from the last seen revision. Multiple writes may arrive as one notification.
 
+The current track from `GET /api/v1/episodes/{episode_id}/subtitles` can include a `stale_reason` when the transcript timing that guided extraction changes. Its saved lines remain available. An explicit subtitle extraction refreshes the track.
+
 ## Agent-ready briefs and downloads
 
 `GET /api/cuts/{cut_id}/structured-analysis` returns structured single-cut outputs as JSON objects, including their type, source and revision links. Pass `?history=true` for all revisions. The brief's `initial_frame` includes the current structured initial-frame result when available. A missing result means it has not yet been generated; do not infer one from a legacy summary. Editing an existing structured result through `PUT /api/analysis-results/{id}` requires `content` to be a JSON object encoded as a string, and creates a new revision.

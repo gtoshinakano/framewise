@@ -147,7 +147,7 @@ class SubtitleRun(BaseModel):
     id: str
     language: str
     language_code: str | None
-    status: str = Field(description="complete for the current run; failed or running for others in history.")
+    status: str = Field(description="complete for the current run; history can contain running, failed and interrupted runs.")
     band: dict[str, Any] = Field(description="Detected subtitle strip and how it was found.")
     diagnostics: dict[str, Any] = Field(description="Scan and reading counts, timings and rejected examples.")
     model_id: str | None
@@ -156,6 +156,7 @@ class SubtitleRun(BaseModel):
     created_at: str
     finished_at: str | None
     line_count: int | None = None
+    stale_reason: str | None = None
 
 
 class EpisodeSubtitles(BaseModel):

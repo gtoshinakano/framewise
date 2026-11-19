@@ -335,6 +335,21 @@ def _audio_invalidates(conn, job):
     audio_worker.invalidate(conn, job)
 
 
+def _subtitle_gather(conn, job):
+    from . import subtitle_pipeline
+    return subtitle_pipeline.gather(conn, job)
+
+
+def _subtitle_inputs(conn, job):
+    from . import subtitle_pipeline
+    return subtitle_pipeline.inputs(conn, job)
+
+
+def _subtitle_invalidates(conn, job):
+    from . import subtitle_pipeline
+    subtitle_pipeline.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -360,7 +375,10 @@ KINDS = {kind.pipeline: kind for kind in (
          retry=_always, attention=False),
     Kind('sequence', 'Sequence', True, label=_sequence_label, cancel_running=_always,
          keys=lambda payload, cut_ids: [f"sequence:{payload.get('sequence_id')}:{payload.get('step')}:{payload.get('shot_key') or ''}"]),
-    Kind('subtitles', 'Subtitle extraction', True, cancel_running=_always, keys=lambda payload, cut_ids: [f"subtitles:{payload.get('language') or ''}"]),
+    Kind('subtitles', 'Subtitle extraction', True, cancel_running=_always,
+         keys=lambda payload, cut_ids: [f"subtitles:{payload.get('language') or ''}"], resources=frozenset({'gpu'}),
+         scope=lambda payload: Scope(frozenset({'original', 'proxy', 'transcript'}), frozenset({'subtitles'})),
+         priority_class=lambda payload: 'batch', inputs=_subtitle_inputs, gather=_subtitle_gather, invalidates=_subtitle_invalidates),
     Kind('transcribe', 'Transcription', True, audio_range=_transcribe_range, cancel_running=_always,
          keys=lambda payload, cut_ids: [_transcribe_key(payload)], resources=frozenset({'gpu', 'audio'}),
          scope=_transcription_scope, priority_class=lambda payload: 'interactive' if payload.get('range') else 'batch',

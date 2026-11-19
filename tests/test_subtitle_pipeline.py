@@ -97,6 +97,7 @@ class SubtitleJobTest(unittest.TestCase):
              patch.object(subtitle_reader, 'read_events', side_effect=reader or self.read_script()):
             self.frame_server, self.require = frame_server, require
             subtitle_pipeline.process(*claimed)
+        worker.release_lease(*claimed)
         return claimed[0], calls
 
     def job(self, job_id):
@@ -114,19 +115,21 @@ class SubtitleJobTest(unittest.TestCase):
         self.assertEqual(self.client.post('/api/episodes/e/subtitles', json={'language': 'pt', 'extra': 1}).status_code, 422)
         self.assertIsNone(db.one("SELECT id FROM jobs WHERE pipeline='subtitles'"))
 
-    def test_the_episode_must_be_prepared_and_transcription_finished(self):
+    def test_the_episode_must_be_prepared_and_subtitles_wait_for_transcription(self):
         self.assertEqual(self.client.post('/api/episodes/e/subtitles', json={'language': 'pt'}).status_code, 400)
         self.prepare()
         with db.connect() as conn:
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('tr','e','transcribe','running')")
-        blocked = self.client.post('/api/episodes/e/subtitles', json={'language': 'pt'})
-        self.assertEqual(blocked.status_code, 409)
-        self.assertIn('audio transcription', blocked.json()['detail'])
+        waiting = self.queue('pt')
+        payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (waiting,))['payload_json'])
+        self.assertEqual(payload['depends_on'], ['tr'])
+        self.assertIsNone(worker.claim_job(('subtitles',)))
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='done' WHERE id='tr'")
-        self.assertEqual(self.client.post('/api/episodes/e/subtitles', json={'language': 'pt'}).status_code, 200)
+        self.assertEqual(self.queue('pt'), waiting)
+        self.assertEqual(worker.claim_job(('subtitles',))[0], waiting)
 
-    def test_queueing_saves_the_language_and_one_job_blocks_another(self):
+    def test_queueing_saves_the_language_and_reuses_an_identical_request(self):
         self.prepare()
         job_id = self.queue('pt-BR')
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (job_id,))['payload_json'])
@@ -134,11 +137,42 @@ class SubtitleJobTest(unittest.TestCase):
         episode = self.client.get('/api/episodes/e').json()
         self.assertEqual(episode['subtitle_language'], 'Brazilian Portuguese')
         self.assertEqual(episode['subtitles'], {'language': 'Brazilian Portuguese', 'run': None})
-        self.assertEqual(self.client.post('/api/episodes/e/subtitles', json={'language': 'pt'}).status_code, 409)
+        self.assertEqual(self.queue('pt-BR'), job_id)
+        self.assertNotEqual(self.queue('pt'), job_id)
         self.assertEqual(self.client.post(f'/api/jobs/{job_id}/cancel').status_code, 200)
         self.assertEqual(db.one('SELECT status,stage FROM jobs WHERE id=?', (job_id,)), {'status': 'cancelled', 'stage': 'Cancelled'})
 
     # -- the job ------------------------------------------------------------------------------------
+
+    def test_new_transcript_times_restart_an_inflight_scan(self):
+        self.prepare()
+        job_id = self.queue()
+
+        def edit_while_reading(server, source, band, language, events, on_result, **kwargs):
+            on_result(events[0], 'text', 'Olá, tudo bem?', 'full', '')
+            result = self.client.put('/api/transcript-segments/t1',
+                                     json={'start_time': 11, 'end_time': 13, 'text': 'Olá'})
+            self.assertEqual(result.status_code, 200, result.text)
+            on_result(events[1], 'text', 'Olá, tudo bem?', 'full', '')
+
+        self.run_job(reader=edit_while_reading)
+        self.assertEqual(self.job(job_id)['stage'], 'Inputs changed, restarting')
+        self.assertIsNone(worker.claim_job(('subtitles',)))
+        self.assertEqual(db.one('SELECT status FROM subtitle_runs')['status'], 'interrupted')
+        self.assertEqual(db.one('SELECT COUNT(*) AS n FROM subtitle_readings')['n'], 1)
+        with db.connect() as conn:
+            conn.execute('UPDATE jobs SET not_before=0 WHERE id=?', (job_id,))
+        speech = []
+        self.run_job(speech_capture=speech)
+        self.assertEqual(speech, [[(11, 13), (30, 33)]])
+        complete = self.client.get('/api/episodes/e/subtitles').json()['run']
+        self.assertIsNone(complete['stale_reason'])
+        update = self.client.put('/api/transcript-segments/t2',
+                                 json={'start_time': 31, 'end_time': 33, 'text': 'Tchau'})
+        self.assertEqual(update.status_code, 200, update.text)
+        current = self.client.get('/api/episodes/e/subtitles').json()['run']
+        self.assertEqual(current['stale_reason'], 'Transcript timing changed')
+        self.assertEqual(db.one("SELECT COUNT(*) AS n FROM jobs WHERE pipeline='subtitles'")['n'], 1)
 
     def test_one_run_covers_the_whole_episode_and_stores_lines_not_tied_to_any_cut(self):
         self.prepare()
