@@ -45,7 +45,7 @@ def make_brief(episode_id, first, last, conn=None):
             WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND start_time<? AND end_time>? ORDER BY start_time,id''', (episode_id, cut['end_time'], cut['start_time']), conn=conn)
         initial = next((item for item in structured_results.list_results(cut['id'], conn=conn) if item['type'] == 'initial_frame'), None)
         result.append({'id': cut['id'], 'cut_number': cut['cut_index'] + 1, 'start_time': cut['start_time'], 'end_time': cut['end_time'],
-            'production_brief': {key: row[key] for key in ('id', 'content', 'origin', 'model_id', 'job_id', 'created_at')} if row else None,
+            'production_brief': {key: row[key] for key in ('id', 'content', 'origin', 'model_id', 'job_id', 'created_at', 'stale_reason')} if row else None,
             'initial_frame': initial,
             'suggested_frame_url': frame_url, 'audio_url': f"/api/v1/cuts/{cut['id']}/audio" if episode['has_audio'] and audio.is_file() else None,
             'dialogue': transcript, 'visible_characters': {'main': section('main_characters'), 'secondary': section('secondary_characters')},
@@ -76,20 +76,23 @@ def gather(conn, job):
     folder = media.episode_dir(episode['project_id'], episode_id)
     try:
         if request.get('kind') == 'sequence':
-            if 'sequence' in request:  # Older requests carry an already-captured package.
-                payload = request
-            else:
-                document = sequence_package.document(request['sequence_id'], conn)
-                if not document:
-                    return {'error': 'Sequence was removed'}
-                full, assets = document
-                if not full.get('shots'):
-                    return {'error': 'This sequence has no shot plan yet'}
-                queued_at = datetime.fromisoformat(job['created_at']).replace(tzinfo=timezone.utc).isoformat(timespec='seconds')
-                payload = {**request, 'contract': sequence_package.CONTRACT, 'sequence': full, 'assets': assets, 'queued_at': queued_at}
+            sequence_id = request.get('sequence_id')
+            if not sequence_id:
+                if request.get('contract') != sequence_package.CONTRACT:
+                    return {'error': 'This export was queued before sequence-v2; queue the export again'}
+                sequence_id = request['sequence']['id']
+            document = sequence_package.document(sequence_id, conn)
+            if not document:
+                return {'error': 'Sequence was removed'}
+            full, assets = document
+            if not full.get('shots'):
+                return {'error': 'This sequence has no shot plan yet'}
+            queued_at = request.get('queued_at') or datetime.fromisoformat(job['created_at']).replace(tzinfo=timezone.utc).isoformat(timespec='seconds')
+            payload = {'kind': 'sequence', 'contract': sequence_package.CONTRACT, 'sequence': full, 'assets': assets,
+                       'queued_at': queued_at, 'include': request.get('include', [])}
             cuts = payload['sequence'].get('cuts', [])
         else:
-            payload = request if 'brief' in request else _brief_snapshot(conn, episode_id, request)
+            payload = _legacy_brief(conn, episode_id, request) if 'brief' in request else _brief_snapshot(conn, episode_id, request)
             cuts = payload['brief']['cuts']
     except (HTTPException, composition_brief.CompositionError) as exc:
         return {'error': exc.detail}
@@ -127,6 +130,30 @@ def _brief_snapshot(conn, episode_id, request):
         assets.append(cut)
     if options:
         payload.update(composition=True, asset_cuts=assets, include_last_frame=request['include_last_frame'])
+    return payload
+
+
+def _legacy_brief(conn, episode_id, request):
+    """Recover selections and explicit image references from a legacy queued export."""
+    from . import composition_brief
+    saved = request['brief']
+    choices = {'from': saved['from'], 'to': saved['to']}
+    if request.get('composition'):
+        fields = {key for cut in saved['cuts'] for key in cut if cut.get('ready')}
+        includes = sorted(fields & composition_brief.INCLUDES)
+        choice_fields = sorted(fields & composition_brief.FIELDS)
+        choices.update(composition={'include': ','.join(includes), 'fields': ','.join(choice_fields)},
+                       include_last_frame=bool(request.get('include_last_frame')))
+    payload = _brief_snapshot(conn, episode_id, choices)
+    images = {cut['id']: url for cut in saved['cuts']
+              if (url := cut.get('suggested_frame_url')) and url.startswith('/api/analysis-results/')}
+    for cut in payload['brief']['cuts']:
+        if cut['id'] in images:
+            cut['suggested_frame_url'] = images[cut['id']]
+    if request.get('composition') and len(saved['cuts']) < choices['to'] - choices['from'] + 1:
+        selected = {cut['id'] for cut in saved['cuts']}
+        payload['brief']['cuts'] = [cut for cut in payload['brief']['cuts'] if cut['id'] in selected]
+        payload['asset_cuts'] = [cut for cut in payload['asset_cuts'] if cut['id'] in selected]
     return payload
 
 

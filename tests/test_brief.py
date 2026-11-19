@@ -147,12 +147,15 @@ class BriefTest(unittest.TestCase):
         brief['cuts'][0]['suggested_frame_url'] = '/api/analysis-results/frame/frame'
         with db.connect() as conn:
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('00000000-0000-0000-0000-000000000001','e','brief_export',?)", (json.dumps({'brief': brief}),))
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,stale_reason) VALUES ('summary','c','cut_description','Cut summary','Updated brief','Evidence changed')")
         worker.process(*worker.claim_job())
         status = self.client.get('/api/v1/brief-exports/00000000-0000-0000-0000-000000000001').json()
         import io
         with zipfile.ZipFile(io.BytesIO(self.client.get(status['download_url']).content)) as z:
             manifest = json.loads(z.read('manifest.json'))
             self.assertEqual(z.read(manifest[0]['frame']), b'legacy frame')
+            summary = json.loads(z.read('brief.json'))['cuts'][0]['production_brief']
+            self.assertEqual((summary['content'], summary['stale_reason']), ('Updated brief', 'Evidence changed'))
 
     def test_structured_sections_and_frame_link(self):
         folder = media.episode_dir('p', 'e') / 'analysis'
