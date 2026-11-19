@@ -102,5 +102,4 @@ def inputs(conn, job):
 
 def invalidate(conn, job):
     cut_id = json.loads(job['payload_json'])['cut_id']
-    conn.execute("""UPDATE analysis_results SET stale_reason='Consistency summary changed'
-        WHERE cut_id=? AND superseded_by IS NULL AND title='Cut summary'""", (cut_id,))
+    structured_results.invalidate_text(conn, cut_id, 'consistency_summary')

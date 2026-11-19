@@ -473,6 +473,7 @@ def init_db():
             ('subtitle_runs', 'stale_reason', 'TEXT'),
             ('cuts', 'created_at', 'TEXT'),
             ('analysis_results', 'stale_reason', 'TEXT'),
+            ('cut_review_drafts', 'stale_reason', 'TEXT'),
             ('character_detections', 'match_model_id', 'TEXT'),
             ('character_detections', 'match_model_revision', 'TEXT'),
             # Bulk recognition: ranked suggestions for unconfirmed boxes, the

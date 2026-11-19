@@ -2099,38 +2099,17 @@ def queue_episode_consistency_summaries(episode_id: str, from_cut: int | None = 
 
 
 
-def review_answers_payload(cut, config, auto_save=False, pending_review=False):
-    """Snapshot the evidence for a review-answers job. Raises ValueError until a consistency summary exists,
-    unless `pending_review` says a chained job will write it first."""
-    from . import structured_results, review_answers
-    cut_id = cut['id']
-    context = selected_analysis_context(cut_id, config)
-    results = structured_results.list_results(cut_id)
-    saved = db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,))
-    existing = saved['content'] if saved else ''
-    neighbours = prompt_context.slim_neighbors(context)
-    evidence = review_answers.build_evidence(results, context, existing, neighbours, pending_review)
-    payload = review_answers.payload_for(cut_id, config.model_dump(), evidence, [item['id'] for item in results], existing)
-    if auto_save:
-        payload['auto_save'] = True
-    return payload, results
-
-
 @app.post('/api/cuts/{cut_id}/review-answers')
 def queue_review_answers(cut_id: str):
-    """Queue a draft of answers to the consistency summary's human-review and suggested-check items."""
+    """Queue a draft of production decisions from the current consistency summary."""
     from . import review_answers
     cut, config = analysis_config_for_cut(cut_id)
     if not cut['active']:
         raise HTTPException(400, 'Only active cuts can be reviewed')
-    try:
-        payload, _ = review_answers_payload(cut, config)
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            job_id = review_answers.insert(conn, cut['episode_id'], payload)
-            worker.sync_episode_status(conn, cut['episode_id'])
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        job_id = review_answers.insert(conn, cut['episode_id'], {'cut_id': cut_id, 'config': config.model_dump()})
+        worker.sync_episode_status(conn, cut['episode_id'])
     return {'job_id': job_id}
 
 
@@ -2145,36 +2124,24 @@ def pending_cut_jobs(conn, episode_id, cut_id, pipelines):
 
 @app.post('/api/episodes/{episode_id}/review-answers')
 def queue_episode_review_answers(episode_id: str, from_cut: int | None = None):
-    """Draft and save production-decision answers for this cut and every later one that is ready.
-
-    `from_cut` is the cut number shown in the editor (cut_index + 1). A cut is queued when it is active and
-    enabled, has a current consistency summary with something to decide (or saved answers to keep), and has
-    no analysis, consistency summary or answers job pending. The others are skipped and listed in `blocked`.
-    The worker saves each draft as the cut's answers unless they were edited after it was queued.
-    """
+    """Queue production-decision drafts for the enabled cuts in the requested range."""
     from . import review_answers
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT id FROM episodes WHERE id=?', (episode_id,)).fetchone():
             raise HTTPException(404, 'Episode not found')
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
-            raise HTTPException(409, 'Wait for media preparation or detection to finish')
         first_index = max(0, from_cut - 1) if from_cut else 0
-        cuts = conn.execute('SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index', (episode_id, first_index)).fetchall()
+        cuts = conn.execute("""SELECT * FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1
+            AND cut_index>=? ORDER BY cut_index""", (episode_id, first_index)).fetchall()
         blocked = {'no_consistency': [], 'busy': [], 'nothing_to_review': []}
         job_ids = []
-        for row in cuts:
-            number = row['cut_index'] + 1
-            if pending_cut_jobs(conn, episode_id, row['id'], ('analyze', 'performance_beats', 'consistency_summary', 'review_answers')):
-                blocked['busy'].append(number); continue
-            cut, config = analysis_config_for_cut(row['id'])
-            try:
-                payload, _ = review_answers_payload(cut, config, auto_save=True)
-            except ValueError:
-                blocked['no_consistency'].append(number); continue
-            if not review_answers.has_review_items(payload['evidence']) and not payload['existing_answers'].strip():
-                blocked['nothing_to_review'].append(number); continue
-            job_ids.append(review_answers.insert(conn, episode_id, payload))
+        for cut in cuts:
+            pending = worker.pending_jobs(conn, episode_id, ('consistency_summary',), [cut['id']])
+            if not pending and (reason := review_answers.readiness(conn, cut['id'])):
+                blocked[reason].append(cut['cut_index'] + 1)
+                continue
+            config = snapshot_analysis_config(conn, cut).model_dump()
+            job_ids.append(review_answers.insert(conn, episode_id, {'cut_id': cut['id'], 'config': config, 'auto_save': True}))
         if job_ids:
             worker.sync_episode_status(conn, episode_id)
     return {'queued': len(job_ids), 'blocked': blocked, 'job_ids': job_ids}
@@ -2241,9 +2208,8 @@ def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, only_
                 consistency['depends_on'] = [beats_id]
                 job_ids.append(beats_id)
             consistency_id = summary_queue.insert(conn, episode_id, consistency)
-            answers, _ = review_answers_payload(cut, config, auto_save=True, pending_review=True)
-            answers['depends_on'] = [consistency_id]
-            answers_id = review_answers.insert(conn, episode_id, answers)
+            answers_id = review_answers.insert(conn, episode_id, {'cut_id': cut_id, 'config': config.model_dump(),
+                                                'auto_save': True, 'depends_on': [consistency_id]})
             job_ids.extend((consistency_id, answers_id))
             if only_missing and conn.execute("SELECT 1 FROM analysis_results WHERE cut_id=? AND title=? AND superseded_by IS NULL", (cut_id, SUMMARY_TITLE)).fetchone():
                 kept_summaries += 1
@@ -2321,9 +2287,18 @@ def get_brief_instructions(cut_id: str):
 
 @app.put("/api/cuts/{cut_id}/brief-instructions")
 def put_brief_instructions(cut_id: str, body: BriefInstructionsInput):
+    from . import review_answers
     analysis_config_for_cut(cut_id)
     with db.connect() as conn:
-        conn.execute("INSERT INTO cut_brief_instructions(cut_id,content) VALUES (?,?) ON CONFLICT(cut_id) DO UPDATE SET content=excluded.content,updated_at=CURRENT_TIMESTAMP", (cut_id, body.content))
+        conn.execute('BEGIN IMMEDIATE')
+        if review_answers.saved_answers(conn, cut_id) != body.content:
+            review_answers.save_answers(conn, cut_id, body.content)
+            review_answers.invalidate_saved_brief(conn, cut_id)
+            conn.execute("""UPDATE cut_review_drafts SET stale_reason='Production decisions edited' WHERE cut_id=? AND content!=?""",
+                         (cut_id, body.content))
+            conn.execute("""UPDATE jobs SET input_json=json_set(COALESCE(input_json,'{}'),'$.keep_saved_answers',json('true'))
+                WHERE pipeline='review_answers' AND status IN ('queued','running')
+                AND json_extract(payload_json,'$.cut_id')=? AND json_extract(payload_json,'$.auto_save')=1""", (cut_id,))
     return {"content": body.content}
 
 

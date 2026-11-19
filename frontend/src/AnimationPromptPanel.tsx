@@ -3,7 +3,8 @@ import { BookOpen, Check, CircleCheck, Circle, Clock, Copy, Loader2, Pencil, Ref
 import { api, type AnalysisResult, type Job } from './api'
 import { SummaryRequestEditor } from './SummaryRequestEditor'
 import { ResultMetrics } from './ResultMetrics'
-import { ActionButton, StatusChip, WarningLine } from './RunUi'
+import { ActionButton, StaleChip, StatusChip, WarningLine } from './RunUi'
+import { useEpisodeRevision } from './episodeEvents'
 import { Disclosure, StepPanel } from './ReviewUi'
 import type { AnswersApi } from './ConsistencySummary'
 import { Markdown } from './Markdown'
@@ -50,8 +51,9 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
   const [previousAnswers, setPreviousAnswers] = useState<string | null>(null)
   const [reviewError, setReviewError] = useState('')
   const [reviewWorking, setReviewWorking] = useState(false)
-  const appliedReviewJob = useRef<string | null | undefined>(undefined)
-  useEffect(() => { appliedReviewJob.current = undefined; setPreviousAnswers(null); setReviewError('') }, [cutId])
+  const [reviewDraft, setReviewDraft] = useState<{ job_id: string | null; content: string; stale_reason?: string | null } | null>(null)
+  const reviewRevision = useEpisodeRevision(['data', 'stale'])
+  useEffect(() => { setReviewDraft(null); setPreviousAnswers(null); setReviewError('') }, [cutId])
   useEffect(() => {
     let active = true
     setInstructionsLoaded(false)
@@ -99,21 +101,20 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
   const reviewJobs = jobs.filter(job => job.pipeline === 'review_answers' && job.cuts.some(cut => cut.id === cutId))
   const activeReview = reviewJobs.find(job => job.status === 'queued' || job.status === 'running')
   const latestReview = reviewJobs[0]
-  const latestReviewDone = reviewJobs.find(job => job.status === 'done')
   const reviewFailure = !activeReview && latestReview?.status === 'failed' ? latestReview.error : null
   useEffect(() => {
     if (!instructionsLoaded) return
-    const doneId = latestReviewDone?.id ?? null
-    if (appliedReviewJob.current === undefined) { appliedReviewJob.current = doneId; return }
-    if (!doneId || doneId === appliedReviewJob.current) return
-    appliedReviewJob.current = doneId
-    Promise.all([api<{ job_id: string | null; content: string }>(`/cuts/${cutId}/review-answers`), api<{ content: string }>(`/cuts/${cutId}/brief-instructions`)]).then(([draft, saved]) => {
-      if (draft.job_id !== doneId || !draft.content) return
-      // A batch draft is saved by the worker; show it as saved so the summary can be queued right away.
-      if (saved.content === draft.content) setSavedInstructions(saved.content)
-      setHumanInstructions(current => { if (current !== draft.content) setPreviousAnswers(current); return draft.content })
-    }).catch(err => setReviewError((err as Error).message))
-  }, [latestReviewDone?.id, instructionsLoaded, cutId])
+    let active = true
+    Promise.all([api<{ job_id: string | null; content: string; stale_reason?: string | null }>(`/cuts/${cutId}/review-answers`),
+      api<{ content: string }>(`/cuts/${cutId}/brief-instructions`)]).then(([draft, saved]) => {
+      if (!active) return
+      setReviewDraft(draft)
+      const previous = savedRef.current
+      setSavedInstructions(saved.content)
+      setHumanInstructions(current => current === previous ? saved.content : current)
+    }).catch(err => { if (active) setReviewError((err as Error).message) })
+    return () => { active = false }
+  }, [reviewRevision, instructionsLoaded, cutId])
   async function generateAnswers() {
     setReviewWorking(true); setReviewError('')
     try { await api(`/cuts/${cutId}/review-answers`, { method: 'POST' }); await onStarted() }
@@ -192,11 +193,15 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
     <div className="grid min-h-0 grid-rows-[minmax(0,1fr)] lg:col-start-1 lg:row-start-1">{typeof review === 'function' ? review({ text: humanInstructions, onChange: setHumanInstructions, ready: instructionsLoaded && !savingInstructions }) : review}</div>
     <div className="scrollbar flex flex-col gap-4 lg:col-start-2 lg:row-start-1 lg:-mt-3 lg:min-h-0 lg:overflow-y-auto lg:pt-3 2xl:contents">
       <StepPanel className="2xl:col-start-2 2xl:row-start-1" step={2} kind="review_answers" title="Your answers" subtitle="Decisions and checks" tag={answersChip}
-        actions={<ActionButton compact icon={<Wand2 size={13} aria-hidden />} pending={!!activeReview || reviewWorking} disabled={!instructionsLoaded || disabled || !!activeReview} onClick={generateAnswers} title="Draft answers to the questions of the review from this cut's results, neighbouring cut summaries, and transcript. Replaces the text (unsaved) when finished.">{activeReview ? 'Drafting…' : 'Draft with AI'}</ActionButton>}>
+        actions={<ActionButton compact icon={<Wand2 size={13} aria-hidden />} pending={reviewWorking} disabled={!instructionsLoaded} onClick={generateAnswers} title="Draft answers from the current review and transcript">Draft with AI</ActionButton>}>
         <div className="flex min-h-[15rem] flex-1 flex-col gap-2">
           <label htmlFor={`answers-${cutId}`} className="label !mb-0">Answers to suggested checks and production decisions</label>
           <textarea id={`answers-${cutId}`} aria-label="Answers to suggested checks and production decisions" className="editor-area min-h-[12rem] flex-1" maxLength={50000} value={humanInstructions} disabled={!instructionsLoaded || savingInstructions} onChange={event => setHumanInstructions(event.target.value)} placeholder="Record confirmations, corrections, and production decisions for this cut. One bullet per item in the Review column works well." />
           {activeReview && <div className="flex items-center justify-between gap-2"><p role="status" className="text-[11px] text-[#c3aeff]">{activeReview.status === 'queued' ? 'Review answers queued' : activeReview.stage || 'Drafting review answers'}…</p><ActionButton compact disabled={reviewWorking} onClick={cancelReview}>Cancel</ActionButton></div>}
+          {reviewDraft?.content && reviewDraft.content !== humanInstructions && reviewDraft.content !== savedInstructions && <div className="flex items-center gap-2">
+            <ActionButton compact icon={<Wand2 size={13} aria-hidden />} onClick={() => { setPreviousAnswers(humanInstructions); setHumanInstructions(reviewDraft.content) }}>Use AI draft</ActionButton>
+            {reviewDraft.stale_reason && <StaleChip reason={reviewDraft.stale_reason} />}
+          </div>}
           {previousAnswers !== null && <button type="button" className="inline-flex items-center gap-1 self-start text-[11px] text-[#c3aeff] underline" onClick={() => { setHumanInstructions(previousAnswers); setPreviousAnswers(null) }}><Undo2 size={12} aria-hidden /> Restore previous answers</button>}
           {(reviewError || reviewFailure) && <p role="alert" className="text-xs text-[#ff9fa7]">{reviewError || reviewFailure}</p>}
           {instructionsError && <p role="alert" className="text-xs text-[#ff9fa7]">{instructionsError}</p>}

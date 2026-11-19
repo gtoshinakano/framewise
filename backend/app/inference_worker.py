@@ -815,41 +815,59 @@ def process_consistency_summary(job_id, owner):
 
 
 def process_review_answers(job_id, owner):
-    from . import review_answers
+    from . import job_inputs, review_answers
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
         return
     payload = json.loads(job['payload_json'])
     cut_id = payload['cut_id']
     try:
-        if payload.get('depends_on'):
-            from . import structured_results
-            saved = db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,))
-            review_answers.refresh(payload, structured_results.list_results(cut_id), saved['content'] if saved else '')
-            if not review_answers.has_review_items(payload['evidence']) and not payload['existing_answers'].strip():
-                with db.connect() as conn:
-                    conn.execute('BEGIN IMMEDIATE')
-                    worker.require_lease(conn, job_id, owner)
-                    conn.execute("UPDATE jobs SET status='done',stage='Nothing to decide',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-                    worker.sync_episode_status(conn, job['episode_id'])
-                return
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            snapshot = job_inputs.JobInputs(conn, job, owner)
+        values = snapshot.data
+        if values.get('missing'):
+            with snapshot.publish(invalidate=False):
+                raise RuntimeError(values['missing'])
+        if values.get('skip') or (payload.get('auto_save') and not review_answers.has_review_items(values['evidence']) and not values['existing_answers'].strip()):
+            with snapshot.publish(invalidate=False) as conn:
+                stage = f"Skipped · {values['skip']}" if values.get('skip') else 'Nothing to decide'
+                conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
+                worker.sync_episode_status(conn, job['episode_id'])
+            return
+        answer_stamp = job_inputs.fingerprint(values['existing_answers'])
+        prior = json.loads(job['input_json'] or '{}')
+        original_answers = prior.get('answers_base', answer_stamp)
+        provenance = {'fingerprint': snapshot.stamp, 'answers_base': original_answers, 'answers_fingerprint': answer_stamp,
+                      'existing_answers': values['existing_answers'],
+                      'source_result_ids': values['source_result_ids'], 'source_transcript_ids': values['source_transcript_ids']}
+
+        def record_inputs(conn):
+            conn.execute("UPDATE jobs SET input_json=json_patch(COALESCE(input_json,'{}'),?) WHERE id=?", (json.dumps(provenance), job_id))
+
+        with snapshot.publish(invalidate=False, on_changed=record_inputs) as conn:
+            record_inputs(conn)
         worker.stage(job_id, owner, job['episode_id'], 'Drafting review answers')
         telemetry = {}
-        content, actual_model = review_answers.generate(payload['config'], payload['evidence'],
+        content, actual_model = review_answers.generate(payload['config'], values['evidence'],
             progress=lambda attempt, total: worker.stage(job_id, owner, job['episode_id'], f'Review answers · attempt {attempt}/{total}'),
             cancel_check=lambda: check_summary_lease(job_id, owner), usage_out=telemetry)
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            worker.require_lease(conn, job_id, owner)
+        autosave = bool(payload.get('auto_save') and original_answers == answer_stamp and not values['keep_saved_answers'])
+        with snapshot.publish(answers_saved=autosave and content != values['existing_answers']) as conn:
             review_answers.save_draft(conn, cut_id, job_id, content, actual_model)
-            saved = not payload.get('auto_save') or review_answers.save_answers(conn, cut_id, content, payload.get('existing_answers'))
-            stage = 'Complete' if saved else 'Draft ready; the answers were edited meanwhile, so it was not saved'
+            if autosave:
+                review_answers.save_answers(conn, cut_id, content)
+            stage = 'Complete' if autosave or not payload.get('auto_save') else 'Draft ready · saved answers kept'
+            conn.execute("UPDATE jobs SET input_json=json_patch(COALESCE(input_json,'{}'),?) WHERE id=?",
+                         (json.dumps({**provenance, 'usage': telemetry}), job_id))
             conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
             worker.sync_episode_status(conn, job['episode_id'])
     except SummaryCancelled:
         if payload.get('config', {}).get('text_provider') == 'local':
             local_text_runtime.cancel_local('Cancelled')
         log.info('Review answers %s was cancelled', job_id)
+    except worker.LeaseLost:
+        return
     except Exception as exc:
         fail_job(job_id, owner, job['episode_id'], exc)
         log.exception('Review answers failed for job %s', job_id)

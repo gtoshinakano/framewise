@@ -380,6 +380,21 @@ def _consistency_invalidates(conn, job):
     summary_queue.invalidate(conn, job)
 
 
+def _review_gather(conn, job):
+    from . import review_answers
+    return review_answers.gather(conn, job)
+
+
+def _review_inputs(conn, job):
+    from . import review_answers
+    return review_answers.inputs(conn, job)
+
+
+def _review_invalidates(conn, job):
+    from . import review_answers
+    review_answers.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -408,7 +423,13 @@ KINDS = {kind.pipeline: kind for kind in (
                                      frozenset({'results:consistency_summary'})),
          priority_class=lambda payload: 'batch' if payload.get('batch') else 'interactive',
          inputs=_consistency_inputs, gather=_consistency_gather, invalidates=_consistency_invalidates),
-    Kind('review_answers', 'Production decisions draft', True, cuts=_one_cut, keys=_cut_keys('review_answers'), cancel_running=_always),
+    Kind('review_answers', 'Production decisions draft', True, cuts=_one_cut, keys=_cut_keys('review_answers'), cancel_running=_always,
+         resources=frozenset({'text'}),
+         scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results', 'transcript', 'subtitles', 'decisions'}),
+             frozenset({'decision_drafts', 'decisions'} if payload.get('auto_save') else {'decision_drafts'}),
+             frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
+         priority_class=lambda payload: 'batch' if payload.get('auto_save') else 'interactive',
+         inputs=_review_inputs, gather=_review_gather, invalidates=_review_invalidates),
     Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always),
     Kind('composition_compact', 'Composition brief', True, cuts=_one_cut, keys=_cut_keys('composition_compact'), cancel_running=_always,
          retry=_always, attention=False),

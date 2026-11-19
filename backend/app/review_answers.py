@@ -1,8 +1,6 @@
 """Draft concise answers to a cut's consistency-summary review items."""
 import json
-import uuid
-
-from . import consistency_summary, db
+from . import analysis_context, consistency_summary, db, job_inputs, prompt_context, structured_results, worker
 
 SUMMARY_TITLE = 'Cut summary'
 FIELDS = ['answers']
@@ -82,18 +80,12 @@ def review_view(content):
     return view
 
 
-def build_evidence(results, context, existing_answers, neighbours, pending_review=False):
-    """neighbours maps previous/next to that adjacent cut's Consistency summary content, when it has one.
-
-    With `pending_review` the consistency summary may be missing or about to be replaced by a chained
-    job; `refresh` fills it in when the job starts.
-    """
+def build_evidence(results, context, existing_answers, neighbours):
+    """Neighbours maps previous and next to their consistency summary content."""
     by_type = {item['type']: item for item in results}
     review = by_type.get('consistency_summary')
     if not review or not isinstance(review['content'], dict):
-        if not pending_review:
-            raise ValueError('Generate the consistency summary first')
-        review = {'content': {}}
+        raise ValueError('Generate the consistency summary first')
     base = consistency_summary.build_input(results, context['transcript_segments'], context['context_items'], context.get('subtitles'))
     evidence = {
         'review': review_view(review['content']),
@@ -122,34 +114,70 @@ def validate_answers(text):
     return text[:MAX_ANSWERS]
 
 
-def refresh(payload, results, existing_answers):
-    """Update a chained job's snapshot with what the earlier jobs of its chain produced.
-
-    The consistency summary and the saved answers are read again when the job starts, because the jobs
-    it waited for wrote the former and the user may have changed the latter. Everything else in the
-    evidence is unchanged by the chain.
-    """
-    review = next((item for item in results if item['type'] == 'consistency_summary'), None)
-    if not review or not isinstance(review['content'], dict):
-        raise RuntimeError('The consistency summary this job waited for is missing; queue the chain again')
-    payload['evidence']['review'] = review_view(review['content'])
-    payload['evidence']['existing_answers'] = existing_answers.strip() or None
-    payload['existing_answers'] = existing_answers
-    payload['source_result_ids'] = [item['id'] for item in results]
-    return payload
-
-
-def payload_for(cut_id, config, evidence, source_result_ids, existing_answers):
-    return {'cut_id': cut_id, 'config': config, 'evidence': evidence, 'source_result_ids': source_result_ids,
-            'existing_answers': existing_answers}
-
-
 def insert(conn, episode_id, payload):
-    if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='review_answers' AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?", (episode_id, payload['cut_id'])).fetchone():
-        raise ValueError('Review answers are already being generated for this cut')
-    job_id = str(uuid.uuid4())
-    conn.execute('INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)', (job_id, episode_id, 'review_answers', json.dumps(payload, ensure_ascii=False)))
-    return job_id
+    cut_id = payload['cut_id']
+    waits = worker.pending_jobs(conn, episode_id, ('consistency_summary', 'performance_beats', 'analyze', 'prepare', 'hardcuts',
+                                                  'transcribe', 'subtitles'), [cut_id])
+    return worker.insert_job(conn, episode_id, 'review_answers',
+                             {'cut_id': cut_id, 'config': payload['config'], 'auto_save': payload.get('auto_save', False),
+                              'depends_on': list(dict.fromkeys([*(payload.get('depends_on') or []), *waits]))},
+                             priority_class='batch' if payload.get('auto_save') else 'interactive')
+
+
+def saved_answers(conn, cut_id):
+    return (db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,), conn=conn) or {}).get('content', '')
+
+
+def readiness(conn, cut_id):
+    review = db.one("""SELECT content FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL
+        AND json_extract(settings_json,'$.structured_type')='consistency_summary' ORDER BY rowid DESC LIMIT 1""",
+        (cut_id,), conn=conn)
+    if not review:
+        return 'no_consistency'
+    try:
+        content = json.loads(review['content'])
+    except ValueError:
+        return 'no_consistency'
+    if not isinstance(content, dict):
+        return 'no_consistency'
+    if not has_review_items({'review': review_view(content)}) and not saved_answers(conn, cut_id).strip():
+        return 'nothing_to_review'
+    return None
+
+
+def gather(conn, job):
+    payload = json.loads(job['payload_json'])
+    cut_id = payload['cut_id']
+    context = analysis_context.selected(conn, cut_id, payload['config'])
+    if not context or not context['cut']['active']:
+        return {'skip': 'Cut archived or removed'}
+    results = structured_results.list_results(cut_id, conn=conn)
+    answers = saved_answers(conn, cut_id)
+    try:
+        evidence = build_evidence(results, context, answers, prompt_context.slim_neighbors(context))
+    except ValueError as exc:
+        return {'missing': str(exc)}
+    draft = db.one('SELECT job_id,content FROM cut_review_drafts WHERE cut_id=?', (cut_id,), conn=conn)
+    protection = db.one("SELECT json_extract(input_json,'$.keep_saved_answers') AS enabled FROM jobs WHERE id=?",
+                        (job['id'],), conn=conn)
+    return {'evidence': evidence, 'existing_answers': answers, 'draft': draft,
+            'keep_saved_answers': bool(protection and protection['enabled']), 'source_result_ids': [item['id'] for item in results],
+            'source_transcript_ids': [item['id'] for item in context['transcript_segments']]}
+
+
+def inputs(conn, job):
+    return job_inputs.fingerprint(job.get('gathered') or gather(conn, job))
+
+
+def invalidate(conn, job):
+    if job.get('answers_saved'):
+        cut_id = json.loads(job['payload_json'])['cut_id']
+        invalidate_saved_brief(conn, cut_id)
+
+
+def invalidate_saved_brief(conn, cut_id):
+    conn.execute("""UPDATE analysis_results SET stale_reason='Production decisions changed'
+        WHERE cut_id=? AND superseded_by IS NULL AND title='Cut summary'""", (cut_id,))
 
 
 def generate(config, evidence, progress=None, cancel_check=None, usage_out=None):
@@ -162,23 +190,14 @@ def generate(config, evidence, progress=None, cancel_check=None, usage_out=None)
 
 def save_draft(conn, cut_id, job_id, content, model_id):
     conn.execute('INSERT INTO cut_review_drafts(cut_id,job_id,content,model_id) VALUES (?,?,?,?) '
-                 'ON CONFLICT(cut_id) DO UPDATE SET job_id=excluded.job_id,content=excluded.content,model_id=excluded.model_id,created_at=CURRENT_TIMESTAMP',
+                 'ON CONFLICT(cut_id) DO UPDATE SET job_id=excluded.job_id,content=excluded.content,model_id=excluded.model_id,stale_reason=NULL,created_at=CURRENT_TIMESTAMP',
                  (cut_id, job_id, content, model_id))
 
 
-def save_answers(conn, cut_id, content, expected):
-    """Store a draft as the cut's saved answers unless they changed after the job was queued.
-
-    `expected` is the text the job was drafted from. Returns False and leaves the answers alone when
-    they no longer match it, so nothing typed in the meantime is lost.
-    """
-    row = conn.execute('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,)).fetchone()
-    if (row['content'] if row else '') != (expected or ''):
-        return False
+def save_answers(conn, cut_id, content):
     conn.execute('INSERT INTO cut_brief_instructions(cut_id,content) VALUES (?,?) ON CONFLICT(cut_id) DO UPDATE SET content=excluded.content,updated_at=CURRENT_TIMESTAMP', (cut_id, content))
-    return True
 
 
 def get_draft(cut_id):
-    row = db.one('SELECT job_id,content FROM cut_review_drafts WHERE cut_id=?', (cut_id,))
-    return {'job_id': row['job_id'], 'content': row['content']} if row else {'job_id': None, 'content': ''}
+    row = db.one('SELECT job_id,content,stale_reason FROM cut_review_drafts WHERE cut_id=?', (cut_id,))
+    return row or {'job_id': None, 'content': '', 'stale_reason': None}

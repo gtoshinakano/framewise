@@ -51,13 +51,14 @@ def list_results(cut_id, history=False, conn=None):
 def invalidate_text(conn, cut_id, evidence):
     """A change to current visual evidence makes its existing text derivatives stale."""
     reason = {'initial_frame': 'Initial frame changed', 'keyframe_analysis': 'Keyframe analysis changed',
-              'performance_beats': 'Performance beats changed'}.get(evidence)
+              'performance_beats': 'Performance beats changed', 'consistency_summary': 'Consistency summary changed'}.get(evidence)
     if not reason:
         return
-    conn.execute("""UPDATE analysis_results SET stale_reason=? WHERE cut_id=? AND superseded_by IS NULL
-        AND (json_extract(settings_json,'$.structured_type')='consistency_summary' OR title='Cut summary'
-             OR (?!='performance_beats' AND json_extract(settings_json,'$.structured_type')='performance_beats'))""",
-        (reason, cut_id, evidence))
+    conn.execute("""UPDATE analysis_results SET stale_reason=? WHERE cut_id=? AND superseded_by IS NULL AND
+        (title='Cut summary' OR (?!='consistency_summary' AND json_extract(settings_json,'$.structured_type')='consistency_summary')
+         OR (? IN ('initial_frame','keyframe_analysis') AND json_extract(settings_json,'$.structured_type')='performance_beats'))""",
+        (reason, cut_id, evidence, evidence))
+    conn.execute('UPDATE cut_review_drafts SET stale_reason=? WHERE cut_id=?', (reason, cut_id))
 
 
 def invalidate_detections(conn, cut_id, *, target=False, reason=None):
