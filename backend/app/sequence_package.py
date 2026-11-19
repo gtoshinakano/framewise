@@ -376,29 +376,32 @@ def provenance(conn, sequence_id):
     return out
 
 
-def document(sequence_id):
+def document(sequence_id, conn=None):
     """``(full, assets)`` for a sequence, or None when it does not exist."""
-    with db.connect() as conn:
-        sequence = store.get(conn, sequence_id)
-        if not sequence:
-            return None
-        current = sequence_view.state(conn, sequence)
-        episode = dict(conn.execute('SELECT id,project_id,original_ext,has_audio FROM episodes WHERE id=?', (sequence['episode_id'],)).fetchone())
-        revisions = provenance(conn, sequence_id)
-        cuts, timeline, bible = current['cuts'], current['timeline'], current['bible'] or {}
-        run = subtitle_store.current_run(sequence['episode_id'], conn) if cuts else None
-        subtitle_lines = subtitle_store.lines(sequence['episode_id'], cuts[0]['start_time'], cuts[-1]['end_time'], conn=conn) if cuts and run else []
-        views = sequence_view.shot_views(current)
-        roster = roster_of(current['ctx'], bible)
-        wanted = {person['character_context_id'] for person in bible.get('characters') or [] if person.get('character_context_id')}
-        built = build_shots(current, views, roster, subtitle_lines)
-        for shot in built['shots']:
-            wanted.update(subject['character_context_id'] for subject in shot.get('subjects') or [] if subject.get('character_context_id'))
-        wanted.update(entry['character_context_id'] for entry in built['speakers'].table.values() if entry['character_context_id'])
-        wanted.update(voice['character_context_id'] for voice in bible.get('voices') or [] if voice.get('character_context_id'))
-        cut_ids = [cut['id'] for cut in cuts] if cuts else []
-        candidates = character_candidates(conn, sorted(wanted), cut_ids)
-        samples = voice_samples(conn, sorted(wanted), episode['project_id'])
+    if conn is None:
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            return document(sequence_id, conn)
+    sequence = store.get(conn, sequence_id)
+    if not sequence:
+        return None
+    current = sequence_view.state(conn, sequence)
+    episode = dict(conn.execute('SELECT id,project_id,original_ext,has_audio FROM episodes WHERE id=?', (sequence['episode_id'],)).fetchone())
+    revisions = provenance(conn, sequence_id)
+    cuts, timeline, bible = current['cuts'], current['timeline'], current['bible'] or {}
+    run = subtitle_store.current_run(sequence['episode_id'], conn) if cuts else None
+    subtitle_lines = subtitle_store.lines(sequence['episode_id'], cuts[0]['start_time'], cuts[-1]['end_time'], conn=conn) if cuts and run else []
+    views = sequence_view.shot_views(current)
+    roster = roster_of(current['ctx'], bible)
+    wanted = {person['character_context_id'] for person in bible.get('characters') or [] if person.get('character_context_id')}
+    built = build_shots(current, views, roster, subtitle_lines)
+    for shot in built['shots']:
+        wanted.update(subject['character_context_id'] for subject in shot.get('subjects') or [] if subject.get('character_context_id'))
+    wanted.update(entry['character_context_id'] for entry in built['speakers'].table.values() if entry['character_context_id'])
+    wanted.update(voice['character_context_id'] for voice in bible.get('voices') or [] if voice.get('character_context_id'))
+    cut_ids = [cut['id'] for cut in cuts] if cuts else []
+    candidates = character_candidates(conn, sorted(wanted), cut_ids)
+    samples = voice_samples(conn, sorted(wanted), episode['project_id'])
     names = {person['character_context_id']: person['name'] for person in roster}
     header = sequence_view.sequence_view(sequence, cuts, current['changed'])
     full = {'contract': CONTRACT, 'view': 'full', 'id': header['id'], 'episode_id': header['episode_id'], 'title': header['title'], 'instruction': header['instruction'],

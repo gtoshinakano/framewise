@@ -446,6 +446,29 @@ def _compaction_invalidates(conn, job):
     composition_compaction.invalidate(conn, job)
 
 
+def _export_scope(payload):
+    reads = {'original', 'prepared_audio', 'cut_boundaries', 'results', 'transcript', 'subtitles', 'detections', 'composition_cache'}
+    if payload.get('kind') == 'sequence':
+        sequence_id = payload.get('sequence_id') or (payload.get('sequence') or {}).get('id')
+        reads.update({f'sequence:{sequence_id}', 'context', 'voices'})
+    return Scope(frozenset(reads), frozenset({'exports'}))
+
+
+def _export_gather(conn, job):
+    from . import brief
+    return brief.gather(conn, job)
+
+
+def _export_inputs(conn, job):
+    from . import brief
+    return brief.inputs(conn, job)
+
+
+def _export_invalidates(conn, job):
+    from . import brief
+    brief.invalidate(conn, job)
+
+
 def _sequence_gather(conn, job):
     from . import sequence_pipeline
     return sequence_pipeline.gather(conn, job)
@@ -547,7 +570,9 @@ KINDS = {kind.pipeline: kind for kind in (
          resources=frozenset({'cpu_media'}), scope=_preview_scope,
          priority_class=lambda payload: 'interactive' if payload.get('frame_step') else 'batch',
          inputs=_preview_inputs, gather=_preview_gather, invalidates=_preview_invalidates),
-    Kind('brief_export', 'Download', False, label=_export_label, cuts=_export_cuts, cancel_queued=False, attention=False),
+    Kind('brief_export', 'Download', False, label=_export_label, cuts=_export_cuts, cancel_queued=False, attention=False,
+         resources=frozenset({'cpu_media'}), scope=_export_scope, priority_class=lambda payload: 'batch',
+         inputs=_export_inputs, gather=_export_gather, invalidates=_export_invalidates),
 )}
 
 def kind_of(pipeline):

@@ -499,10 +499,7 @@ def process(job_id: str, owner: str):
             return
         if job['pipeline'] == 'brief_export':
             from .brief import process_export
-            process_export(job, owner, episode, payload)
-            with db.connect() as conn:
-                require_lease(conn, job_id, owner)
-                conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+            process_export(job, owner, episode)
             return
         if job['pipeline'] == 'keyframes':
             from . import keyframes

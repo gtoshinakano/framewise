@@ -693,42 +693,35 @@ def create_brief_export(episode_id: str, from_cut: int = Query(alias='from', ge=
                         include: str = Query('', description='Same includes as the composition brief; last_frame also adds the final JPEG.'),
                         fields: str = Query('', description='Same cut-record selection as the composition brief.'),
                         only_ready: bool = False, updated_since: str | None = Query(None, description='Inclusive ISO 8601 change watermark with timezone.')):
-    """Snapshot the brief and queue an export; poll the returned job status before downloading."""
-    import uuid
-    from . import worker
-    from .brief import make_brief
+    """Queue a ZIP of the brief and assets as they exist when processing starts."""
+    from . import composition_brief, worker
     if view != 'composition' and (include or fields or only_ready or updated_since):
         raise HTTPException(422, 'Selection and incremental options require view=composition')
-    job_id = str(uuid.uuid4())
+    if to < from_cut or to - from_cut >= 500:
+        raise HTTPException(422, 'Choose an inclusive range of at most 500 cuts')
+    payload = {'from': from_cut, 'to': to}
+    if view == 'composition':
+        includes = composition_brief.selection(include, composition_brief.INCLUDES, 'include')
+        selected = composition_brief.selection(fields, composition_brief.FIELDS, 'fields')
+        watermark = composition_brief.parse_watermark(updated_since)
+        payload.update(composition={'include': ','.join(sorted(includes)), 'fields': ','.join(sorted(selected)),
+                                    'only_ready': only_ready, 'updated_since': watermark.isoformat() if watermark else None},
+                       include_last_frame='last_frame' in includes)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        if view == 'composition':
-            from .composition_brief import make_composition_brief, selection, INCLUDES
-            snapshot = make_composition_brief(episode_id, from_cut, to, include=include, fields=fields, only_ready=only_ready, updated_since=updated_since)
-            CompositionBrief.model_validate(snapshot)
-        else:
-            snapshot = make_brief(episode_id, from_cut, to)
-        first_frame_times = {cut['id']: conn.execute('SELECT first_frame_time FROM cuts WHERE id=?', (cut['id'],)).fetchone()['first_frame_time'] for cut in snapshot['cuts']}
-        payload = {'brief': snapshot, 'first_frame_times': first_frame_times}
-        if view == 'composition':
-            assets = []
-            for item in snapshot['cuts']:
-                cut = dict(conn.execute('SELECT * FROM cuts WHERE id=?', (item['id'],)).fetchone())
-                cut['cut_number'] = cut['cut_index'] + 1
-                from . import structured_results, frame_source
-                for result in structured_results.list_results(item['id'], conn=conn):
-                    if result['type'] not in ('initial_frame', 'last_frame'): continue
-                    key = 'analysis_' + result['type'] + '_time'
-                    if key in cut: continue
-                    spec = frame_source.result_frame_spec(result['id'], conn)
-                    if spec and spec.get('time') is not None and cut['start_time'] <= spec['time'] < cut['end_time']:
-                        cut[key] = spec['time']
-                cut['has_speech'] = bool(conn.execute('SELECT 1 FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND start_time<? AND end_time>? LIMIT 1', (episode_id,cut['end_time'],cut['start_time'])).fetchone())
-                assets.append(cut)
-            payload.update(composition=True, asset_cuts=assets, include_last_frame='last_frame' in selection(include, INCLUDES, 'include'))
-        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, episode_id, 'brief_export', json.dumps(payload)))
+        if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
+            raise HTTPException(404, 'Episode not found')
+        waiting = worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts'))
+        if not waiting:
+            count = conn.execute('SELECT COUNT(*) FROM cuts WHERE episode_id=? AND active=1 AND cut_index BETWEEN ? AND ?',
+                                 (episode_id, from_cut - 1, to - 1)).fetchone()[0]
+            if count != to - from_cut + 1:
+                raise HTTPException(404, 'One or more requested active cuts do not exist')
+        if waiting:
+            payload['depends_on'] = waiting
+        job_id = worker.insert_job(conn, episode_id, 'brief_export', payload)
     worker.wake_event.set()
-    return {'job_id': job_id, 'status': 'queued', 'stage': 'queued', 'error': None, 'download_url': None}
+    return brief_export_status(job_id)
 
 
 @router.get('/brief-exports/{job_id}', response_model=BriefExportStatus, summary='Get brief export status')
@@ -1095,22 +1088,27 @@ def sequence_package(sequence_id: str,
              responses={409: {'description': 'The sequence has no shot plan yet.'}, 422: {'description': 'Unknown include.'}})
 def create_sequence_export(sequence_id: str,
                            include: Annotated[str, Query(description='Comma-separated optional files: sequence_audio (sequence.wav), references (character crops, scene frames, voice samples), clips (silent source clip per shot).')] = ''):
-    """Snapshot the package and queue the export; poll `/api/v1/brief-exports/{job_id}` and download from there."""
-    import uuid
-    from datetime import datetime, timezone
-    from . import worker
+    """Queue a ZIP from the current sequence package once its pending steps finish."""
+    from . import sequence_store, worker
     packages = _sequences()
     includes = _package_call(packages.selection, include, packages.EXPORT_INCLUDES, 'include')
-    full, assets = _document(sequence_id)
-    if not full.get('shots'):
-        raise HTTPException(409, 'This sequence has no shot plan yet')
-    job_id = str(uuid.uuid4())
-    payload = {'kind': 'sequence', 'contract': packages.CONTRACT, 'sequence': full, 'assets': assets, 'include': sorted(includes),
-               'queued_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
     with db.connect() as conn:
-        conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,'brief_export',?)", (job_id, full['episode_id'], json.dumps(payload, ensure_ascii=False)))
+        conn.execute('BEGIN IMMEDIATE')
+        sequence = sequence_store.get(conn, sequence_id)
+        if not sequence:
+            raise HTTPException(404, 'Sequence not found')
+        episode_id = sequence['episode_id']
+        sequence_jobs = conn.execute('''SELECT id,json_extract(payload_json,'$.step') AS step FROM jobs
+            WHERE episode_id=? AND pipeline='sequence' AND status IN ('queued','running')
+            AND json_extract(payload_json,'$.sequence_id')=? ORDER BY rowid''', (episode_id, sequence_id)).fetchall()
+        if (not any(row['step'] == 'plan' for row in sequence_jobs) and
+                not sequence_store.current(conn, sequence_id, 'plan')):
+            raise HTTPException(409, 'This sequence has no shot plan yet')
+        waiting = [*worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts')), *(row['id'] for row in sequence_jobs)]
+        payload = {'kind': 'sequence', 'sequence_id': sequence_id, 'include': sorted(includes), 'depends_on': waiting}
+        job_id = worker.insert_job(conn, episode_id, 'brief_export', payload)
     worker.wake_event.set()
-    return {'job_id': job_id, 'status': 'queued', 'stage': 'queued', 'error': None, 'download_url': None}
+    return brief_export_status(job_id)
 
 
 AUDIO_RESPONSE = {200: {'content': {'audio/wav': {'schema': {'type': 'string', 'format': 'binary'}}}, 'description': 'PCM WAV of the prepared episode audio (mono 16 kHz).'},

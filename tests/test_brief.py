@@ -55,7 +55,7 @@ class BriefTest(unittest.TestCase):
             with wave.open(io.BytesIO(z.read(manifest[0]['audio']))) as w:
                 self.assertEqual(w.getnframes(), 6000)
 
-    def test_export_uses_snapshotted_first_frame(self):
+    def test_export_uses_first_frame_at_start_and_retries_if_it_changes(self):
         folder = media.episode_dir('p', 'e')
         (folder / 'original.mp4').write_bytes(b'original')
         with db.connect() as conn:
@@ -63,10 +63,27 @@ class BriefTest(unittest.TestCase):
         cut = self.client.get('/api/v1/episodes/e/brief?from=1&to=1').json()['cuts'][0]
         self.assertEqual(cut['suggested_frame_url'], '/api/cuts/c/frame/first')
         job = self.client.post('/api/v1/episodes/e/brief/exports?from=1&to=1').json()['job_id']
+        self.assertEqual(self.client.post('/api/v1/episodes/e/brief/exports?from=1&to=1').json()['job_id'], job)
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET first_frame_time=0.5 WHERE id='c'")
+
+        def edit_during_export(source, output, sample, start, end, **kwargs):
+            self.assertEqual(sample, .5)
+            output.write_bytes(b'outdated frame')
+            with db.connect() as conn:
+                conn.execute("UPDATE cuts SET first_frame_time=0.6 WHERE id='c'")
+
+        claimed = worker.claim_job()
+        with patch('app.brief.media.extract_cut_frame', side_effect=edit_during_export) as frame:
+            worker.process(*claimed)
+        frame.assert_called_once()
+        self.assertEqual(self.client.get('/api/v1/brief-exports/' + job).json()['stage'], 'Inputs changed, restarting')
+        worker.release_lease(*claimed)
+        with db.connect() as conn:
+            conn.execute('UPDATE jobs SET not_before=0 WHERE id=?', (job,))
+
         def extract(source, output, sample, start, end, **kwargs):
-            self.assertEqual((source, sample, start, end, kwargs['width']), (folder / 'original.mp4', .3, .25, 1, None))
+            self.assertEqual((source, sample, start, end, kwargs['width']), (folder / 'original.mp4', .6, .25, 1, None))
             output.write_bytes(b'first frame')
         with patch('app.brief.media.extract_cut_frame', side_effect=extract) as frame:
             worker.process(*worker.claim_job())

@@ -56,6 +56,18 @@ def selection(value, allowed, label):
     return items
 
 
+def parse_watermark(value):
+    if not value:
+        return None
+    try:
+        since = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if since.tzinfo is None:
+            raise ValueError()
+        return since.astimezone(timezone.utc)
+    except ValueError as exc:
+        raise CompositionError(422, 'updated_since must be an ISO 8601 timestamp with timezone') from exc
+
+
 def reference_subjects(record):
     """Refer to a unique identified opening subject instead of repeating its name."""
     subjects = record.get('subjects', [])
@@ -751,14 +763,7 @@ def _make_composition_brief(conn, episode_id, first, last, *, include='', fields
         return [dict(row) for row in conn.execute(sql, args)]
     includes = selection(include, INCLUDES, 'include')
     selected = selection(fields, FIELDS, 'fields')
-    since = None
-    if updated_since:
-        try:
-            since = datetime.fromisoformat(updated_since.replace('Z', '+00:00'))
-            if since.tzinfo is None: raise ValueError()
-            since = since.astimezone(timezone.utc)
-        except ValueError:
-            raise CompositionError(422, 'updated_since must be an ISO 8601 timestamp with timezone')
+    since = parse_watermark(updated_since)
     episode = one('SELECT * FROM episodes WHERE id=?', (episode_id,))
     if not episode: raise CompositionError(404, 'Episode not found')
     if first < 1 or last < first or last-first >= 500: raise CompositionError(422, 'Choose an inclusive range of at most 500 cuts')

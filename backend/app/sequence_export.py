@@ -2,7 +2,7 @@
 
 Runs on the export worker thread like a brief export (pipeline ``brief_export`` with
 ``payload.kind == 'sequence'``), so the same status and download endpoints serve it. The package and the
-asset specs are snapshotted when the export is queued (``sequence_package.document``); audio and frames are
+asset specs are read when the export starts (``sequence_package.document``); audio and frames are
 cut from the prepared audio and the original video, at the original resolution, when the job runs. Every
 file is listed in ``manifest.json`` with its size and sha256; a file that cannot be made is listed under
 ``errors`` instead, never replaced by something else.
@@ -18,7 +18,6 @@ silence only where the episode audio ends), ``shot-NN-initial.jpg``,
 import hashlib
 import json
 import math
-import os
 import tempfile
 import wave
 import zipfile
@@ -26,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import db, media, sequence_package as packages
+from . import media, sequence_package as packages
 from .brief import export_path, write_audio
 from .sequence_package import CROP_MARGIN, crop_fractions  # noqa: F401  (kept here for the export's readers)
 
@@ -106,7 +105,7 @@ class Archive:
         self.errors.append(packages.pack({'asset': asset, 'shot': shot, 'path': path, 'error': str(exc)[:500]}))
 
 
-def process_export(job, owner, episode, payload):
+def process_export(job, owner, episode, payload, publish):
     from . import worker
     if payload.get('contract') != packages.CONTRACT:
         raise ValueError('This export was queued before sequence-v2; queue the export again')
@@ -148,9 +147,7 @@ def process_export(job, owner, episode, payload):
                                       'exported_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'sequence_updated_at': full.get('updated_at'),
                                       'include': sorted(include), 'files': out.files, 'references': references, 'errors': out.errors})
             z.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False, indent=1))
-        with db.connect() as conn:
-            worker.require_lease(conn, job['id'], owner)
-            os.replace(archive, target)
+        publish(archive, target)
 
 
 def reference_audio(audio, folder, spec, exact):

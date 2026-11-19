@@ -100,7 +100,7 @@ class SequenceExportTest(pipeline_tests.SequenceBase):
                     'shot-01-ref.wav', 'shot-02-ref.wav'}  # only shots shorter than 5 s get a reference audio of the generated length
         self.assertEqual(set(files), expected)
         self.assertNotIn('errors', manifest)
-        # The ZIP's documents are the lean view and the digest, snapshotted when the export was queued.
+        # The ZIP's documents are the lean view and the digest, captured when the export started.
         lean, digest = json.loads(files['sequence.json']), json.loads(files['overview.json'])
         self.assertEqual((lean['contract'], lean['view'], digest['view']), ('sequence-v2', 'lean', 'digest'))
         self.assertNotIn('prompt', lean['shots'][0])
@@ -235,6 +235,16 @@ class SequenceExportTest(pipeline_tests.SequenceBase):
         job = db.one("SELECT status,error FROM jobs WHERE id='11111111-1111-1111-1111-111111111111'")
         self.assertEqual(job['status'], 'failed')
         self.assertIn('queued before sequence-v2', job['error'])
+
+    def test_export_queues_behind_a_plan_in_progress(self):
+        sequence_id = self.create()
+        with db.connect() as conn:
+            plan = worker.insert_job(conn, 'e', 'sequence', {'sequence_id': sequence_id, 'step': 'plan'})
+        response = self.client.post(f'/api/v1/sequences/{sequence_id}/exports')
+        self.assertEqual(response.status_code, 200, response.text)
+        job = db.one('SELECT payload_json FROM jobs WHERE id=?', (response.json()['job_id'],))
+        self.assertEqual(json.loads(job['payload_json'])['depends_on'], [plan])
+        self.assertIsNone(worker.claim_job(('brief_export',)))
 
 
 class ExportHelpersTest(unittest.TestCase):
