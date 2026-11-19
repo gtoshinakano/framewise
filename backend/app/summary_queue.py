@@ -47,18 +47,13 @@ def payload_for(cut_id, config, context, results):
 
 
 def prerequisites(conn, episode_id, cut_id, config):
-    from . import job_kinds, performance_beats
+    from . import performance_beats
     jobs = worker.pending_jobs(conn, episode_id,
                                ('prepare', 'hardcuts', 'analyze', 'performance_beats', 'character_detect', 'subtitles', 'transcribe'),
                                [cut_id])
-    for job_id in jobs:
-        row = conn.execute('SELECT pipeline,payload_json FROM jobs WHERE id=?', (job_id,)).fetchone()
-        if row['pipeline'] == 'analyze' and 'keyframe_analysis' in job_kinds.stages_of(json.loads(row['payload_json'])):
-            beats = performance_beats.ensure_queued(conn, episode_id, cut_id, {key: value for key, value in config.items()
-                                                  if key in ('text_provider', 'openrouter_model', 'local_thinking')})
-            if beats not in jobs:
-                jobs.append(beats)
-            break
+    beats = performance_beats.after_visual(conn, episode_id, cut_id, config, jobs)
+    if beats and beats not in jobs:
+        jobs.append(beats)
     return jobs
 
 

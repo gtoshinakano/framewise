@@ -376,6 +376,18 @@ def ensure_queued(conn, episode_id, cut_id, config=None):
     return pending_job(conn, cut_id) or insert(conn, episode_id, cut_id, config)
 
 
+def after_visual(conn, episode_id, cut_id, config, candidates):
+    """If a predecessor will write keyframes, make its beats a prerequisite as well."""
+    from .job_kinds import stages_of
+    for job_id in candidates:
+        row = conn.execute('SELECT pipeline,payload_json FROM jobs WHERE id=?', (job_id,)).fetchone()
+        if row['pipeline'] == 'analyze' and 'keyframe_analysis' in stages_of(json.loads(row['payload_json'])):
+            return ensure_queued(conn, episode_id, cut_id, {
+                key: value for key, value in config.items() if key in ('text_provider', 'openrouter_model', 'local_thinking')
+            })
+    return None
+
+
 # -- the job -------------------------------------------------------------------------------------------------------------
 
 def generate(config, data, ctx, progress=None, cancel_check=None, usage_out=None):

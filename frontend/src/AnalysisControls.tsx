@@ -123,7 +123,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const targetRun = targetPeople.data?.run && !targetPeople.data.run.stale ? targetPeople.data.run : null
   const targetState: StepState = isJobActive(targetJob) ? (targetJob!.status as StepState) : targetJob?.status === 'failed' ? 'failed' : targetRun ? 'done' : 'none'
   const targetUnknown = unknownSlots(targetRun).length
-  const allTextReason = pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : ''
+  const allTextReason = pending ? 'Another action is being queued' : ''
   const nextReason = settingsReason || (!onNext ? 'This is the last cut' : '')
   const precedingCut = cuts.find(item => item.cut_index === cut.cut_index - 1)
   const followingCut = cuts.find(item => item.cut_index === cut.cut_index + 1)

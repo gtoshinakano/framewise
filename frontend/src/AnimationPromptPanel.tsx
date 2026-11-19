@@ -179,21 +179,21 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
           : <StatusChip tone="grey" icon={<Circle size={11} aria-hidden />}>No answers yet</StatusChip>
   const summaryChip = activeJob ? <StatusChip tone="purple" icon={activeJob.status === 'queued' ? <Clock size={11} aria-hidden /> : <Loader2 size={11} className="animate-spin" aria-hidden />}>{activeJob.status === 'queued' ? 'Queued' : 'Generating…'}</StatusChip>
     : summaryDirty ? <StatusChip tone="amber" icon={<Circle size={11} aria-hidden />}>Unsaved edits</StatusChip>
-      : current ? <StatusChip tone="green" icon={<CircleCheck size={11} aria-hidden />} title={`Source: ${current.origin}${current.model_id ? ` · ${current.model_id}` : ''}`}>Saved</StatusChip>
+      : current?.stale_reason ? <StaleChip reason={current.stale_reason} />
+        : current ? <StatusChip tone="green" icon={<CircleCheck size={11} aria-hidden />} title={`Source: ${current.origin}${current.model_id ? ` · ${current.model_id}` : ''}`}>Saved</StatusChip>
         : <StatusChip tone="grey" icon={<Circle size={11} aria-hidden />}>Not generated yet</StatusChip>
 
   // Same conditions as before, now with the reason in words instead of a silently disabled button.
-  const queueBlocked = working || savingInstructions || disabled || !!activeJob || !instructionsLoaded || answersDirty
-  const blockedReason = activeJob ? 'A summary is already queued for this cut.'
-    : answersDirty ? 'Save your answers first. The summary is written from the saved version.'
-      : disabled ? 'Analysis is running, turned off for this cut, or the cut is archived.' : ''
+  const queueBlocked = working || savingInstructions || disabled || !instructionsLoaded || answersDirty
+  const blockedReason = answersDirty ? 'Save your answers first. The summary is written from the saved version.'
+    : disabled ? 'Analysis is off for this cut, or the cut is archived.' : ''
   const editHint = !queueBlocked && (!current ? 'Queue edit needs a saved summary to change.' : !instruction.trim() ? 'Add an instruction to use Queue edit.' : '')
 
   return <div role="group" aria-label="Review, answers and Cut summary" className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] gap-4 pt-3 lg:grid-cols-2 lg:grid-rows-[minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
     <div className="grid min-h-0 grid-rows-[minmax(0,1fr)] lg:col-start-1 lg:row-start-1">{typeof review === 'function' ? review({ text: humanInstructions, onChange: setHumanInstructions, ready: instructionsLoaded && !savingInstructions }) : review}</div>
     <div className="scrollbar flex flex-col gap-4 lg:col-start-2 lg:row-start-1 lg:-mt-3 lg:min-h-0 lg:overflow-y-auto lg:pt-3 2xl:contents">
       <StepPanel className="2xl:col-start-2 2xl:row-start-1" step={2} kind="review_answers" title="Your answers" subtitle="Decisions and checks" tag={answersChip}
-        actions={<ActionButton compact icon={<Wand2 size={13} aria-hidden />} pending={reviewWorking} disabled={!instructionsLoaded} onClick={generateAnswers} title="Draft answers from the current review and transcript">Draft with AI</ActionButton>}>
+        actions={<ActionButton compact icon={<Wand2 size={13} aria-hidden />} pending={reviewWorking} disabled={!instructionsLoaded || disabled} onClick={generateAnswers} title="Draft answers from the current review and transcript">Draft with AI</ActionButton>}>
         <div className="flex min-h-[15rem] flex-1 flex-col gap-2">
           <label htmlFor={`answers-${cutId}`} className="label !mb-0">Answers to suggested checks and production decisions</label>
           <textarea id={`answers-${cutId}`} aria-label="Answers to suggested checks and production decisions" className="editor-area min-h-[12rem] flex-1" maxLength={50000} value={humanInstructions} disabled={!instructionsLoaded || savingInstructions} onChange={event => setHumanInstructions(event.target.value)} placeholder="Record confirmations, corrections, and production decisions for this cut. One bullet per item in the Review column works well." />
@@ -217,10 +217,9 @@ export function CutSummaryPanel({ cutId, review, editorSlot, current, loaded, jo
             <ActionButton icon={<Sparkles size={14} aria-hidden />} className="flex-1" disabled={queueBlocked || !current || !instruction.trim()} onClick={() => start('edit')} title="Edit the current summary following your instruction">Queue edit</ActionButton>
           </div>
           {blockedReason ? <WarningLine level="warn">{blockedReason}</WarningLine> : editHint ? <WarningLine level="info">{editHint}</WarningLine> : null}
-          {activeJob && <p className="muted text-[11px] leading-4">Saved answers will be used the next time you queue a summary. The queued summary keeps its original answers.</p>}
           <p className="muted text-[11px]">Uses the text engine selected in the top navigation.</p>
         </div>
-        <div className="shrink-0"><SummaryRequestEditor textProvider={textProvider} cutId={cutId} disabled={disabled || !!activeJob} onStarted={onStarted} /></div>
+        <div className="shrink-0"><SummaryRequestEditor textProvider={textProvider} cutId={cutId} disabled={disabled} onStarted={onStarted} /></div>
       </StepPanel>
 
       <StepPanel className="2xl:col-start-3 2xl:row-start-1" step={3} kind="cut_summary" title="Cut summary" subtitle="Final production brief" tag={summaryChip}

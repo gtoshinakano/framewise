@@ -44,7 +44,8 @@ class TextChainTest(unittest.TestCase):
             a, r = self.payload(answers[cut]), self.payload(summary[cut])
             self.assertEqual(a['depends_on'], [consistency[cut]])
             self.assertTrue(a['auto_save'])
-            self.assertEqual((r['depends_on'], r['refresh_answers']), ([answers[cut]], True))
+            self.assertEqual(r['depends_on'], [answers[cut]])
+            self.assertNotIn('human_instructions', r)
 
     def test_only_consistency_and_answers_when_a_cut_summary_is_kept(self):
         self.seed(consistency=False)
@@ -54,7 +55,7 @@ class TextChainTest(unittest.TestCase):
         self.assertEqual((body['queued'], body['skipped'], len(body['job_ids'])), (2, 1, 5))
         self.assertNotIn('c1', self.jobs('regen'))
         again = self.chain(only_missing=False).json()  # c1's chain has no summary step yet, c2's is complete
-        self.assertEqual((again['attached'], again['blocked']['busy']), (1, [2]))
+        self.assertEqual((again['attached'], again['blocked']['busy']), (1, []))
 
     def test_replacing_summaries_adds_the_step_to_chains_queued_without_it(self):
         self.seed(consistency=False)
@@ -63,10 +64,10 @@ class TextChainTest(unittest.TestCase):
         self.chain()  # c1 keeps its summary, so it has no Cut summary job
         self.assertNotIn('c1', self.jobs('regen'))
         body = self.chain(only_missing=False).json()
-        self.assertEqual((body['queued'], body['attached'], len(body['job_ids']), body['blocked']['busy']), (0, 1, 1, [2]))  # c2's chain is complete
+        self.assertEqual((body['queued'], body['attached'], len(body['job_ids']), body['blocked']['busy']), (0, 1, 6, []))  # c2's chain is complete
         brief = self.payload(self.jobs('regen')['c1'])
-        self.assertEqual((brief['depends_on'], brief['refresh_answers'], brief['base_id']),
-                         ([self.jobs('review_answers')['c1']], True, 's1'))
+        self.assertEqual(brief['depends_on'], [self.jobs('review_answers')['c1']])
+        self.assertNotIn('base_id', brief)
         self.assertEqual(self.chain(only_missing=False).json()['attached'], 0)  # not added twice
 
     def test_lists_cuts_that_are_busy_or_not_analysed(self):
@@ -74,7 +75,8 @@ class TextChainTest(unittest.TestCase):
         body = self.chain().json()
         self.assertEqual((body['queued'], body['blocked']), (1, {'missing_results': [2], 'busy': []}))
         again = self.chain().json()
-        self.assertEqual((again['queued'], again['blocked']['busy']), (0, [1]))
+        self.assertEqual((again['queued'], again['blocked']['busy']), (0, []))
+        self.assertEqual(again['job_ids'], body['job_ids'])
         self.assertEqual(self.chain(2).json()['blocked']['missing_results'], [2])
 
     def test_later_jobs_wait_for_the_job_before_them(self):
@@ -118,7 +120,7 @@ class TextChainTest(unittest.TestCase):
         self.assertEqual(sent['review']['human_review'], 'Confirm the NEW coat colour.')
         self.assertEqual(sent['existing_answers'], 'Typed after queuing')
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (answers_id,))['status'], 'done')
-        self.assertEqual(self.client.get('/api/cuts/c1/brief-instructions').json()['content'], '- Coat: green')
+        self.assertEqual(self.client.get('/api/cuts/c1/brief-instructions').json()['content'], 'Typed after queuing')
 
     def test_answers_are_skipped_when_the_new_summary_leaves_nothing_to_decide(self):
         self.seed(cuts=('c1',), consistency=False)

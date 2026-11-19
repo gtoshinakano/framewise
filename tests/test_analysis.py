@@ -853,7 +853,7 @@ class AnalysisTest(unittest.TestCase):
     def test_summary_jobs_for_different_cuts_can_be_queued_without_duplicate_same_cut(self):
         first = self.client.post('/api/cuts/c1/regenerate-summary', json={'mode': 'regenerate'})
         self.assertEqual(first.status_code, 200, first.text)
-        self.assertEqual(self.client.post('/api/cuts/c1/regenerate-summary', json={'mode': 'regenerate'}).status_code, 409)
+        self.assertEqual(self.client.post('/api/cuts/c1/regenerate-summary', json={'mode': 'regenerate'}).json(), first.json())
         other = self.client.post('/api/cuts/c2/regenerate-summary', json={'mode': 'regenerate'})
         self.assertEqual(other.status_code, 200, other.text)
         self.assertEqual(self.client.post('/api/jobs/' + first.json()['job_id'] + '/cancel').status_code, 200)
@@ -868,8 +868,9 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(self.client.post('/api/cuts/c2/regenerate-summary', json={'mode': 'regenerate'}).status_code, 200)
         job_id = queued.json()['job_id']
         payload = json.loads(db.one("SELECT payload_json FROM jobs WHERE id=?", (job_id,))['payload_json'])
-        self.assertEqual((payload['base_id'], payload['current_prompt']), ('anim', 'Unsaved prompt'))
-        self.assertEqual([item['title'] for item in payload['results']], ['Shot description'])
+        self.assertEqual(payload['edited_prompt'], 'Unsaved prompt')
+        self.assertNotIn('base_id', payload)
+        self.assertNotIn('results', payload)
         claimed = worker.claim_job(('regen',))
         response = {'model': 'provider/x', 'choices': [{'finish_reason': 'stop', 'message': {'content': PRODUCTION_TEXT}}]}
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'k'}), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps(response).encode())):

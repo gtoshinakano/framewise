@@ -213,7 +213,7 @@ class ChainTest(unittest.TestCase):
         payload = self.payload(consistency)
         self.assertEqual(payload['depends_on'], [beats_job])
         self.assertNotIn('evidence', payload)
-        self.assertTrue(self.payload(summary)['refresh_results'])
+        self.assertNotIn('results', self.payload(summary))
         self.assertIsNone(worker.claim_job(('consistency_summary',)))  # held behind the beats
         # The beats job runs; the consistency job then builds its evidence from them.
         claimed = worker.claim_job(('performance_beats',))

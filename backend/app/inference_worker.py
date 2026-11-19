@@ -632,38 +632,51 @@ def validate_production_brief(text, duration=None, camera=False):
 
 def process_regen(job_id, owner):
     """Rewrite a summary, retaining compatibility with previously queued jobs."""
+    from . import job_inputs
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
         return
+    payload = json.loads(job["payload_json"])
     try:
-        payload = json.loads(job["payload_json"])
         cut_id, mode = payload["cut_id"], payload["mode"]
         legacy = payload.get("result_type") != "summary"
         title = ANIMATION_TITLE if legacy else SUMMARY_TITLE
         field = "minimax_animation_prompt" if legacy else "cut_summary"
         system = ANIMATION_SYSTEM if legacy else PRODUCTION_BRIEF_SYSTEM if payload.get("production_brief") else SUMMARY_TEXT_SYSTEM
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            inputs = job_inputs.JobInputs(conn, job, owner)
+        values = inputs.data
+        current = values.get('base') or {}
+        initial = json.loads(job['input_json'] or '{}').get('output_base', current.get('id'))
+        edited = current.get('id') != initial and current.get('origin') in ('manual', 'manual_edit', 'assistant_edit')
+        if values.get('skip') or edited:
+            with inputs.publish(invalidate=False) as conn:
+                stage = f"Skipped · {values.get('skip') or 'summary edited by hand'}"
+                conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
+                worker.sync_episode_status(conn, job['episode_id'])
+            return
+        provenance = {'fingerprint': inputs.stamp, 'output_base': initial, 'source_result_ids': values['source_result_ids'],
+                      'source_summary_id': current.get('id')}
+
+        def record_inputs(conn):
+            conn.execute('UPDATE jobs SET input_json=? WHERE id=?', (json.dumps(provenance, ensure_ascii=False), job_id))
+
+        with inputs.publish(invalidate=False, on_changed=record_inputs) as conn:
+            record_inputs(conn)
         worker.stage(job_id, owner, job["episode_id"], "Rewriting cut summary" if mode == "edit" else "Regenerating cut summary")
-        if payload.get('refresh_results'):
-            # A chained summary reads the analysis as it is now (the performance beats were written after it was queued).
-            rows = db.all_rows("SELECT id,kind,title,content,origin,context_json FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut_id,))
-            payload['results'] = prompt_context.slim_results([row for row in rows if row['title'] != SUMMARY_TITLE], drop=(prompt_context.CONSISTENCY_TITLE,))
-        if payload.get('refresh_answers'):
-            saved = db.one('SELECT content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,))
-            payload['human_instructions'] = saved['content'] if saved else ''
-        candidates = payload.get("sampled_frames", []) if not legacy else []
-        candidates = [frame for frame in candidates if frame_source.result_frame_spec(frame['frame_id'])]
-        current_prompt = payload["current_prompt"] if legacy else strip_suggested_frame(payload["current_prompt"])
+        candidates = values['sampled_frames']
+        current_prompt = values["current_prompt"] if legacy else strip_suggested_frame(values["current_prompt"])
         # The Cut summary is written from the analysis and the user's answers only: no transcript, subtitles or consistency assessment.
         brief = bool(payload.get("production_brief")) and not legacy
         request = {"mode": mode, "instruction": payload["instruction"], ("current_animation_prompt" if legacy else "current_summary"): current_prompt,
-                   "context": prompt_context.slim_context(payload["context"], dialogue=not brief),
-                   "current_results": prompt_context.slim_results(payload["results"], drop=(prompt_context.CONSISTENCY_TITLE,) if brief else ())}
+                   "context": values['context'], "current_results": values['results']}
         if not legacy:
             seen = {str(row.get('content')) for row in request["current_results"]}
             candidates = [frame for frame in candidates if str(frame.get('description')) not in seen]
             request["sampled_frames"] = candidates
             if payload.get("production_brief"):
-                request["human_instructions"] = payload.get("human_instructions", "")
+                request["human_instructions"] = values['human_instructions']
         model = payload["model"]
         provider, thinking = payload.get('text_provider', 'openrouter'), payload.get('local_thinking', False)
         telemetry = {}
@@ -671,7 +684,7 @@ def process_regen(job_id, owner):
         if override is not None:
             model, system, request = override["model"], override["system"], override["input"]
         fields = [field] if legacy else [key for key, _ in SUMMARY_TOPICS]
-        context_cut = payload.get('context', {}).get('cut', {})
+        context_cut = values['context'].get('cut', {})
         begin, end = context_cut.get('start_time'), context_cut.get('end_time')
         duration = end - begin if all(isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value) for value in (begin,end)) and end > begin else None
         # A model answer must end with the Cinematic Camera section when the instructions ask for it (an edited request may not).
@@ -679,6 +692,9 @@ def process_regen(job_id, owner):
         validator = (lambda text: validate_production_brief(text, duration, camera)) if payload.get('production_brief') and not legacy else None
         cancel = lambda: check_summary_lease(job_id, owner)
         request_json = json.dumps(request, ensure_ascii=False)
+        provenance['request'] = {'model': model, 'system': system, 'input': request}
+        with inputs.publish(invalidate=False) as conn:
+            record_inputs(conn)
         # The first frame goes with the evidence when the model can see it: it only informs the camera section. Never a reason to fail.
         picture, picture_skipped = [], None
         if camera and override is None:
@@ -694,31 +710,30 @@ def process_regen(job_id, owner):
         generation_seconds = time.monotonic() - generation_started
         content = output[field].strip() if legacy else None
         settings = json.dumps({"mode": mode, "instruction": payload["instruction"], "summary_model": actual_model, "summary_generation_seconds": generation_seconds, "provider": provider, "model_revision": local_text_runtime.revision_for(telemetry.get('model_variant')) if provider == 'local' else None, "thinking": thinking if provider == "local" else None, "thinking_budget_tokens": int(os.environ.get("QWEN36_THINKING_BUDGET", "2048")) if provider == "local" and thinking else None, "usage": telemetry,
+                               "input_fingerprint": inputs.stamp, "source_result_ids": values['source_result_ids'],
                                **({'picture': 'first frame'} if picture else {}), **({'picture_skipped': picture_skipped} if picture_skipped else {})}, ensure_ascii=False)
         snapshot = json.dumps(request, ensure_ascii=False)
         new_id = str(uuid.uuid4())
-        with db.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            worker.require_lease(conn, job_id, owner)
+        with inputs.publish() as conn:
             if not legacy:
                 content = validate_production_brief(output, duration, camera) if payload.get("production_brief") and isinstance(output, str) else render_relaxed_summary(output)
                 if payload.get('production_brief') and (content.startswith('{') or re.match(r'^```(?:json)?\s*\{', content, re.IGNORECASE)):
                     content = render_relaxed_summary(content)
                 if len(content) > 50000:
                     raise RuntimeError("The generated cut summary is too long to edit; run it again")
-            current = conn.execute("SELECT id FROM analysis_results WHERE cut_id=? AND title=? AND superseded_by IS NULL ORDER BY rowid DESC LIMIT 1", (cut_id, title)).fetchone()
-            if (current["id"] if current else None) != payload["base_id"]:
-                raise RuntimeError("The result changed while it was being rewritten; run it again")
+            base_id = current.get('id')
             conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json,parent_id) VALUES (?,?,?,?,?,'model',?,?,?,?,?,?)",
-                         (new_id, cut_id, "generation_prompt" if legacy else "cut_description", title, content, actual_model, job_id, system, settings, snapshot, payload["base_id"]))
-            if payload["base_id"]:
-                conn.execute("UPDATE analysis_results SET superseded_by=? WHERE id=?", (new_id, payload["base_id"]))
+                         (new_id, cut_id, "generation_prompt" if legacy else "cut_description", title, content, actual_model, job_id, system, settings, snapshot, base_id))
+            if base_id:
+                conn.execute("UPDATE analysis_results SET superseded_by=? WHERE id=?", (new_id, base_id))
             conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
             worker.sync_episode_status(conn, job["episode_id"])
     except SummaryCancelled:
         if payload.get('text_provider') == 'local':
             local_text_runtime.cancel_local('Cancelled')
         log.info("Summary job %s was cancelled", job_id)
+    except worker.LeaseLost:
+        return
     except Exception as exc:
         fail_job(job_id, owner, job["episode_id"], exc)
         log.exception("Prompt regeneration failed for job %s", job_id)

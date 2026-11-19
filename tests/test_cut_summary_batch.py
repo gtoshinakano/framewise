@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from app import db
+from app import db, summary_jobs, worker
 import tests.test_analysis as analysis_tests
 
 
@@ -31,7 +31,10 @@ class CutSummaryBatchTest(unittest.TestCase):
         self.assertEqual((everything['queued'], everything['skipped']), (2, 0))
         first = self.payload(everything['job_ids'][0])
         self.assertEqual((first['cut_id'], first['mode'], first['result_type']), ('c1', 'regenerate', 'summary'))
-        self.assertEqual(self.payload(everything['job_ids'][1])['human_instructions'], 'Coat is green')
+        self.assertNotIn('human_instructions', self.payload(everything['job_ids'][1]))
+        with db.connect() as conn:
+            job = db.one('SELECT * FROM jobs WHERE id=?', (everything['job_ids'][1],), conn=conn)
+            self.assertEqual(summary_jobs.gather(conn, job)['human_instructions'], 'Coat is green')
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='done'")
         self.assertEqual(self.queue_from(2).json()['queued'], 1)  # earlier cuts are left out
@@ -50,7 +53,9 @@ class CutSummaryBatchTest(unittest.TestCase):
             conn.execute("UPDATE jobs SET status='done'")
         redo = self.queue_from(only_missing=False).json()
         self.assertEqual((redo['queued'], redo['skipped']), (2, 0))
-        self.assertEqual(self.payload(redo['job_ids'][0])['base_id'], 'c1summary')  # revises the current summary
+        with db.connect() as conn:
+            job = db.one('SELECT * FROM jobs WHERE id=?', (redo['job_ids'][0],), conn=conn)
+            self.assertEqual(summary_jobs.gather(conn, job)['base']['id'], 'c1summary')
 
     def test_a_cut_whose_answers_are_still_being_drafted_waits(self):
         self.seed()
@@ -58,19 +63,25 @@ class CutSummaryBatchTest(unittest.TestCase):
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('r','e','review_answers',?)", (json.dumps({'cut_id': 'c1'}),))
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('a','e','analyze',?)", (json.dumps({'cuts': [{'cut_id': 'c2'}]}),))
         body = self.queue_from().json()
-        self.assertEqual((body['queued'], body['blocked']), (0, {'no_consistency': [], 'answers_pending': [1], 'busy': [2]}))
+        self.assertEqual(body['queued'], 2)
+        for job_id, predecessor in zip(body['job_ids'], ('r', 'a')):
+            self.assertIn(predecessor, self.payload(job_id)['depends_on'])
+        self.assertIsNone(worker.claim_job(('regen',)))
 
     def test_a_summary_already_queued_is_not_queued_twice(self):
         self.seed()
-        self.assertEqual(self.queue_from().json()['queued'], 2)
+        first = self.queue_from().json()
         again = self.queue_from().json()
-        self.assertEqual((again['queued'], again['blocked']['busy']), (0, [1, 2]))
+        self.assertEqual(first['queued'], 2)
+        self.assertEqual(again['job_ids'], first['job_ids'])
 
     def test_waits_for_media_work(self):
         self.seed()
         with db.connect() as conn:
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json,status) VALUES ('prep','e','prepare','{}','running')")
-        self.assertEqual(self.queue_from().status_code, 409)
+        response = self.queue_from()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.payload(response.json()['job_ids'][0])['depends_on'], ['prep'])
 
     def test_archived_and_disabled_cuts_are_left_out(self):
         self.seed()

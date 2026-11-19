@@ -395,6 +395,21 @@ def _review_invalidates(conn, job):
     review_answers.invalidate(conn, job)
 
 
+def _summary_gather(conn, job):
+    from . import summary_jobs
+    return summary_jobs.gather(conn, job)
+
+
+def _summary_inputs(conn, job):
+    from . import summary_jobs
+    return summary_jobs.inputs(conn, job)
+
+
+def _summary_invalidates(conn, job):
+    from . import summary_jobs
+    summary_jobs.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -430,7 +445,11 @@ KINDS = {kind.pipeline: kind for kind in (
              frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
          priority_class=lambda payload: 'batch' if payload.get('auto_save') else 'interactive',
          inputs=_review_inputs, gather=_review_gather, invalidates=_review_invalidates),
-    Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always),
+    Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always,
+         resources=frozenset({'text'}),
+         scope=lambda payload: Scope(frozenset({'cut_boundaries', 'results', 'decisions', 'context', 'chunks', 'detections'}),
+             frozenset({'results:summary'}), frozenset({payload['cut_id']}) if payload.get('cut_id') else None),
+         priority_class=lambda payload: 'interactive', inputs=_summary_inputs, gather=_summary_gather, invalidates=_summary_invalidates),
     Kind('composition_compact', 'Composition brief', True, cuts=_one_cut, keys=_cut_keys('composition_compact'), cancel_running=_always,
          retry=_always, attention=False),
     Kind('sequence', 'Sequence', True, label=_sequence_label, cancel_running=_always,
