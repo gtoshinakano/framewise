@@ -44,6 +44,8 @@ test('stages and steps read as words', () => {
   assert.equal(stageText({ stage: 'Complete', status: 'done' }), '')
   assert.equal(stageText({ stage: 'Cancelled', status: 'stopping' }), 'Stopping — finishing the current step')
   assert.equal(stageText({ stage: 'Cancelled', status: 'cancelled' }), '')
+  assert.equal(stageText({ stage: 'queued', status: 'queued', waiting_for: ['Character boxes'] }), 'Queued after Character boxes')
+  assert.equal(stageText({ stage: 'Inputs changed, restarting', status: 'queued' }), 'Restarting with your changes')
   assert.equal(unitsText({ units: { done: 3, total: 12 }, status: 'running' }), '3/12 steps')
   assert.equal(unitsText({ units: { done: 0, total: 1 }, status: 'queued' }), '')
 })

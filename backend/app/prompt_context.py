@@ -214,7 +214,7 @@ def beats_view(content):
 def beats_current(by_type):
     """True when the cut's performance beats were built from its current keyframe analysis."""
     keyframes, beats = by_type.get('keyframe_analysis'), by_type.get('performance_beats')
-    if not keyframes or not beats or not isinstance(beats.get('content'), dict):
+    if not keyframes or not beats or beats.get('stale_reason') or not isinstance(beats.get('content'), dict):
         return False
     return (beats['content'].get('based_on') or {}).get('keyframe_analysis') == keyframes.get('id')
 

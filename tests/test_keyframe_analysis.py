@@ -215,8 +215,8 @@ class KeyframeStageTest(unittest.TestCase):
             return answer_for(schema)
         job_id, _ = self.run_stage(ask=moving)
         job = db.one('SELECT status,error FROM jobs WHERE id=?', (job_id,))
-        self.assertEqual(job['status'], 'failed')
-        self.assertIn('cut changed', job['error'])
+        self.assertEqual(job['status'], 'queued')
+        self.assertIsNone(job['error'])
         self.assertIsNone(self.current())
         self.assertIsNone(db.one("SELECT id FROM jobs WHERE pipeline='performance_beats'"))
 
@@ -250,10 +250,8 @@ class QueueingTest(unittest.TestCase):
         self.assertEqual(len(wait), 1)
         self.assertEqual(len(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (wait[0],))['payload_json'])['cuts']), 2)
         frame_only = self.client.post('/api/cuts/c1/analysis-stages/run', json={'stage': 'initial_frame'})
-        self.assertEqual(frame_only.status_code, 409)  # the batch already covers that stage
-        with db.connect() as conn:
-            conn.execute("UPDATE jobs SET status='cancelled' WHERE id=?", (first,))
-        frame_only = self.client.post('/api/cuts/c1/analysis-stages/run', json={'stage': 'initial_frame'}).json()['job_id']
+        self.assertEqual(frame_only.status_code, 200)
+        frame_only = frame_only.json()['job_id']
         self.assertNotIn('depends_on', json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (frame_only,))['payload_json']))
 
     def test_the_video_stage_is_gone(self):

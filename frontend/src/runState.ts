@@ -65,7 +65,7 @@ export type CharacterSummary = { boxes: number; autoUnverified: number; unknown:
 export function preflight(input: { mediaBusy: boolean; enabled: boolean; characters: CharacterSummary | null }): Warning[] {
   const out: Warning[] = []
   if (!input.enabled) out.push({ level: 'error', text: 'Analysis is disabled for this cut. Enable it in the cut editor to queue it.' })
-  if (input.mediaBusy) out.push({ level: 'warn', text: 'Media preparation or detection is running. Analysis can be queued when it finishes.' })
+  if (input.mediaBusy) out.push({ level: 'warn', text: 'Queued analysis waits for its media or character inputs.' })
   const people = input.characters
   if (people?.stale) out.push({ level: 'warn', text: 'Cut timing changed since characters were detected. Detect again before analysis.' })
   if (people && people.autoUnverified > 0) out.push({ level: 'warn', text: `${people.autoUnverified} automatic ${people.autoUnverified === 1 ? 'label is' : 'labels are'} unverified. Queuing treats named boxes as verified, so confirm or correct them first.` })

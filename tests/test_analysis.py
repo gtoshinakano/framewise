@@ -6,19 +6,25 @@ import threading
 import unittest
 import io
 import urllib.error
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from app import db, media, worker, inference_worker
-from app.main import app, enqueue_analysis
+from app import analysis_context, db, media, worker, inference_worker
+from app.main import app, analysis_config_for_cut, selected_analysis_context
 
 PRODUCTION_TEXT = ('### Scene\nA store.\n\n### Opening Frame\nA person.\n\n'
                    '### Performance Beats\n[0.0–1.0] Camera: static.\n\n### Acting Notes\nThe person waits.\n\n'
                    '### Continuity & Constraints\nStatic camera.\n\n'
                    '### Cinematic Camera\n- Camera body: ARRI Alexa 35\n- Lens: Cooke S4/i\n- Focal length: 35 mm\n- Aperture: T2.8\n'
                    '- Lighting: soft key from the left\n- Color grading: muted, warm highlights\n- Image texture: fine grain')
+
+
+def visual_inputs(job_id, cut_id):
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        job = dict(conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
+        return analysis_context.visual(conn, {**job, 'unit_id': cut_id})
 
 
 class AnalysisTest(unittest.TestCase):
@@ -40,17 +46,22 @@ class AnalysisTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def legacy_single_job(self):
-        # Jobs queued before the v2 rollout have no workflow marker.
-        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
-        with db.connect() as conn:
-            payload = json.loads(conn.execute('SELECT payload_json FROM jobs WHERE id=?', (job_id,)).fetchone()['payload_json'])
-            payload.pop('workflow', None)
-            conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload), job_id))
-        return job_id
+        return self.legacy_batch_job('c1')
 
-    def legacy_batch_job(self):
-        # Recreate the payload shape that may still be present after upgrades.
-        return enqueue_analysis('e')['job_id']
+    def legacy_batch_job(self, *cut_ids):
+        # A fixture in the pre-v2 format exercises restart and compatibility paths.
+        if not cut_ids:
+            cut_ids = tuple(row['id'] for row in db.all_rows("SELECT id FROM cuts WHERE active=1 AND analysis_enabled=1 ORDER BY cut_index"))
+        items = []
+        for cut_id in cut_ids:
+            _, config = analysis_config_for_cut(cut_id)
+            context = selected_analysis_context(cut_id, config)
+            items.append({'cut_id': cut_id, 'config': config.model_dump(), 'context': context})
+        with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            job_id = worker.insert_job(conn, 'e', 'analyze', {'cuts': items})
+            worker.sync_episode_status(conn, 'e')
+        return job_id
 
     def test_repeated_merges_refresh_only_changed_cuts(self):
         with db.connect() as conn:
@@ -211,7 +222,12 @@ class AnalysisTest(unittest.TestCase):
         self.assertNotIn('status', stored['current_results'][0])
         self.assertNotIn('status', stored['transcript_segments'][0])
         queued = self.client.post('/api/cuts/c1/analyze').json()['job_id']
-        captured = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (queued,))['payload_json'])['cuts'][0]['context']
+        row = db.one('SELECT * FROM jobs WHERE id=?', (queued,))
+        payload = json.loads(row['payload_json'])
+        self.assertNotIn('context', payload['cuts'][0])
+        snapshot = worker.claim_job(('analyze',))
+        from app import single_cut_pipeline
+        captured = single_cut_pipeline.gather_batch(row, snapshot[1], payload)[0].data['context']
         self.assertEqual([r['content'] for r in captured['current_results']], ['Previously rejected'])
         self.assertNotIn('status', captured['current_results'][0])
         self.assertEqual(self.client.post('/api/cuts/c1/analysis-results', json={'kind': 'other', 'content': 'x', 'status': 'draft'}).status_code, 422)
@@ -272,35 +288,23 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(self.client.post(f'/api/jobs/{first}/retry').status_code, 409)
         self.assertEqual(self.client.get('/api/cuts/c2/analysis-config').status_code, 200)
 
-    def test_queue_snapshot_excludes_concurrent_context_edits(self):
-        from app import main
-        self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json={'context_ids': ['ctx']}).status_code, 200)
-        captured, release, write_finished = threading.Event(), threading.Event(), threading.Event()
-        original = main.selected_analysis_context
-        def hold_snapshot(cut_id, config):
-            value = original(cut_id, config)
-            captured.set()
-            if not release.wait(5):
-                raise RuntimeError('Test did not release the snapshot')
-            return value
-        def edit_context():
-            with db.connect() as conn:
-                conn.execute("UPDATE context_items SET content='Changed concurrently' WHERE id='ctx'")
-            write_finished.set()
-        with ThreadPoolExecutor(max_workers=2) as executor, patch.object(main, 'selected_analysis_context', side_effect=hold_snapshot):
-            queued = executor.submit(self.client.post, '/api/cuts/c1/analyze')
-            try:
-                self.assertTrue(captured.wait(5))
-                edited = executor.submit(edit_context)
-                self.assertFalse(write_finished.wait(.2))
-            finally:
-                release.set()
-            response = queued.result(timeout=5)
-            edited.result(timeout=5)
+    def test_analysis_queues_choices_and_reads_edited_context_at_start(self):
+        from app import analysis_context, single_cut_pipeline
+        self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json={'context_ids': ['ctx'], 'additional_context': 'First preset'}).status_code, 200)
+        with patch.object(analysis_context, 'selected', side_effect=AssertionError('Evidence was gathered at queue time')):
+            response = self.client.post('/api/cuts/c1/analyze')
         self.assertEqual(response.status_code, 200, response.text)
-        payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (response.json()['job_id'],))['payload_json'])
-        self.assertEqual(payload['cuts'][0]['context']['context_items'][0]['content'], 'Green coat')
-        self.assertEqual(db.one("SELECT content FROM context_items WHERE id='ctx'")['content'], 'Changed concurrently')
+        job_id = response.json()['job_id']
+        self.assertEqual(self.client.put('/api/cuts/c1/analysis-config', json={'context_ids': ['ctx'], 'additional_context': 'Later preset'}).status_code, 200)
+        with db.connect() as conn:
+            conn.execute("UPDATE context_items SET content='Changed before start' WHERE id='ctx'")
+        _, owner = worker.claim_job(('analyze',))
+        job = db.one('SELECT * FROM jobs WHERE id=?', (job_id,))
+        payload = json.loads(job['payload_json'])
+        self.assertEqual(set(payload['cuts'][0]), {'cut_id', 'config'})
+        snapshot, = single_cut_pipeline.gather_batch(job, owner, payload)
+        self.assertEqual(snapshot.data['context']['context_items'][0]['content'], 'Changed before start')
+        self.assertEqual(snapshot.data['config']['additional_context'], 'First preset')
 
     def test_checkpoint_reuse(self):
         job_id = self.legacy_single_job()
@@ -340,8 +344,8 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(json.loads(db.one('SELECT evidence_json FROM analysis_job_cuts WHERE job_id=?', (job_id,))['evidence_json']), fresh)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
 
-    def test_retry_rejects_changed_unfinished_cut(self):
-        job_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+    def test_legacy_retry_rejects_changed_unfinished_cut(self):
+        job_id = self.legacy_single_job()
         claimed = worker.claim_job(('analyze',))
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': ''}):
             inference_worker.process(*claimed)
@@ -596,7 +600,7 @@ class AnalysisTest(unittest.TestCase):
                 inference_worker.synthesize(config, {}, observations)
 
     def test_failed_analysis_preview_and_edited_retry_send_reviewed_input(self):
-        old_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        old_id = self.legacy_single_job()
         observations = [{'time': 0.5, 'description': 'Old description', 'ocr_response': 'old text', 'ocr': []}]
         with db.connect() as conn:
             conn.execute("INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) VALUES (?,?,?)", (old_id, 'c1', json.dumps(observations)))

@@ -41,7 +41,8 @@ def _field(name, path=None):
 
 SLIM = ("CASE WHEN json_valid(payload_json) THEN json_object("
         + ','.join(_field(name) for name in ('workflow', 'text_only', 'phase', 'cut_id', 'cut_ids', 'next_cut_id', 'step', 'shot_key',
-                                               'kind', 'result_type', 'production_brief', 'range', 'ranges', 'language', 'character_context_id'))
+                                               'kind', 'result_type', 'production_brief', 'range', 'ranges', 'language', 'character_context_id',
+                                               'depends_on'))
         + ",'stages',CASE WHEN json_type(payload_json,'$.stages')='array' THEN json_extract(payload_json,'$.stages') END"
         + f",'cut',{_snapshot('$.cut')},'context',json_object('cut',{_snapshot('$.context.cut')})"
         + ",'cuts',CASE WHEN json_type(payload_json,'$.cuts')='array' THEN (SELECT json_group_array(json_object("
@@ -186,6 +187,11 @@ def describe(conn, rows, now=None):
         return []
     progress = _progress_for(conn, items)
     sequences = _sequences(conn, {payload['sequence_id'] for row, payload in items if isinstance(payload.get('sequence_id'), str)})
+    parent_ids = {parent for row, payload in items if row['status'] == 'queued' for parent in payload.get('depends_on') or []}
+    waiting_for = {}
+    for ids in _chunks(parent_ids):
+        for parent in conn.execute(f"SELECT id,pipeline,{SLIM} AS slim FROM jobs WHERE id IN ({_placeholders(ids)}) AND status!='done'", ids):
+            waiting_for[parent['id']] = job_kinds.kind_of(parent['pipeline']).name(_loads(parent))
     refs = {}
     for row, payload in items:
         kind = job_kinds.kind_of(row['pipeline'])
@@ -226,6 +232,7 @@ def describe(conn, rows, now=None):
         runs.append({
             'id': row['id'], 'seq': row['seq'], 'kind': row['pipeline'], 'label': label, 'group': f"{row['pipeline']}:{label}", 'gpu': kind.gpu,
             'status': status, 'stage': row['stage'], 'error': row['error'], 'priority_class': row['priority_class'],
+            'waiting_for': list(dict.fromkeys(waiting_for[parent] for parent in payload.get('depends_on') or [] if parent in waiting_for)),
             'cuts': listed[:LISTED_CUTS], 'cut_count': len(listed),
             'cut_span': {'first': min(numbers), 'last': max(numbers)} if (numbers := [cut['number'] for cut in listed if cut['number'] is not None]) else None,
             'sequence': {'id': sequence['id'], 'title': sequence['title'], 'step': payload.get('step'), 'shot_key': payload.get('shot_key'),

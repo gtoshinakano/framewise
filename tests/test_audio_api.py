@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app import db, media, inference_worker
 from app.main import app
+from tests.test_analysis import visual_inputs
 
 
 class AudioApiTests(unittest.TestCase):
@@ -216,7 +217,7 @@ class AudioApiTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/episodes/e/transcript/assign-voice', json={'character_context_id': 'c'}).json(), {'updated': 1})
         self.assertIsNone(next(row for row in self.client.get('/api/episodes/e/transcript').json() if row['text'] == 'Other')['character_context_id'])
 
-    def test_many_generated_words_are_queued_as_analysis_context_without_approval(self):
+    def test_many_generated_words_are_loaded_at_analysis_start(self):
         with db.connect() as conn:
             conn.executemany("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,origin) VALUES(?, 'e',?,?,?,'model')",
                              [(f'word-{i}', i / 300, (i + 1) / 300, f'word{i}') for i in range(1200)])
@@ -225,4 +226,5 @@ class AudioApiTests(unittest.TestCase):
         response = self.client.post('/api/cuts/cut/analyze')
         self.assertEqual(response.status_code, 200, response.text)
         payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (response.json()['job_id'],))['payload_json'])
-        self.assertEqual(len(payload['cuts'][0]['context']['transcript_segments']), 1200)
+        self.assertNotIn('context', payload['cuts'][0])
+        self.assertEqual(len(visual_inputs(response.json()['job_id'], 'cut')['context']['transcript_segments']), 1200)

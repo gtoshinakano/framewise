@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import media, video_model
+from tests.test_analysis import visual_inputs
 from tests.test_video_model import Tensor
 
 
@@ -73,5 +74,5 @@ class FrameBudgetSettingsTest(unittest.TestCase):
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('box','run','first','[0,0,1,1]','ctx','manual')")
         response = self.client.post('/api/cuts/c1/analyze')
         self.assertEqual(response.status_code, 200, response.text)
-        payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?',(response.json()['job_id'],))['payload_json'])
-        self.assertEqual([item['id'] for item in payload['cuts'][0]['context']['context_items']], ['ctx'])
+        context = visual_inputs(response.json()['job_id'], 'c1')['context']
+        self.assertEqual([item['id'] for item in context['context_items']], ['ctx'])

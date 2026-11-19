@@ -50,9 +50,9 @@ def cache_key(source, cut, settings, mask):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
-def mask_for(episode_id, settings):
+def mask_for(episode_id, settings, conn=None):
     from . import subtitle_store
-    run = subtitle_store.current_run(episode_id)
+    run = subtitle_store.current_run(episode_id, conn)
     band = (run or {}).get('band') or {}
     top, bottom = band.get('top'), band.get('bottom')
     if isinstance(top, (int, float)) and isinstance(bottom, (int, float)) and 0 <= top < bottom <= 1 and (top > 0 or bottom < 1):
@@ -67,28 +67,31 @@ def latest_job(conn, episode_id, cut_id):
                            ORDER BY j.rowid DESC LIMIT 1''', (episode_id, cut_id)).fetchone()
 
 
-def current_selection(cut_id):
+def current_selection(cut_id, conn=None):
     """``(cut, source path, key, result)`` of the cut's latest selection; key and result are None when it is missing or stale.
 
     The cut is None when it does not exist or is not active. The key is the ``keyframe_results`` cache key: the
     settings of the cut's latest selection job with today's subtitle mask, so extracting subtitles makes it stale.
     """
     from . import db, media
+    if conn is None:
+        with db.connect() as conn:
+            conn.execute('BEGIN')
+            return current_selection(cut_id, conn)
     cut = db.one('''SELECT c.*,e.project_id,e.original_ext FROM cuts c JOIN episodes e ON e.id=c.episode_id
-                    WHERE c.id=? AND c.active=1''', (cut_id,))
+                    WHERE c.id=? AND c.active=1''', (cut_id,), conn=conn)
     if not cut:
         return None, None, None, None
     source = media.episode_dir(cut['project_id'], cut['episode_id']) / f"original{cut['original_ext']}"
-    with db.connect() as conn:
-        job = latest_job(conn, cut['episode_id'], cut_id)
+    job = latest_job(conn, cut['episode_id'], cut_id)
     if not job:
         return cut, source, None, None
     settings = json.loads(job['payload_json'])['keyframe_settings']
     try:
-        key = cache_key(source, cut, settings, mask_for(cut['episode_id'], settings))
+        key = cache_key(source, cut, settings, mask_for(cut['episode_id'], settings, conn))
     except OSError:
         return cut, source, None, None
-    row = db.one('SELECT result_json FROM keyframe_results WHERE cache_key=?', (key,))
+    row = db.one('SELECT result_json FROM keyframe_results WHERE cache_key=?', (key,), conn=conn)
     return (cut, source, key, json.loads(row['result_json'])) if row else (cut, source, None, None)
 
 

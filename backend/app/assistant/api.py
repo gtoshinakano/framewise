@@ -443,11 +443,9 @@ def apply_proposal(proposal_id: str):
                           json.dumps(settings, ensure_ascii=False), base['context_json'] if structured and base else '{}', base['id'] if base else None))
             if base:
                 conn.execute('UPDATE analysis_results SET superseded_by=? WHERE id=?', (applied_id, base['id']))
-            if proposal['target'] == 'keyframe_analysis':
-                # The beats are built from the keyframe analysis: an edited one is written into new beats.
-                from .. import performance_beats
-                episode_id = conn.execute('SELECT episode_id FROM cuts WHERE id=?', (proposal['cut_id'],)).fetchone()['episode_id']
-                performance_beats.ensure_queued(conn, episode_id, proposal['cut_id'])
+            if structured:
+                from .. import structured_results
+                structured_results.invalidate_text(conn, proposal['cut_id'], proposal['target'])
         conn.execute("UPDATE assistant_proposals SET status='applied',applied_result_id=?,resolved_at=CURRENT_TIMESTAMP WHERE id=?", (applied_id, proposal_id))
         if proposal['turn_id']:
             store.bump(conn, proposal['turn_id'])

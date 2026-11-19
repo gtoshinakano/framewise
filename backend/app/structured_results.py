@@ -43,8 +43,19 @@ def list_results(cut_id, history=False, conn=None):
         frame_url = f"/api/analysis-results/{row['id']}/frame" if kind in ('initial_frame', 'last_frame') and frame_source.result_frame_spec(row['id'], conn) else None
         results.append({'id': row['id'], 'cut_id': row['cut_id'], 'type': kind, 'content': content, 'frame_url': frame_url,
                         'origin': row['origin'], 'model_id': row['model_id'], 'job_id': row['job_id'],
-                        'parent_id': row['parent_id'], 'superseded_by': row['superseded_by'], 'created_at': row['created_at']})
+                        'parent_id': row['parent_id'], 'superseded_by': row['superseded_by'], 'created_at': row['created_at'],
+                        'stale_reason': row['stale_reason']})
     return results
+
+
+def invalidate_text(conn, cut_id, evidence):
+    """A change to current visual evidence makes its existing text derivatives stale."""
+    reason = {'initial_frame': 'Initial frame changed', 'keyframe_analysis': 'Keyframe analysis changed'}.get(evidence)
+    if not reason:
+        return
+    conn.execute("""UPDATE analysis_results SET stale_reason=? WHERE cut_id=? AND superseded_by IS NULL
+        AND (json_extract(settings_json,'$.structured_type') IN ('performance_beats','consistency_summary') OR title='Cut summary')""",
+        (reason, cut_id))
 
 
 def save_generated(conn, cut_id, job_id, owner, result_type, content, model_id, prompt, settings, context, *, expected_current=...):

@@ -288,7 +288,7 @@ function RunItem({ run, now, links, showTime, children }: { run: Run; now: numbe
           {!run.gpu && <CpuTag />}
         </div>
         <div className="mt-0.5 flex min-w-0"><Target run={run} links={links} /></div>
-        {stage && run.status !== 'done' && <p className="muted mt-0.5 break-words">{stage}</p>}
+        {stage && <p className="muted mt-0.5 break-words">{stage}</p>}
       </div>
       <div className="shrink-0 text-right text-[11px] leading-4 tabular-nums text-[#aeb5c1]">
         {seconds != null && <span className="block font-semibold text-[#d5dbe5]" title={run.status === 'running' || run.status === 'stopping' ? 'Running for' : 'Took'}>{formatRunTime(seconds)}</span>}

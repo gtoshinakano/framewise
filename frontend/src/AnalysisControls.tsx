@@ -11,23 +11,9 @@ import { ActionButton, Elapsed, NoticeStrip, Skeleton, StateChip, StatusChip, Wa
 import { cachedConfig, cachedProjectId, loadConfig, loadProjectId, prefetchConfigs, storeConfig } from './runCache'
 import { STEP_LABELS, VISUAL_STEPS, activeRunFor, batchCounts, cutStepStates, preflight, queueNotice, type CharacterSummary, type StageRow, type StepKey, type StepState } from './runState'
 
-type BatchQueueResult = { queued?: number; skipped?: number; blocked?: { unknown_characters: number[]; not_detected: number[] } }
+type BatchQueueResult = { queued: number }
 type Optimistic = Partial<Record<StepKey, StepState>>
 type RunKind = 'cut' | 'next' | 'batch' | 'from-here' | 'redo-all'
-
-function cutList(numbers: number[]) {
-  return numbers.slice(0, 8).join(', ') + (numbers.length > 8 ? ` and ${numbers.length - 8} more` : '')
-}
-
-/** Says what was queued and, for the cuts that were held back, which ones need a person first. */
-function fromHereMessage(firstCut: number, result: BatchQueueResult) {
-  const unknown = result.blocked?.unknown_characters ?? []
-  const undetected = result.blocked?.not_detected ?? []
-  const parts = [`Queued ${result.queued ?? 0} cuts from cut ${firstCut}; ${result.skipped ?? 0} already complete were skipped.`]
-  if (unknown.length) parts.push(`Not queued, unknown characters: cut ${cutList(unknown)}.`)
-  if (undetected.length) parts.push(`Not queued, characters not detected yet: cut ${cutList(undetected)}.`)
-  return parts.join(' ')
-}
 
 const STAGE_BUTTONS: { stage: VisualStage; label: string; icon: ReactNode; hint: string }[] = [
   { stage: 'initial_frame', label: 'Initial frame', icon: <ImageIcon size={13} />, hint: 'Describe only the first frame: the still image, with each character\'s look, pose, expression and emotion' },
@@ -127,8 +113,8 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const warnings = useMemo(() => preflight({ mediaBusy: busy, enabled, characters }), [busy, enabled, characters])
 
   const boundaryDirty = Object.values(boundaryDraft).some(draft => draft && draft.index !== draft.original)
-  const settingsReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !enabled ? 'Analysis is disabled for this cut' : !config ? 'Settings are still loading' : ''
-  const batchReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : !config ? 'Settings are still loading' : ''
+  const settingsReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : !enabled ? 'Analysis is disabled for this cut' : !config ? 'Settings are still loading' : ''
+  const batchReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : !config ? 'Settings are still loading' : ''
   const textReason = pending ? 'Another action is being queued' : !cut.active ? 'Only active cuts can be queued' : ''
   const consistencyReason = pending ? 'Another action is being queued' : !enabled ? 'Analysis is disabled for this cut' : ''
   const targetBatchReason = pending ? 'Another action is being queued' : busy ? 'Media preparation or detection is running' : ''
@@ -232,8 +218,8 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
       : `/cuts/${cutId}/analyze`
     const result = await api<BatchQueueResult>(url, { method: 'POST' })
     return kind === 'redo-all' ? `Visual analysis re-run queued for ${result.queued ?? 0} cuts.`
-      : kind === 'batch' ? `Visual analysis queued for ${result.queued ?? 0} cuts; ${result.skipped ?? 0} already complete were skipped.`
-      : kind === 'from-here' ? fromHereMessage(cut.cut_index + 1, result) : 'Visual analysis queued for this cut.'
+      : kind === 'batch' ? `Visual analysis queued for ${result.queued ?? 0} cuts. Current stages will be skipped when it starts.`
+      : kind === 'from-here' ? `Visual analysis queued from cut ${cut.cut_index + 1}. Character readiness is checked when it starts.` : 'Visual analysis queued for this cut.'
   }, { settings: true, steps: kind === 'cut' || kind === 'next' ? [...VISUAL_STEPS] : [], afterQueued: kind === 'next' ? onNext : undefined })
 
   const queueStage = (stage: VisualStage) => perform(`stage-${stage}`, async () => {

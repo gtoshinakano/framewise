@@ -852,8 +852,12 @@ def process(job_id, owner):
         payload = json.loads(job['payload_json'])
         if payload.get('workflow') == 'single_cut_v2':
             from . import single_cut_pipeline, structured_results, summary_queue
-            items = payload['cuts']
-            single_cut_pipeline.run_batch(job, owner, episode, items)
+            snapshots = single_cut_pipeline.gather_batch(job, owner, payload)
+            if single_cut_pipeline.wait_for_selection(job, owner, snapshots):
+                return
+            items = [inputs.data for inputs in snapshots if not inputs.data.get('skip')]
+            skipped = [inputs.data for inputs in snapshots if inputs.data.get('skip')]
+            single_cut_pipeline.run_batch(job, owner, episode, items, {inputs.job['unit_id']: inputs for inputs in snapshots})
             summaries = []
             for item in items if payload.get('auto_consistency', True) else []:
                 # Jobs queued before 2026-11-14 summarize every cut that is ready; a cut whose beats are still queued is left to the user.
@@ -866,7 +870,12 @@ def process(job_id, owner):
                 worker.require_lease(conn, job_id, owner)
                 for summary_payload in summaries:
                     summary_queue.insert(conn, job['episode_id'], summary_payload)
-                conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+                for item in skipped:
+                    conn.execute("""INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json,completed)
+                        SELECT ?,id,?,1 FROM cuts WHERE id=?
+                        ON CONFLICT(job_id,cut_id) DO NOTHING""", (job_id, json.dumps({'skip': item['skip']}), item['cut_id']))
+                stage = 'Complete' if not skipped else f"Complete · {len(skipped)} cuts skipped ({', '.join(dict.fromkeys(item['skip'] for item in skipped))})"
+                conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
                 worker.sync_episode_status(conn, job['episode_id'])
             return
         for item in payload["cuts"]:
@@ -940,7 +949,7 @@ def process(job_id, owner):
             worker.require_lease(conn, job_id, owner)
             conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
             worker.sync_episode_status(conn, episode["id"])
-    except SummaryCancelled:
+    except (SummaryCancelled, worker.LeaseLost):
         if payload.get('text_only') and item.get('config', {}).get('text_provider', 'openrouter') == 'local':
             local_text_runtime.cancel_local('Cancelled')
         log.info('Analysis %s was cancelled', job_id)

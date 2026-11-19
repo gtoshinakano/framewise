@@ -1,9 +1,9 @@
 import { ResultMetrics } from './ResultMetrics'
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { AlignLeft, AudioLines, BoxSelect, Captions, Drama, FileText, GalleryHorizontal, History, Image as ImageIcon, Layers3, LayoutTemplate, ListTree, Plus, Save, Sparkles, StickyNote, Trash2, Video, WandSparkles, X, type LucideIcon } from 'lucide-react'
+import { AlignLeft, AudioLines, BoxSelect, Captions, Drama, FileText, GalleryHorizontal, History, Image as ImageIcon, Layers3, LayoutTemplate, ListTree, Plus, RotateCcw, Save, Sparkles, StickyNote, Trash2, Video, WandSparkles, X, type LucideIcon } from 'lucide-react'
 import { api, type AnalysisContext, type AnalysisResult, type ResultKind } from './api'
-import { resultAccent } from './RunUi'
+import { resultAccent, StaleChip } from './RunUi'
 
 const kinds: { value: ResultKind; label: string }[] = [
   { value: 'first_frame', label: 'First frame' },
@@ -63,6 +63,18 @@ export default function ResultEditor({ cutId, refreshKey, onLoaded, onChanged, e
     // Stacked layout: the editor opens below the lists, so scroll to it. From lg up it is already in view.
     if (draft && editorTarget && window.matchMedia('(max-width: 1023.98px)').matches) editorTarget.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [draft === null, editorTarget])
+  async function rerun(result: AnalysisResult) {
+    const type = result.settings.structured_type
+    const path = result.title === 'Cut summary' ? 'regenerate-summary'
+      : type === 'consistency_summary' ? 'consistency-summary'
+      : type === 'performance_beats' ? 'performance-beats' : 'analysis-stages/run'
+    const body = path === 'regenerate-summary' ? { mode: 'regenerate' }
+      : path === 'analysis-stages/run' ? { stage: type } : undefined
+    setBusy(true); setError('')
+    try { await api(`/cuts/${cutId}/${path}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined }); await onChanged?.() }
+    catch (err) { setError((err as Error).message) } finally { setBusy(false) }
+  }
+
   async function toggleHistory() { const next = !history; setHistory(next); await load(next) }
   async function toggleContext() {
     if (contextOpen) { setContextOpen(false); return }
@@ -101,8 +113,10 @@ export default function ResultEditor({ cutId, refreshKey, onLoaded, onChanged, e
         <button type="button" onClick={() => setDraft(result)} title={`${name} · ${look.label}${result.superseded_by ? ' · earlier revision' : ''}`} aria-current={selected || undefined} className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-xs ${selected ? 'bg-[#322a48] ring-1 ring-[#a58ae8]' : 'hover:bg-[#262d3a]'} ${result.superseded_by ? 'opacity-60' : ''}`}>
           <Icon size={14} style={{ color: look.color }} className="shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate">{name}</span>
+          {!result.superseded_by && result.stale_reason && <StaleChip reason={result.stale_reason} />}
           {result.superseded_by && <span className="shrink-0 rounded bg-white/5 px-1 text-[9px] uppercase tracking-wide text-[#929aa9]">older</span>}
         </button>
+        {!result.superseded_by && result.stale_reason && <button type="button" onClick={() => void rerun(result)} disabled={busy} className="btn btn-quiet !px-2 !py-1 text-[11px]" title={result.stale_reason} aria-label={`Re-run ${name}`}><RotateCcw size={12} /> Re-run</button>}
         {!result.superseded_by && <button onClick={() => remove(result)} disabled={busy} className="shrink-0 rounded-md p-1 text-[#98a1af] opacity-40 hover:bg-[#3a2229] hover:text-[#ff9fa7] hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100" title="Delete this result" aria-label={`Delete ${result.title || result.kind}`}><Trash2 size={13} /></button>}
       </li>
     })}</ul> : <p className="muted mt-2 text-[11px]">No analysis fields yet.</p>}

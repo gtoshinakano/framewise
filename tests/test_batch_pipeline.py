@@ -86,7 +86,7 @@ class BatchPipelineTest(unittest.TestCase):
              patch.object(pipeline.keyframe_analysis, 'stage', side_effect=lambda *_: order.append('keyframes')):
             for run in runs:
                 run.validate = lambda: None
-            pipeline.run_batch(job, 'owner', {}, [{}, {}])
+            pipeline.run_batch(job, 'owner', {}, [{'cut_id': run.cut_id} for run in runs])
         self.assertEqual(order, ['frames', 'keyframes'])  # the keyframe roster builds on the first frame; subtitles are an episode-wide step of their own
         self.assertTrue(all(run.completed for run in runs))
 

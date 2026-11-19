@@ -116,13 +116,13 @@ def first_frame_roster(detections, frames):
     return roster, anchors, {frames[0]['ordinal']: size}
 
 
-def target_run(cut_id, key, cut):
+def target_run(cut_id, key, cut, conn=None):
     """The cut's Target frames run for this selection with its slots and boxes, when it was made for these boundaries."""
     from . import target_characters
-    run = target_characters.run_for(cut_id, key)
+    run = target_characters.run_for(cut_id, key, conn)
     if not run or run['cut_start'] != cut['start_time'] or run['cut_end'] != cut['end_time']:
         return None
-    state = target_characters.state(cut_id)
+    state = target_characters.state(cut_id, conn)
     detail = (state or {}).get('run')
     if not detail or detail['id'] != run['id'] or detail['stale']:
         return None
@@ -374,13 +374,16 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
         timings = {}
         ask = ask or (lambda messages, schema: chat(server_url, messages, schema, cut_run.cancel_check))
         cut = cut_run.cut
-        _, source, key, result = keyframes.current_selection(cut_run.cut_id)
+        if cut_run.inputs:
+            source, key, result = cut_run.original, cut_run.item['selection_key'], cut_run.item['keyframe_selection']
+        else:
+            _, source, key, result = keyframes.current_selection(cut_run.cut_id)
         if key is None:
             raise RuntimeError('This cut has no current keyframe selection (it failed, or the cut or its subtitles changed); '
                                'open Target frames and evaluate the cut, then run Keyframes again')
         frames = frames_of(result)
         windows = keyframe_schema.make_windows(frames, WINDOW)
-        detail = target_run(cut_run.cut_id, key, cut) if not cut.get('no_characters') else None
+        detail = cut_run.item['target_run'] if cut_run.inputs else target_run(cut_run.cut_id, key, cut) if not cut.get('no_characters') else None
         if cut.get('no_characters'):
             roster, anchors, anchor_sizes, roster_source = [], {}, {}, 'none'
         elif detail:
@@ -407,10 +410,7 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
             run_id = existing['id']
         else:
             run_id = str(uuid.uuid4())
-            with db.connect() as conn:
-                conn.execute('BEGIN IMMEDIATE')
-                worker.require_lease(conn, cut_run.job['id'], cut_run.owner)
-                cut_run.check_cut(conn)
+            with cut_run.publish() as conn:
                 conn.execute('''INSERT INTO keyframe_analysis_runs(id,cut_id,selection_key,cut_start,cut_end,job_id,input_hash,method,roster_source,target_run_id,roster_json,provenance_json)
                                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
                              (run_id, cut_run.cut_id, key, cut['start_time'], cut['end_time'], cut_run.job['id'], digest, method, roster_source,
@@ -432,10 +432,7 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
             rules = [keyframe_rules.answer_for_window(states, window, pairs) if pose is not None and len(window['frames']) > 1 else None for window in windows]
             texts = state_texts(states)
             timings['prepare'] = round(time.monotonic() - began, 2)
-            with db.connect() as conn:
-                conn.execute('BEGIN IMMEDIATE')
-                worker.require_lease(conn, cut_run.job['id'], cut_run.owner)
-                cut_run.check_cut(conn)
+            with cut_run.publish() as conn:
                 for frame, found, size in zip(frames, people, sizes):
                     conn.execute('''INSERT OR REPLACE INTO keyframe_analysis_frames(run_id,ordinal,label,frame_time,relative_time,reason,image_size_json,pose_json,states_json)
                                     VALUES (?,?,?,?,?,?,?,?,?)''',
@@ -463,10 +460,7 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
         def describe(window):
             cut_run.cancel_check()
             record = describe_window(ask, sample, window, [encoded[frame['label']] for frame in window['frames']])
-            with db.connect() as conn:
-                conn.execute('BEGIN IMMEDIATE')
-                worker.require_lease(conn, cut_run.job['id'], cut_run.owner)
-                cut_run.check_cut(conn)
+            with cut_run.publish() as conn:
                 conn.execute('''INSERT INTO keyframe_analysis_windows(run_id,window_index,labels_json,answer_json,attempts_json,prompt,ok,seconds) VALUES (?,?,?,?,?,?,?,?)
                                 ON CONFLICT(run_id,window_index) DO UPDATE SET answer_json=excluded.answer_json,attempts_json=excluded.attempts_json,
                                 prompt=excluded.prompt,ok=excluded.ok,seconds=excluded.seconds''',
@@ -525,7 +519,9 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
                 conn.execute('UPDATE keyframe_analysis_pairs SET changes_json=? WHERE run_id=? AND pair_index=?', (json.dumps(segment, ensure_ascii=False), run_id, index))
             conn.execute("UPDATE keyframe_analysis_runs SET phase='complete',result_id=?,timings_json=?,finished_at=CURRENT_TIMESTAMP WHERE id=?",
                          (result_id, json.dumps(timings), run_id))
-            performance_beats.ensure_queued(conn, cut_run.episode['id'], cut_run.cut_id)
+            if not conn.execute("""SELECT 1 FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL
+                AND json_extract(settings_json,'$.structured_type')='performance_beats'""", (cut_run.cut_id,)).fetchone():
+                performance_beats.ensure_queued(conn, cut_run.episode['id'], cut_run.cut_id, cut_run.config)
 
         cut_run.save('keyframe_analysis', content, model.model_id, keyframe_prompts.SYSTEM, extra, after=finish)
         log.info('keyframe analysis cut=%s method=%s frames=%d windows=%d took %.1fs', cut.get('cut_index'), method, len(frames), len(windows), timings['total'])

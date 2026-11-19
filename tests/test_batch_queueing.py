@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import cut_timeline, db, frame_model, inference_worker, main, media, single_cut_pipeline as pipeline, worker
+from tests.test_analysis import visual_inputs
 
 
 class BatchQueueingTest(unittest.TestCase):
@@ -39,7 +40,7 @@ class BatchQueueingTest(unittest.TestCase):
         payload = json.loads(self.jobs('analyze')[0]['payload_json'])
         self.assertEqual([item['cut_id'] for item in payload['cuts']], ['c1', 'c2', 'c3'])
         self.assertEqual(payload['workflow'], 'single_cut_v2')
-        self.assertEqual(main.queue_episode_visual_analysis('e'), {'queued': 0, 'skipped': 0, 'blocked': {'unknown_characters': [], 'not_detected': []}, 'job_ids': []})
+        self.assertEqual(main.queue_episode_visual_analysis('e')['job_ids'], result['job_ids'])
 
     def test_visual_analysis_can_start_from_a_cut_number(self):
         result = main.queue_episode_visual_analysis('e', from_cut=2)  # the editor numbers cuts from 1
@@ -54,16 +55,16 @@ class BatchQueueingTest(unittest.TestCase):
                          (result_id, cut_id, stage, json.dumps(content or {'summary': 'x'}), json.dumps({'structured_type': stage}), json.dumps(context or {})))
         return result_id
 
-    def test_only_missing_stages_are_queued_and_finished_cuts_are_skipped(self):
+    def test_only_missing_stages_run_and_finished_cuts_are_skipped(self):
         self.seed_result('c1', 'initial_frame', {'cut': {'start_time': 0, 'end_time': 2}})  # c1 only lacks the keyframes
         for stage in pipeline.ALL_STAGES:                    # c2 is finished
             self.seed_result('c2', stage, {'cut': {'start_time': 2, 'end_time': 4}})
         result = main.queue_episode_visual_analysis('e')     # c3 has nothing
-        self.assertEqual((result['queued'], result['skipped']), (2, 1))
-        items = {item['cut_id']: item for item in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts']}
-        self.assertEqual(sorted(items), ['c1', 'c3'])
-        self.assertEqual(items['c1']['stages'], ['keyframe_analysis'])  # the last frame and the video are no longer stages
-        self.assertNotIn('stages', items['c3'])              # nothing done: every stage runs
+        self.assertEqual(result['queued'], 3)
+        job_id = result['job_ids'][0]
+        self.assertEqual(visual_inputs(job_id, 'c1')['stages'], ['keyframe_analysis'])
+        self.assertEqual(visual_inputs(job_id, 'c2')['skip'], 'Requested stages are current')
+        self.assertEqual(list(visual_inputs(job_id, 'c3')['stages']), list(pipeline.ALL_STAGES))
 
     def test_subtitles_are_not_a_visual_stage_and_old_results_do_not_count(self):
         self.assertNotIn('subtitle_ocr', main.VISUAL_STAGES)
@@ -74,13 +75,13 @@ class BatchQueueingTest(unittest.TestCase):
         self.assertNotIn('stages', item)
         self.assertNotIn('subtitle_input', item)
 
-    def test_queued_cut_context_carries_the_episode_subtitles_that_overlap_it(self):
+    def test_cut_context_at_start_has_subtitle_overlap(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO subtitle_runs(id,episode_id,language,language_code,status,band_json) VALUES ('run','e','Portuguese','pt','complete',?)", (json.dumps({'top': .8, 'bottom': .95}),))
             conn.executemany("INSERT INTO subtitle_lines(id,run_id,episode_id,line_index,start_time,end_time,text,confidence) VALUES (?,?,?,?,?,?,?,?)",
                              [('l1', 'run', 'e', 0, 1.5, 2.5, 'Spans the boundary', 'high'), ('l2', 'run', 'e', 1, 3, 3.5, 'Inside c2', 'low')])
-        main.queue_episode_visual_analysis('e')
-        items = {item['cut_id']: item for item in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts']}
+        job_id, = main.queue_episode_visual_analysis('e')['job_ids']
+        items = {cut: visual_inputs(job_id, cut) for cut in ('c1', 'c2', 'c3')}
         first, second = items['c1']['context']['subtitles'], items['c2']['context']['subtitles']
         self.assertEqual((first['language'], first['strip'], first['extracted']), ('Portuguese', {'top': .8, 'bottom': .95}, True))
         self.assertEqual([(line['text'], line['crosses_cut']) for line in first['lines']], [('Spans the boundary', True)])
@@ -125,7 +126,7 @@ class BatchQueueingTest(unittest.TestCase):
         self.seed_result('c2', 'performance_beats', content={'beats': [], 'based_on': {'keyframe_analysis': keyframes}})
         self.assertTrue(next(cut for cut in main.episode_response('e')['cuts'] if cut['id'] == 'c2')['has_visual_results'])
 
-    def test_characters_must_be_settled_before_cuts_are_queued_from_a_cut(self):
+    def test_character_readiness_is_checked_before_analysis_starts(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO cuts(id,episode_id,cut_index,start_time,end_time,first_frame_time,last_frame_time) VALUES ('c4','e',3,6,8,6,7.9)")
             conn.execute("INSERT INTO context_items(id,project_id,kind,title) VALUES ('hero','p','character','Hero')")
@@ -135,10 +136,13 @@ class BatchQueueingTest(unittest.TestCase):
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('d2','r2','first','[1,1,2,2]','hero')")  # c2: all named
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id) VALUES ('d3','r3','first','[1,1,2,2]',NULL)")    # c3: unknown box
         result = main.queue_episode_visual_analysis('e', from_cut=2, characters_resolved=True)  # c4 was never detected
-        self.assertEqual(result['blocked'], {'unknown_characters': [3], 'not_detected': [4]})
-        self.assertEqual(result['queued'], 1)
+        self.assertEqual(result['queued'], 3)
+        job_id = result['job_ids'][0]
         queued = [item['cut_id'] for item in json.loads(self.jobs('analyze')[0]['payload_json'])['cuts']]
-        self.assertEqual(queued, ['c2'])                                                          # c1 is before from_cut
+        self.assertEqual(queued, ['c2', 'c3', 'c4'])
+        self.assertNotIn('skip', visual_inputs(job_id, 'c2'))
+        self.assertEqual(visual_inputs(job_id, 'c3')['skip'], 'Character labels still need review')
+        self.assertEqual(visual_inputs(job_id, 'c4')['skip'], 'Character boxes are missing')
 
     def test_without_the_prerequisite_nothing_is_blocked(self):
         result = main.queue_episode_visual_analysis('e')

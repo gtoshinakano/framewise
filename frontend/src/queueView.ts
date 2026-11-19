@@ -15,6 +15,7 @@ export type Run = {
   /** Cursor of the history pages (newest first). */
   id: string; seq: number; kind: string; label: string; group: string; gpu: boolean; status: RunStatus; stage: string; error: string | null
   priority_class: 'chat' | 'interactive' | 'batch'
+  waiting_for: string[]
   cuts: RunCut[]; cut_count: number; cut_span: { first: number; last: number } | null
   sequence: { id: string; title: string; step: string | null; shot_key: string | null; shot_number: number | null } | null
   range: { start: number; end: number } | null
@@ -134,9 +135,11 @@ export function localTime(value: string | null | undefined, now = Date.now()) {
 }
 
 /** A stage worth showing under the run name (not just its status repeated). */
-export function stageText(run: Pick<Run, 'stage' | 'status'>) {
+export function stageText(run: Pick<Run, 'stage' | 'status'> & Partial<Pick<Run, 'waiting_for'>>) {
   if (run.status === 'stopping') return 'Stopping — finishing the current step'
+  if (run.status === 'queued' && run.waiting_for?.length) return `Queued after ${run.waiting_for.join(', ')}`
   const stage = (run.stage || '').trim()
+  if (stage === 'Inputs changed, restarting') return 'Restarting with your changes'
   if (!stage || /^(queued|starting|complete|cancelled|failed)$/i.test(stage)) return ''
   return stage.replace(/^Failed\s*·\s*/i, '')
 }

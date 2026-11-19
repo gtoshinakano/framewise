@@ -78,6 +78,20 @@ def insert_job(conn, episode_id, pipeline, payload, *, priority_class=None, retr
     return job_id
 
 
+def pending_jobs(conn, episode_id, pipelines, cut_ids=None):
+    """Find the predecessors that can produce inputs for this request."""
+    marks = ','.join('?' for _ in pipelines)
+    rows = conn.execute(f"""SELECT id,pipeline,payload_json FROM jobs WHERE episode_id=?
+        AND pipeline IN ({marks}) AND status IN ('queued','running') ORDER BY rowid""", (episode_id, *pipelines))
+    requested = set(cut_ids) if cut_ids is not None else None
+    found = []
+    for row in rows:
+        targets = {ref['id'] for ref in job_kinds.kind_of(row['pipeline']).cuts(json.loads(row['payload_json']))}
+        if requested is None or not targets or requested & targets:
+            found.append(row['id'])
+    return found
+
+
 def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
     try:
         with db.connect() as conn:
@@ -220,6 +234,16 @@ def requeue_job(job_id, owner, stage='Waiting for a text worker'):
         conn.execute("UPDATE jobs SET status='queued',stage=?,lease_owner=NULL,lease_until=NULL,attempt_count=MAX(0,attempt_count-1),updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
         sync_episode_status(conn, job['episode_id'])
         return True
+
+
+def defer_for_dependencies(conn, job, owner, dependencies, stage):
+    """Return to waiting when a handler discovers an input producer it needs."""
+    require_lease(conn, job['id'], owner)
+    payload = json.loads(job['payload_json'])
+    payload['depends_on'] = list(dict.fromkeys([*(payload.get('depends_on') or []), *dependencies]))
+    conn.execute("""UPDATE jobs SET status='queued',stage=?,payload_json=?,attempt_count=MAX(0,attempt_count-1),
+        updated_at=CURRENT_TIMESTAMP WHERE id=?""", (stage, json.dumps(payload, ensure_ascii=False), job['id']))
+    sync_episode_status(conn, job['episode_id'])
 
 
 WAITED_FOR_FAILED = 'Cancelled because a job it waited for did not finish'

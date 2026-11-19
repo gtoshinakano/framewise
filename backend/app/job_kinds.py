@@ -11,6 +11,8 @@ A new pipeline needs one entry in ``KINDS`` (``tests/test_runs.py`` checks every
 from dataclasses import dataclass, field
 from typing import Callable
 
+from . import analysis_context
+
 STAGE_LABELS = {'initial_frame': 'Initial frame', 'keyframe_analysis': 'Keyframe analysis', 'video_analysis': 'Video analysis', 'subtitle_ocr': 'Subtitle detection and OCR',
                 'last_frame': 'Last frame'}
 # The stages a visual job runs when its payload names none (single_cut_pipeline.ALL_STAGES).
@@ -202,11 +204,24 @@ def _always(payload):
     return True
 
 
+def _visual_scope(payload):
+    return Scope(frozenset({'cut_boundaries', 'detections', 'subtitles', 'context', 'keyframes'}),
+                 frozenset(f'results:{stage}' for stage in stages_of(payload)),
+                 frozenset(ref['id'] for ref in _analysis_cuts(payload)))
+
+
+def _visual_invalidates(conn, job):
+    from . import structured_results
+    structured_results.invalidate_text(conn, job['unit_id'], job['result_type'])
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
          cancel_running=lambda payload: payload.get('workflow') == 'single_cut_v2' or payload.get('text_only') is True,
-         retry=_always),
+         retry=_always, resources=frozenset({'gpu'}), scope=_visual_scope,
+         priority_class=lambda payload: 'batch' if payload.get('batch') else 'interactive',
+         inputs=analysis_context.visual_fingerprint, gather=analysis_context.visual, invalidates=_visual_invalidates),
     Kind('character_detect', 'Character detection', True, label=_character_label, cuts=_one_cut, keys=_character_keys,
          # Bulk detection keeps one lease per cut and skips a cut whose lease is gone; the older workflow cannot stop midway.
          cancel_running=lambda payload: payload.get('workflow') in ('anime_bulk_v1', 'target_frames_v1')),

@@ -164,11 +164,15 @@ class BeatsTest(unittest.TestCase):
         self.assertEqual(job['status'], 'failed')
         self.assertIn('run Keyframes first', job['error'])
 
-    def test_a_manual_edit_of_the_keyframes_queues_new_beats(self):
+    def test_a_manual_edit_of_keyframes_marks_existing_beats_stale(self):
         self.seed()
+        with db.connect() as conn:
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,content,settings_json) VALUES ('beats','c1','cut_description','Performance beats','{}',?)",
+                         (json.dumps({'structured_type': 'performance_beats'}),))
         response = self.client.put('/api/analysis-results/kf', json={'title': 'Keyframe analysis', 'content': json.dumps(KEYFRAMES)})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(len(db.all_rows("SELECT id FROM jobs WHERE pipeline='performance_beats' AND status='queued'")), 1)
+        self.assertIsNone(db.one("SELECT id FROM jobs WHERE pipeline='performance_beats'"))
+        self.assertEqual(db.one("SELECT stale_reason FROM analysis_results WHERE id='beats'")['stale_reason'], 'Keyframe analysis changed')
 
     def test_endpoint_and_retry(self):
         self.assertEqual(self.client.post('/api/cuts/c1/performance-beats').status_code, 409)  # no keyframes yet

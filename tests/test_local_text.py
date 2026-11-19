@@ -94,7 +94,7 @@ class LocalTextTest(unittest.TestCase):
         response = self.client.post('/api/episodes/e/visual-analysis')
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['queued'], 2)
-        self.assertEqual(self.client.post('/api/episodes/e/visual-analysis').json()['queued'], 0)
+        self.assertEqual(self.client.post('/api/episodes/e/visual-analysis').json()['job_ids'], response.json()['job_ids'])
         jobs = db.all_rows("SELECT payload_json FROM jobs ORDER BY rowid")
         self.assertEqual(len(jobs), 1)  # one job covers every cut so each model loads once
         self.assertEqual([cut['cut_id'] for cut in json.loads(jobs[0]['payload_json'])['cuts']], ['c1', 'c2'])
@@ -112,24 +112,24 @@ class LocalTextTest(unittest.TestCase):
         self.assertEqual(len(payload['cuts']), 2)
         self.assertEqual((jobs[0]['pipeline'], payload['workflow'], payload['auto_consistency']), ('analyze', 'single_cut_v2', False))
         repeated = self.client.post('/api/episodes/e/analyze').json()
-        self.assertEqual((repeated['queued'], repeated['job_id']), (0, None))
+        self.assertEqual(repeated['job_id'], data['job_id'])
 
-    def test_single_cut_visual_queue_rejects_duplicate_and_allows_retry(self):
+    def test_single_cut_visual_queue_reuses_duplicate_and_allows_retry(self):
         first = self.client.post('/api/cuts/c1/analyze')
         self.assertEqual(first.status_code, 200, first.text)
         duplicate = self.client.post('/api/cuts/c1/analyze')
-        self.assertEqual(duplicate.status_code, 409)
-        self.assertEqual(self.client.post('/api/episodes/e/visual-analysis').json()['queued'], 1)
+        self.assertEqual(duplicate.json(), first.json())
+        self.assertEqual(self.client.post('/api/episodes/e/visual-analysis').json()['queued'], 2)
         self.assertEqual(self.client.post('/api/jobs/' + first.json()['job_id'] + '/cancel').status_code, 200)
         self.assertEqual(self.client.post('/api/cuts/c1/analyze').status_code, 200)
 
-    def test_retry_rejects_an_already_queued_retry(self):
+    def test_retry_reuses_an_already_queued_retry(self):
         first = self.client.post('/api/cuts/c1/analyze').json()['job_id']
         self.client.post('/api/jobs/' + first + '/cancel')
         retry = self.client.post('/api/jobs/' + first + '/retry')
         self.assertEqual(retry.status_code, 200, retry.text)
         repeated = self.client.post('/api/jobs/' + first + '/retry')
-        self.assertEqual(repeated.status_code, 409)
+        self.assertEqual(repeated.json(), retry.json())
         self.assertEqual(len(db.all_rows("SELECT id FROM jobs WHERE pipeline='analyze' AND status='queued'")), 1)
 
     def test_local_text_batch_snapshots_and_uses_dependency_and_usage(self):
@@ -227,7 +227,7 @@ class LocalTextTest(unittest.TestCase):
                 self.assertIn('stalled', status['detail'])
 
     def test_failed_legacy_analysis_can_retry_as_cancellable_local_text(self):
-        old_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
+        old_id = analysis_tests.AnalysisTest.legacy_batch_job(self, 'c1')
         with db.connect() as conn:
             old = conn.execute('SELECT payload_json FROM jobs WHERE id=?', (old_id,)).fetchone()
             data = json.loads(old['payload_json']); data.pop('workflow', None)
@@ -250,11 +250,11 @@ class LocalTextTest(unittest.TestCase):
         settings=json.loads(result['settings_json'])
         self.assertEqual((settings['provider'],settings['usage']['total_tokens']),('local',8))
 
-    def test_bulk_queues_skip_every_cut_in_older_multi_cut_jobs(self):
+    def test_visual_batch_can_queue_alongside_older_multi_cut_jobs(self):
         self.seed_visual_results()
         with db.connect() as conn:
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('legacy','e','analyze',?)", (json.dumps({'cuts':[{'cut_id':'c1'},{'cut_id':'c2'}]}),))
-        self.assertEqual(self.client.post('/api/episodes/e/visual-analysis').json()['queued'],0)
+        self.assertEqual(self.client.post('/api/episodes/e/visual-analysis').json()['queued'],2)
         response=self.client.post('/api/episodes/e/text-processing',json={}).json()
         self.assertEqual((response['cuts_queued'],response['skipped']),(0,2))
 

@@ -18,6 +18,10 @@ export function StatusChip({ tone, icon, children, title, className = '' }: { to
   return <span title={title} className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold leading-4 ${TONES[tone]} ${className}`}>{icon}{children}</span>
 }
 
+export function StaleChip({ reason }: { reason: string }) {
+  return <StatusChip tone="amber" title={reason}>Stale<span className="sr-only">. {reason}</span></StatusChip>
+}
+
 const STATE_ICON: Record<StepState, ReactNode> = {
   none: <Circle size={11} aria-hidden />, queued: <Clock size={11} aria-hidden />, running: <Loader2 size={11} className="animate-spin" aria-hidden />,
   done: <CheckCircle2 size={11} aria-hidden />, failed: <XCircle size={11} aria-hidden />,

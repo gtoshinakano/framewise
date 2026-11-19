@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from unittest.mock import patch
 
 import tests.test_analysis as analysis_tests
+from tests.test_analysis import visual_inputs
 from app import db, inference_worker, keyframe_prompts, worker
 from tests.test_keyframe_analysis import fake_models, seed_selection
 
@@ -49,7 +50,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
         self.assertEqual(self.client.put(f'/api/character-detections/{first}', json={'character_context_id': None}).status_code, 409)
         self.assertEqual(len(self.client.get('/api/projects/p/character-references').json()), 1)
         queued_analysis = self.client.post('/api/cuts/c1/analyze').json()['job_id']
-        item = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (queued_analysis,))['payload_json'])['cuts'][0]
+        item = visual_inputs(queued_analysis, 'c1')
         self.assertEqual(item['context']['character_detections']['detections'][0]['character_name'], 'Hero')
         self.assertEqual(item['character_references'][0]['character_context_id'], 'ctx')
         self.assertEqual(self.client.delete(f'/api/character-detections/{first}/reference').status_code, 200)
@@ -58,7 +59,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
             conn.execute("UPDATE cuts SET end_time=1.5 WHERE id='c1'")
         self.assertTrue(self.client.get('/api/cuts/c1/character-detections').json()['stale'])
 
-    def test_automatic_matches_are_unverified_and_queued_labels_are_snapshotted(self):
+    def test_automatic_matches_are_unverified_and_read_at_visual_start(self):
         from app import character_detection, single_cut_pipeline, frame_model, visual_models
         frames = [{'position': position, 'time': time, 'image_size': [100, 80], 'boxes': [[5, 4, 40, 60]], 'raw_response': 'raw', 'prompt': 'detect'} for position, time in [('first', 0), ('last', 1.9)]]
         with db.connect() as conn:
@@ -76,7 +77,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
         self.assertEqual([d['label_source'] for d in run['detections']], ['auto', 'auto'])
         self.assertEqual(len(self.client.get('/api/projects/p/character-references').json()), 1)
         analysis_id = self.client.post('/api/cuts/c1/analyze').json()['job_id']
-        context = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (analysis_id,))['payload_json'])['cuts'][0]['context']
+        context = visual_inputs(analysis_id, 'c1')['context']
         self.assertEqual(context['character_detections']['detections'][0]['label_source'], 'auto')
         self.assertTrue(context['character_detections']['labels_confirmed_by_queue'])
 
@@ -164,8 +165,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
             conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('box','run','first','[5,4,40,60]','ctx','auto')")
         response = self.client.post('/api/episodes/e/analyze')
         self.assertEqual(response.status_code, 200, response.text)
-        payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (response.json()['job_id'],))['payload_json'])
-        context = next(item['context'] for item in payload['cuts'] if item['cut_id'] == 'c1')
+        context = visual_inputs(response.json()['job_id'], 'c1')['context']
         self.assertNotIn('labels_confirmed_by_queue', context['character_detections'])
 
     def test_wrong_cut_and_out_of_bounds_manual_box_rejected(self):

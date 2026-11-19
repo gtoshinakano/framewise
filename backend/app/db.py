@@ -468,6 +468,7 @@ def init_db():
             ('local_text_model_state', 'variants_json', "TEXT NOT NULL DEFAULT '{}'"),
             ('episodes', 'subtitle_language', 'TEXT'),
             ('cuts', 'created_at', 'TEXT'),
+            ('analysis_results', 'stale_reason', 'TEXT'),
             ('character_detections', 'match_model_id', 'TEXT'),
             ('character_detections', 'match_model_revision', 'TEXT'),
             # Bulk recognition: ranked suggestions for unconfirmed boxes, the

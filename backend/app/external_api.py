@@ -72,6 +72,7 @@ class AnalysisResult(BaseModel):
     context: dict[str, Any] = Field(description="Recorded analysis input and evidence, when available.")
     parent_id: str | None = Field(description="Previous revision ID, if this is a revision.")
     superseded_by: str | None = Field(description="Next revision ID, if this revision is no longer current.")
+    stale_reason: str | None = Field(None, description="Why the evidence used for the current revision has changed.")
     created_at: str
 
 
@@ -202,7 +203,8 @@ class JobDetail(BaseModel):
     started_at: str | None = Field(description="UTC time processing first started, or null if it has not started.")
     finished_at: str | None = Field(description="UTC time the run finished or was cancelled, or null if still active.")
     retry_of: str | None = Field(description="Failed job copied for this retry, if any.")
-    payload: dict[str, Any] = Field(description="Queued input snapshot. May be large and may differ from current cut or context values.")
+    priority_class: Literal['chat', 'interactive', 'batch']
+    payload: dict[str, Any] = Field(description="Queued settings, targets and prerequisites. Older runs can also contain stored inputs.")
     cut_evidence: list[JobCutEvidence] = Field(description="Stored intermediate analysis checkpoints, if any; may be incomplete.")
 
 
@@ -329,7 +331,7 @@ def voice_sample_detail(sample_id: str):
 
 @router.get("/jobs/{job_id}", response_model=JobDetail, summary="Get job provenance and saved analysis evidence")
 def job_detail(job_id: str):
-    row = db.one("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,payload_json FROM jobs WHERE id=?", (job_id,))
+    row = db.one("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,priority_class,payload_json FROM jobs WHERE id=?", (job_id,))
     if not row:
         raise HTTPException(404, "Job not found")
     row["payload"] = json.loads(row.pop("payload_json"))

@@ -6,6 +6,7 @@ import mimetypes
 import os
 import re
 import shutil
+import time
 import uuid
 import sqlite3
 import wave
@@ -20,7 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import db, media, worker, cut_history, storage, frame_source, frame_cache, subtitle_store, audio_worker, prompt_context, job_kinds, runs
+from . import analysis_context, db, media, worker, cut_history, storage, frame_source, frame_cache, subtitle_store, audio_worker, prompt_context, job_kinds, runs
+from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
 
@@ -277,15 +279,6 @@ class ContextInput(BaseModel):
     is_main: bool = False
 
 
-def json_object_or_empty(value):
-    """Keep damaged optional metadata from making the episode editor inaccessible."""
-    try:
-        result = json.loads(value)
-        return result if isinstance(result, dict) else {}
-    except (TypeError, ValueError):
-        return {}
-
-
 def require_project(project_id: str):
     project = db.one("SELECT * FROM projects WHERE id=?", (project_id,))
     if not project:
@@ -319,7 +312,7 @@ def episode_response(episode_id: str):
         -- cut analysed before keyframes existed its video analysis (summary_queue.missing_evidence).
         (EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='initial_frame')
          AND (EXISTS(SELECT 1 FROM analysis_results b JOIN analysis_results k ON k.cut_id=c.id AND k.superseded_by IS NULL AND json_extract(k.settings_json,'$.structured_type')='keyframe_analysis'
-                     WHERE b.cut_id=c.id AND b.superseded_by IS NULL AND json_extract(b.settings_json,'$.structured_type')='performance_beats' AND json_extract(b.content,'$.based_on.keyframe_analysis')=k.id)
+                     WHERE b.cut_id=c.id AND b.superseded_by IS NULL AND b.stale_reason IS NULL AND json_extract(b.settings_json,'$.structured_type')='performance_beats' AND json_extract(b.content,'$.based_on.keyframe_analysis')=k.id)
               OR (NOT EXISTS(SELECT 1 FROM analysis_results k WHERE k.cut_id=c.id AND k.superseded_by IS NULL AND json_extract(k.settings_json,'$.structured_type')='keyframe_analysis')
                   AND EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='video_analysis')))) AS has_visual_results,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='consistency_summary') AS has_consistency_summary,
@@ -334,7 +327,8 @@ def episode_response(episode_id: str):
                                 "run": {**run, "line_count": conn.execute("SELECT COUNT(*) FROM subtitle_lines WHERE run_id=?", (run["id"],)).fetchone()[0]} if run else None}
     # The queued payload can contain every cut's context and may be very large.
     # Keep it in SQLite for the worker and return only job metadata to the UI.
-    episode["jobs"] = db.all_rows("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,payload_json FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
+    episode["jobs"] = db.all_rows("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,priority_class,payload_json FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
+    current_cuts = {cut['id']: cut for cut in episode['cuts'] + episode['archived_cuts']}
     completed = {(row["job_id"], row["cut_id"]) for row in db.all_rows(
         "SELECT a.job_id,a.cut_id FROM analysis_job_cuts a JOIN jobs j ON j.id=a.job_id WHERE j.episode_id=? AND a.completed=1", (episode_id,))}
     for job in episode["jobs"]:
@@ -350,7 +344,7 @@ def episode_response(episode_id: str):
             items = payload.get("cuts", [])
         elif job["pipeline"] == "character_detect":
             items = [{"cut_id": payload.get("cut_id"), "context": {"cut": payload.get("cut", {})}}]
-        elif job["pipeline"] in ("regen", "consistency_summary", "review_answers"):
+        elif job["pipeline"] in ("regen", "consistency_summary", "review_answers", "performance_beats"):
             items = [{"cut_id": payload.get("cut_id"), "context": payload.get("context", {})}]
         else:
             items = []
@@ -366,6 +360,7 @@ def episode_response(episode_id: str):
                 cut = {}
             cut_id = item.get("cut_id")
             if isinstance(cut_id, str) and cut_id:
+                cut = cut or current_cuts.get(cut_id, {})
                 index = cut.get("cut_index")
                 title = cut.get("title")
                 def time_value(value):
@@ -377,29 +372,10 @@ def episode_response(episode_id: str):
     return episode
 
 
-def serialize_cut(cut: dict):
-    cut["results"] = json_object_or_empty(cut.pop("results_json"))
-    cut["active"] = bool(cut["active"])
-    cut["analysis_enabled"] = bool(cut["analysis_enabled"])
-    cut["no_characters"] = bool(cut.get("no_characters"))
-    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters", "has_unlabeled_boxes", "has_target_boxes", "has_unlabeled_target_boxes", "has_visual_results", "has_consistency_summary", "last_job_failed"):
-        if flag in cut:
-            cut[flag] = bool(cut[flag])
-    fallback_first, fallback_last = media.cut_frame_times(cut["start_time"], cut["end_time"])
-    cut["first_frame_time"] = cut.get("first_frame_time") if cut.get("first_frame_time") is not None else fallback_first
-    cut["last_frame_time"] = cut.get("last_frame_time") if cut.get("last_frame_time") is not None else fallback_last
-    return cut
-
-
 def serialize_result(result: dict):
     result["settings"] = json_object_or_empty(result.pop("settings_json"))
     result["context"] = json_object_or_empty(result.pop("context_json"))
     return result
-
-
-def serialize_transcript(segment: dict):
-    segment["deleted"] = bool(segment["deleted"])
-    return segment
 
 
 def require_character(episode: dict, character_context_id: str | None):
@@ -880,7 +856,7 @@ def list_analysis_results(cut_id: str, history: bool = False, include_context: b
     if not db.one("SELECT id FROM cuts WHERE id=?", (cut_id,)):
         raise HTTPException(404, "Cut not found")
     where = "cut_id=?" if history else "cut_id=? AND superseded_by IS NULL"
-    columns = "*" if include_context else "id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,'{}' AS context_json,parent_id,superseded_by,created_at"
+    columns = "*" if include_context else "id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,'{}' AS context_json,parent_id,superseded_by,created_at,stale_reason"
     return [serialize_result(row) for row in db.all_rows(f"SELECT {columns} FROM analysis_results WHERE {where} ORDER BY rowid DESC", (cut_id,))]
 
 
@@ -906,8 +882,9 @@ def revise_analysis_result(result_id: str, body: ResultUpdate):
             raise HTTPException(404, "Analysis result not found")
         if old["superseded_by"]:
             raise HTTPException(409, "This result already has a newer revision")
-        from .structured_results import structured_type
-        if structured_type(old['settings_json']):
+        from . import structured_results
+        result_type = structured_results.structured_type(old['settings_json'])
+        if result_type:
             try:
                 data = json.loads(body.content, parse_constant=lambda value: (_ for _ in ()).throw(ValueError('Invalid number')))
                 if not isinstance(data, dict):
@@ -916,12 +893,7 @@ def revise_analysis_result(result_id: str, body: ResultUpdate):
                 raise HTTPException(422, 'Structured results must contain a valid JSON object') from exc
             conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,parent_id,settings_json,context_json) VALUES (?,?,?,?,?,'manual_edit',?,?,?)",
                          (new_id, old['cut_id'], old['kind'], body.title, body.content, result_id, old['settings_json'], old['context_json']))
-            if structured_type(old['settings_json']) == 'keyframe_analysis':
-                # The beats are built from the keyframe analysis: an edited one is written into new beats.
-                from . import performance_beats
-                episode_id = conn.execute('SELECT episode_id FROM cuts WHERE id=?', (old['cut_id'],)).fetchone()['episode_id']
-                performance_beats.ensure_queued(conn, episode_id, old['cut_id'])
-                worker.sync_episode_status(conn, episode_id)
+            structured_results.invalidate_text(conn, old['cut_id'], result_type)
         else:
             if len(body.content) > 50000:
                 raise HTTPException(422, 'Text results may contain at most 50000 characters')
@@ -1223,40 +1195,15 @@ def assign_voice(episode_id: str, body: AssignVoiceInput):
     return {"updated": len(lines)}
 
 
-def subtitle_context(cut, episode_id):
-    """Subtitle lines overlapping the cut from the episode-wide extraction, with the language they are in."""
-    with db.connect() as conn:
-        context = subtitle_store.cut_context(conn, cut, episode_id)
-    band = context.pop("band")
-    context["strip"] = {"top": band["top"], "bottom": band["bottom"]} if band else None
-    return context
-
-
 @app.get("/api/cuts/{cut_id}/analysis-context", responses={200: {"model": AnalysisContext}})
 def get_analysis_context(cut_id: str):
     """Return cut context with current neighboring results and overlapping transcript segments."""
-    cut = db.one("SELECT * FROM cuts WHERE id=?", (cut_id,))
-    if not cut:
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        context = analysis_context.load(conn, cut_id)
+    if context is None:
         raise HTTPException(404, "Cut not found")
-    episode = require_episode(cut["episode_id"])
-    project = require_project(episode["project_id"])
-    previous = db.one("SELECT * FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?", (episode["id"], cut["cut_index"] - 1)) if cut["active"] else None
-    following = db.one("SELECT * FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?", (episode["id"], cut["cut_index"] + 1)) if cut["active"] else None
-    neighbors = {}
-    for label, neighbor in (("previous", previous), ("next", following)):
-        neighbors[label] = db.all_rows("SELECT kind,title,content,origin,model_id FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid DESC", (neighbor["id"],)) if neighbor else []
-    return {
-        "project": {"id": project["id"], "title": project["title"], "synopsis": project["synopsis"]},
-        "episode": {"id": episode["id"], "title": episode["title"], "duration": episode["duration"]},
-        "cut": serialize_cut(cut),
-        "previous_cut": serialize_cut(previous) if previous else None,
-        "next_cut": serialize_cut(following) if following else None,
-        "neighbor_results": neighbors,
-        "chunks": db.all_rows("SELECT * FROM chunks WHERE episode_id=? AND start_time<? AND end_time>? ORDER BY chunk_index", (episode["id"], cut["end_time"], cut["start_time"])),
-        "context_items": db.all_rows("SELECT * FROM context_items WHERE project_id=? AND (episode_id IS NULL OR episode_id=?) ORDER BY kind,title", (project["id"], episode["id"])),
-        "transcript_segments": [serialize_transcript(segment) for segment in db.all_rows("SELECT t.*,c.title AS character_name FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>? ORDER BY t.start_time,t.id", (episode["id"], cut["end_time"], cut["start_time"]))],
-        "subtitles": subtitle_context(cut, episode["id"]),
-    }
+    return context
 
 
 SINGLE_WINDOW_SECONDS = 6.0
@@ -1276,7 +1223,12 @@ def analysis_config_for_cut(cut_id: str):
     cut = db.one("SELECT * FROM cuts WHERE id=?", (cut_id,))
     if not cut:
         raise HTTPException(404, "Cut not found")
-    saved = db.one("SELECT config_json FROM cut_analysis_configs WHERE cut_id=?", (cut_id,))
+    with db.connect() as conn:
+        return cut, snapshot_analysis_config(conn, cut)
+
+
+def snapshot_analysis_config(conn, cut):
+    saved = db.one("SELECT config_json FROM cut_analysis_configs WHERE cut_id=?", (cut['id'],), conn=conn)
     duration = max(0.000001, cut["end_time"] - cut["start_time"])
     if saved:
         config = AnalysisConfig.model_validate_json(saved["config_json"])
@@ -1284,23 +1236,18 @@ def analysis_config_for_cut(cut_id: str):
             config.video_fps = automatic_video_fps(duration)
     else:
         config = AnalysisConfig(video_fps=automatic_video_fps(duration), video_frame_budget=60)
-    return cut, config.model_copy(update=text_generation_settings())
+    return config.model_copy(update=text_generation_settings(conn))
 
 
 def selected_analysis_context(cut_id: str, config: AnalysisConfig):
-    context = get_analysis_context(cut_id)
-    valid = {item["id"] for item in context["context_items"]}
-    if not set(config.context_ids).issubset(valid):
-        raise HTTPException(400, "One or more selected context items no longer apply to this cut")
-    detections = get_character_detections(cut_id)
-    detected_ids = {d['character_context_id'] for d in detections['detections'] if d['character_context_id']} if detections and not detections['stale'] else set()
-    context["context_items"] = [item for item in context["context_items"] if item["id"] in config.context_ids or (item['kind'] == 'character' and item['id'] in detected_ids)]
-    context["additional_context"] = config.additional_context
-    if detections and not detections['stale']:
-        context['character_detections'] = {'run_id': detections['id'], 'model_id': detections['model_id'], 'model_revision': detections['model_revision'],
-            'frames': [{'position': frame['position'], 'time': frame['time'], 'image_size': frame['image_size']} for frame in detections['frames']],
-            'detections': [{'id': d['id'], 'position': d['position'], 'box': d['box'], 'character_context_id': d['character_context_id'],
-                            'character_name': d['character_name'], 'label_source': d['label_source'], 'match_reason': d['match_reason'], 'match_model_id': d['match_model_id'], 'match_model_revision': d['match_model_revision']} for d in detections['detections']]}
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        try:
+            context = analysis_context.selected(conn, cut_id, config.model_dump(), strict=True)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    if context is None:
+        raise HTTPException(404, "Cut not found")
     return context
 
 
@@ -1441,25 +1388,11 @@ def rerun_character_recognition(episode_id: str):
 
 @app.get('/api/cuts/{cut_id}/character-detections')
 def get_character_detections(cut_id: str):
-    cut = db.one('SELECT * FROM cuts WHERE id=?', (cut_id,))
-    if not cut:
-        raise HTTPException(404, 'Cut not found')
-    run = db.one('SELECT * FROM character_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1', (cut_id,))
-    if not run:
-        return None
-    run['frames'] = json.loads(run.pop('frames_json'))
-    run['stale'] = run['cut_start'] != cut['start_time'] or run['cut_end'] != cut['end_time']
-    boxes = db.all_rows('''SELECT d.*,c.title AS character_name,EXISTS(SELECT 1 FROM character_image_references r WHERE r.detection_id=d.id) AS is_reference
-                           FROM character_detections d LEFT JOIN context_items c ON c.id=d.character_context_id WHERE d.run_id=? ORDER BY d.rowid''', (run['id'],))
-    names = {row['id']: row['title'] for row in db.all_rows("SELECT ci.id,ci.title FROM context_items ci JOIN cuts cu ON cu.id=? JOIN episodes e ON e.id=cu.episode_id WHERE ci.project_id=e.project_id AND ci.kind='character'", (cut_id,))}
-    for box in boxes:
-        box['box'] = json.loads(box.pop('box_json'))
-        box['is_reference'] = bool(box['is_reference'])
-        # Ranked suggestions from the last recognition pass, for one-click labelling.
-        box['candidates'] = [{**item, 'character_name': names[item['character_id']]}
-                             for item in json.loads(box.pop('candidates_json') or '[]') if item['character_id'] in names]
-    run['detections'] = boxes
-    return run
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        if not conn.execute('SELECT 1 FROM cuts WHERE id=?', (cut_id,)).fetchone():
+            raise HTTPException(404, 'Cut not found')
+        return analysis_context.character_detections(conn, cut_id)
 
 
 @app.delete('/api/character-detection-runs/{run_id}/frame/{position}')
@@ -1815,152 +1748,65 @@ def keyframe_wait(conn, episode_id, cut_ids, stages):
     return {'depends_on': waits} if waits else {}
 
 
-def enqueue_analysis(episode_id: str, cut_id: str | None = None, stages: list[str] | None = None):
-    from . import structured_results
+def enqueue_analysis(episode_id: str, cut_id: str, stages: list[str] | None = None):
     retired = [RETIRED_STAGES[stage] for stage in stages or () if stage in RETIRED_STAGES]
     if retired:
         raise HTTPException(410, retired[0])
-    job_id = str(uuid.uuid4())
-    try:
-        with db.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            if not conn.execute("SELECT 1 FROM episodes WHERE id=?", (episode_id,)).fetchone():
-                raise HTTPException(404, "Episode not found")
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
-                raise HTTPException(409, "Wait for media preparation or detection to finish")
-            if cut_id is None:
-                cuts = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 ORDER BY cut_index", (episode_id,)).fetchall()
-                if not cuts:
-                    raise HTTPException(400, "Detect and enable cuts before running analysis")
-            else:
-                cut = conn.execute("SELECT id FROM cuts WHERE id=? AND episode_id=? AND active=1 AND analysis_enabled=1", (cut_id, episode_id)).fetchone()
-                if not cut:
-                    raise HTTPException(409, "The cut is archived or disabled for analysis")
-                active_jobs = conn.execute("SELECT j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running') AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (episode_id, cut_id)).fetchall()
-                for active_job in active_jobs:
-                    active_payload = json_object_or_empty(active_job['payload_json'])
-                    active_stages = active_payload.get('stages') if active_payload.get('workflow') == 'single_cut_v2' else None
-                    if set(stages or VISUAL_STAGES) & set(active_stages or VISUAL_STAGES):
-                        raise HTTPException(409, 'An overlapping visual analysis stage is already queued or running for this cut')
-                if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='consistency_summary' AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id')=?", (episode_id, cut_id)).fetchone():
-                    raise HTTPException(409, 'Wait for the existing consistency summary before queuing this cut')
-                cuts = [cut]
-            # The write lock keeps cut boundaries, presets and context stable until
-            # the complete job payload is committed. The helpers use read-only
-            # connections so the UI never sees a partial queue snapshot.
-            inputs = []
-            for cut in cuts:
-                _, config = analysis_config_for_cut(cut["id"])
-                context = selected_analysis_context(cut["id"], config)
-                # Queueing an individual cut confirms the displayed named boxes.
-                # Keep detector provenance; batch queueing does not imply review.
-                if cut_id is not None and context.get('character_detections'):
-                    context['character_detections']['labels_confirmed_by_queue'] = True
-                context["current_results"] = [dict(row) for row in conn.execute("SELECT kind,title,content,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid", (cut["id"],))]
-                item = {"cut_id": cut["id"], "config": config.model_dump(), "context": context}
-                if cut_id is not None:
-                    from . import character_detection
-                    labeled = {d['character_context_id'] for d in context.get('character_detections', {}).get('detections', []) if d['character_context_id']}
-                    labeled.update(entry['id'] for entry in context['context_items'] if entry['kind'] == 'character')
-                    project_id = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()['project_id']
-                    item['character_references'] = character_detection.select_analysis_references(character_detection.reference_snapshots(conn, project_id), labeled)
-                    item['base_result_ids'] = {result['type']: result['id'] for result in structured_results.list_results(cut['id'])}
-                inputs.append(item)
-            from . import visual_models
-            # A single-cut job snapshots the models chosen in the Visual engine dialog (visual_models.py).
-            single = {'workflow': 'single_cut_v2', 'auto_consistency': False, 'models': visual_models.snapshot(conn, VISUAL_STAGES)} if cut_id is not None else {}
-            # The keyframe stage needs the cut's keyframe selection: missing ones are queued now and this job waits for them.
-            waits = keyframe_wait(conn, episode_id, [item['cut_id'] for item in inputs], stages) if cut_id is not None else {}
-            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,stage) VALUES (?,?,?,?,?)", (job_id, episode_id, "analyze", json.dumps({"cuts": inputs, **single, **({'stages': stages} if stages else {}), **waits}),
-                                                                                              'Waiting for keyframe selection' if waits else 'queued'))
-            worker.sync_episode_status(conn, episode_id)
-    except sqlite3.IntegrityError as exc:
-        raise HTTPException(409, "An analysis job is already running for this episode") from exc
-    return {"job_id": job_id}
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        cut = db.one('SELECT id,active,analysis_enabled,start_time,end_time FROM cuts WHERE id=? AND episode_id=?',
+                     (cut_id, episode_id), conn=conn)
+        if not cut or not cut['active'] or not cut['analysis_enabled']:
+            raise HTTPException(409, 'The cut is archived or disabled for analysis')
+        job_id = insert_visual_job(conn, episode_id, [cut], stages=stages)
+    return {'job_id': job_id}
 
 
+def insert_visual_job(conn, episode_id, cuts, *, stages=None, batch=False, only_missing=False,
+                      characters_resolved=False, from_index=0, dynamic_cuts=False):
+    from . import visual_models
 
-def unsettled_characters(cut, context):
-    """Why a cut's characters still need a person, or None when they are settled.
-
-    A cut marked as having no characters is settled. Otherwise it needs a current detection
-    run with first-frame data, and every first-frame box must have a character assigned.
-    """
-    if cut['no_characters']:
-        return None
-    detections = context.get('character_detections')
-    if detections is None:
-        return 'not_detected'
-    if not any(isinstance(frame, dict) and frame.get('position') == 'first' for frame in detections.get('frames', [])):
-        return 'not_detected'
-    first_frame = [d for d in detections['detections'] if d.get('position') == 'first']
-    if any(d['character_context_id'] is None for d in first_frame):
-        return 'unknown_characters'
-    return None
+    cut_ids = [cut['id'] for cut in cuts]
+    items = [{'cut_id': cut['id'], 'config': snapshot_analysis_config(conn, cut).model_dump()} for cut in cuts]
+    payload = {'workflow': 'single_cut_v2', 'auto_consistency': False, 'batch': batch, 'cuts': items,
+               'models': visual_models.snapshot(conn, VISUAL_STAGES)}
+    if stages:
+        payload['stages'] = stages
+    if only_missing:
+        payload['only_missing'] = True
+    if characters_resolved:
+        payload['characters_resolved'] = True
+    if dynamic_cuts:
+        payload.update(dynamic_cuts=True, from_index=from_index,
+                       default_config=AnalysisConfig(**text_generation_settings(conn)).model_dump())
+    dependencies = worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts', 'character_detect'),
+                                       None if dynamic_cuts else cut_ids)
+    if not dynamic_cuts:
+        dependencies.extend(keyframe_wait(conn, episode_id, cut_ids, stages).get('depends_on', []))
+    if dependencies:
+        payload['depends_on'] = list(dict.fromkeys(dependencies))
+    job_id = worker.insert_job(conn, episode_id, 'analyze', payload)
+    worker.sync_episode_status(conn, episode_id)
+    worker.wake_event.set()
+    return job_id
 
 
 @app.post('/api/episodes/{episode_id}/visual-analysis')
-def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, only_missing: bool = True, characters_resolved: bool = False):
-    """Queue one restart-safe visual-only job covering every enabled active cut.
-
-    `from_cut` is the cut number shown in the editor (cut_index + 1); earlier cuts are left out.
-    With `only_missing` (the default) a stage that already has a current result is not run again, and
-    cuts with every stage done are skipped. Pass only_missing=false to redo everything.
-    With `characters_resolved`, a cut is only queued when its characters are settled: it is marked as
-    having none, or its boxes are all assigned to a character. The rest are returned in `blocked`.
-
-    A single job lets the worker run each model once across all cuts (see
-    single_cut_pipeline.run_batch) instead of reloading models for every cut.
-    """
-    from . import character_detection, structured_results
+def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, only_missing: bool = True,
+                                  characters_resolved: bool = False):
+    """Queue one model-major run. Check cut readiness and unfinished stages at start."""
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()
-        if not episode:
+        if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
             raise HTTPException(404, 'Episode not found')
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts','character_detect') AND status IN ('queued','running')", (episode_id,)).fetchone():
-            raise HTTPException(409, 'Wait for media preparation or detection to finish')
         first_index = max(0, from_cut - 1) if from_cut else 0
-        cuts = conn.execute("SELECT id,cut_index,no_characters FROM cuts WHERE episode_id=? AND active=1 AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index", (episode_id, first_index)).fetchall()
-        references = character_detection.reference_snapshots(conn, episode['project_id'])
-        already_queued = {row[0] for row in conn.execute("SELECT json_extract(i.value,'$.cut_id') FROM jobs j, json_each(j.payload_json,'$.cuts') i WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running')", (episode_id,))}
-        items, skipped, blocked = [], 0, {'unknown_characters': [], 'not_detected': []}
-        for cut in cuts:
-            cut_id = cut['id']
-            if cut_id in already_queued:
-                continue
-            _, config = analysis_config_for_cut(cut_id)
-            context = selected_analysis_context(cut_id, config)
-            context['current_results'] = [dict(row) for row in conn.execute('SELECT kind,title,content,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid', (cut_id,))]
-            labeled = {d['character_context_id'] for d in context.get('character_detections', {}).get('detections', []) if d['character_context_id']}
-            labeled.update(entry['id'] for entry in context['context_items'] if entry['kind'] == 'character')
-            if characters_resolved:
-                problem = unsettled_characters(cut, context)
-                if problem:
-                    blocked[problem].append(cut['cut_index'] + 1)
-                    continue
-            base_ids = {result['type']: result['id'] for result in structured_results.list_results(cut_id)}
-            missing = [stage for stage in VISUAL_STAGES if stage not in base_ids] if only_missing else list(VISUAL_STAGES)
-            if not missing:
-                skipped += 1
-                continue
-            item = {'cut_id': cut_id, 'config': config.model_dump(), 'context': context, 'base_result_ids': base_ids,
-                    'character_references': character_detection.select_analysis_references(references, labeled)}
-            if len(missing) < len(VISUAL_STAGES):
-                item['stages'] = missing
-            items.append(item)
-        job_ids = []
-        if items:
-            job_id = str(uuid.uuid4())
-            from . import visual_models
-            payload = {'cuts': items, 'workflow': 'single_cut_v2', 'auto_consistency': False, 'models': visual_models.snapshot(conn, VISUAL_STAGES)}
-            waits = keyframe_wait(conn, episode_id, [item['cut_id'] for item in items if 'keyframe_analysis' in item.get('stages', VISUAL_STAGES)], None)
-            payload.update(waits)
-            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json,stage) VALUES (?,?,'analyze',?,?)", (job_id, episode_id, json.dumps(payload, ensure_ascii=False),
-                                                                                                     'Waiting for keyframe selection' if waits else 'queued'))
-            job_ids.append(job_id)
-            worker.sync_episode_status(conn, episode_id)
-    return {'queued': len(items), 'skipped': skipped, 'blocked': blocked, 'job_ids': job_ids}
+        cuts = db.all_rows("""SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1
+            AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index""", (episode_id, first_index), conn=conn)
+        dynamic_cuts = bool(worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts')))
+        job_ids = [insert_visual_job(conn, episode_id, cuts, batch=True, only_missing=only_missing,
+                                     characters_resolved=characters_resolved, from_index=first_index,
+                                     dynamic_cuts=dynamic_cuts)] if cuts or dynamic_cuts else []
+    return {'queued': len(cuts), 'skipped': 0, 'blocked': {'unknown_characters': [], 'not_detected': []}, 'job_ids': job_ids}
 
 
 class BatchTextInput(BaseModel):
@@ -2486,8 +2332,8 @@ class TextGenerationSettings(BaseModel):
     local_model: Literal['standard', 'mtp'] | None = None  # omitted keeps the current choice
 
 
-def text_generation_settings():
-    row = db.one('SELECT text_provider,local_thinking,openrouter_model,local_model FROM text_generation_settings WHERE id=1')
+def text_generation_settings(conn=None):
+    row = db.one('SELECT text_provider,local_thinking,openrouter_model,local_model FROM text_generation_settings WHERE id=1', conn=conn)
     if not row:
         return {**TextGenerationSettings().model_dump(), 'local_model': 'standard'}
     row['local_thinking'] = bool(row['local_thinking'])
@@ -2834,9 +2680,33 @@ def cancel_inference_job(job_id: str):
     return {"ok": True}
 
 
+def retry_visual_job(conn, job, payload):
+    existing = conn.execute("SELECT id FROM jobs WHERE retry_of=? AND status IN ('queued','running')", (job['id'],)).fetchone()
+    if existing:
+        return existing['id']
+    cut_ids = [item['cut_id'] for item in payload['cuts']]
+    dependencies = worker.pending_jobs(conn, job['episode_id'], ('prepare', 'hardcuts', 'character_detect'),
+                                       None if payload.get('dynamic_cuts') else cut_ids)
+    if not payload.get('dynamic_cuts'):
+        dependencies.extend(keyframe_wait(conn, job['episode_id'], cut_ids, payload.get('stages')).get('depends_on', []))
+    payload['depends_on'] = list(dict.fromkeys(dependencies))
+    retry_id = worker.insert_job(conn, job['episode_id'], 'analyze', payload, retry_of=job['id'],
+                                 priority_class=job['priority_class'])
+    conn.execute("""INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json,completed)
+        SELECT ?,cut_id,evidence_json,completed FROM analysis_job_cuts WHERE job_id=?""", (retry_id, job['id']))
+    now = time.time()
+    labels = job_kinds.STAGE_LABELS
+    for row in conn.execute('SELECT cut_id,evidence_json FROM analysis_job_cuts WHERE job_id=?', (retry_id,)):
+        for stage in json_object_or_empty(row['evidence_json']).keys() & labels.keys():
+            conn.execute("""INSERT INTO analysis_job_stages(id,job_id,cut_id,stage_key,label,status,started_at,last_seen_at,finished_at)
+                VALUES (?,?,?,?,?,'reused',?,?,?)""", (str(uuid.uuid4()), retry_id, row['cut_id'], stage, labels[stage], now, now, now))
+    worker.sync_episode_status(conn, job['episode_id'])
+    worker.wake_event.set()
+    return retry_id
+
+
 @app.post("/api/jobs/{job_id}/retry")
 def retry_analysis(job_id: str):
-    import time
     try:
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -2889,6 +2759,9 @@ def retry_analysis(job_id: str):
                 return {'job_id': retry_id}
             if job["pipeline"] != "analyze" or job["status"] not in ("failed", "cancelled"):
                 raise HTTPException(409, "Only failed or cancelled analysis jobs can be retried")
+            retry_payload = json_object_or_empty(job['payload_json'])
+            if retry_payload.get('workflow') == 'single_cut_v2':
+                return {'job_id': retry_visual_job(conn, dict(job), retry_payload)}
             if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (job["episode_id"],)).fetchone():
                 raise HTTPException(409, "Wait for media preparation or cut detection to finish")
             for item in json.loads(job["payload_json"])["cuts"]:
@@ -2910,21 +2783,9 @@ def retry_analysis(job_id: str):
             retry_id = str(uuid.uuid4())
             retry_payload = json_object_or_empty(job['payload_json'])
             retry_payload.pop('depends_on', None)
-            if retry_payload.get('workflow') == 'single_cut_v2':
-                # Keyframe windows are checkpointed per run, not per job: the retry resumes them. Its selection may need queueing again.
-                retry_payload.update(keyframe_wait(conn, job['episode_id'], [item['cut_id'] for item in retry_payload['cuts']], retry_payload.get('stages')))
             conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job["episode_id"], 'analyze', json.dumps(retry_payload, ensure_ascii=False), job_id))
             conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json,completed) SELECT ?,cut_id,evidence_json,completed FROM analysis_job_cuts WHERE job_id=?", (retry_id, job_id))
             conn.execute("INSERT INTO analysis_video_windows (job_id,cut_id,window_index,start_time,end_time,model_revision,content_json) SELECT ?,cut_id,window_index,start_time,end_time,model_revision,content_json FROM analysis_video_windows WHERE job_id=?", (retry_id, job_id))
-            if retry_payload.get('workflow') == 'single_cut_v2':
-                labels = {'subtitle_ocr': 'Subtitle detection and OCR', 'initial_frame': 'Initial frame', 'video_analysis': 'Video analysis', 'last_frame': 'Last frame',
-                          'keyframe_analysis': 'Keyframe analysis'}
-                now = time.time()
-                for checkpoint in conn.execute('SELECT cut_id,evidence_json FROM analysis_job_cuts WHERE job_id=?', (retry_id,)):
-                    saved = json_object_or_empty(checkpoint['evidence_json'])
-                    for key, label in labels.items():
-                        if key in saved:
-                            conn.execute("INSERT INTO analysis_job_stages(id,job_id,cut_id,stage_key,label,status,started_at,last_seen_at,finished_at) VALUES (?,?,?,?,?,'reused',?,?,?)", (str(uuid.uuid4()), retry_id, checkpoint['cut_id'], key, label, now, now, now))
             worker.sync_episode_status(conn, job["episode_id"])
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "An analysis job is already running for this episode") from exc

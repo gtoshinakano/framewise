@@ -29,9 +29,10 @@ import threading
 import time
 import os
 import tempfile
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from . import character_detection, db, frame_model, keyframe_analysis, media, pose_detail, structured_results, visual_models, worker
+from . import character_detection, db, frame_model, job_inputs, keyframe_analysis, keyframes, media, pose_detail, structured_results, visual_models, worker
 from .visual_contracts import FRAME_INSTRUCTION
 
 log = logging.getLogger('framewise.visual_analysis')
@@ -76,7 +77,7 @@ DETECTION_NOTE = ('Boxes are pixel coordinates in the named boundary frame only.
 
 
 def _subtitle_strip(context):
-    """The episode's subtitle language and strip as saved when the job was queued, or None before extraction."""
+    """The episode's subtitle language and strip at the start of the run."""
     subtitles = context.get('subtitles') if isinstance(context, dict) else None
     if not isinstance(subtitles, dict):
         return None
@@ -103,7 +104,7 @@ def frame_canvas(episode, width=1280):
 class CutRun:
     """One cut inside an analysis job: its checkpoint, saved results and progress messages."""
 
-    def __init__(self, job, owner, episode, item, stages, batch_size):
+    def __init__(self, job, owner, episode, item, stages, batch_size, inputs=None):
         self.job, self.owner, self.episode, self.item, self.stages = job, owner, episode, item, stages
         self.cut_id, self.config, self.context = item['cut_id'], item['config'], item['context']
         self.cut = self.context['cut']
@@ -112,11 +113,15 @@ class CutRun:
         self.base_ids = item.get('base_result_ids', {})
         self.strip = _subtitle_strip(self.context)
         self.failure = None  # set when this cut fails; the other cuts keep going
+        self.inputs = inputs
         row = db.one('SELECT * FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job['id'], self.cut_id))
         self.completed = bool(row and row['completed'])
         self.checkpoint = json.loads(row['evidence_json']) if row else {}
         if not isinstance(self.checkpoint, dict):
             raise RuntimeError('Single-cut checkpoint is invalid')
+        self.protected = set(self.checkpoint.get('_protected', ()))
+        if inputs and self.checkpoint.get('_inputs') not in (None, inputs.stamp):
+            self.completed, self.checkpoint = False, {}
         self.hints = {'selected_context': [{'id': entry['id'], 'kind': entry['kind'], 'title': entry['title'],
                                             'description': entry['content'][:500]} for entry in self.context['context_items']],
                       'additional_context': self.context.get('additional_context', '')[:2000],
@@ -140,7 +145,7 @@ class CutRun:
 
     def needs(self, kind):
         """True when the job should run this stage for this cut and has no saved result yet."""
-        return kind in self.stages and self.saved(kind) is None
+        return kind in self.stages and not (kind in self.protected and kind in self.item.get('manual_bases', ())) and self.saved(kind) is None
 
     def check_cut(self, conn):
         current = conn.execute('SELECT active,start_time,end_time FROM cuts WHERE id=? AND episode_id=?', (self.cut_id, self.episode['id'])).fetchone()
@@ -148,9 +153,31 @@ class CutRun:
             raise RuntimeError('The cut changed while analysis was queued or running; start a new analysis')
 
     def validate(self):
+        with self.publish():
+            pass
+
+    @contextmanager
+    def publish(self, result_type=None):
+        if self.inputs:
+            with self.inputs.publish(invalidate=result_type is not None, on_changed=self.protect_edits, result_type=result_type) as conn:
+                yield conn
+            return
         with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
             worker.require_lease(conn, self.job['id'], self.owner)
             self.check_cut(conn)
+            yield conn
+
+    def protect_edits(self, conn):
+        """A restarted request still respects any output revision edited while it was running."""
+        for result in structured_results.list_results(self.cut_id, conn=conn):
+            kind = result['type']
+            if kind in self.stages and result['origin'] in ('manual', 'manual_edit', 'assistant_edit') and result['id'] != self.base_ids.get(kind):
+                self.protected.add(kind)
+        checkpoint = {**self.checkpoint, '_protected': sorted(self.protected)}
+        conn.execute("""INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) SELECT ?,id,? FROM cuts WHERE id=?
+            ON CONFLICT(job_id,cut_id) DO UPDATE SET evidence_json=excluded.evidence_json,completed=0""",
+            (self.job['id'], json.dumps(checkpoint), self.cut_id))
 
     # -- checkpointed results ----------------------------------------------------
 
@@ -160,17 +187,24 @@ class CutRun:
         provenance = {'cut': self.cut, 'model_context_hints': self.hints,
                       **({'subtitle_strip': self.strip} if self.strip else {}),
                       **({'frame_time': data['frame_time']} if 'frame_time' in data else {})}
-        with db.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            worker.require_lease(conn, self.job['id'], self.owner)
-            self.check_cut(conn)
+        if self.inputs:
+            provenance['input_fingerprint'] = self.inputs.stamp
+            provenance['input_result_ids'] = self.base_ids
+            provenance['selection_key'] = item.get('selection_key')
+            provenance['target_detection_run'] = (item.get('target_run') or {}).get('id')
+        with self.publish(result_type) as conn:
             new_id = structured_results.save_generated(conn, self.cut_id, self.job['id'], self.owner, result_type, data, model_id, prompt,
                 {**self.config, 'provider': 'local', **(extra or {})}, provenance,
                 expected_current=self.checkpoint.get(result_type, self.base_ids.get(result_type)))
             if after:
                 after(conn, new_id)
             self.checkpoint[result_type] = new_id
-            conn.execute('INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) VALUES (?,?,?) ON CONFLICT(job_id,cut_id) DO UPDATE SET evidence_json=excluded.evidence_json',
+            if self.inputs:
+                self.inputs.stamp = self.inputs.kind.inputs(conn, self.inputs.job)
+                self.checkpoint['_inputs'] = self.inputs.stamp
+                if self.protected:
+                    self.checkpoint['_protected'] = sorted(self.protected)
+            conn.execute('INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) VALUES (?,?,?) ON CONFLICT(job_id,cut_id) DO UPDATE SET evidence_json=excluded.evidence_json,completed=0',
                          (self.job['id'], self.cut_id, json.dumps(self.checkpoint)))
 
     def saved(self, result_type):
@@ -183,27 +217,59 @@ class CutRun:
         return json.loads(row['content'])
 
     def mark_complete(self):
-        with db.connect() as conn:
-            worker.require_lease(conn, self.job['id'], self.owner)
+        with self.publish() as conn:
             conn.execute('UPDATE analysis_job_cuts SET completed=1 WHERE job_id=? AND cut_id=?', (self.job['id'], self.cut_id))
             self.completed = True
 
 
-def run_batch(job, owner, episode, items):
+def gather_batch(job, owner, payload):
+    """Read each cut in one snapshot, before loading any model."""
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        worker.require_lease(conn, job['id'], owner)
+        cut_ids = [item['cut_id'] for item in payload['cuts']]
+        if payload.get('dynamic_cuts'):
+            cut_ids = [row['id'] for row in conn.execute("""SELECT id FROM cuts WHERE episode_id=? AND active=1
+                AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index""", (job['episode_id'], payload['from_index']))]
+        return [job_inputs.JobInputs(conn, {**job, 'payload': payload}, owner, cut_id) for cut_id in cut_ids]
+
+
+def wait_for_selection(job, owner, snapshots):
+    missing = [inputs.job['unit_id'] for inputs in snapshots if 'keyframe_analysis' in inputs.data.get('stages', ())
+               and not inputs.data['selection_key']]
+    if not missing:
+        return False
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        worker.require_lease(conn, job['id'], owner)
+        waits = keyframes.ensure_selection(conn, job['episode_id'], missing)
+        if waits:
+            worker.defer_for_dependencies(conn, job, owner, waits, 'Waiting for keyframe selection')
+    return bool(waits)
+
+
+def run_batch(job, owner, episode, items, snapshots=None):
     """Run every requested stage for all cuts, loading each model once."""
     payload = json.loads(job['payload_json'])
     job_stages = set(payload.get('stages') or ALL_STAGES)
     # A cut may list its own stages when only part of its analysis is missing. Jobs queued before
     # subtitles became an episode-wide step, before the last frame was dropped or before keyframes
     # replaced the video stage may still name subtitle_ocr, last_frame or video_analysis; none runs here.
-    runs = [CutRun(job, owner, episode, item, set(item.get('stages') or job_stages) & set(ALL_STAGES), len(items)) for item in items]
+    snapshots = snapshots or {}
+    runs = [CutRun(job, owner, episode, item, set(item.get('stages') or job_stages) & set(ALL_STAGES),
+                   len(items), snapshots.get(item['cut_id'])) for item in items]
     runs = [cut_run for cut_run in runs if not cut_run.completed]
     if not runs:
         return
     for cut_run in runs:
         cut_run.validate()
     models = job_models(payload)
-    ensure_models_available(set().union(*(cut_run.stages for cut_run in runs)), models)
+    needed = {stage for cut_run in runs for stage in cut_run.stages if cut_run.needs(stage)}
+    if not needed:
+        for cut_run in runs:
+            cut_run.mark_complete()
+        return
+    ensure_models_available(needed, models)
     release_gpu_models()
     try:
         with tempfile.TemporaryDirectory(prefix='framewise-cut-analysis-') as scratch:

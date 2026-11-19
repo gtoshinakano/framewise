@@ -39,10 +39,10 @@ def is_target_job(payload):
     return isinstance(payload, dict) and payload.get('workflow') == WORKFLOW
 
 
-def current_selection(cut_id):
+def current_selection(cut_id, conn=None):
     """``(cut, source path, key, result)`` of the cut's latest evaluation (``keyframes.current_selection``)."""
     from . import keyframes
-    return keyframes.current_selection(cut_id)
+    return keyframes.current_selection(cut_id, conn)
 
 
 def pending_job(cut_id):
@@ -50,14 +50,14 @@ def pending_job(cut_id):
                      AND json_extract(payload_json,'$.cut_id')=?""", (cut_id,))
 
 
-def latest_job(cut_id):
+def latest_job(cut_id, conn=None):
     return db.one("""SELECT id,status,stage,error FROM jobs WHERE pipeline='character_detect'
                      AND json_extract(payload_json,'$.workflow')=? AND json_extract(payload_json,'$.cut_id')=?
-                     ORDER BY rowid DESC LIMIT 1""", (WORKFLOW, cut_id))
+                     ORDER BY rowid DESC LIMIT 1""", (WORKFLOW, cut_id), conn=conn)
 
 
-def run_for(cut_id, key):
-    return db.one('SELECT * FROM target_detection_runs WHERE cut_id=? AND selection_key=?', (cut_id, key))
+def run_for(cut_id, key, conn=None):
+    return db.one('SELECT * FROM target_detection_runs WHERE cut_id=? AND selection_key=?', (cut_id, key), conn=conn)
 
 
 def frame_capacity(slots, locked=False):
@@ -66,22 +66,22 @@ def frame_capacity(slots, locked=False):
     return max(MAX_BOXES, opening) if locked else MAX_BOXES
 
 
-def state(cut_id):
+def state(cut_id, conn=None):
     """What the Target frames tab shows: the evaluation, the latest run with its slots and boxes, and the job."""
-    cut, _, key, _ = current_selection(cut_id)
+    cut, _, key, _ = current_selection(cut_id, conn)
     if not cut:
         return None
-    run = db.one('SELECT * FROM target_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1', (cut_id,))
-    cast = db.one('SELECT locked FROM target_cast_settings WHERE cut_id=?', (cut_id,))
+    run = db.one('SELECT * FROM target_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1', (cut_id,), conn=conn)
+    cast = db.one('SELECT locked FROM target_cast_settings WHERE cut_id=?', (cut_id,), conn=conn)
     locked = bool((cast or {}).get('locked'))
     result = {'evaluation': 'current' if key else 'missing', 'selection_key': key, 'max_boxes': MAX_BOXES,
-              'cast_locked': locked, 'run': None, 'job': latest_job(cut_id)}
+              'cast_locked': locked, 'run': None, 'job': latest_job(cut_id, conn)}
     if run:
         slots = db.all_rows('''SELECT s.slot,s.origin,s.character_context_id,s.label_source,s.ignored,c.title AS character_name
                                FROM target_slots s LEFT JOIN context_items c ON c.id=s.character_context_id
-                               WHERE s.run_id=? ORDER BY s.slot''', (run['id'],))
+                               WHERE s.run_id=? ORDER BY s.slot''', (run['id'],), conn=conn)
         boxes = db.all_rows('''SELECT d.* FROM target_detections d JOIN target_slots s ON s.run_id=d.run_id AND s.slot=d.slot
-                              WHERE d.run_id=? AND s.ignored=0 ORDER BY d.rowid''', (run['id'],))
+                              WHERE d.run_id=? AND s.ignored=0 ORDER BY d.rowid''', (run['id'],), conn=conn)
         result['max_boxes'] = frame_capacity(slots, bool(run['cast_locked']))
         candidates = json.loads(run['candidates_json'])
         detections = [target_reviews.box_row(box) for box in boxes]

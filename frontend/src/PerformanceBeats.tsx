@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ChevronDown, Drama, RotateCcw } from 'lucide-react'
 import { api, type AnalysisResult, type Job, type PerformanceBeats as Beats } from './api'
-import { ActionButton, StatusChip } from './RunUi'
+import { ActionButton, StaleChip, StatusChip } from './RunUi'
 
 const DELIVERY: Record<string, string> = { on_screen: 'lip-synced', off_screen: 'off screen', inner_voice: 'inner voice', narrative: 'narration' }
 
@@ -18,13 +18,13 @@ export function PerformanceBeats({ cutId, results, jobs, disabled, onStarted }: 
   let beats: Beats | null = null
   try { beats = result ? JSON.parse(result.content) as Beats : null } catch { beats = null }
   const pending = jobs.find(job => job.pipeline === 'performance_beats' && ['queued', 'running'].includes(job.status) && job.cuts?.some(item => item.id === cutId))
-  const stale = !!beats && !!keyframes && beats.based_on?.keyframe_analysis !== keyframes.id
+  const staleReason = result?.stale_reason || (beats && keyframes && beats.based_on?.keyframe_analysis !== keyframes.id ? 'The keyframe analysis changed' : '')
   async function rewrite() {
     setQueueing(true); setError('')
     try { await api(`/cuts/${cutId}/performance-beats`, { method: 'POST' }); await onStarted() } catch (failure) { setError((failure as Error).message) } finally { setQueueing(false) }
   }
   const status = pending ? <StatusChip tone={pending.status === 'running' ? 'purple' : 'amber'}>{pending.status === 'running' ? 'Writing' : 'Queued'}</StatusChip>
-    : stale ? <StatusChip tone="amber" title="The keyframes were analysed again after these beats were written">Stale</StatusChip>
+    : staleReason ? <StaleChip reason={staleReason} />
     : beats ? <StatusChip tone="green">Current</StatusChip> : <StatusChip tone="grey">Not written</StatusChip>
   return <details open className="group shrink-0 rounded-lg border hairline bg-[#171c25] text-xs">
     <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 font-semibold text-[#d5dbe5]"><ChevronDown size={14} className="-rotate-90 transition-transform group-open:rotate-0" aria-hidden />
