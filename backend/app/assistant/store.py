@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS assistant_turns (
     status TEXT NOT NULL DEFAULT 'queued', stage TEXT NOT NULL DEFAULT 'Queued',
     provider TEXT NOT NULL, model TEXT NOT NULL, thinking INTEGER NOT NULL DEFAULT 1,
     skill TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0, gpu_fallback INTEGER NOT NULL DEFAULT 0,
+    priority_class TEXT NOT NULL DEFAULT 'chat', retry_of TEXT,
     lease_owner TEXT, lease_until REAL, attempt_count INTEGER NOT NULL DEFAULT 0,
     error TEXT, usage_json TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -60,8 +61,10 @@ def init_schema(conn):
     for column in ('diff_base', 'diff_label', 'payload_json'):
         if column not in columns:
             conn.execute(f'ALTER TABLE assistant_proposals ADD COLUMN {column} TEXT')
-    if 'gpu_fallback' not in {row['name'] for row in conn.execute('PRAGMA table_info(assistant_turns)')}:
-        conn.execute('ALTER TABLE assistant_turns ADD COLUMN gpu_fallback INTEGER NOT NULL DEFAULT 0')
+    turns = {row['name'] for row in conn.execute('PRAGMA table_info(assistant_turns)')}
+    for column, definition in (('gpu_fallback', 'INTEGER NOT NULL DEFAULT 0'), ('priority_class', "TEXT NOT NULL DEFAULT 'chat'"), ('retry_of', 'TEXT')):
+        if column not in turns:
+            conn.execute(f'ALTER TABLE assistant_turns ADD COLUMN {column} {definition}')
     # A chat about a sequence: sequence_id is set and cut_id is the sequence's first cut (the column is
     # NOT NULL and gives the tools their project). Cut chats leave it NULL.
     for table in ('assistant_sessions', 'assistant_proposals'):

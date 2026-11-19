@@ -237,26 +237,44 @@ def delete_session(session_id: str):
 @router.post('/api/assistant/sessions/{session_id}/messages')
 def send_message(session_id: str, body: MessageInput):
     """Store the user's message and queue a turn for the inference worker."""
-    session = require_session(session_id)
+    require_session(session_id)
     validate_choice(body.provider, body.model, body.skill)
     content = body.content.strip()
     if not content:
         raise HTTPException(400, 'Write a message first')
-    turn_id, message_id = str(uuid.uuid4()), str(uuid.uuid4())
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        if conn.execute("SELECT 1 FROM assistant_turns WHERE session_id=? AND status IN ('queued','running')", (session_id,)).fetchone():
-            raise HTTPException(409, 'Wait for the current reply to finish or stop it first')
-        conn.execute('INSERT INTO assistant_turns(id,session_id,provider,model,thinking,skill,gpu_fallback) VALUES (?,?,?,?,?,?,?)',
-                     (turn_id, session_id, body.provider, body.model, int(body.thinking), body.skill, int(body.gpu_fallback)))
-        conn.execute("INSERT INTO assistant_messages(id,session_id,turn_id,seq,role,content) VALUES (?,?,?,?,'user',?)",
-                     (message_id, session_id, turn_id, store.next_seq(conn, session_id), content))
-        title = session['title'] or (content.splitlines()[0][:80] if content else 'New chat')
-        conn.execute('UPDATE assistant_sessions SET title=?,provider=?,model=?,thinking=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                     (title, body.provider, body.model, int(body.thinking), session_id))
+        turn_id, message_id = _queue_turn(conn, session_id, content, body.provider, body.model, int(body.thinking), body.skill, int(body.gpu_fallback))
         turn = store.serialize_turn(conn.execute('SELECT * FROM assistant_turns WHERE id=?', (turn_id,)).fetchone())
         message = store.serialize_message(conn.execute('SELECT * FROM assistant_messages WHERE id=?', (message_id,)).fetchone())
     return {'turn': turn, 'message': message}
+
+
+def _active_duplicate(conn, session_id, content, provider, model, thinking, skill, gpu_fallback, retry_of):
+    return conn.execute('''SELECT t.id AS turn_id,m.id AS message_id FROM assistant_turns t
+        JOIN assistant_messages m ON m.turn_id=t.id AND m.role='user' WHERE t.session_id=? AND t.status IN ('queued','running')
+        AND t.provider=? AND t.model=? AND t.thinking=? AND t.skill IS ? AND t.gpu_fallback=? AND t.retry_of IS ? AND m.content=?
+        ORDER BY t.rowid LIMIT 1''', (session_id, provider, model, thinking, skill, gpu_fallback, retry_of, content)).fetchone()
+
+
+def _queue_turn(conn, session_id, content, provider, model, thinking, skill, gpu_fallback, *, retry_of=None):
+    session = conn.execute('SELECT title FROM assistant_sessions WHERE id=?', (session_id,)).fetchone()
+    if not session:
+        raise HTTPException(404, 'Chat session not found')
+    existing = _active_duplicate(conn, session_id, content, provider, model, thinking, skill, gpu_fallback, retry_of)
+    if existing:
+        return existing['turn_id'], existing['message_id']
+    waiting = conn.execute("SELECT 1 FROM assistant_turns WHERE session_id=? AND status IN ('queued','running')", (session_id,)).fetchone()
+    stage = 'Queued after current reply' if waiting else 'Queued'
+    turn_id, message_id = str(uuid.uuid4()), str(uuid.uuid4())
+    conn.execute('INSERT INTO assistant_turns(id,session_id,provider,model,thinking,skill,gpu_fallback,stage,retry_of) VALUES (?,?,?,?,?,?,?,?,?)',
+                 (turn_id, session_id, provider, model, thinking, skill, gpu_fallback, stage, retry_of))
+    conn.execute("INSERT INTO assistant_messages(id,session_id,turn_id,seq,role,content) VALUES (?,?,?,?,'user',?)",
+                 (message_id, session_id, turn_id, store.next_seq(conn, session_id), content))
+    title = session['title'] or content.splitlines()[0][:80]
+    conn.execute('UPDATE assistant_sessions SET title=?,provider=?,model=?,thinking=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                 (title, provider, model, thinking, session_id))
+    return turn_id, message_id
 
 
 @router.post('/api/assistant/turns/{turn_id}/cancel')
@@ -279,28 +297,32 @@ def retry_turn(turn_id: str, body: RetryInput | None = None):
     """Regenerate the latest reply, optionally with another model."""
     body = body or RetryInput()
     with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         turn = conn.execute('SELECT * FROM assistant_turns WHERE id=?', (turn_id,)).fetchone()
         if not turn:
             raise HTTPException(404, 'Turn not found')
-    provider = body.provider or turn['provider']
-    model = body.model or turn['model']
-    thinking = turn['thinking'] if body.thinking is None else int(body.thinking)
-    gpu_fallback = turn['gpu_fallback'] if body.gpu_fallback is None else int(body.gpu_fallback)
-    validate_choice(provider, model)
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        turn = conn.execute('SELECT * FROM assistant_turns WHERE id=?', (turn_id,)).fetchone()
-        if not turn or turn['status'] in store.ACTIVE:
-            raise HTTPException(409, 'This reply is still running')
-        latest = conn.execute('SELECT id FROM assistant_turns WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1', (turn['session_id'],)).fetchone()
-        if latest['id'] != turn_id:
+        provider = body.provider or turn['provider']
+        model = body.model or turn['model']
+        thinking = turn['thinking'] if body.thinking is None else int(body.thinking)
+        gpu_fallback = turn['gpu_fallback'] if body.gpu_fallback is None else int(body.gpu_fallback)
+        validate_choice(provider, model)
+        session_id = turn['session_id']
+        content = conn.execute("SELECT content FROM assistant_messages WHERE turn_id=? AND role='user'", (turn_id,)).fetchone()['content']
+        choices = (provider, model, thinking, turn['skill'], gpu_fallback)
+        latest = conn.execute('SELECT id FROM assistant_turns WHERE session_id=? ORDER BY rowid DESC LIMIT 1', (session_id,)).fetchone()
+        existing = _active_duplicate(conn, session_id, content, *choices, turn_id)
+        if not existing and latest['id'] != turn_id:
             raise HTTPException(409, 'Only the latest reply can be regenerated')
-        conn.execute("DELETE FROM assistant_messages WHERE turn_id=? AND role!='user'", (turn_id,))
-        conn.execute("DELETE FROM assistant_proposals WHERE turn_id=? AND status='pending'", (turn_id,))
-        store.bump(conn, turn_id, status='queued', stage='Queued', error=None, cancel_requested=0, attempt_count=0, usage_json='{}',
-                   started_at=None, finished_at=None, provider=provider, model=model, thinking=thinking, gpu_fallback=gpu_fallback, lease_owner=None, lease_until=None)
-        conn.execute('UPDATE assistant_sessions SET provider=?,model=?,thinking=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (provider, model, thinking, turn['session_id']))
-    return session_detail(turn['session_id'])
+        if not existing and turn['status'] in store.ACTIVE:
+            if choices != tuple(turn[key] for key in ('provider', 'model', 'thinking', 'skill', 'gpu_fallback')):
+                _queue_turn(conn, session_id, content, *choices, retry_of=turn_id)
+        elif not existing:
+            conn.execute("DELETE FROM assistant_messages WHERE turn_id=? AND role!='user'", (turn_id,))
+            conn.execute("DELETE FROM assistant_proposals WHERE turn_id=? AND status='pending'", (turn_id,))
+            store.bump(conn, turn_id, status='queued', stage='Queued', error=None, cancel_requested=0, attempt_count=0, usage_json='{}',
+                       started_at=None, finished_at=None, provider=provider, model=model, thinking=thinking, gpu_fallback=gpu_fallback, lease_owner=None, lease_until=None)
+            conn.execute('UPDATE assistant_sessions SET provider=?,model=?,thinking=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (provider, model, thinking, session_id))
+    return session_detail(session_id)
 
 
 def turn_snapshot(turn_id):

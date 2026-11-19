@@ -210,12 +210,17 @@ class ApiTest(AssistantBase):
         self.assertEqual(sent.status_code, 200, sent.text)
         turn = sent.json()['turn']
         self.assertEqual((turn['status'], turn['skill']), ('queued', 'cut_status_summary'))
-        self.assertEqual(self.client.post(f'/api/assistant/sessions/{session_id}/messages', json={'content': 'again', 'provider': 'fake', 'model': 'fake-model'}).status_code, 409)
         sessions = self.client.get('/api/cuts/c1/assistant/sessions').json()
         self.assertEqual((sessions[0]['title'], sessions[0]['message_count'], sessions[0]['last_status']), ('Summarize the cut', 1, 'queued'))
         self.assertEqual(self.client.post(f"/api/assistant/turns/{turn['id']}/cancel").json()['status'], 'cancelled')
         retried = self.client.post(f"/api/assistant/turns/{turn['id']}/retry", json={})
         self.assertEqual(retried.json()['turns'][0]['status'], 'queued')
+        follow_up = {'content': 'again', 'provider': 'fake', 'model': 'fake-model'}
+        queued = self.client.post(f'/api/assistant/sessions/{session_id}/messages', json=follow_up)
+        self.assertEqual(queued.status_code, 200, queued.text)
+        self.assertEqual(queued.json()['turn']['stage'], 'Queued after current reply')
+        self.assertEqual(queued.json()['turn']['priority_class'], 'chat')
+        self.assertEqual(self.client.post(f'/api/assistant/sessions/{session_id}/messages', json=follow_up).json(), queued.json())
         config = self.client.get('/api/assistant/config').json()
         self.assertTrue(config['worker_online'])
         self.assertIn('h3_animation_prompt', [skill['name'] for skill in config['skills']])
@@ -244,6 +249,40 @@ class FakeProvider(providers.Provider):
 
 
 class RunnerTest(AssistantBase):
+    def test_follow_ups_claim_in_order_and_use_only_earlier_turns(self):
+        session_id = self.session()
+        self.worker_online()
+
+        def queue(content):
+            return self.client.post(f'/api/assistant/sessions/{session_id}/messages',
+                                    json={'content': content, 'provider': 'fake', 'model': 'fake-model'}).json()['turn']['id']
+
+        first, second = queue('first'), queue('follow up')
+        self.assertEqual(runner.claim_turn()[0], first)
+        self.assertIsNone(runner.claim_turn())
+        self.assertEqual([message['content'] for message in runner.history_messages(session_id, first, 1000)], ['first'])
+        with db.connect() as conn:
+            conn.execute("INSERT INTO assistant_messages(id,session_id,turn_id,seq,role,content) VALUES ('answer',?,?,?,'assistant','answer')",
+                         (session_id, first, store.next_seq(conn, session_id)))
+            store.bump(conn, first, status='done')
+        self.assertEqual(runner.claim_turn()[0], second)
+        self.assertEqual([message['content'] for message in runner.history_messages(session_id, second, 1000)], ['first', 'answer', 'follow up'])
+
+    def test_active_reply_can_queue_a_retry_with_different_choices(self):
+        session_id = self.session()
+        self.worker_online()
+        turn = self.client.post(f'/api/assistant/sessions/{session_id}/messages', json={'content': 'describe', 'provider': 'fake', 'model': 'fake-model'}).json()['turn']
+        self.assertEqual(runner.claim_turn()[0], turn['id'])
+        path = f"/api/assistant/turns/{turn['id']}/retry"
+        self.assertEqual(len(self.client.post(path, json={}).json()['turns']), 1)
+        retry = self.client.post(path, json={'thinking': False}).json()['turns'][1]
+        self.assertEqual(retry['status'], 'queued')
+        self.assertEqual(self.client.post(path, json={'thinking': False}).json()['turns'][1]['id'], retry['id'])
+        with db.connect() as conn:
+            store.bump(conn, turn['id'], status='done')
+        self.assertEqual(runner.claim_turn()[0], retry['id'])
+        self.assertEqual([message['content'] for message in runner.history_messages(session_id, retry['id'], 1000)], ['describe'])
+
     def test_turn_runs_tools_then_answers_with_usage(self):
         session_id = self.session()
         self.worker_online()

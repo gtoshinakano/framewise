@@ -86,8 +86,11 @@ def claim_turn():
         conn.execute('''UPDATE assistant_turns SET status='failed',stage='Failed',error='The turn was interrupted; retry it',
                         lease_owner=NULL,lease_until=NULL,finished_at=?,version=version+1
                         WHERE status='running' AND (lease_until IS NULL OR lease_until<=?) AND attempt_count>=?''', (now, now, MAX_ATTEMPTS))
-        row = conn.execute('''SELECT * FROM assistant_turns WHERE status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?))
-                              ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, rowid LIMIT 1''', (now,)).fetchone()
+        row = conn.execute('''SELECT t.* FROM assistant_turns t
+            WHERE (t.status='queued' OR (t.status='running' AND COALESCE(t.lease_until,0)<=?))
+              AND NOT EXISTS (SELECT 1 FROM assistant_turns earlier WHERE earlier.session_id=t.session_id
+                              AND earlier.rowid<t.rowid AND earlier.status IN ('queued','running'))
+            ORDER BY CASE t.status WHEN 'running' THEN 0 ELSE 1 END, t.created_at, t.rowid LIMIT 1''', (now,)).fetchone()
         if not row:
             return None
         owner = str(uuid.uuid4())
@@ -155,7 +158,12 @@ def history_messages(session_id, current_turn_id, budget_tokens, vision=False):
     older ones, and all of them for a model that cannot see, stay only as the text the tool returned.
     """
     with db.connect() as conn:
-        rows = [dict(row) for row in conn.execute('SELECT * FROM assistant_messages WHERE session_id=? ORDER BY seq', (session_id,))]
+        rows = [dict(row) for row in conn.execute('''SELECT m.* FROM assistant_messages m
+            LEFT JOIN assistant_turns t ON t.id=m.turn_id
+            LEFT JOIN assistant_turns current ON current.id=? AND current.session_id=m.session_id
+            WHERE m.session_id=? AND (current.rowid IS NULL OR t.rowid IS NULL OR t.rowid<=current.rowid)
+              AND (current.retry_of IS NULL OR m.turn_id IS NOT current.retry_of)
+            ORDER BY m.seq''', (current_turn_id, session_id))]
     answered = {row['tool_call_id'] for row in rows if row['role'] == 'tool'}
     shown = [(row['id'], index) for row in rows if row['role'] == 'tool' for index in range(len(tool_pictures(row)))]
     keep = set(shown[-images.MAX_ATTACHED:]) if vision else set()

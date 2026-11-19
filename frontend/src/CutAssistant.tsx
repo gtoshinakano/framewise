@@ -163,7 +163,7 @@ export default function CutAssistant({ cut, sequence, active, onResultsChanged }
   const workerOffline = config ? !config.worker_online : false
   const localOffline = provider?.managed && localStatus?.state === 'worker_offline'
   const sendBlocker = !config ? 'Loading…' : workerOffline ? 'The inference worker is offline; start it to chat.' : !provider ? 'Choose a provider.' : !provider.available ? (provider.detail || `${provider.label} is unavailable.`) : !choice?.model.trim() ? 'Choose a model.' : localOffline ? 'The local model worker is not responding.' : ''
-  const canSend = !sendBlocker && !running && !sending && !!draft.trim()
+  const canSend = !sendBlocker && !sending && !!draft.trim()
 
   async function newChat() {
     setSessionId(null); setDetail(null); setDraft(''); setSkill(null)
@@ -172,7 +172,7 @@ export default function CutAssistant({ cut, sequence, active, onResultsChanged }
 
   async function send(text = draft, skillName = skill?.name ?? null) {
     const content = text.trim()
-    if (!content || !choice || sendBlocker || running) return
+    if (!content || !choice || sendBlocker || sending) return
     setSending(true); setError('')
     try {
       let id = sessionId
@@ -183,7 +183,12 @@ export default function CutAssistant({ cut, sequence, active, onResultsChanged }
       }
       const result = await assistantApi.send(id, { content, provider: choice.provider, model: choice.model.trim(), thinking: choice.thinking, skill: skillName, gpu_fallback: useFallback })
       stick.current = true
-      setDetail({ ...base, messages: [...base.messages, result.message], turns: [...base.turns, result.turn] })
+      setDetail(current => {
+        const session = current?.session.id === id ? current : base
+        if (!session) return current
+        const next = session.turns.find(turn => turn.id === result.turn.id && turn.version > result.turn.version) ? session : applyStreamEvent(session, 'turn', result.turn)
+        return applyStreamEvent(next, 'message', result.message)
+      })
       if (id !== sessionId) setSessionId(id)
       setDraft(''); setSkill(null)
       void refreshSessions().catch(() => {})
@@ -285,16 +290,15 @@ export default function CutAssistant({ cut, sequence, active, onResultsChanged }
       </div>
       <footer className="border-t hairline bg-[#11151d] px-4 py-3">
         <div className="mx-auto max-w-4xl">
-          {views.length > 0 && !running && !draft && <div className="scrollbar mb-2 flex gap-1.5 overflow-x-auto pb-1">{starters.map(({ item, example }) => <button key={example} type="button" className="shrink-0 rounded-full border border-[#353c48] px-2.5 py-1 !text-[11px] text-[#c9cfda] hover:border-[#a58ae8] hover:text-white" onClick={() => pickStarter(item, example)} title={item.description}>{example}</button>)}</div>}
+          {views.length > 0 && !draft && <div className="scrollbar mb-2 flex gap-1.5 overflow-x-auto pb-1">{starters.map(({ item, example }) => <button key={example} type="button" className="shrink-0 rounded-full border border-[#353c48] px-2.5 py-1 !text-[11px] text-[#c9cfda] hover:border-[#a58ae8] hover:text-white" onClick={() => pickStarter(item, example)} title={item.description}>{example}</button>)}</div>}
           {skill && <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-[#2b2442] px-2.5 py-1 text-[11px] text-[#d6c8ff]"><Sparkles size={12} /> Skill: {skill.title}<button type="button" aria-label="Remove skill" onClick={() => setSkill(null)} className="rounded-full p-0.5 hover:bg-[#3b3260]"><X size={11} /></button></div>}
           <div className="flex items-end gap-2">
             <textarea ref={composer} aria-label="Message Cut Assistance" className="field scrollbar max-h-56 min-h-[44px] flex-1 resize-none !text-sm leading-6" rows={Math.min(8, Math.max(1, draft.split('\n').length))} maxLength={20000} value={draft}
-              placeholder={running ? 'Wait for the reply, or stop it…' : sequence ? 'Ask about this sequence, or request a change to a shot, the plan or the bible…' : 'Ask about this cut, paste a prompt to fix, or request a correction…'}
+              placeholder={running ? 'Queue a follow-up…' : sequence ? 'Ask about this sequence, or request a change to a shot, the plan or the bible…' : 'Ask about this cut, paste a prompt to fix, or request a correction…'}
               onChange={event => setDraft(event.target.value)}
               onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (canSend) void send() } }} />
-            {running
-              ? <button type="button" className="btn btn-danger h-[44px]" onClick={() => void stop()} disabled={running.cancel_requested} title="Stop generating"><Square size={14} /> {running.cancel_requested ? 'Stopping…' : 'Stop'}</button>
-              : <button type="button" className="btn btn-primary h-[44px]" onClick={() => void send()} disabled={!canSend} title={sendBlocker || 'Send (Enter)'}>{sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Send</button>}
+            {running && <button type="button" className="btn btn-danger h-[44px]" onClick={() => void stop()} disabled={running.cancel_requested} title="Stop current reply"><Square size={14} /> {running.cancel_requested ? 'Stopping…' : 'Stop'}</button>}
+            <button type="button" className="btn btn-primary h-[44px]" onClick={() => void send()} disabled={!canSend} title={sendBlocker || 'Send (Enter)'}>{sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} {running ? 'Queue' : 'Send'}</button>
           </div>
           <p className="muted mt-1.5 text-[11px]">{sendBlocker && !running ? sendBlocker : 'Enter to send · Shift+Enter for a new line · proposals change saved results only when you apply them'}{provider?.id === 'openrouter' ? ' · OpenRouter receives this cut\'s analysis and may charge for usage' : ''}{useFallback && fallbackReady && !remoteFallback ? ' · if the GPU is busy, OpenRouter free receives this cut\'s analysis' : ''}</p>
         </div>

@@ -336,7 +336,7 @@ def summary(conn, episode_id, now=None):
 def _chat(conn, episode_id):
     """This episode's Cut Assistance replies that are queued or running (listed, never counted)."""
     try:
-        rows = conn.execute("""SELECT t.id,t.status,t.stage,t.provider,t.model,t.created_at,t.started_at,t.cancel_requested,s.cut_id,s.sequence_id,s.title AS session_title,
+        rows = conn.execute("""SELECT t.id,t.status,t.stage,t.provider,t.model,t.created_at,t.started_at,t.cancel_requested,t.priority_class,s.cut_id,s.sequence_id,s.title AS session_title,
                 c.cut_index,c.title AS cut_title,c.active,q.title AS sequence_title
             FROM assistant_turns t JOIN assistant_sessions s ON s.id=t.session_id JOIN cuts c ON c.id=s.cut_id LEFT JOIN sequences q ON q.id=s.sequence_id
             WHERE c.episode_id=? AND t.status IN ('queued','running') ORDER BY t.created_at""", (episode_id,)).fetchall()
@@ -344,7 +344,7 @@ def _chat(conn, episode_id):
         return []
     now = time.time()
     return [{'id': row['id'], 'kind': 'chat', 'label': 'Cut Assistance reply', 'status': 'stopping' if row['status'] == 'running' and row['cancel_requested'] else row['status'],
-             'stage': row['stage'], 'provider': row['provider'], 'model': row['model'], 'title': row['session_title'],
+             'stage': row['stage'], 'provider': row['provider'], 'model': row['model'], 'title': row['session_title'], 'priority_class': row['priority_class'],
              'cut': {'id': row['cut_id'], 'number': row['cut_index'] + 1 if row['active'] and row['cut_index'] is not None and row['cut_index'] >= 0 else None, 'title': row['cut_title'] or '', 'archived': not row['active']},
              'sequence': {'id': row['sequence_id'], 'title': row['sequence_title']} if row['sequence_id'] else None,
              'created_at': iso(row['created_at']), 'started_at': iso(row['started_at']),
