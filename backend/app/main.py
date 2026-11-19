@@ -2492,7 +2492,7 @@ def remove_regenerated_legacy(path, episode_id, fingerprint):
     try:
         with db.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (episode_id,)).fetchone():
+            if storage.active_frame_reference(conn, episode_id, path.name):
                 return
             stat = path.stat()
             if (stat.st_ino, stat.st_size, stat.st_mtime_ns) == fingerprint:

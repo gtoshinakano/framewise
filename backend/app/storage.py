@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from . import db, frame_source, frame_cache, media
+from . import db, frame_source, frame_cache, job_scopes, media, worker
 
 router = APIRouter(prefix='/api', tags=['Storage'])
 
@@ -22,11 +22,46 @@ def _json(value, fallback):
         return fallback
 
 
+LIVE_JOBS = "(j.status IN ('queued','running') OR (j.lease_owner IS NOT NULL AND j.lease_until>?))"
+
+
+def active_frame_reference(conn, episode_id, name):
+    """Only older frame checkpoints, named outputs and legacy export snapshots refer to JPEG files."""
+    return conn.execute(f'''SELECT 1 FROM jobs j WHERE j.episode_id=? AND {LIVE_JOBS} AND (
+        substr(?,1,length(j.id)+1)=j.id || '-' OR EXISTS (
+            SELECT 1 FROM analysis_job_cuts a, json_each(CASE WHEN json_valid(a.evidence_json) THEN a.evidence_json ELSE '[]' END) f
+            WHERE a.job_id=j.id AND f.type='object' AND json_extract(f.value,'$.frame_file')=?
+        ) OR (j.pipeline='brief_export' AND EXISTS (
+            SELECT 1 FROM json_each(CASE WHEN json_valid(j.payload_json) THEN j.payload_json ELSE '{{}}' END,'$.brief.cuts') c
+            WHERE json_extract(c.value,'$.suggested_frame_url')=?
+        ))) LIMIT 1''', (episode_id, time.time(), name, name, f'/api/analysis-results/{Path(name).stem}/frame')).fetchone()
+
+
+def affected_domain(sub):
+    if sub in ('proxy.mp4', 'proxy.partial.mp4'):
+        return 'proxy'
+    if sub in ('audio.wav', 'audio.partial.wav', 'waveform.json'):
+        return 'prepared_audio'
+    if sub.startswith(('frames/', 'thumbnails/')):
+        return 'previews'
+    return None
+
+
 def _inventory(conn):
     projects = {row['id']: dict(row) for row in conn.execute('SELECT id,title FROM projects')}
     episodes = {row['id']: dict(row) for row in conn.execute('SELECT id,project_id,title,original_ext,status,has_audio FROM episodes')}
-    active = {row['episode_id'] for row in conn.execute("SELECT DISTINCT episode_id FROM jobs WHERE status IN ('queued','running')")}
-    busy_projects = {episodes[eid]['project_id'] for eid in active if eid in episodes}
+    protected = set()
+    active_ids, active_uploads, active_domains = set(), set(), {}
+    for job in conn.execute(f'SELECT j.* FROM jobs j WHERE {LIVE_JOBS}', (time.time(),)):
+        active_ids.add(job['id'])
+        payload = _json(job['payload_json'], None)
+        if not isinstance(payload, dict):
+            protected.add(job['episode_id'])
+            continue
+        if payload.get('upload_id'):
+            active_uploads.add((job['episode_id'], payload['upload_id']))
+        footprint = job_scopes.footprint(conn, job, job['lease_owner'] or '')
+        active_domains.setdefault(job['episode_id'], set()).update(footprint.reads.keys() | footprint.writes.keys())
     cuts = [dict(row) for row in conn.execute('SELECT id,episode_id,cut_index,active FROM cuts')]
     results = {row['id']: dict(row) for row in conn.execute('SELECT a.id,a.cut_id,a.job_id,a.title,a.origin,c.episode_id FROM analysis_results a JOIN cuts c ON c.id=a.cut_id')}
     samples = {row['id']: dict(row) for row in conn.execute('SELECT v.id,c.project_id FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id')}
@@ -42,12 +77,12 @@ def _inventory(conn):
             if valid:
                 continue
             warnings.append(f"Run {row['job_id']} has an invalid structured checkpoint; its files are protected.")
-            active.add(row['episode_id'])
+            protected.add(row['episode_id'])
             continue
         if not isinstance(frames, list):
             warnings.append(f"Run {row['job_id']} has unreadable saved frame evidence; its files are protected.")
             # A malformed reference could point to any file in this episode.
-            active.add(row['episode_id'])
+            protected.add(row['episode_id'])
             continue
         for frame in frames:
             # Older runs stored descriptions without saving frame files.
@@ -56,7 +91,7 @@ def _inventory(conn):
             name = frame.get('frame_file') if isinstance(frame, dict) else None
             if not isinstance(name, str) or not name or Path(name).name != name:
                 warnings.append(f"Run {row['job_id']} has incomplete saved frame evidence; its files are protected.")
-                active.add(row['episode_id'])
+                protected.add(row['episode_id'])
                 continue
             evidence.setdefault((row['episode_id'], name), []).append({'job_id': row['job_id'], 'cut_id': row['cut_id']})
 
@@ -74,7 +109,7 @@ def _inventory(conn):
         orphan_evidence_records.append({'job_id': row['job_id'], 'cut_id': row['cut_id'], 'frame_count': len(frames) if isinstance(frames, list) else None})
         if not isinstance(frames, list) or any(not isinstance(frame, dict) or ('frame_file' in frame and (not isinstance(frame['frame_file'], str) or not frame['frame_file'] or Path(frame['frame_file']).name != frame['frame_file'])) for frame in frames):
             warnings.append(f"Orphan evidence for missing run {row['job_id']} is unreadable; episode files are protected.")
-            active.update(episodes)
+            protected.update(episodes)
         else:
             orphan_evidence.update(frame['frame_file'] for frame in frames if 'frame_file' in frame)
     orphan_transcripts = [dict(row) for row in conn.execute("SELECT t.id,t.episode_id,t.text,t.start_time,t.end_time,t.job_id,t.created_at FROM transcript_segments t LEFT JOIN episodes e ON e.id=t.episode_id WHERE e.id IS NULL")]
@@ -154,14 +189,17 @@ def _inventory(conn):
                             upload_id = str(uuid.UUID(name))
                         except ValueError:
                             upload_id = None
-                        if upload_id == name and time.time() - info.st_mtime > 86400:
-                            kind, reason, deletable = 'Old voice upload', 'Temporary upload older than one day, with no active episode jobs.', True
+                        if upload_id == name and time.time() - info.st_mtime > 86400 and (episode_id, upload_id) not in active_uploads:
+                            kind, reason, deletable = 'Old voice upload', 'Temporary upload older than one day with no matching voice job.', True
                         else:
-                            kind, reason = 'Voice upload', 'Temporary input; retained while recent or an episode job is active.'
+                            kind, reason = 'Voice upload', 'Temporary input retained while recent or used by its voice job.'
                     cleanup_candidate = deletable and kind not in ('Prepared media', 'Cut preview')
-                    if episode_id in active:
-                        if deletable:
-                            reason += ' Cleanup is unavailable while jobs are active or saved evidence is unreadable.'
+                    if deletable and episode_id in protected:
+                        reason += ' Unreadable saved evidence may reference this file.'
+                        deletable = cleanup_candidate = False
+                    if deletable and (affected_domain(sub) in active_domains.get(episode_id, ()) or
+                                      (sub.startswith('analysis/') and active_frame_reference(conn, episode_id, name))):
+                        reason += ' A job uses this file or its media data.'
                         deletable = cleanup_candidate = False
                 elif project and len(parts) == 3 and parts[1] == 'voice-references':
                     sample = samples.get(Path(name).stem) if name.endswith('.wav') else None
@@ -173,9 +211,9 @@ def _inventory(conn):
                             valid_name = str(uuid.UUID(Path(name).stem)) == Path(name).stem and name.endswith('.wav')
                         except ValueError:
                             valid_name = False
-                        kind, reason, deletable = 'Unlinked voice reference', 'No voice sample references this generated file.', valid_name and project_id not in busy_projects
-                        if project_id in busy_projects:
-                            reason += ' Cleanup is unavailable while project jobs are active.'
+                        kind, reason, deletable = 'Unlinked voice reference', 'No voice sample references this generated file.', valid_name and Path(name).stem not in active_ids
+                        if Path(name).stem in active_ids:
+                            reason += ' A voice sample job is saving this file.'
                 elif not episode:
                     kind, reason = 'Unlinked file', 'No matching episode record; originals and unknown files are protected.'
                     # An abandoned episode directory can contain an original upload.
@@ -407,14 +445,23 @@ def job_outputs(job_id: str):
 def delete_job(job_id: str):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        job = conn.execute('SELECT status,episode_id FROM jobs WHERE id=?', (job_id,)).fetchone()
+        job = conn.execute(f'SELECT status,{LIVE_JOBS} AS live FROM jobs j WHERE id=?', (time.time(), job_id)).fetchone()
         if not job:
             raise HTTPException(404, 'Run not found')
-        if job['status'] in ('queued', 'running'):
-            raise HTTPException(409, 'A queued or running job cannot be deleted')
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (job['episode_id'],)).fetchone():
-            raise HTTPException(409, 'Wait for episode jobs to finish before deleting run history')
+        if job['live']:
+            raise HTTPException(409, 'Cancel this job and let it stop before deleting its run')
+        if job['status'] == 'done':
+            for child in conn.execute(f'''SELECT j.id,j.payload_json FROM jobs j WHERE {LIVE_JOBS} AND EXISTS (
+                SELECT 1 FROM json_each(CASE WHEN json_valid(j.payload_json) THEN j.payload_json ELSE '{{}}' END,'$.depends_on') p
+                WHERE p.value=?)''', (time.time(), job_id)).fetchall():
+                payload = json.loads(child['payload_json'])
+                payload['depends_on'] = [parent for parent in payload['depends_on'] if parent != job_id]
+                conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload, ensure_ascii=False), child['id']))
+            cancelled = []
+        else:
+            cancelled = worker.cancel_jobs(conn, worker.dependents(conn, job_id), worker.WAITED_FOR_FAILED)
         conn.execute('DELETE FROM jobs WHERE id=?', (job_id,))
+    worker.after_cancel(cancelled)
     return {'ok': True}
 
 
@@ -457,12 +504,12 @@ def delete_orphan(kind: str, record_id: str):
 def delete_job_evidence(job_id: str, cut_id: str):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        job = conn.execute('SELECT episode_id,payload_json FROM jobs WHERE id=?', (job_id,)).fetchone()
+        job = conn.execute(f'SELECT payload_json,{LIVE_JOBS} AS live FROM jobs j WHERE id=?', (time.time(), job_id)).fetchone()
         if not job:
             raise HTTPException(404, 'Run not found')
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (job['episode_id'],)).fetchone():
-            raise HTTPException(409, 'Wait for episode jobs to finish before deleting saved evidence')
         checkpoint = conn.execute('SELECT evidence_json FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job_id, cut_id)).fetchone()
+        if checkpoint and job['live']:
+            raise HTTPException(409, 'This run still owns the checkpoint for this cut')
         payload = _json(job['payload_json'], {})
         if checkpoint and isinstance(payload, dict) and payload.get('workflow') == 'single_cut_v2' and isinstance(_json(checkpoint['evidence_json'], None), dict):
             raise HTTPException(409, 'Structured checkpoints are required to resume this run and cannot be deleted separately')
@@ -479,10 +526,8 @@ def delete_job_evidence(job_id: str, cut_id: str):
 def delete_orphan_evidence(job_id: str, cut_id: str):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('SELECT a.job_id,c.episode_id FROM analysis_job_cuts a LEFT JOIN jobs j ON j.id=a.job_id LEFT JOIN cuts c ON c.id=a.cut_id WHERE a.job_id=? AND a.cut_id=? AND j.id IS NULL', (job_id, cut_id)).fetchone()
+        row = conn.execute('SELECT a.job_id FROM analysis_job_cuts a LEFT JOIN jobs j ON j.id=a.job_id WHERE a.job_id=? AND a.cut_id=? AND j.id IS NULL', (job_id, cut_id)).fetchone()
         if not row:
             raise HTTPException(409, 'Evidence is no longer orphaned or does not exist')
-        if row['episode_id'] and conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (row['episode_id'],)).fetchone():
-            raise HTTPException(409, 'Wait for episode jobs to finish before deleting orphan evidence')
         conn.execute('DELETE FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job_id, cut_id))
     return {'ok': True}

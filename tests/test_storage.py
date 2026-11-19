@@ -63,9 +63,9 @@ class StorageTest(unittest.TestCase):
         file = next(f for f in self.inventory()['files'] if f['path'].endswith('00000000-0000-4000-8000-000000000003.jpg'))
         with db.connect() as conn:
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('busy','e','analyze','queued')")
-        self.assertEqual(self.client.post('/api/storage/cleanup', json=body(file)).status_code, 409)
-        with db.connect() as conn:
-            conn.execute("DELETE FROM jobs WHERE id='busy'")
+            conn.execute("INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) VALUES ('busy','c',?)",
+                         (json.dumps([{'frame_file': 'evidence.jpg'}]),))
+        self.assertEqual(self.client.post('/api/storage/cleanup', json=body(files['evidence.jpg'])).status_code, 409)
         response = self.client.post('/api/storage/cleanup', json=body(file))
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse((self.root / 'analysis/00000000-0000-4000-8000-000000000003.jpg').exists())
@@ -82,6 +82,15 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(self.client.delete('/api/jobs/j').status_code, 200)
         self.assertIsNone(db.one("SELECT job_id FROM analysis_results WHERE id='r'")['job_id'])
         self.assertEqual(self.client.get('/api/jobs/j/outputs').status_code, 404)
+
+    def test_delete_completed_dependency_preserves_the_waiting_request(self):
+        from app import worker
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='done' WHERE id='j'")
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('waiting','e','keyframes',?)",
+                         (json.dumps({'cut_ids': ['c'], 'depends_on': ['j']}),))
+        self.assertEqual(self.client.delete('/api/jobs/j').status_code, 200)
+        self.assertEqual(worker.claim_job(('keyframes',))[0], 'waiting')
 
     def test_structured_checkpoint_is_not_mistaken_for_corrupt_frame_evidence(self):
         with db.connect() as conn:
@@ -138,6 +147,7 @@ class StorageTest(unittest.TestCase):
             conn.execute("UPDATE analysis_job_cuts SET completed=1 WHERE job_id='j'")
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('j2','e','analyze','failed')")
             conn.execute("INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json) VALUES ('j2','c',?)", (json.dumps([{'frame_file':'evidence.jpg'}]),))
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('other','e','subtitles','queued')")
         self.assertEqual(self.client.delete('/api/jobs/j/evidence/c').status_code, 200)
         row = db.one("SELECT completed,evidence_json FROM analysis_job_cuts WHERE job_id='j'")
         self.assertEqual(row['completed'], 1)
