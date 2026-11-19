@@ -109,8 +109,16 @@ class CharacterDetectionAPITest(unittest.TestCase):
         self.assertIsNone(db.one("SELECT id FROM jobs WHERE pipeline='consistency_summary'"))
         queued = self.client.post('/api/cuts/c1/consistency-summary')
         self.assertEqual(queued.status_code, 200, queued.text)
-        summary = json.loads(db.one("SELECT payload_json FROM jobs WHERE pipeline='consistency_summary'")['payload_json'])
-        self.assertEqual(summary['evidence']['character_detections']['detections'][0]['label_source'], 'manual')
+        from app import summary_queue
+        with db.connect() as conn:
+            keyframes = conn.execute("SELECT id FROM analysis_results WHERE title='Keyframe analysis' AND cut_id='c1'").fetchone()
+            conn.execute("INSERT INTO analysis_results(id,cut_id,kind,title,settings_json,content) VALUES ('beats','c1','cut_description','Performance beats',?,?)",
+                         (json.dumps({'structured_type': 'performance_beats'}),
+                          json.dumps({'based_on': {'keyframe_analysis': keyframes['id']}, 'beats': [], 'speech': []})))
+            summary = db.one("SELECT * FROM jobs WHERE pipeline='consistency_summary'", conn=conn)
+            self.assertNotIn('evidence', json.loads(summary['payload_json']))
+            evidence = summary_queue.gather(conn, summary)['evidence']
+            self.assertEqual(evidence['character_detections']['detections'][0]['label_source'], 'manual')
 
     def run_analysis(self, describe_effect, no_characters=False):
         from app import single_cut_pipeline, frame_model
