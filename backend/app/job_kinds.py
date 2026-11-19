@@ -266,6 +266,28 @@ def _preview_invalidates(conn, job):
     cut_previews.invalidate(conn, job)
 
 
+def _hardcut_scope(payload):
+    writes = {'cut_boundaries', 'previews'}
+    if not payload.get('cut_id'):
+        writes.add('chunks')
+    return Scope(frozenset({'proxy', 'cut_boundaries'}), frozenset(writes))
+
+
+def _media_gather(conn, job):
+    from . import media_jobs
+    return media_jobs.gather(conn, job)
+
+
+def _media_inputs(conn, job):
+    from . import media_jobs
+    return media_jobs.inputs(conn, job)
+
+
+def _media_invalidates(conn, job):
+    from . import media_jobs
+    media_jobs.invalidate(conn, job)
+
+
 KINDS = {kind.pipeline: kind for kind in (
     Kind('analyze', 'Visual analysis', True, label=_analysis_label, cuts=_analysis_cuts, stage_units=True, keys=_analysis_keys,
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
@@ -298,9 +320,15 @@ KINDS = {kind.pipeline: kind for kind in (
          keys=lambda payload, cut_ids: [f"voice_sample:{payload.get('character_context_id')}"]),
     # Media work runs on the CPU in the API process: listed, never counted, not cancellable while it runs.
     Kind('keyframes', 'Keyframe selection', False, cuts=_keyframe_cuts, cancel_running=_always, retry=_always, keys=lambda payload, cut_ids: ['keyframes']),
-    Kind('prepare', 'Prepare media', False, cancel_queued=False, keys=lambda payload, cut_ids: ['prepare']),
+    Kind('prepare', 'Prepare media', False, cancel_queued=False, keys=lambda payload, cut_ids: ['prepare'],
+         resources=frozenset({'cpu_media'}),
+         scope=lambda payload: Scope(frozenset({'original'}), frozenset({'proxy', 'prepared_audio', 'chunks', 'previews'})),
+         priority_class=lambda payload: 'batch', inputs=_media_inputs, gather=_media_gather, invalidates=_media_invalidates),
     Kind('hardcuts', 'Hard-cut detection', False, cuts=_one_cut, cancel_queued=False,
-         keys=lambda payload, cut_ids: [f'hardcuts:{cut_id}' for cut_id in cut_ids] or ['hardcuts']),
+         keys=lambda payload, cut_ids: [f'hardcuts:{cut_id}' for cut_id in cut_ids] or ['hardcuts'],
+         resources=frozenset({'cpu_media'}), scope=_hardcut_scope,
+         priority_class=lambda payload: 'interactive' if payload.get('cut_id') else 'batch',
+         inputs=_media_inputs, gather=_media_gather, invalidates=_media_invalidates),
     Kind('cutframes', 'Cut previews', False, cuts=_frame_cuts, cancel_queued=False,
          keys=lambda payload, cut_ids: [f'cutframes:{cut_id}' for cut_id in cut_ids],
          resources=frozenset({'cpu_media'}), scope=_preview_scope,

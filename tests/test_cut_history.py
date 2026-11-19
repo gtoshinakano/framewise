@@ -202,6 +202,34 @@ class CutHistoryTest(unittest.TestCase):
             worker.process(*worker.claim_job(('hardcuts',)))
         self.assertEqual(self.history(), {'undo': None, 'redo': None})
 
+    def test_detect_within_reuses_request_and_restarts_after_a_split(self):
+        url = '/api/cuts/c3/detect-hardcuts'
+        body = {'scene_threshold': 0.3}
+        first = self.client.post(url, json=body).json()['job_id']
+        self.assertEqual(self.client.post(url, json=body).json()['job_id'], first)
+        claim = worker.claim_job(('hardcuts',))
+
+        def split_during_scan(_proxy, start, end, _threshold):
+            self.assertEqual((start, end), (4, 8))
+            self.split('c3', 7)
+            return [(4, 6), (6, 8)]
+
+        with patch.object(media, 'detect_cuts_in_range', side_effect=split_during_scan):
+            worker.process(*claim)
+        worker.release_lease(*claim)
+        saved = db.one('SELECT status,stage,attempt_count,not_before FROM jobs WHERE id=?', (first,))
+        self.assertEqual((saved['status'], saved['stage'], saved['attempt_count']),
+                         ('queued', 'Inputs changed, restarting', 0))
+        self.assertIsNone(worker.claim_job(('hardcuts',)))
+        with db.connect() as conn:
+            conn.execute('UPDATE jobs SET not_before=0 WHERE id=?', (first,))
+        with patch.object(media, 'detect_cuts_in_range', return_value=[(4, 6), (6, 7)]) as detect, \
+             patch.object(media, 'extract_cut_frame', side_effect=extract):
+            worker.process(*worker.claim_job(('hardcuts',)))
+        self.assertEqual(detect.call_args.args[1:3], (4, 7))
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (first,))['status'], 'done')
+        self.assertEqual(self.active()[2], ('c3', 2, 4, 6))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -269,9 +269,13 @@ function Editor({ id }: { id: string }) {
   function togglePlay() { const player = video.current; if (!player) return; if (player.paused) void player.play().catch(() => {}); else player.pause() }
   function onVideoTimeUpdate(player: HTMLVideoElement) { const end = playbackEnd.current; if (!player.seeking && end !== null && player.currentTime >= end) { player.pause(); player.currentTime = end; playbackEnd.current = null }; setTime(player.currentTime) }
   const fail = (err: unknown) => toast({ message: (err as Error).message, tone: 'error' })
+  const [mediaRequest, setMediaRequest] = useState(false)
   async function run(pipeline: 'prepare' | 'hardcuts') {
+    if (mediaRequest) return
     if (pipeline === 'hardcuts' && episode?.cuts.length && !window.confirm('Detect the hard cuts of the whole video again? Notes and results stay on cuts whose boundary is found again; the others are archived. Earlier cut edits can no longer be undone.')) return
+    setMediaRequest(true)
     try { await api(`/episodes/${id}/run`, jsonBody({ pipeline })); await refresh(); toast({ message: pipeline === 'prepare' ? 'Rebuilding the preview and waveform.' : 'Detecting hard cuts.' }) } catch (err) { fail(err) }
+    finally { setMediaRequest(false) }
   }
   const [bulkDetectionWorking, setBulkDetectionWorking] = useState(false)
   async function queueCharacterStep(path: CharacterStep) {
@@ -302,7 +306,8 @@ function Editor({ id }: { id: string }) {
   const busy = jobs.some(active)
   const cutQueueStates = analysisQueueStates(jobs)
   const analysisBusy = jobs.some(job => (['prepare', 'hardcuts', 'character_detect'].includes(job.pipeline) || job.workflow === 'boundary_frame') && active(job))
-  const characterBlock = bulkDetectionWorking ? 'Queuing…' : !episode?.cuts.length ? 'Detect hard cuts first.' : ''
+  const hardcutsQueued = jobs.some(job => job.pipeline === 'hardcuts' && active(job))
+  const characterBlock = bulkDetectionWorking ? 'Queuing…' : !episode?.cuts.length && !hardcutsQueued ? 'Detect hard cuts first.' : ''
   const frameVersion = `${jobs[0]?.id || ''}-${jobs[0]?.status || ''}`
   const history = episode?.cut_history
   const activeSelected = selected?.active ? selected : undefined
@@ -337,7 +342,7 @@ function Editor({ id }: { id: string }) {
   const audioBusy = jobs.some(job => ['transcribe', 'voice_sample', 'subtitles'].includes(job.pipeline) && active(job))
   return <EpisodeEventsContext.Provider value={id}><div className="editor-shell bg-[#0d1016]">
     <EditorHeader projectId={episode?.project_id} projectTitle={project?.title} episodeTitle={episode?.title} status={episode?.status || 'queued'} stage={episode?.stage}
-      hasCuts={!!episode?.cuts.length} mediaBlocked={busy ? 'Wait for the running jobs to finish.' : ''} characterBlock={characterBlock} onCharacterStep={step => void queueCharacterStep(step)}
+      hasCuts={!!episode?.cuts.length} mediaBlocked={mediaRequest ? 'Queuing…' : ''} characterBlock={characterBlock} onCharacterStep={step => void queueCharacterStep(step)}
       onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}
       queue={queueSummary} running={jobs.some(job => job.status === 'running')} onOpenQueue={focus => setQueueOpen(focus || 'top')}
       onOpenSettings={() => setSettingsOpen(true)} onDeleteEpisode={() => void remove()} />

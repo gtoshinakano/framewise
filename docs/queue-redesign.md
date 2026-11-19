@@ -9,11 +9,11 @@ This inventory records the behavior at `af57f81`. Each row stays open until its 
 | Location and current gate | What it protects | Classification | Replacement |
 | --- | --- | --- | --- |
 | `main.delete_project`, `main.delete_episode` | A queued or leased worker still needs the media and database rows | Real conflict | Keep deletion protection, including workers finishing cancellation |
-| `worker.enqueue` and its callers in `main.py` (prepare, hard cuts, frame boundary move, audio and voice jobs) and `keyframes_api.py` | An episode already has work | Scope | Insert with prerequisites and deduplicate matching requests |
+| `worker.enqueue` and its callers in `main.py` (prepare, hard cuts, frame boundary move, audio and voice jobs) and `keyframes_api.py` | An episode already has work | Scope | The generic admission hold is gone. Media requests deduplicate and use prerequisites. Audio and keyframe endpoints still need workflow-specific migration |
 | `main.py` timeline timing, split, merge, delete, undo, redo and `cut_history.busy` | Full prepare or hard-cut replacement would race a cut edit | Real conflict | Resolved. Retains 423 for work replacing the cut list |
 | Timeline timing and history paths when `cutframes` is queued or running | Preview images and times match the boundaries a worker read | User wins | Resolved. Edits cancel obsolete previews and enqueue replacements. A merge cancels jobs targeting the archived cut |
 | Timeline timing and restore revision checks | Stale clients could overwrite a newer edit | Real conflict | Keep the existing compare-and-save checks |
-| `POST /api/cuts/{id}/detect-cuts` and `step_cut_boundary` | Existing preview and boundary data must match the edit | Scope / real conflict | Read the live boundary at start. Preserve stale-client checks when the action submits an expected boundary |
+| `POST /api/cuts/{id}/detect-hardcuts` and `step_cut_boundary` | Existing preview and boundary data must match the edit | Scope / real conflict | Resolved. Both read the live boundary at start and restart if it changes while working |
 | `keyframes_api.enqueue_selection`, `enqueue_cut_selection` | Keyframe selection needs valid cut boundaries | Dependency | Queue behind cut replacement, then read current active boundaries |
 | `main.extract_episode_subtitles` and subtitle queue validation | Subtitle probes may need transcription. The guard also includes voice samples | Dependency | Depend on transcription when present. Schedule voice samples using resource scopes |
 | `main.py` single first-frame recognition, `target_characters_api.py` single and bulk detection | A request already covers this cut | Real conflict | Return the existing job for the same selection and choices |

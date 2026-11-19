@@ -480,7 +480,9 @@ def delete_context(context_id: str):
 def delete_project(project_id: str):
     require_project(project_id)
     with db.connect() as conn:
-        active = conn.execute("SELECT 1 FROM jobs j JOIN episodes e ON e.id=j.episode_id WHERE e.project_id=? AND j.status IN ('queued','running')", (project_id,)).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        active = conn.execute("""SELECT 1 FROM jobs j JOIN episodes e ON e.id=j.episode_id WHERE e.project_id=?
+            AND (j.status IN ('queued','running') OR j.lease_until>unixepoch()) LIMIT 1""", (project_id,)).fetchone()
         if active:
             raise HTTPException(409, "Wait for analysis jobs to finish before deleting this project")
         conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
@@ -589,7 +591,9 @@ def run_pipeline(episode_id: str, body: PipelineInput):
 def delete_episode(episode_id: str):
     episode = require_episode(episode_id)
     with db.connect() as conn:
-        active = conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND status IN ('queued','running')", (episode_id,)).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        active = conn.execute("""SELECT 1 FROM jobs WHERE episode_id=?
+            AND (status IN ('queued','running') OR lease_until>unixepoch()) LIMIT 1""", (episode_id,)).fetchone()
         if active:
             raise HTTPException(409, "Wait for analysis jobs to finish before deleting this episode")
         samples = conn.execute("SELECT v.id FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id WHERE c.episode_id=?", (episode_id,)).fetchall()

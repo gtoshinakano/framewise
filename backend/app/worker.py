@@ -2,16 +2,14 @@ import json
 import logging
 import math
 import re
-import sqlite3
 import threading
-import tempfile
 import time
 import uuid
 from contextlib import contextmanager
 
 from pathlib import Path
 
-from . import cut_history, db, job_inputs, job_kinds, media
+from . import db, job_inputs, job_kinds, media
 
 log = logging.getLogger(__name__)
 worker_thread: threading.Thread | None = None
@@ -46,10 +44,15 @@ def stop_worker():
         export_thread.join(timeout=2)
 
 
-def sync_chunks(episode_id: str, duration: float, chunk_duration: int):
+def sync_chunks(episode_id: str, duration: float, chunk_duration: int, *, conn=None):
     if not math.isfinite(duration) or duration <= 0:
         return
-    previous = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
+    if conn is None:
+        with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            sync_chunks(episode_id, duration, chunk_duration, conn=conn)
+        return
+    previous = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,), conn=conn)
     values = []
     for index in range(math.ceil(duration / chunk_duration)):
         start = index * chunk_duration
@@ -57,9 +60,8 @@ def sync_chunks(episode_id: str, duration: float, chunk_duration: int):
         old = next((chunk for chunk in previous if abs(chunk["start_time"] - start) < 0.1), None)
         values.append((old["id"] if old else str(uuid.uuid4()), episode_id, index, start, end,
                        old["title"] if old else "", old["notes"] if old else ""))
-    with db.connect() as conn:
-        conn.execute("DELETE FROM chunks WHERE episode_id=?", (episode_id,))
-        conn.executemany("INSERT INTO chunks (id,episode_id,chunk_index,start_time,end_time,title,notes) VALUES (?,?,?,?,?,?,?)", values)
+    conn.execute("DELETE FROM chunks WHERE episode_id=?", (episode_id,))
+    conn.executemany("INSERT INTO chunks (id,episode_id,chunk_index,start_time,end_time,title,notes) VALUES (?,?,?,?,?,?,?)", values)
 
 
 def insert_job(conn, episode_id, pipeline, payload, *, priority_class=None, retry_of=None, stage='queued'):
@@ -93,38 +95,42 @@ def pending_jobs(conn, episode_id, pipelines, cut_ids=None):
 
 
 def enqueue(episode_id: str, pipeline: str, extra: dict | None = None):
-    try:
-        with db.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            episode = conn.execute("SELECT settings_json FROM episodes WHERE id=?", (episode_id,)).fetchone()
-            if not episode:
-                raise ValueError("Episode not found")
-            existing = conn.execute("SELECT id FROM jobs WHERE episode_id=? AND pipeline NOT IN ('brief_export','composition_compact') AND status IN ('queued','running')", (episode_id,)).fetchone()
-            if existing and pipeline != 'cutframes':
-                raise ValueError("An analysis job is already running for this episode")
-            if pipeline == 'hardcuts' and extra and extra.get('cut_id'):
-                cut = conn.execute('SELECT start_time,end_time FROM cuts WHERE id=? AND episode_id=? AND active=1', (extra['cut_id'], episode_id)).fetchone()
-                if not cut:
-                    raise ValueError('Active cut not found')
-                extra = {**extra, 'cut_start': cut['start_time'], 'cut_end': cut['end_time']}
-            if pipeline == 'cutframes' and extra and extra.get('frame_step'):
-                cut = conn.execute('SELECT cut_index FROM cuts WHERE id=? AND episode_id=? AND active=1', (extra['cut_id'], episode_id)).fetchone()
-                if not cut:
-                    raise ValueError('Active cut not found')
-                following = conn.execute('SELECT id FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?', (episode_id, cut['cut_index'] + 1)).fetchone()
-                if not following:
-                    raise ValueError('There is no following cut at this boundary')
-                extra = {**extra, 'next_cut_id': following['id']}
-            payload = {"settings": json.loads(episode["settings_json"]), **(extra or {})}
-            if pipeline == 'cutframes':
-                deps = pending_jobs(conn, episode_id, ('prepare', 'hardcuts'))
-                if deps:
-                    payload['depends_on'] = deps
-            job_id = insert_job(conn, episode_id, pipeline, payload)
-            sync_episode_status(conn, episode_id)
-    except sqlite3.IntegrityError as exc:
-        raise ValueError("An analysis job is already running for this episode") from exc
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        job_id = enqueue_in(conn, episode_id, pipeline, extra)
     wake_event.set()
+    return job_id
+
+
+def enqueue_in(conn, episode_id, pipeline, extra=None):
+    """Record settings and prerequisites in a transaction already held by the caller."""
+    episode = conn.execute("SELECT settings_json FROM episodes WHERE id=?", (episode_id,)).fetchone()
+    if not episode:
+        raise ValueError("Episode not found")
+    payload = {"settings": json.loads(episode["settings_json"]), **(extra or {})}
+    cut_id = payload.get('cut_id')
+    if cut_id and pipeline in ('hardcuts', 'cutframes'):
+        cut = conn.execute('SELECT cut_index FROM cuts WHERE id=? AND episode_id=? AND active=1', (cut_id, episode_id)).fetchone()
+        if not cut:
+            raise ValueError('Active cut not found')
+        if pipeline == 'cutframes' and payload.get('frame_step'):
+            following = conn.execute('SELECT id FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?',
+                                     (episode_id, cut['cut_index'] + 1)).fetchone()
+            if not following:
+                raise ValueError('There is no following cut at this boundary')
+            payload['next_cut_id'] = following['id']
+    deps = list(payload.get('depends_on', []))
+    if pipeline in ('hardcuts', 'cutframes', 'transcribe', 'voice_sample', 'subtitles'):
+        deps.extend(pending_jobs(conn, episode_id, ('prepare',)))
+    if (pipeline == 'hardcuts' and cut_id) or pipeline == 'cutframes':
+        deps.extend(row['id'] for row in conn.execute("""SELECT id FROM jobs WHERE episode_id=? AND pipeline='hardcuts'
+            AND status IN ('queued','running') AND json_extract(payload_json,'$.cut_id') IS NULL ORDER BY rowid""", (episode_id,)))
+    if pipeline == 'subtitles':
+        deps.extend(pending_jobs(conn, episode_id, ('transcribe',)))
+    if deps:
+        payload['depends_on'] = list(dict.fromkeys(deps))
+    job_id = insert_job(conn, episode_id, pipeline, payload)
+    sync_episode_status(conn, episode_id)
     return job_id
 
 
@@ -363,6 +369,7 @@ def require_lease(conn, job_id: str, owner: str):
 
 def stage(job_id: str, owner: str, episode_id: str, label: str):
     with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         require_lease(conn, job_id, owner)
         conn.execute("UPDATE jobs SET stage=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (label, job_id))
         conn.execute("UPDATE episodes SET status='processing', stage=?, error=NULL WHERE id=? AND (SELECT pipeline FROM jobs WHERE id=?) NOT IN ('brief_export','composition_compact')", (label, episode_id, job_id))
@@ -455,7 +462,6 @@ def process(job_id: str, owner: str):
     episode_id = episode["id"]
     path = media.episode_dir(episode["project_id"], episode_id)
     original = path / f"original{episode['original_ext']}"
-    proxy = path / "proxy.mp4"
     payload = json.loads(job["payload_json"])
     settings = payload.get("settings") or json.loads(episode["settings_json"])
     try:
@@ -478,127 +484,11 @@ def process(job_id: str, owner: str):
                 conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
                 sync_episode_status(conn, episode_id)
             return
-        targeted = job["pipeline"] == "hardcuts" and bool(payload.get('cut_id'))
-        if job["pipeline"] != "cutframes" and not targeted:
-            stage(job_id, owner, episode_id, "Probing video")
-            info = media.probe(original)
-            with db.connect() as conn:
-                require_lease(conn, job_id, owner)
-                conn.execute("UPDATE episodes SET duration=?, width=?, height=?, has_audio=? WHERE id=?",
-                             (info["duration"], info["width"], info["height"], int(info["has_audio"]), episode_id))
-            stage(job_id, owner, episode_id, "Organizing chunks")
-            sync_chunks(episode_id, info["duration"], settings.get("chunk_duration", 60))
-        if (job["pipeline"] == "cutframes" or targeted) and not proxy.exists():
-            raise RuntimeError("Preview video is missing; run Prepare before updating cut frames")
-        if job["pipeline"] == "prepare" or not proxy.exists():
-            stage(job_id, owner, episode_id, "Creating preview video")
-            media.make_proxy(original, proxy, settings["proxy_width"], settings.get("proxy_crf", 28), settings.get("proxy_preset", "veryfast"))
-            with db.connect() as conn:
-                require_lease(conn, job_id, owner)
-                discard_obsolete_previews(path)
-            stage(job_id, owner, episode_id, "Indexing frames")
-            media.write_frame_manifest(path / "frames", settings["frame_interval"], info["duration"])
-            if info["has_audio"]:
-                stage(job_id, owner, episode_id, "Extracting audio")
-                media.extract_audio(original, path / "audio.wav")
-                stage(job_id, owner, episode_id, "Building waveform")
-                media.waveform(path / "audio.wav", path / "waveform.json", info["duration"])
-            else:
-                (path / "waveform.json").write_text(json.dumps({"peaks": [], "duration": info["duration"]}))
-        if targeted:
-            affected = payload.get('detected_cut_ids')
-            if affected is None:
-                stage(job_id, owner, episode_id, 'Detecting hard cuts in selected cut')
-                segments = media.detect_cuts_in_range(proxy, payload['cut_start'], payload['cut_end'], payload['scene_threshold'])
-                with db.connect() as conn:
-                    conn.execute('BEGIN IMMEDIATE')
-                    require_lease(conn, job_id, owner)
-                    cut = conn.execute('SELECT * FROM cuts WHERE id=? AND episode_id=? AND active=1', (payload['cut_id'], episode_id)).fetchone()
-                    if not cut or cut['start_time'] != payload['cut_start'] or cut['end_time'] != payload['cut_end']:
-                        raise RuntimeError('The selected cut changed before detection completed; run it again')
-                    affected = []
-                    before = cut_history.snapshot(conn, episode_id)
-                    created = set()
-                    if len(segments) > 1:
-                        affected.append(cut['id'])
-                        conn.execute('UPDATE cuts SET end_time=?,first_frame_time=NULL,last_frame_time=NULL WHERE id=?', (segments[0][1], cut['id']))
-                        later = conn.execute('SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1 AND cut_index>? ORDER BY cut_index DESC', (episode_id, cut['cut_index'])).fetchall()
-                        for item in later:
-                            conn.execute('UPDATE cuts SET cut_index=? WHERE id=?', (item['cut_index'] + len(segments) - 1, item['id']))
-                        archived = conn.execute('SELECT * FROM cuts WHERE episode_id=? AND active=0 AND start_time>? AND start_time<?', (episode_id, cut['start_time'], cut['end_time'])).fetchall()
-                        used = set()
-                        for offset, (start, end) in enumerate(segments[1:], 1):
-                            match = min((item for item in archived if item['id'] not in used and abs(item['start_time'] - start) < .25), key=lambda item: abs(item['start_time'] - start), default=None)
-                            cut_id = match['id'] if match else str(uuid.uuid4())
-                            if match:
-                                used.add(cut_id)
-                                conn.execute('UPDATE cuts SET active=1,cut_index=?,start_time=?,end_time=?,first_frame_time=NULL,last_frame_time=NULL WHERE id=?', (cut['cut_index'] + offset, start, end, cut_id))
-                            else:
-                                conn.execute('INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time,created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)', (cut_id, episode_id, cut['cut_index'] + offset, start, end))
-                                created.add(cut_id)
-                            affected.append(cut_id)
-                        cut_history.record(conn, episode_id, 'detect', f"Detected {len(segments)} cuts inside cut {cut['cut_index'] + 1}", cut['id'], before, created)
-                    payload['detected_cut_ids'] = affected
-                    conn.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps(payload), job_id))
-            stage(job_id, owner, episode_id, 'Updating selected cut previews')
-            with tempfile.TemporaryDirectory(prefix='framewise-boundaries-') as scratch:
-                for cut_id in affected:
-                    cut = db.one('SELECT id,start_time,end_time,first_frame_time,last_frame_time FROM cuts WHERE id=? AND active=1', (cut_id,))
-                    if not cut or (cut['first_frame_time'] is not None and cut['last_frame_time'] is not None):
-                        continue
-                    start, end = cut['start_time'], cut['end_time']
-                    first, last = media.cut_frame_times(start, end)
-                    first = media.extract_cut_frame(proxy, Path(scratch) / 'first.jpg', first, start, end)
-                    last = media.extract_cut_frame(proxy, Path(scratch) / 'last.jpg', last, start, end, last=True, probe_padding=1)
-                    with db.connect() as conn:
-                        require_lease(conn, job_id, owner)
-                        conn.execute('UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?', (first, last, cut_id))
-                        for position in ('first', 'last'):
-                            (path / 'thumbnails' / f'{cut_id}_{position}.jpg').unlink(missing_ok=True)
-        elif job["pipeline"] == "hardcuts":
-            stage(job_id, owner, episode_id, "Detecting hard cuts")
-            segments = media.detect_cuts(proxy, info["duration"], settings["scene_threshold"])
-            old = db.all_rows("SELECT * FROM cuts WHERE episode_id=? ORDER BY active DESC,start_time", (episode_id,))
-            matched_ids = set()
-            replacement = []
-            for index, (start, end) in enumerate(segments):
-                candidates = (cut for cut in old if cut["id"] not in matched_ids and abs(cut["start_time"] - start) < 0.25)
-                match = min(candidates, key=lambda cut: (not cut["active"], abs(cut["start_time"] - start)), default=None)
-                if match:
-                    matched_ids.add(match["id"])
-                replacement.append((match["id"] if match else None, index, start, end))
-            with db.connect() as conn:
-                require_lease(conn, job_id, owner)
-                # Every cut is replaced, so earlier cut edits can no longer be reversed.
-                cut_history.clear(conn, episode_id)
-                next_archive_index = min((cut["cut_index"] for cut in old), default=0) - 1
-                for cut in old:
-                    if cut["active"]:
-                        conn.execute("UPDATE cuts SET active=0,cut_index=? WHERE id=?", (next_archive_index, cut["id"]))
-                        next_archive_index -= 1
-                for cut_id, index, start, end in replacement:
-                    if cut_id:
-                        conn.execute("UPDATE cuts SET active=1,cut_index=?,start_time=?,end_time=?,first_frame_time=NULL,last_frame_time=NULL WHERE id=?", (index, start, end, cut_id))
-                    else:
-                        conn.execute("INSERT INTO cuts (id,episode_id,cut_index,start_time,end_time,created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
-                                     (str(uuid.uuid4()), episode_id, index, start, end))
-            cut_ids = {cut["cut_index"]: cut["id"] for cut in db.all_rows("SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1", (episode_id,))}
-            with tempfile.TemporaryDirectory(prefix='framewise-boundaries-') as scratch:
-                for index, (start, end) in enumerate(segments):
-                    first, last = media.cut_frame_times(start, end)
-                    cut_id = cut_ids[index]
-                    first = media.extract_cut_frame(proxy, Path(scratch) / 'first.jpg', first, start, end)
-                    last = media.extract_cut_frame(proxy, Path(scratch) / 'last.jpg', last, start, end, last=True, probe_padding=1)
-                    with db.connect() as conn:
-                        require_lease(conn, job_id, owner)
-                        conn.execute("UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?", (first, last, cut_id))
-                        for position in ('first', 'last'):
-                            (path / 'thumbnails' / f"{cut_id}_{position}.jpg").unlink(missing_ok=True)
-        with db.connect() as conn:
-            require_lease(conn, job_id, owner)
-            final_stage = ('Complete · no new cuts found' if targeted and not payload.get('detected_cut_ids') else 'Complete')
-            conn.execute("UPDATE jobs SET status='done', stage=?, error=NULL, lease_owner=NULL, lease_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (final_stage, job_id))
-            sync_episode_status(conn, episode_id)
+        from . import media_jobs
+        if job['pipeline'] == 'prepare':
+            media_jobs.prepare(job, owner, path, settings)
+        elif job['pipeline'] == 'hardcuts':
+            media_jobs.hardcuts(job, owner, episode, payload, path, settings)
     except LeaseLost:
         return
     except Exception as exc:

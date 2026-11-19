@@ -85,11 +85,19 @@ def process(job, owner, payload, path):
         move(job, owner, payload, path)
         return
     worker.stage(job['id'], owner, job['episode_id'], 'Updating cut frames')
+    rebuild(job, owner, path, payload.get('cut_ids'))
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        worker.require_lease(conn, job['id'], owner)
+        finish(conn, job)
+
+
+def rebuild(job, owner, path, requested=None):
     with db.connect() as conn:
         conn.execute('BEGIN')
         todo = [row['id'] for row in conn.execute("""SELECT id FROM cuts WHERE episode_id=? AND active=1
             AND (first_frame_time IS NULL OR last_frame_time IS NULL) ORDER BY cut_index""", (job['episode_id'],))]
-        requested = set(payload.get('cut_ids', todo))
+        requested = set(todo if requested is None else requested)
         units = [job_inputs.JobInputs(conn, job, owner, cut_id) for cut_id in todo if cut_id in requested]
     with tempfile.TemporaryDirectory(prefix='framewise-boundaries-') as scratch:
         proxy = path / 'proxy.mp4'
@@ -102,13 +110,9 @@ def process(job, owner, payload, path):
                 conn.execute('UPDATE cuts SET first_frame_time=?,last_frame_time=? WHERE id=?', (first, last, cut['id']))
             for position in ('first', 'last'):
                 (path / 'thumbnails' / f"{cut['id']}_{position}.jpg").unlink(missing_ok=True)
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        worker.require_lease(conn, job['id'], owner)
-        finish(conn, job)
 
 
-def after_timeline_edit(conn, episode, changed, removed=()):
+def after_timeline_edit(conn, episode, changed, removed=(), *, rebuilding=()):
     """Replace previews and cancel jobs whose entire target was archived."""
     changed, removed = set(changed), set(removed)
     obsolete = changed | removed
@@ -120,16 +124,16 @@ def after_timeline_edit(conn, episode, changed, removed=()):
     for job in candidates:
         payload = json.loads(job['payload_json'])
         targets = {ref['id'] for ref in job_kinds.kind_of(job['pipeline']).cuts(payload)}
-        if job['pipeline'] == 'cutframes' and (not targets or targets & obsolete):
-            if not payload.get('frame_step'):
-                remaining = targets or {row['id'] for row in conn.execute("""SELECT id FROM cuts WHERE episode_id=? AND active=1
-                    AND (first_frame_time IS NULL OR last_frame_time IS NULL)""", (episode['id'],))}
-                rebuild.update(remaining - removed)
+        if job['pipeline'] == 'cutframes' and not payload.get('frame_step') and (not targets or targets & obsolete):
+            remaining = targets or {row['id'] for row in conn.execute("""SELECT id FROM cuts WHERE episode_id=? AND active=1
+                AND (first_frame_time IS NULL OR last_frame_time IS NULL)""", (episode['id'],))}
+            rebuild.update(remaining - removed)
             cancelled.extend(worker.cancel_jobs(conn, [job], 'Cancelled because cut previews changed'))
-        elif targets and targets <= removed:
+        elif (targets and targets <= removed) or (payload.get('frame_step') and payload.get('cut_id') in removed):
             cancelled.extend(worker.cancel_jobs(conn, [job], 'Cancelled because the target cut was archived'))
     structured_results.invalidate_cut_timing(conn, changed | removed)
     conn.executemany('UPDATE cuts SET first_frame_time=NULL,last_frame_time=NULL WHERE id=?', [(cut_id,) for cut_id in changed])
+    rebuild.difference_update(rebuilding)
     if rebuild:
         worker.insert_job(conn, episode['id'], 'cutframes',
                           {'settings': json.loads(episode['settings_json']), 'cut_ids': sorted(rebuild)})

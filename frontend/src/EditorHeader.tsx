@@ -23,7 +23,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   onCharacterStep: (step: CharacterStep) => void
   onDetectCuts: () => void
   onPrepare: () => void
-  /** The episode's queue counter (backend runs.summary); null until the first status poll. */
+  /** The episode's queue counter (backend runs.summary); null until the first status response. */
   queue: QueueSummary | null
   /** Anything of this episode running, GPU or media work. */
   running: boolean
