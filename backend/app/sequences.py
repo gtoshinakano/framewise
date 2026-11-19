@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from . import db, media, sequence_edit, worker, sequence_store as store, sequence_timeline, sequence_view
+from . import db, media, sequence_compile, sequence_edit, worker, sequence_store as store, sequence_timeline, sequence_view
 
 router = APIRouter(prefix='/api', tags=['Sequences'])
 
@@ -51,6 +51,11 @@ class ShotPointInput(BaseModel):
 class CompilationConfirmInput(BaseModel):
     result_id: str = Field(description='The current dialogue revision the user reviewed.')
     points: list[ShotPointInput] | None = Field(default=None, max_length=500)
+
+
+class CompilationSaveInput(CompilationConfirmInput):
+    content: dict[str, Any] | None = None
+    confirm: bool = False
 
 
 class ShotPointsInput(BaseModel):
@@ -223,6 +228,45 @@ def dismiss_review_issue(result_id: str, index: int):
         return row['sequence_id']
 
     return detail_or_404(edit(action))
+
+
+@router.put('/sequences/{sequence_id}/compilation')
+def save_compilation(sequence_id: str, body: CompilationSaveInput):
+    """Save dialogue edits, placed shot boundaries and optional confirmation in one transaction."""
+    def action(conn):
+        sequence = require(conn, sequence_id)
+        row = store.current(conn, sequence_id, 'compilation')
+        conflict = 'The dialogue has a newer revision. Your draft is still open.'
+        if not row:
+            raise sequence_edit.EditError(409, 'The dialogue is no longer available. Your draft is still open.')
+        result_id = row['id']
+        if result_id != body.result_id:
+            # Recover a retry when the dialogue write already landed, including from the older two-request editor.
+            if row['parent_id'] != body.result_id or row['origin'] != 'manual_edit' or body.content is None:
+                raise sequence_edit.EditError(409, conflict)
+            current = sequence_view.state(conn, sequence)
+            if current['cuts'] is None:
+                raise sequence_edit.EditError(409, 'The first or last cut of this sequence was archived; create the sequence again')
+            roster = {person['name']: person['id'] for person in current['ctx']['characters']}
+            try:
+                normal = sequence_compile.validate(body.content, current['timeline']['duration'], roster)
+            except ValueError as exc:
+                raise sequence_edit.EditError(422, str(exc)) from exc
+            saved = store.loads(row['content'], {})
+            if any(saved.get(key) != value for key, value in normal.items()):
+                raise sequence_edit.EditError(409, conflict)
+        elif body.content is not None:
+            result_id = sequence_edit.revise(conn, sequence, row, body.content)
+            sequence = require(conn, sequence_id)
+
+        points = [point.model_dump() for point in body.points] if body.points is not None else None
+        if body.confirm:
+            sequence_edit.confirm_compilation(conn, sequence, result_id, points)
+        elif points is not None:
+            sequence_edit.set_points(conn, sequence, points)
+
+    edit(action)
+    return detail_or_404(sequence_id)
 
 
 @router.post('/sequences/{sequence_id}/compilation/confirm', responses={409: {'description': 'The dialogue has a newer revision than the one confirmed.'}})

@@ -222,21 +222,20 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
     else if (event.key === 'Escape' && selectedMarker) { event.stopPropagation(); setSelectedMarker(null) }
   }
 
-  // The dialogue and the placed boundaries are saved together; the boundaries do not need the dialogue to be confirmed again.
-  const save = () => act('save-dialogue', async () => {
-    let latest: SequenceDetail | undefined
-    if (dialogueDirty && result && draft) latest = await sequenceApi.revise(result.id, payload(draft))
-    if (pointsDirty) latest = await sequenceApi.setShotPoints(info.id, points)
-    return latest
-  })
+  function save(finalize = false) {
+    return act(finalize ? 'confirm-dialogue' : 'save-dialogue', () => result
+      ? sequenceApi.saveDialogue(info.id, {
+        result_id: result.id,
+        content: dialogueDirty && draft ? payload(draft) : undefined,
+        points: pointsDirty ? points : undefined,
+        confirm: finalize,
+      })
+      : sequenceApi.setShotPoints(info.id, points))
+  }
   async function confirm() {
     if (!result || !draft) return
     if (state === 'confirmed' && !dirty) { onContinue(); return }
-    const ok = await act('confirm-dialogue', async () => {
-      let id = result.id
-      if (dialogueDirty) id = (await sequenceApi.revise(id, payload(draft))).compilation.result?.id || id
-      return sequenceApi.confirmDialogue(info.id, id, pointsDirty ? points : undefined)
-    })
+    const ok = await save(true)
     if (!ok) return
     onContinue()
     // After a cut was added the server directs the sequence again by itself once the dialogue is confirmed.
@@ -278,7 +277,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
       <p className="muted text-[11px] leading-5">Playhead <PlayheadClock origin={info.start_time} /> in the sequence. <kbd className="rounded bg-[#262b35] px-1">J</kbd>/<kbd className="rounded bg-[#262b35] px-1">K</kbd> move between lines, <kbd className="rounded bg-[#262b35] px-1">Space</kbd> plays or pauses the selected line. The crosshair next to a time sets it to the playhead. On the timeline, drag a shot to place where it starts.</p>
       {marker && <BoundaryCard marker={marker} markers={markers} cuts={cuts} lines={lines} origin={info.start_time} duration={duration} disabled={busy}
         onPlace={place} onRelease={release} onClose={() => setSelectedMarker(null)} onSave={!draft && pointsDirty ? () => void save() : undefined} />}
-      {draft && <section aria-label="Voices" className="rounded-xl border hairline bg-[#1b202a] p-4">
+      {draft && <section aria-label="Voices" className="rounded-xl border hairline bg-[#1b202a] p-4" inert={working}>
         <h3 className="text-sm font-semibold">Voices</h3>
         <p className="muted mb-3 text-[11px] leading-5">Decide who owns each voice once; it is applied to every line of that voice, and the bible keeps your decision.</p>
         {voices.length ? <ul className="space-y-2">{voices.map(({ label, voice, count }) => <li key={label} className="flex items-center gap-2">
@@ -326,7 +325,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
           <div className="flex gap-2"><button type="button" className="btn btn-primary !text-xs" disabled={busy} onClick={() => void run('compile')}><WandSparkles size={13} /> Compile dialogue</button><button type="button" className="btn btn-quiet !text-xs" disabled={busy} onClick={useOriginal}>Use the original transcript</button></div>
         </div>
           : <>
-            <ol className="scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto p-3" aria-label="Dialogue lines">
+            <ol className="scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto p-3" aria-label="Dialogue lines" inert={working}>
               {shown.map(line => <Row key={line.id} line={line} selected={selected === line.id} active={activeId === line.id} playing={!paused && playingId === line.id}
                 colour={colours.get(line.id) ?? lineColour(0)} shotsInside={inside.get(line.id) ?? ''} problems={problems[line.id] || []} duration={duration} added={isNew(line, newFrom)} options={options} characters={characters}
                 onSelect={setSelected} onPlay={play} onEdit={edit} onMerge={merge} onSplit={split} onDelete={remove} playhead={playhead} />)}

@@ -196,6 +196,72 @@ class CompileFlowTest(SequenceBase):
         self.assertTrue(shot_call['dialogue_reviewed'])
         self.assertNotIn('delivery_fixed', json.dumps(shot_call['dialogue']))
 
+    def test_dialogue_save_can_be_retried_after_boundary_validation_fails(self):
+        self.answers['compile'] = self.compile_answer
+        sequence_id = self.create(review=None)
+        self.work()
+        result = self.detail(sequence_id)['compilation']['result']
+        url = f'/api/sequences/{sequence_id}/compilation'
+        content = result['content']
+        content['lines'][0]['text'] = 'おはよう'
+        draft = {'result_id': result['id'], 'content': content}
+
+        for confirm in (False, True):
+            rejected = self.client.put(url, json={**draft, 'points': [{'after_cut_id': 'c2', 'time': 1.0}], 'confirm': confirm})
+            self.assertEqual(rejected.status_code, 422, rejected.text)
+            self.assertIn('would show 0.00 s of its own picture', rejected.json()['detail'])
+        detail = self.detail(sequence_id)
+        self.assertEqual(detail['compilation']['result']['id'], result['id'])
+        self.assertEqual(detail['sequence']['shot_points'], [])
+        self.assertEqual(detail['compilation']['state'], 'review')
+
+        points = [{'after_cut_id': 'c1', 'time': 2.2}]
+        saved = self.client.put(url, json={**draft, 'points': points})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        saved_detail = saved.json()
+        self.assertEqual(saved_detail['sequence']['shot_points'], points)
+        newer = saved_detail['compilation']['result']
+        self.assertEqual(newer['content']['lines'][0]['text'], 'おはよう')
+        self.assertEqual(saved_detail['compilation']['state'], 'review')
+
+        content['lines'][0]['text'] = 'こんばんは'
+        again = self.client.put(url, json={'result_id': newer['id'], 'content': content})
+        self.assertEqual(again.status_code, 200, again.text)
+        compilation = again.json()['compilation']
+        self.assertEqual(compilation['state'], 'review')
+        self.assertEqual(compilation['result']['parent_id'], newer['id'])
+        self.assertEqual(compilation['result']['content']['lines'][0]['text'], 'こんばんは')
+        confirmed = self.client.put(url, json={'result_id': compilation['result']['id'], 'confirm': True})
+        self.assertEqual(confirmed.status_code, 200, confirmed.text)
+        self.assertEqual(confirmed.json()['compilation']['state'], 'confirmed')
+
+    def test_dialogue_save_with_old_base_recovers_only_the_same_saved_edit(self):
+        self.answers['compile'] = self.compile_answer
+        sequence_id = self.create(review=None)
+        self.work()
+        result = self.detail(sequence_id)['compilation']['result']
+        content = result['content']
+        content['lines'][0]['text'] = '  おはよう '
+        old_save = self.client.put(f"/api/sequence-results/{result['id']}", json={'content': content})
+        self.assertEqual(old_save.status_code, 200, old_save.text)
+        newer_id = old_save.json()['compilation']['result']['id']
+
+        url = f'/api/sequences/{sequence_id}/compilation'
+        points = [{'after_cut_id': 'c1', 'time': 2.2}]
+        draft = {'result_id': result['id'], 'content': content, 'points': points, 'confirm': True}
+        retry = self.client.put(url, json=draft)
+        self.assertEqual(retry.status_code, 200, retry.text)
+        self.assertEqual(retry.json()['compilation']['result']['id'], newer_id)
+        self.assertEqual(retry.json()['compilation']['state'], 'confirmed')
+        self.assertEqual(retry.json()['sequence']['shot_points'], points)
+
+        content['lines'][0]['text'] = 'こんばんは'
+        rejected = self.client.put(url, json={**draft, 'points': []})
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        detail = self.detail(sequence_id)
+        self.assertEqual(detail['compilation']['result']['id'], newer_id)
+        self.assertEqual(detail['sequence']['shot_points'], points)
+
     def test_a_shot_of_reviewed_dialogue_gets_no_second_version_of_the_words(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO subtitle_runs(id,episode_id,status,language) VALUES ('r','e','complete','Japanese')")

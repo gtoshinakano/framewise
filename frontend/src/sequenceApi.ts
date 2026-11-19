@@ -162,7 +162,8 @@ export const sequenceApi = {
   /** Every version of a shot's prompt, newest first, with the rewrite in progress and the Assistant's unapplied proposals. */
   shotHistory: (id: string, shotKey: string) => api<ShotHistory>(`/sequences/${id}/shots/${encodeURIComponent(shotKey)}/history`),
   revise: (resultId: string, content: unknown) => api<SequenceDetail>(`/sequence-results/${resultId}`, { method: 'PUT', body: JSON.stringify({ content }) }),
-  confirmDialogue: (id: string, resultId: string, points?: ShotPoint[]) => api<SequenceDetail>(`/sequences/${id}/compilation/confirm`, jsonBody({ result_id: resultId, points })),
+  saveDialogue: (id: string, body: { result_id: string; content?: Compilation; points?: ShotPoint[]; confirm?: boolean }) =>
+    api<SequenceDetail>(`/sequences/${id}/compilation`, { method: 'PUT', body: JSON.stringify(body) }),
   useSourceDialogue: (id: string) => api<SequenceDetail>(`/sequences/${id}/compilation/use-source`, { method: 'POST' }),
   /** Choose where the shot boundary sits at the hard cut after a cut; the two shots beside it must be written again. */
   setBoundary: (id: string, afterCutId: string, choice: BoundaryChoice) =>
