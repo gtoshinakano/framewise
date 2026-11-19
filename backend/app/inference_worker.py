@@ -890,10 +890,12 @@ def process_review_answers(job_id, owner):
 
 
 def process(job_id, owner):
+    from . import job_inputs
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
         return
     episode = db.one("SELECT * FROM episodes WHERE id=?", (job["episode_id"],))
+    config = {}
     try:
         payload = json.loads(job['payload_json'])
         if payload.get('workflow') == 'single_cut_v2':
@@ -923,26 +925,58 @@ def process(job_id, owner):
                 conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
                 worker.sync_episode_status(conn, job['episode_id'])
             return
-        for item in payload["cuts"]:
-            cut_id, config, context = item["cut_id"], item["config"], item["context"]
+        skipped = []
+        for item in payload['cuts']:
+            cut_id = item['cut_id']
+            with db.connect() as conn:
+                conn.execute('BEGIN')
+                saved = db.one('SELECT * FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job_id, cut_id), conn=conn)
+                if saved and saved['completed']:
+                    continue
+                live = job_inputs.JobInputs(conn, job, owner, unit_id=cut_id)
+            data = live.data
+            baselines = json.loads(db.one('SELECT input_json FROM jobs WHERE id=?', (job_id,))['input_json'] or '{}')
+            expected = baselines.setdefault('legacy_cut_inputs', {}).get(cut_id, {}).get('bases', data.get('bases', {}))
+            protected = any(base['id'] != expected.get(title, {}).get('id') and base['origin'] in ('manual', 'manual_edit', 'assistant_edit')
+                            for title, base in data.get('bases', {}).items())
+            if data.get('skip') or protected:
+                reason = data.get('skip') or 'A result was edited by hand'
+                with live.publish(invalidate=False) as conn:
+                    conn.execute('''INSERT INTO analysis_job_cuts(job_id,cut_id,evidence_json,completed)
+                        SELECT ?,id,?,1 FROM cuts WHERE id=? ON CONFLICT(job_id,cut_id) DO UPDATE SET completed=1''',
+                        (job_id, json.dumps({'skip': reason}), cut_id))
+                skipped.append(reason)
+                continue
+            baselines['legacy_cut_inputs'][cut_id] = {'fingerprint': live.stamp, 'bases': expected}
+
+            def record_inputs(conn):
+                conn.execute('UPDATE jobs SET input_json=? WHERE id=?', (json.dumps(baselines), job_id))
+
+            with live.publish(invalidate=False, on_changed=record_inputs) as conn:
+                record_inputs(conn)
+            config, context, request_override = data['config'], data['context'], data['request_override']
             if config.get('text_provider', 'openrouter') == 'openrouter' and not os.environ.get("OPENROUTER_API_KEY", "").strip():
                 raise RuntimeError("OPENROUTER_API_KEY is not configured for the inference worker")
-            request_override = item.get("request_override")
             worker.stage(job_id, owner, episode["id"], f"Processing cut {context['cut']['cut_index'] + 1}")
-            saved = db.one("SELECT * FROM analysis_job_cuts WHERE job_id=? AND cut_id=?", (job_id, cut_id))
-            if saved and saved["completed"]:
-                continue
-            observations = json.loads(saved["evidence_json"]) if saved else []
+            observations = json.loads(saved['evidence_json']) if saved and data['reuse_observations'] else []
             # Checkpoints created by the earlier pipeline do not contain OCR.
             # Refresh them once so an interrupted pre-upgrade job gets the new evidence.
             if payload.get('text_only') and (not saved or not observations):
                 raise RuntimeError('Saved analysis evidence is unavailable; queue visual analysis again')
             if not saved or not observations or (request_override is None and any("ocr_response" not in frame for frame in observations)):
+                from .single_cut_pipeline import release_gpu_models
+                if local_text_runtime.runtime:
+                    local_text_runtime.runtime.stop('Released for visual analysis')
                 with worker.analysis_stage(job_id, owner, cut_id, 'frame_evidence', 'Frame evidence'):
-                    observations = describe_frames(job_id, owner, episode, context["cut"], config)
-                with db.connect() as conn:
-                    worker.require_lease(conn, job_id, owner)
-                    conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json) VALUES (?,?,?) ON CONFLICT(job_id,cut_id) DO UPDATE SET evidence_json=excluded.evidence_json", (job_id, cut_id, json.dumps(observations, ensure_ascii=False)))
+                    with gpu_device.hold(lambda: check_summary_lease(job_id, owner)):
+                        try:
+                            observations = describe_frames(job_id, owner, episode, context['cut'], config)
+                        finally:
+                            release_gpu_models()
+                with live.publish(invalidate=False) as conn:
+                    conn.execute('''INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json,source_cut_json) VALUES (?,?,?,?)
+                        ON CONFLICT(job_id,cut_id) DO UPDATE SET evidence_json=excluded.evidence_json,source_cut_json=excluded.source_cut_json''',
+                        (job_id, cut_id, json.dumps(observations, ensure_ascii=False), json.dumps(data['bounds'])))
             # Results retain times and IDs; their images are reconstructed from
             # the original only when requested.
             observations = [dict(item) for item in observations]
@@ -961,7 +995,7 @@ def process(job_id, owner):
                 else:
                     output, actual_model = synthesize(config, context, observations, progress=progress)
             generation_seconds = time.monotonic() - generation_started
-            snapshot_data = {**context, "sampled_frames": observations, "assessments": {"visual_evidence": output["visual_evidence"], "text_evidence": output["text_evidence"]}}
+            snapshot_data = {**context, 'input_fingerprint': live.stamp, "sampled_frames": observations, "assessments": {"visual_evidence": output["visual_evidence"], "text_evidence": output["text_evidence"]}}
             if output.get('_brief_sections'):
                 snapshot_data['brief_sections'] = output['_brief_sections']
             if request_override is not None:
@@ -974,8 +1008,7 @@ def process(job_id, owner):
             visual_settings_data.pop('thinking', None)
             visual_settings_data.pop('model_revision', None)
             visual_settings = json.dumps(visual_settings_data, ensure_ascii=False)
-            with db.connect() as conn:
-                worker.require_lease(conn, job_id, owner)
+            with live.publish(result_type='legacy_visual') as conn:
                 for kind, title, field in FIELDS:
                     prompt = (request_override["summary_system"] if field == "cut_summary" else request_override["system"]) if request_override is not None else (SUMMARY_SYSTEM if field == "cut_summary" else SYSTEM_PROMPT)
                     conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json) VALUES (?,?,?,?,?,'model',?,?,?,?,?)", (str(uuid.uuid4()), cut_id, kind, title, output[field].strip(), actual_model if field == "cut_summary" else output.get("_assessment_model", actual_model), job_id, prompt, settings, snapshot))
@@ -991,13 +1024,17 @@ def process(job_id, owner):
                         conn.execute("INSERT INTO analysis_results (id,cut_id,kind,title,content,origin,model_id,job_id,prompt,settings_json,context_json) VALUES (?,?,?,?,?,'model',?,?,?,?,?)", (result_id, cut_id, "other", f"Object detections at {observation['time']:.3f}s", evidence, MODEL_ID, job_id, observation.get("detection_prompt", ""), visual_settings, detection_snapshot))
                 conn.execute("UPDATE analysis_job_cuts SET completed=1 WHERE job_id=? AND cut_id=?", (job_id, cut_id))
         with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
             worker.require_lease(conn, job_id, owner)
-            conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+            stage = 'Complete' if not skipped else 'Complete · Skipped: ' + ', '.join(dict.fromkeys(skipped))
+            conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (stage, job_id))
             worker.sync_episode_status(conn, episode["id"])
-    except (SummaryCancelled, worker.LeaseLost):
-        if payload.get('text_only') and item.get('config', {}).get('text_provider', 'openrouter') == 'local':
+    except SummaryCancelled:
+        if config.get('text_provider') == 'local':
             local_text_runtime.cancel_local('Cancelled')
         log.info('Analysis %s was cancelled', job_id)
+    except worker.LeaseLost as exc:
+        log.info('Analysis %s stopped: %s', job_id, exc)
     except Exception as exc:
         fail_job(job_id, owner, episode["id"], exc)
         log.exception("Analysis failed for job %s", job_id)
@@ -1295,12 +1332,17 @@ def main():
                         slot_held = False
                     cancel_check = lambda: check_summary_lease(job_id, owner)
                     use_gpu = 'gpu' in kind_entry.resources and not payload.get('text_only')
+                    mixed_legacy_analysis = kind == 'analyze' and payload.get('workflow') != 'single_cut_v2'
                     job_episode = db.one('SELECT episode_id FROM jobs WHERE id=?', (job_id,))['episode_id']
                     with contextlib.ExitStack() as devices:
                         if use_gpu:
                             local_text_runtime.runtime.begin_gpu_work()
                             local_text_runtime.runtime.stop('Released for visual analysis')
-                            devices.enter_context(gpu_device.hold(cancel_check))
+                            if not mixed_legacy_analysis:
+                                devices.enter_context(gpu_device.hold(cancel_check))
+                                if kind == 'character_detect' and not payload.get('workflow'):
+                                    from .single_cut_pipeline import release_gpu_models
+                                    devices.callback(release_gpu_models)
                         elif uses_local_text:
                             devices.enter_context(local_text_runtime.runtime.chat_session(cancel_check=cancel_check))
                         if kind_entry.handler:

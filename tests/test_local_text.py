@@ -242,7 +242,7 @@ class LocalTextTest(unittest.TestCase):
         body = {'source_job_id':old_id, 'request_override':{'model':'openrouter/free','system':'system','summary_system':'summary','input':{'context':{},'sampled_frames':[]}}}
         response = self.client.post('/api/cuts/c1/retry-analysis-request', json=body)
         self.assertEqual(response.status_code,200,response.text)
-        self.assertEqual(self.client.post('/api/cuts/c1/retry-analysis-request', json=body).status_code, 409)
+        self.assertEqual(self.client.post('/api/cuts/c1/retry-analysis-request', json=body).json(), response.json())
         job_id=response.json()['job_id']
         payload=json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?',(job_id,))['payload_json'])
         self.assertTrue(payload['text_only'])

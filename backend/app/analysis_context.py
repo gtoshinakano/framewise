@@ -125,6 +125,8 @@ def visual(conn, job):
 
     payload = job.get('payload') or json.loads(job['payload_json'])
     cut_id = job['unit_id']
+    if payload.get('workflow') != 'single_cut_v2':
+        return legacy_visual(conn, job, payload, cut_id)
     request = next((item for item in payload['cuts'] if item['cut_id'] == cut_id), None)
     if request is None:
         request = {'config': payload['default_config']}
@@ -164,10 +166,38 @@ def visual(conn, job):
             'character_references': references, 'selection_key': key, 'keyframe_selection': selection, 'target_run': targets}
 
 
+def legacy_visual(conn, job, payload, cut_id):
+    """Old raw frame workflows use current context and preserve the user's explicit prompt overrides."""
+    from .inference_worker import FIELDS
+    item = next(item for item in payload['cuts'] if item['cut_id'] == cut_id)
+    context = selected(conn, cut_id, item['config'])
+    if not context or not context['cut']['active'] or not context['cut']['analysis_enabled']:
+        return {'cut_id': cut_id, 'skip': 'Cut archived, removed or disabled'}
+    cut = context['cut']
+    boundaries = [cut['start_time'], cut['end_time']]
+    saved = (item.get('context') or {}).get('cut') or {}
+    original_boundaries = item.get('source_bounds') or [saved.get('start_time'), saved.get('end_time')]
+    checkpoint = db.one('SELECT source_cut_json FROM analysis_job_cuts WHERE job_id=? AND cut_id=?', (job['id'], cut_id), conn=conn)
+    checkpoint_bounds = json.loads(checkpoint['source_cut_json']) if checkpoint and checkpoint['source_cut_json'] else original_boundaries
+    if payload.get('text_only') and boundaries != checkpoint_bounds:
+        return {'cut_id': cut_id, 'skip': 'Cut boundaries changed since the saved frame evidence'}
+    titles = {title for _, title, _ in FIELDS}
+    bases = {}
+    for row in conn.execute('SELECT id,title,origin FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL ORDER BY rowid', (cut_id,)):
+        if row['title'] in titles:
+            bases[row['title']] = {'id': row['id'], 'origin': row['origin']}
+    return {'cut_id': cut_id, 'context': context, 'bases': bases, 'bounds': boundaries,
+            'request_override': item.get('request_override'), 'config': item['config'],
+            'reuse_observations': boundaries == checkpoint_bounds}
+
+
 def visual_fingerprint(conn, job):
     from .job_inputs import fingerprint
 
     item = job.get('gathered') or visual(conn, job)
+    if 'reuse_observations' in item:
+        # Recording a checkpoint of this job does not change the underlying inputs.
+        return fingerprint({key: value for key, value in item.items() if key != 'reuse_observations'})
     context = item.get('context')
     if not context:
         return fingerprint(item)

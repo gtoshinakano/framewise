@@ -166,7 +166,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS analysis_job_cuts (
             job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
             cut_id TEXT NOT NULL REFERENCES cuts(id) ON DELETE CASCADE,
-            evidence_json TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0,
+            evidence_json TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0, source_cut_json TEXT,
             PRIMARY KEY(job_id,cut_id)
         );
         CREATE TABLE IF NOT EXISTS analysis_job_stages (
@@ -510,6 +510,9 @@ def init_db():
             if column not in job_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
         migrate_queue_dependencies(db)
+        checkpoint_columns = {row['name'] for row in db.execute('PRAGMA table_info(analysis_job_cuts)')}
+        if 'source_cut_json' not in checkpoint_columns:
+            db.execute('ALTER TABLE analysis_job_cuts ADD COLUMN source_cut_json TEXT')
         # The queue lists failures that still need the user (runs.attention) until they are run again or dismissed.
         if 'dismissed_at' not in job_columns:
             db.execute('ALTER TABLE jobs ADD COLUMN dismissed_at TEXT')

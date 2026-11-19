@@ -2000,37 +2000,34 @@ def summary_request_preview(cut_id: str, source: Literal["current", "failed", "f
 def retry_analysis_request(cut_id: str, body: AnalysisRequestRetry):
     cut, current_config = analysis_config_for_cut(cut_id)
     edited = validate_summary_request(body.request_override, full_analysis=True)
-    job_id = str(uuid.uuid4())
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        if not cut['active'] or not cut['analysis_enabled']:
+        current = conn.execute("SELECT active,analysis_enabled FROM cuts WHERE id=?", (cut_id,)).fetchone()
+        if not current or not current['active'] or not current['analysis_enabled']:
             raise HTTPException(409, "The cut is archived or disabled for analysis")
-        if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (cut['episode_id'],)).fetchone():
-            raise HTTPException(409, "Wait for media preparation or cut detection to finish")
-        if conn.execute("SELECT 1 FROM jobs j WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running') AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (cut['episode_id'], cut_id)).fetchone():
-            raise HTTPException(409, 'An analysis for this cut is already queued or running')
         old = conn.execute("SELECT * FROM jobs WHERE id=? AND episode_id=? AND pipeline='analyze' AND status IN ('failed','cancelled')", (body.source_job_id, cut['episode_id'])).fetchone()
-        saved = conn.execute("SELECT evidence_json,completed FROM analysis_job_cuts WHERE job_id=? AND cut_id=?", (body.source_job_id, cut_id)).fetchone()
-        if not old or not saved or saved['completed']:
-            raise HTTPException(409, "The failed analysis evidence is no longer available")
+        saved = conn.execute("""SELECT completed,source_cut_json,
+            CASE WHEN json_valid(evidence_json) AND json_type(evidence_json)='array' THEN json_array_length(evidence_json) ELSE 0 END AS frames
+            FROM analysis_job_cuts WHERE job_id=? AND cut_id=?""", (body.source_job_id, cut_id)).fetchone()
+        if not old or not saved or saved['completed'] or not saved['frames']:
+            raise HTTPException(409, "The failed analysis frame evidence is no longer available")
         snapshot = json_object_or_empty(old['payload_json'])
         item = next((item for item in snapshot.get('cuts', []) if isinstance(item, dict) and item.get('cut_id') == cut_id), None)
-        if not item or not isinstance(item.get('context', {}).get('cut'), dict):
+        if not item:
             raise HTTPException(409, "The saved analysis context is unavailable")
-        original_cut = item['context']['cut']
-        current = conn.execute("SELECT active,analysis_enabled,start_time,end_time FROM cuts WHERE id=?", (cut_id,)).fetchone()
-        if not current or not current['active'] or not current['analysis_enabled'] or any(current[key] != original_cut.get(key) for key in ('start_time', 'end_time')):
-            raise HTTPException(409, "The cut changed since this analysis; start a new analysis")
-        try:
-            evidence = json.loads(saved['evidence_json'])
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(409, "The saved frame evidence is unreadable") from exc
-        if not isinstance(evidence, list) or not evidence:
-            raise HTTPException(409, "The saved frame evidence is unavailable")
-        item['request_override'] = edited
-        item['config'] = {**item.get('config', {}), 'text_provider': current_config.text_provider, 'local_thinking': current_config.local_thinking}
-        conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (job_id, cut['episode_id'], 'analyze', json.dumps({'cuts': [item], 'workflow': 'legacy_text_retry', 'text_only': True}), old['id']))
-        conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json,completed) VALUES (?,?,?,0)", (job_id, cut_id, saved['evidence_json']))
+        original_cut = (item.get('context') or {}).get('cut') or {}
+        bounds = json.loads(saved['source_cut_json']) if saved['source_cut_json'] else item.get('source_bounds')
+        if not bounds and not {'start_time', 'end_time'} <= original_cut.keys():
+            raise HTTPException(409, "The saved analysis context is unavailable")
+        bounds = bounds or [original_cut['start_time'], original_cut['end_time']]
+        options = {**item['config'], 'text_provider': current_config.text_provider, 'local_thinking': current_config.local_thinking}
+        choices = {'cuts': [{'cut_id': cut_id, 'source_bounds': bounds, 'request_override': edited, 'config': options}],
+                   'workflow': 'legacy_text_retry', 'text_only': True,
+                   'depends_on': worker.pending_jobs(conn, cut['episode_id'], ('prepare', 'hardcuts'), [cut_id])}
+        job_id = worker.insert_job(conn, cut['episode_id'], 'analyze', choices, retry_of=old['id'])
+        conn.execute("""INSERT OR IGNORE INTO analysis_job_cuts (job_id,cut_id,evidence_json,source_cut_json)
+            SELECT ?,cut_id,evidence_json,? FROM analysis_job_cuts WHERE job_id=? AND cut_id=?""",
+            (job_id, json.dumps(bounds), old['id'], cut_id))
         worker.sync_episode_status(conn, cut['episode_id'])
     return {"job_id": job_id}
 
@@ -2620,77 +2617,62 @@ def retry_visual_job(conn, job, payload):
 
 @app.post("/api/jobs/{job_id}/retry")
 def retry_analysis(job_id: str):
-    try:
-        with db.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if not job:
-                raise HTTPException(404, "Job not found")
-            if job['pipeline'] == 'composition_compact' and job['status'] in ('failed', 'cancelled'):
-                from . import composition_compaction
-                payload = json_object_or_empty(job['payload_json'])
-                choices = {key: payload[key] for key in ('text_provider', 'model', 'local_thinking') if key in payload}
-                retry_id = composition_compaction.insert(conn, job['episode_id'], payload['cut_id'], choices, retry_of=job_id)
-                return {'job_id': retry_id}
-            if job['pipeline'] == 'keyframes' and job['status'] in ('failed', 'cancelled'):
-                from . import job_kinds
-                payload = json_object_or_empty(job['payload_json'])
-                choices = {'keyframe_settings': payload['keyframe_settings']}
-                if payload.get('all_cuts'):
-                    choices['all_cuts'] = True
-                else:
-                    choices['cut_ids'] = [ref['id'] for ref in job_kinds.KINDS['keyframes'].cuts(payload)]
-                retry_id = worker.enqueue_in(conn, job['episode_id'], 'keyframes', choices, retry_of=job_id)
-                worker.wake_event.set()
-                return {'job_id': retry_id}
-            if job['pipeline'] == 'performance_beats' and job['status'] in ('failed', 'cancelled'):
-                from . import performance_beats
-                payload = json_object_or_empty(job['payload_json'])
-                retry_id = performance_beats.insert(conn, job['episode_id'], payload['cut_id'], payload.get('config'), retry_of=job_id)
-                worker.sync_episode_status(conn, job['episode_id'])
-                return {'job_id': retry_id}
-            if job['pipeline'] == 'character_profile' and job['status'] in ('failed', 'cancelled'):
-                payload = json_object_or_empty(job['payload_json'])
-                if not conn.execute("SELECT 1 FROM context_items WHERE id=? AND kind='character'", (payload.get('character_context_id'),)).fetchone():
-                    raise HTTPException(409, 'The character was deleted')
-                for key in ('depends_on', 'result', 'cut'):
-                    payload.pop(key, None)
-                retry_id = worker.insert_job(conn, job['episode_id'], 'character_profile', payload, retry_of=job_id)
-                worker.sync_episode_status(conn, job['episode_id'])
-                return {'job_id': retry_id}
-            if job["pipeline"] != "analyze" or job["status"] not in ("failed", "cancelled"):
-                raise HTTPException(409, "Only failed or cancelled analysis jobs can be retried")
-            retry_payload = json_object_or_empty(job['payload_json'])
-            if retry_payload.get('workflow') == 'single_cut_v2':
-                return {'job_id': retry_visual_job(conn, dict(job), retry_payload)}
-            if conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline IN ('prepare','hardcuts') AND status IN ('queued','running')", (job["episode_id"],)).fetchone():
-                raise HTTPException(409, "Wait for media preparation or cut detection to finish")
-            for item in json.loads(job["payload_json"])["cuts"]:
-                done = conn.execute("SELECT completed FROM analysis_job_cuts WHERE job_id=? AND cut_id=?", (job_id, item["cut_id"])).fetchone()
-                if done and done["completed"]:
-                    continue
-                cut = conn.execute("SELECT active,analysis_enabled,start_time,end_time FROM cuts WHERE id=? AND episode_id=?", (item["cut_id"], job["episode_id"])).fetchone()
-                saved = item["context"]["cut"]
-                if not cut or not cut["active"] or not cut["analysis_enabled"] or cut["start_time"] != saved["start_time"] or cut["end_time"] != saved["end_time"]:
-                    raise HTTPException(409, "An unfinished cut changed since this run; start a new analysis")
-                active_jobs = conn.execute("SELECT j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='analyze' AND j.status IN ('queued','running') AND EXISTS (SELECT 1 FROM json_each(j.payload_json,'$.cuts') i WHERE json_extract(i.value,'$.cut_id')=?)", (job['episode_id'], item['cut_id'])).fetchall()
-                retry_payload = json_object_or_empty(job['payload_json'])
-                retry_stages = retry_payload.get('stages') if retry_payload.get('workflow') == 'single_cut_v2' else None
-                for active_job in active_jobs:
-                    active_payload = json_object_or_empty(active_job['payload_json'])
-                    active_stages = active_payload.get('stages') if active_payload.get('workflow') == 'single_cut_v2' else None
-                    if set(retry_stages or VISUAL_STAGES) & set(active_stages or VISUAL_STAGES):
-                        raise HTTPException(409, 'An overlapping analysis for this cut is already queued or running')
-            retry_id = str(uuid.uuid4())
-            retry_payload = json_object_or_empty(job['payload_json'])
-            retry_payload.pop('depends_on', None)
-            conn.execute("INSERT INTO jobs (id,episode_id,pipeline,payload_json,retry_of) VALUES (?,?,?,?,?)", (retry_id, job["episode_id"], 'analyze', json.dumps(retry_payload, ensure_ascii=False), job_id))
-            conn.execute("INSERT INTO analysis_job_cuts (job_id,cut_id,evidence_json,completed) SELECT ?,cut_id,evidence_json,completed FROM analysis_job_cuts WHERE job_id=?", (retry_id, job_id))
-            conn.execute("INSERT INTO analysis_video_windows (job_id,cut_id,window_index,start_time,end_time,model_revision,content_json) SELECT ?,cut_id,window_index,start_time,end_time,model_revision,content_json FROM analysis_video_windows WHERE job_id=?", (retry_id, job_id))
-            worker.sync_episode_status(conn, job["episode_id"])
-    except sqlite3.IntegrityError as exc:
-        raise HTTPException(409, "An analysis job is already running for this episode") from exc
-    return {"job_id": retry_id}
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if job['pipeline'] == 'composition_compact' and job['status'] in ('failed', 'cancelled'):
+            from . import composition_compaction
+            payload = json_object_or_empty(job['payload_json'])
+            choices = {key: payload[key] for key in ('text_provider', 'model', 'local_thinking') if key in payload}
+            retry_id = composition_compaction.insert(conn, job['episode_id'], payload['cut_id'], choices, retry_of=job_id)
+            return {'job_id': retry_id}
+        if job['pipeline'] == 'keyframes' and job['status'] in ('failed', 'cancelled'):
+            from . import job_kinds
+            payload = json_object_or_empty(job['payload_json'])
+            choices = {'keyframe_settings': payload['keyframe_settings']}
+            if payload.get('all_cuts'):
+                choices['all_cuts'] = True
+            else:
+                choices['cut_ids'] = [ref['id'] for ref in job_kinds.KINDS['keyframes'].cuts(payload)]
+            retry_id = worker.enqueue_in(conn, job['episode_id'], 'keyframes', choices, retry_of=job_id)
+            worker.wake_event.set()
+            return {'job_id': retry_id}
+        if job['pipeline'] == 'performance_beats' and job['status'] in ('failed', 'cancelled'):
+            from . import performance_beats
+            payload = json_object_or_empty(job['payload_json'])
+            retry_id = performance_beats.insert(conn, job['episode_id'], payload['cut_id'], payload.get('config'), retry_of=job_id)
+            worker.sync_episode_status(conn, job['episode_id'])
+            return {'job_id': retry_id}
+        if job['pipeline'] == 'character_profile' and job['status'] in ('failed', 'cancelled'):
+            payload = json_object_or_empty(job['payload_json'])
+            if not conn.execute("SELECT 1 FROM context_items WHERE id=? AND kind='character'", (payload.get('character_context_id'),)).fetchone():
+                raise HTTPException(409, 'The character was deleted')
+            for key in ('depends_on', 'result', 'cut'):
+                payload.pop(key, None)
+            retry_id = worker.insert_job(conn, job['episode_id'], 'character_profile', payload, retry_of=job_id)
+            worker.sync_episode_status(conn, job['episode_id'])
+            return {'job_id': retry_id}
+        if job["pipeline"] != "analyze" or job["status"] not in ("failed", "cancelled"):
+            raise HTTPException(409, "Only failed or cancelled analysis jobs can be retried")
+        retry_payload = json_object_or_empty(job['payload_json'])
+        if retry_payload.get('workflow') == 'single_cut_v2':
+            return {'job_id': retry_visual_job(conn, dict(job), retry_payload)}
+        cuts = retry_payload.get('cuts') or []
+        for item in cuts:
+            saved = (item.pop('context', None) or {}).get('cut') or {}
+            if {'start_time', 'end_time'} <= saved.keys():
+                item.setdefault('source_bounds', [saved['start_time'], saved['end_time']])
+        retry_payload['depends_on'] = worker.pending_jobs(conn, job['episode_id'], ('prepare', 'hardcuts', 'character_detect'),
+                                                         [item['cut_id'] for item in cuts])
+        retry_id = worker.insert_job(conn, job['episode_id'], 'analyze', retry_payload, retry_of=job_id)
+        conn.execute("""INSERT OR IGNORE INTO analysis_job_cuts (job_id,cut_id,evidence_json,completed,source_cut_json)
+            SELECT ?,cut_id,evidence_json,completed,source_cut_json FROM analysis_job_cuts WHERE job_id=?""", (retry_id, job_id))
+        conn.execute("""INSERT OR IGNORE INTO analysis_video_windows (job_id,cut_id,window_index,start_time,end_time,model_revision,content_json)
+            SELECT ?,cut_id,window_index,start_time,end_time,model_revision,content_json FROM analysis_video_windows WHERE job_id=?""", (retry_id, job_id))
+        worker.sync_episode_status(conn, job['episode_id'])
+    return {'job_id': retry_id}
 
 
 @app.get("/api/episodes/{episode_id}/waveform")

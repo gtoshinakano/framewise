@@ -237,7 +237,10 @@ def _visual_scope(payload):
 
 def _visual_invalidates(conn, job):
     from . import structured_results
-    structured_results.invalidate_text(conn, job['unit_id'], job['result_type'])
+    if job['result_type'] == 'legacy_visual':
+        conn.execute("UPDATE cut_review_drafts SET stale_reason='Cut analysis changed' WHERE cut_id=?", (job['unit_id'],))
+    else:
+        structured_results.invalidate_text(conn, job['unit_id'], job['result_type'])
 
 
 def _detection_scope(payload):

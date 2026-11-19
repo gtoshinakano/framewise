@@ -131,7 +131,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
         results = self.client.get('/api/cuts/c1/analysis-results').json()
         self.assertEqual(len(results), 4)
-        self.assertEqual(results[0]['context']['context_items'][0]['content'], 'Green coat')
+        self.assertEqual(results[0]['context']['context_items'][0]['content'], 'Changed')
         self.assertEqual(results[0]['job_id'], job_id)
         compact = self.client.get('/api/cuts/c1/analysis-results?include_context=false').json()
         self.assertEqual(len(compact), len(results))
@@ -285,7 +285,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertIsNotNone(failed['started_at'])
         self.assertIsNotNone(failed['finished_at'])
         self.assertEqual(snapshots[0][0]['context']['cut']['end_time'], 2)
-        self.assertEqual(self.client.post(f'/api/jobs/{first}/retry').status_code, 409)
+        self.assertEqual(self.client.post(f'/api/jobs/{first}/retry').status_code, 200)
         self.assertEqual(self.client.get('/api/cuts/c2/analysis-config').status_code, 200)
 
     def test_analysis_queues_choices_and_reads_edited_context_at_start(self):
@@ -344,17 +344,52 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(json.loads(db.one('SELECT evidence_json FROM analysis_job_cuts WHERE job_id=?', (job_id,))['evidence_json']), fresh)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
 
-    def test_legacy_retry_rejects_changed_unfinished_cut(self):
+    def test_legacy_retry_uses_changed_cut_and_waits_for_media(self):
         job_id = self.legacy_single_job()
         claimed = worker.claim_job(('analyze',))
         with patch.dict(os.environ, {'OPENROUTER_API_KEY': ''}):
             inference_worker.process(*claimed)
         with db.connect() as conn:
             conn.execute("UPDATE cuts SET end_time=1.5 WHERE id='c1'")
+        prerequisite = worker.enqueue('e', 'hardcuts')
         response = self.client.post(f'/api/jobs/{job_id}/retry')
-        self.assertEqual(response.status_code, 409)
-        self.assertIn('changed', response.json()['detail'])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.client.post(f'/api/jobs/{job_id}/retry').json(), response.json())
+        self.assertIsNone(worker.claim_job(('analyze',)))
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET status='done' WHERE id=?", (prerequisite,))
+        fields = {key: 'draft' for _, _, key in inference_worker.FIELDS}
+        frames = [{'time': 0.05, 'description': 'New evidence', 'ocr_response': 'Text'}]
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', return_value=frames) as describe, \
+             patch.object(inference_worker, 'synthesize', return_value=(fields, 'test/model')):
+            inference_worker.process(*worker.claim_job(('analyze',)))
+        self.assertEqual(describe.call_args.args[3]['end_time'], 1.5)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'failed')
+
+    def test_legacy_analysis_restarts_on_live_context_change_and_keeps_frames(self):
+        job_id = self.legacy_single_job()
+        notes = []
+        frames = [{'time': 0.05, 'description': 'Frame', 'ocr_response': 'Text'}]
+
+        def summarize(config, context, observations, **kwargs):
+            notes.append(context['cut']['notes'])
+            if len(notes) == 1:
+                self.assertEqual(self.client.put('/api/cuts/c1', json={'notes': 'New notes'}).status_code, 200)
+            return ({key: 'draft' for _, _, key in inference_worker.FIELDS}, 'test/model')
+
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test'}), patch.object(inference_worker, 'describe_frames', return_value=frames) as describe, \
+             patch.object(inference_worker, 'synthesize', side_effect=summarize):
+            lease = worker.claim_job(('analyze',))
+            inference_worker.process(*lease)
+            self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job_id,))['stage'], 'Inputs changed, restarting')
+            self.assertIsNone(db.one('SELECT id FROM analysis_results WHERE job_id=?', (job_id,)))
+            worker.release_lease(*lease)
+            with db.connect() as conn:
+                conn.execute('UPDATE jobs SET not_before=0 WHERE id=?', (job_id,))
+            inference_worker.process(*worker.claim_job(('analyze',)))
+        self.assertEqual(notes, ['', 'New notes'])
+        describe.assert_called_once()
+        self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
 
     def test_retry_batch_skips_completed_cuts(self):
         job_id = self.legacy_batch_job()
