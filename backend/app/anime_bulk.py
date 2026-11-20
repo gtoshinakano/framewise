@@ -154,7 +154,7 @@ def preserve_checkpoint(conn, job_id):
         WHERE job_id=?""", (job_id, job_id))
 
 
-def enqueue(conn, episode_id, phase, *, rerun=False, cut_id=None, depends_on=()):
+def enqueue(conn, episode_id, phase, *, rerun=False, cut_id=None, depends_on=(), first_index=0, last_index=None):
     # Episode-wide work after a boundary replacement must discover the new cuts.
     media_jobs = worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts'), None if cut_id is None else [cut_id])
     waits = list(dict.fromkeys([*depends_on, *media_jobs]))
@@ -162,10 +162,11 @@ def enqueue(conn, episode_id, phase, *, rerun=False, cut_id=None, depends_on=())
         payload = {'workflow': WORKFLOW, 'episode_batch': True, 'select_cuts': True,
                    'phase': phase, 'rerun': rerun, 'depends_on': waits}
         return [worker.insert_job(conn, episode_id, 'character_detect', payload)]
-    return _enqueue_cuts(conn, episode_id, phase, rerun=rerun, cut_id=cut_id, depends_on=waits)
+    return _enqueue_cuts(conn, episode_id, phase, rerun=rerun, cut_id=cut_id, depends_on=waits,
+                         first_index=first_index, last_index=last_index)
 
 
-def eligible_cuts(conn, episode_id, phase, *, rerun=False, cut_id=None, depends_on=()):
+def eligible_cuts(conn, episode_id, phase, *, rerun=False, cut_id=None, depends_on=(), first_index=0, last_index=None):
     # The latest run for the cut's current boundaries decides what is still missing.
     latest = """(SELECT r2.id FROM character_detection_runs r2 WHERE r2.cut_id=c.id AND r2.cut_start=c.start_time AND r2.cut_end=c.end_time ORDER BY r2.rowid DESC LIMIT 1)"""
     # Current detection runs save one frame. Older runs may still have both
@@ -185,15 +186,20 @@ def eligible_cuts(conn, episode_id, phase, *, rerun=False, cut_id=None, depends_
             OR EXISTS (SELECT 1 FROM jobs j WHERE j.episode_id=c.episode_id AND j.pipeline='character_detect'
                 AND j.status IN ('queued','running') AND json_extract(j.payload_json,'$.cut_id')=c.id
                 AND json_extract(j.payload_json,'$.phase') IN ('boxes','full')))"""
-    scope = "AND c.id=?" if cut_id else "AND c.analysis_enabled=1 AND c.no_characters=0"
+    if cut_id:
+        scope, params = "AND c.id=?", [cut_id]
+    else:
+        scope = "AND c.analysis_enabled=1 AND c.no_characters=0 AND c.cut_index>=? AND (? IS NULL OR c.cut_index<=?)"
+        params = [first_index, last_index, last_index]
     if cut_id and depends_on:
         need = ''  # a cut producer can make its current evidence obsolete
     return conn.execute(f"""SELECT c.id FROM cuts c WHERE c.episode_id=? AND c.active=1 {scope}
-        {need} ORDER BY c.cut_index""", (episode_id, *([cut_id] if cut_id else []))).fetchall()
+        {need} ORDER BY c.cut_index""", (episode_id, *params)).fetchall()
 
 
-def _enqueue_cuts(conn, episode_id, phase, *, rerun, cut_id=None, depends_on=()):
-    cuts = eligible_cuts(conn, episode_id, phase, rerun=rerun, cut_id=cut_id, depends_on=depends_on)
+def _enqueue_cuts(conn, episode_id, phase, *, rerun, cut_id=None, depends_on=(), first_index=0, last_index=None):
+    cuts = eligible_cuts(conn, episode_id, phase, rerun=rerun, cut_id=cut_id, depends_on=depends_on,
+                         first_index=first_index, last_index=last_index)
     job_ids, batch_id = [], str(uuid.uuid4())
     for row in cuts:
         cid = row['id']

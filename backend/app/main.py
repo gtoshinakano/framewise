@@ -89,6 +89,8 @@ from .visual_models_api import router as visual_models_router
 app.include_router(visual_models_router)
 from .point_detect_api import first_frame_spec, router as point_detect_router
 app.include_router(point_detect_router)
+from .review_report import CUT_FLAGS, router as review_router
+app.include_router(review_router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
 
@@ -314,24 +316,7 @@ def episode_response(episode_id: str):
     episode = require_episode(episode_id)
     path = media.episode_dir(episode["project_id"], episode_id)
     episode["proxy_ready"] = (path / "proxy.mp4").is_file()
-    episode["cuts"] = [serialize_cut(cut) for cut in db.all_rows("""SELECT c.*, EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL) AS has_analysis_results,
-        EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.title='Cut summary' AND a.superseded_by IS NULL) AS has_summary,
-        EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_boxes,
-        EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.character_context_id IS NOT NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_characters,
-        EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.character_context_id IS NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_boxes,
-        EXISTS(SELECT 1 FROM target_detections t JOIN target_slots s ON s.run_id=t.run_id AND s.slot=t.slot WHERE s.ignored=0
-               AND t.run_id=(SELECT r.id FROM target_detection_runs r WHERE r.cut_id=c.id AND r.cut_start=c.start_time AND r.cut_end=c.end_time ORDER BY r.rowid DESC LIMIT 1)) AS has_target_boxes,
-        EXISTS(SELECT 1 FROM target_detections t JOIN target_slots s ON s.run_id=t.run_id AND s.slot=t.slot WHERE s.character_context_id IS NULL AND s.ignored=0
-               AND t.run_id=(SELECT r.id FROM target_detection_runs r WHERE r.cut_id=c.id AND r.cut_start=c.start_time AND r.cut_end=c.end_time ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_target_boxes,
-        -- Ready for review: a first frame and the motion, i.e. performance beats built from the current keyframe analysis, or for a
-        -- cut analysed before keyframes existed its video analysis (summary_queue.missing_evidence).
-        (EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='initial_frame')
-         AND (EXISTS(SELECT 1 FROM analysis_results b JOIN analysis_results k ON k.cut_id=c.id AND k.superseded_by IS NULL AND json_extract(k.settings_json,'$.structured_type')='keyframe_analysis'
-                     WHERE b.cut_id=c.id AND b.superseded_by IS NULL AND b.stale_reason IS NULL AND json_extract(b.settings_json,'$.structured_type')='performance_beats' AND json_extract(b.content,'$.based_on.keyframe_analysis')=k.id)
-              OR (NOT EXISTS(SELECT 1 FROM analysis_results k WHERE k.cut_id=c.id AND k.superseded_by IS NULL AND json_extract(k.settings_json,'$.structured_type')='keyframe_analysis')
-                  AND EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='video_analysis')))) AS has_visual_results,
-        EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='consistency_summary') AS has_consistency_summary,
-        COALESCE((SELECT j.status='failed' FROM analysis_job_cuts jc JOIN jobs j ON j.id=jc.job_id WHERE jc.cut_id=c.id ORDER BY j.created_at DESC, j.rowid DESC LIMIT 1),0) AS last_job_failed
+    episode["cuts"] = [serialize_cut(cut) for cut in db.all_rows(f"""SELECT c.*, {CUT_FLAGS}
         FROM cuts c WHERE c.episode_id=? AND c.active=1 ORDER BY c.cut_index""", (episode_id,))]
     episode["archived_cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=0 ORDER BY start_time,cut_index", (episode_id,))]
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
@@ -1551,7 +1536,8 @@ def set_cut_no_characters(cut_id: str, body: NoCharactersInput):
     return {'cut_id': cut_id, 'no_characters': body.no_characters}
 
 
-def _queue_bulk_character_jobs(episode_id: str, phase: str, rerun: bool = False, cut_id: str | None = None):
+def _queue_bulk_character_jobs(episode_id: str, phase: str, rerun: bool = False, cut_id: str | None = None,
+                               from_cut: int | None = None, to_cut: int | None = None):
     """Queue one bulk job per cut. The gallery of confirmed labels is read live by the worker.
 
     With rerun, recognition is redone for every cut that has boxes. The new
@@ -1559,42 +1545,47 @@ def _queue_bulk_character_jobs(episode_id: str, phase: str, rerun: bool = False,
     Manual labels (and the boxes the user drew) are never touched, and a cut
     whose boxes are all manually labelled is skipped. Cuts without a current
     run get the full pass. With cut_id only that cut is considered, whatever
-    its "No characters" mark or analysis switch.
+    its "No characters" mark or analysis switch. from_cut/to_cut limit the
+    episode request to those displayed cut numbers (inclusive).
     """
+    span = episode_requests.cut_range(from_cut, to_cut)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()
         if not episode:
             raise HTTPException(404, 'Episode not found')
+        if from_cut is not None or to_cut is not None:
+            episode_requests.refuse_range_while_cutting(conn, episode_id, True)
         from . import anime_bulk
-        job_ids = anime_bulk.enqueue(conn, episode_id, phase, rerun=rerun, cut_id=cut_id)
+        job_ids = anime_bulk.enqueue(conn, episode_id, phase, rerun=rerun, cut_id=cut_id,
+                                     first_index=span['first_index'], last_index=span.get('last_index'))
         if job_ids:
             worker.sync_episode_status(conn, episode_id)
     return {'queued': len(job_ids), 'job_ids': job_ids}
 
 
 @app.post('/api/episodes/{episode_id}/character-boxes')
-def queue_character_boxes(episode_id: str):
+def queue_character_boxes(episode_id: str, from_cut: int | None = None, to_cut: int | None = None):
     """Step 1: AniRef boxes on the first frame of cuts without a current detection run."""
-    return _queue_bulk_character_jobs(episode_id, 'boxes')
+    return _queue_bulk_character_jobs(episode_id, 'boxes', from_cut=from_cut, to_cut=to_cut)
 
 
 @app.post('/api/episodes/{episode_id}/character-detection-all')
-def queue_all_character_detection(episode_id: str):
+def queue_all_character_detection(episode_id: str, from_cut: int | None = None, to_cut: int | None = None):
     """Steps 1 and 2 together: batched AniRef boxes, then gallery matching (optionally Qwen), sharing models across all cuts."""
-    return _queue_bulk_character_jobs(episode_id, 'full')
+    return _queue_bulk_character_jobs(episode_id, 'full', from_cut=from_cut, to_cut=to_cut)
 
 
 @app.post('/api/episodes/{episode_id}/character-detection')
-def queue_missing_character_detections(episode_id: str):
+def queue_missing_character_detections(episode_id: str, from_cut: int | None = None, to_cut: int | None = None):
     """Step 2: match boxes with the gallery of confirmed labels (optionally Qwen) for cuts whose boxes exist but are not complete."""
-    return _queue_bulk_character_jobs(episode_id, 'recognize')
+    return _queue_bulk_character_jobs(episode_id, 'recognize', from_cut=from_cut, to_cut=to_cut)
 
 
 @app.post('/api/episodes/{episode_id}/character-detection-rerun')
-def rerun_character_recognition(episode_id: str):
+def rerun_character_recognition(episode_id: str, from_cut: int | None = None, to_cut: int | None = None):
     """Redo automatic recognition for the whole episode; manual labels and drawn boxes are kept as they are."""
-    return _queue_bulk_character_jobs(episode_id, 'recognize', rerun=True)
+    return _queue_bulk_character_jobs(episode_id, 'recognize', rerun=True, from_cut=from_cut, to_cut=to_cut)
 
 
 @app.get('/api/cuts/{cut_id}/character-detections')
@@ -2050,16 +2041,19 @@ def insert_visual_job(conn, episode_id, cuts, *, stages=None, batch=False, only_
 
 
 @app.post('/api/episodes/{episode_id}/visual-analysis')
-def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, only_missing: bool = True,
-                                  characters_resolved: bool = False):
+def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, to_cut: int | None = None,
+                                  only_missing: bool = True, characters_resolved: bool = False):
     """Queue one model-major run. Check cut readiness and unfinished stages at start."""
+    span = episode_requests.cut_range(from_cut, to_cut)
+    first_index, last_index = span['first_index'], span.get('last_index')
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
             raise HTTPException(404, 'Episode not found')
-        first_index = max(0, from_cut - 1) if from_cut else 0
+        episode_requests.refuse_range_while_cutting(conn, episode_id, last_index is not None)
         cuts = db.all_rows("""SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1
-            AND analysis_enabled=1 AND cut_index>=? ORDER BY cut_index""", (episode_id, first_index), conn=conn)
+            AND analysis_enabled=1 AND cut_index>=? AND (? IS NULL OR cut_index<=?) ORDER BY cut_index""",
+            (episode_id, first_index, last_index, last_index), conn=conn)
         dynamic_cuts = bool(worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts')))
         job_ids = [insert_visual_job(conn, episode_id, cuts, batch=True, only_missing=only_missing,
                                      characters_resolved=characters_resolved, from_index=first_index,
@@ -2262,16 +2256,27 @@ def queue_consistency_summary(cut_id: str, with_beats: bool = False):
 
 
 @app.post('/api/episodes/{episode_id}/consistency-summaries')
-def queue_episode_consistency_summaries(episode_id: str, from_cut: int | None = None):
-    """Queue consistency summaries from the displayed cut number onward."""
-    return queue_text_batch(episode_id, 'consistency', {'first_index': max(0, (from_cut or 1) - 1)})
+def queue_episode_consistency_summaries(episode_id: str, from_cut: int | None = None, to_cut: int | None = None,
+                                        only_missing: bool = False):
+    """Queue consistency summaries for the displayed cut numbers from_cut..to_cut (inclusive)."""
+    options = episode_requests.cut_range(from_cut, to_cut)
+    if only_missing:
+        options['only_missing'] = True
+    return queue_text_batch(episode_id, 'consistency', options)
 
 
 def _batch_consistency(conn, episode_id, options, cuts, configuration):
     from . import summary_queue
+    if options.get('only_missing'):
+        done = {row['cut_id'] for row in conn.execute("""SELECT a.cut_id FROM analysis_results a JOIN cuts c ON c.id=a.cut_id
+            WHERE c.episode_id=? AND a.superseded_by IS NULL
+            AND json_extract(a.settings_json,'$.structured_type')='consistency_summary'""", (episode_id,))}
+        kept = [cut for cut in cuts if cut['id'] not in done]
+    else:
+        kept = cuts
     job_ids = [summary_queue.insert(conn, episode_id, {'cut_id': cut['id'], 'batch': True,
-                'config': configuration(cut)}) for cut in cuts]
-    return {'queued': len(job_ids), 'job_ids': job_ids}
+                'config': configuration(cut)}) for cut in kept]
+    return {'queued': len(job_ids), 'skipped': len(cuts) - len(kept), 'job_ids': job_ids}
 
 
 @app.post('/api/cuts/{cut_id}/review-answers')
@@ -2289,9 +2294,16 @@ def queue_review_answers(cut_id: str):
 
 
 @app.post('/api/episodes/{episode_id}/review-answers')
-def queue_episode_review_answers(episode_id: str, from_cut: int | None = None):
-    """Queue production-decision drafts for the enabled cuts in the requested range."""
-    return queue_text_batch(episode_id, 'review_answers', {'first_index': max(0, (from_cut or 1) - 1)})
+def queue_episode_review_answers(episode_id: str, from_cut: int | None = None, to_cut: int | None = None,
+                                 auto_save: bool = True):
+    """Queue production-decision drafts for the enabled cuts in the requested range.
+
+    Without ``auto_save`` each draft is kept as a suggestion, like the single-cut button, and the saved answers stay as they are.
+    """
+    options = episode_requests.cut_range(from_cut, to_cut)
+    if not auto_save:
+        options['auto_save'] = False
+    return queue_text_batch(episode_id, 'review_answers', options)
 
 
 def _batch_review_answers(conn, episode_id, options, cuts, configuration):
@@ -2304,14 +2316,17 @@ def _batch_review_answers(conn, episode_id, options, cuts, configuration):
             blocked[reason].append(cut['cut_index'] + 1)
             continue
         config = configuration(cut)
-        job_ids.append(review_answers.insert(conn, episode_id, {'cut_id': cut['id'], 'config': config, 'auto_save': True}))
+        payload = {'cut_id': cut['id'], 'config': config}
+        if options.get('auto_save', True):
+            payload['auto_save'] = True
+        job_ids.append(review_answers.insert(conn, episode_id, payload))
     return {'queued': len(job_ids), 'blocked': blocked, 'job_ids': job_ids}
 
 
 @app.post('/api/episodes/{episode_id}/text-chain')
-def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, only_missing: bool = True):
+def queue_episode_text_chain(episode_id: str, from_cut: int | None = None, to_cut: int | None = None, only_missing: bool = True):
     """Queue related text steps and reuse current requests with the same choices."""
-    return queue_text_batch(episode_id, 'text_chain', {'first_index': max(0, (from_cut or 1) - 1), 'only_missing': only_missing})
+    return queue_text_batch(episode_id, 'text_chain', {**episode_requests.cut_range(from_cut, to_cut), 'only_missing': only_missing})
 
 
 def _batch_text_chain(conn, episode_id, options, cuts, configuration):
@@ -2366,9 +2381,9 @@ def _batch_text_chain(conn, episode_id, options, cuts, configuration):
 
 
 @app.post('/api/episodes/{episode_id}/cut-summaries')
-def queue_episode_cut_summaries(episode_id: str, from_cut: int | None = None, only_missing: bool = True):
-    """Queue Cut summaries for enabled cuts from the displayed cut number onward."""
-    return queue_text_batch(episode_id, 'cut_summaries', {'first_index': max(0, (from_cut or 1) - 1), 'only_missing': only_missing})
+def queue_episode_cut_summaries(episode_id: str, from_cut: int | None = None, to_cut: int | None = None, only_missing: bool = True):
+    """Queue Cut summaries for enabled cuts with displayed numbers from_cut..to_cut (inclusive)."""
+    return queue_text_batch(episode_id, 'cut_summaries', {**episode_requests.cut_range(from_cut, to_cut), 'only_missing': only_missing})
 
 
 def _batch_cut_summaries(conn, episode_id, options, cuts, configuration):
@@ -2420,11 +2435,12 @@ def queue_text_batch(episode_id, action, options):
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
             raise HTTPException(404, 'Episode not found')
+        episode_requests.refuse_range_while_cutting(conn, episode_id, 'last_index' in options)
         dispatch = episode_requests.defer(conn, episode_id, action, options, config=lambda: snapshot_batch_config(conn, episode_id))
         if dispatch:
             result = {'queued': 0, 'cuts_queued': 0, 'skipped': 0, 'blocked': {}, 'job_ids': [dispatch], 'deferred': True}
         else:
-            cuts = episode_requests.cuts(conn, episode_id, options['first_index'])
+            cuts = episode_requests.cuts(conn, episode_id, options['first_index'], last_index=options.get('last_index'))
             result = run_text_batch(conn, episode_id, action, options, cuts)
         if result['job_ids']:
             worker.sync_episode_status(conn, episode_id)

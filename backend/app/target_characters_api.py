@@ -84,19 +84,20 @@ def queue_targets(conn, episode_id, cuts, *, cut_id=None, only_missing=True):
     return {'queued': len(job_ids), 'job_ids': job_ids, 'skipped': skipped}
 
 
-def _queue(episode_id, cut_id=None, from_cut=None, only_missing=True):
+def _queue(episode_id, cut_id=None, from_cut=None, to_cut=None, only_missing=True):
     """Queue one request per cut. Each worker reads the current selection and anchors."""
-    first_index = max(0, (from_cut or 1) - 1)
+    span = episode_requests.cut_range(from_cut, to_cut)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
             raise HTTPException(404, 'Episode not found')
+        episode_requests.refuse_range_while_cutting(conn, episode_id, 'last_index' in span)
         dispatch = None if cut_id else episode_requests.defer(conn, episode_id, 'target_detection',
-                                                               {'first_index': first_index, 'only_missing': only_missing})
+                                                               {**span, 'only_missing': only_missing})
         if dispatch:
             result = {'queued': 0, 'job_ids': [dispatch], 'skipped': {}, 'deferred': True}
         else:
-            cuts = episode_requests.cuts(conn, episode_id, first_index, cut_id)
+            cuts = episode_requests.cuts(conn, episode_id, span['first_index'], cut_id, last_index=span.get('last_index'))
             if cut_id and not cuts:
                 raise HTTPException(404, 'Active cut not found')
             result = queue_targets(conn, episode_id, cuts, cut_id=cut_id, only_missing=only_missing)
@@ -117,9 +118,9 @@ def queue_cut(cut_id: str):
 
 
 @router.post('/api/episodes/{episode_id}/target-detection')
-def queue_episode(episode_id: str, from_cut: int | None = None, only_missing: bool = True):
-    """Queue enabled cuts from the given timeline number and evaluate missing target frames as needed."""
-    return _queue(episode_id, from_cut=from_cut, only_missing=only_missing)
+def queue_episode(episode_id: str, from_cut: int | None = None, to_cut: int | None = None, only_missing: bool = True):
+    """Queue enabled cuts with timeline numbers from_cut..to_cut (inclusive) and evaluate missing target frames as needed."""
+    return _queue(episode_id, from_cut=from_cut, to_cut=to_cut, only_missing=only_missing)
 
 
 # --- editing ---------------------------------------------------------------------------------------------------

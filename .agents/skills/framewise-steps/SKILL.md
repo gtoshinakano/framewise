@@ -1,0 +1,63 @@
+---
+name: framewise-steps
+description: "Queue one Framewise analysis step for a range of cuts with scripts/fw: detect character boxes, recognize characters, target frames, keyframes, visual analysis, performance beats, consistency review, review answers, Cut summaries, transcription, subtitles, speaker attribution. Use when the user asks to detect, trigger, run, redo, rewrite or queue one of these for some cuts or a whole episode (e.g. 'detect the boxes for cuts 100 to 120', 'trigger video analysis for cuts 5 to 10', 'rewrite the cut summary for the entire episode')."
+---
+
+# Framewise: one step over a cut range
+
+Work from the repository root. Everything goes through `scripts/fw`, which talks to the Framewise API on the LAN
+(`FRAMEWISE_URL`, default `http://192.168.0.6:8080`). Do not open the browser, click the UI or call the API with curl for these.
+
+## 1. Name the episode
+
+`scripts/fw episodes` lists `id  Project / Episode`. Pass the id, or text such as `"Seishun Buta Yarou / Episode 6"`.
+If fw answers that a name matches several episodes, use the id it prints. `--latest` means the newest episode.
+
+## 2. Map the request to a command
+
+Cut numbers are the ones the editor shows (they start at 1). RANGE: `100-120`, `7`, `5-` (to the end), `-10`, or `all` (the default).
+
+| The user says | Command |
+|---|---|
+| detect the boxes for cuts 100 to 120 | `scripts/fw boxes EP 100-120` |
+| recognize / name the characters in cuts 1-50 | `scripts/fw recognize EP 1-50` |
+| redo the recognition (keep my labels) | `scripts/fw recognize EP RANGE --redo` |
+| boxes and recognition together | `scripts/fw characters EP RANGE` |
+| find the people on the target frames | `scripts/fw target-frames EP RANGE` (`--redo` detects again) |
+| pick keyframes | `scripts/fw keyframes EP RANGE` |
+| trigger video / visual analysis for cuts 5 to 10 | `scripts/fw visual EP 5-10` (`--redo` analyses done cuts again) |
+| write the performance beats again | `scripts/fw beats EP RANGE` |
+| run the consistency review | `scripts/fw consistency EP RANGE` (`--redo` for cuts that have one) |
+| draft answers to the review questions | `scripts/fw answers EP RANGE` (suggestions; `--save` only if the user says to save them as answers) |
+| write the Cut summaries | `scripts/fw summary EP RANGE` |
+| rewrite the cut summary for the entire episode | `scripts/fw summary EP all --redo` |
+| review + answers + summary unattended | `scripts/fw text-chain EP RANGE` (only when asked for exactly this) |
+| transcribe cuts 10-12 again | `scripts/fw transcribe EP 10-12` (`--replace-manual` only if the user says hand edits may go) |
+| read the subtitles | `scripts/fw subtitles EP --language Japanese` (whole episode) |
+| attribute speakers again | `scripts/fw speakers EP` (whole episode) |
+| set the episode up | `scripts/fw setup EP --language Japanese` (whole episode; skips finished steps) |
+
+Without `--redo`, cuts that already have the result are skipped. Use `--redo` only when the user says redo, rewrite,
+again, or all of them. When the request is unclear (which episode, which cuts, redo or not), run the command with
+`--dry-run` first, show the user the request it would send, and ask.
+
+## 3. Report and follow up
+
+fw prints what it queued, what it skipped and why, and the job ids. Tell the user, including any skipped or "not ready" cuts.
+If it prints `warning: open checkpoints`, pass that on word for word: the work was queued, but the person still has to
+settle those items in the UI (unnamed boxes, flagged target frames, unknown voices, unanswered review questions).
+
+To wait for the result: `scripts/fw wait EP --jobs ID,ID` (exit 0 done, 1 a job failed, with the error).
+For progress at any time: `scripts/fw queue EP` or `scripts/fw status EP`.
+
+## Errors
+
+- `this server does not understand cut ranges yet`: the host runs older code. Tell the user to rebuild and restart
+  `video-analyzer` on the host; never fall back to queuing the whole episode instead.
+- `HTTP 409 Cuts are still being detected`: wait (`scripts/fw wait EP`) and try again.
+- Any other error: show it to the user. Do not retry in a loop.
+
+## Never
+
+- Never edit labels, boxes, transcript text, answers, dialogue or sequences: those belong to the person, in the UI.
+- Never restart containers or workers. Never use Playwright or the browser to trigger work.

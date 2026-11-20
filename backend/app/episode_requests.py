@@ -1,6 +1,8 @@
 """Dispatch existing episode-wide actions once the episode has its current cuts."""
 import json
 
+from fastapi import HTTPException
+
 from . import db, job_inputs, worker
 
 
@@ -14,15 +16,32 @@ def defer(conn, episode_id, action, options, *, config=None):
     return worker.insert_job(conn, episode_id, 'episode_request', payload)
 
 
-def cuts(conn, episode_id, first_index, cut_id=None):
+def cut_range(from_cut, to_cut):
+    """Batch options for the displayed (1-based, inclusive) cut numbers. ``last_index`` is only set for a closed range."""
+    first_index = max(0, (from_cut or 1) - 1)
+    if to_cut is None:
+        return {'first_index': first_index}
+    if to_cut < first_index + 1:
+        raise HTTPException(422, 'to_cut must not be before from_cut')
+    return {'first_index': first_index, 'last_index': to_cut - 1}
+
+
+def refuse_range_while_cutting(conn, episode_id, ranged):
+    # A range names cut numbers, which a pending cut detection can still renumber.
+    if ranged and worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts')):
+        raise HTTPException(409, 'Cuts are still being detected; queue a cut range once detection has finished')
+
+
+def cuts(conn, episode_id, first_index, cut_id=None, last_index=None):
     return db.all_rows('''SELECT id,cut_index,analysis_enabled,no_characters,start_time,end_time FROM cuts
-        WHERE episode_id=? AND active=1 AND cut_index>=? AND (? IS NULL OR id=?) ORDER BY cut_index''',
-        (episode_id, first_index, cut_id, cut_id), conn=conn)
+        WHERE episode_id=? AND active=1 AND cut_index>=? AND (? IS NULL OR cut_index<=?) AND (? IS NULL OR id=?) ORDER BY cut_index''',
+        (episode_id, first_index, last_index, last_index, cut_id, cut_id), conn=conn)
 
 
 def gather(conn, job):
     payload = json.loads(job['payload_json'])
-    return cuts(conn, job['episode_id'], payload['options'].get('first_index', 0))
+    options = payload['options']
+    return cuts(conn, job['episode_id'], options.get('first_index', 0), last_index=options.get('last_index'))
 
 
 def inputs(conn, job):
