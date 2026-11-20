@@ -114,7 +114,7 @@ serve() {
 drive() {  # drive <run id> <end epoch> [excerpt args...]
   local id=$1 end=$2; shift 2
   local extra=("$@") state="$RUNS/$id/driver.state"
-  trap 'docker rm -f '"$EXP"' >/dev/null 2>&1; start_workers; echo "$(date +%T) driver ended" >>"$RUNS/$id/log.txt"' EXIT
+  trap 'docker rm -f '"$EXP"' >/dev/null 2>&1; start_workers; echo "$(date +%T) driver ended" >>"'"$RUNS/$id"'/log.txt"' EXIT
   say() { echo "$(date +%T) $*" | tee -a "$RUNS/$id/log.txt"; }
   local abort_gpu=0
   gpu_ids="--group-add $(getent group video | cut -d: -f3) --group-add $(getent group render | cut -d: -f3)"

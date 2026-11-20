@@ -301,6 +301,7 @@ def stage_qwen2(ctx):
                       'windows': [{k: v for k, v in r.items() if k not in ('answers',)} for r in records],
                       'thresholds': {'fix_top': R.FIX_TOP, 'fix_gap': R.FIX_GAP, 'ref_guard': R.REF_GUARD}}, f'ep{n}', 'Q4.json')
             run.timing(f'ep{n}.round2.Q4', time.monotonic() - started, asked=asked, windows=len(records))
+            run.progress(f'qwen2.ep{n}.Q4', 'done')
             run.progress('qwen2', 'running', step, total)
         for n in ctx.episodes:                                      # 2. names
             step += 1

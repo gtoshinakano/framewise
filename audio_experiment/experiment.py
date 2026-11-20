@@ -109,6 +109,7 @@ def phase_final2(ctx):
     import round2_analysis
     run = ctx.run
     run.progress('final2', 'running', 0, 2)
+    run.set_status('finished')
     timed = round2_analysis.load_labels(sorted(str(p) for p in LABELS.glob('*.json')), [], ctx.base)
     results = round2_analysis.write(run, ctx.base, timed)
     if results is None:
