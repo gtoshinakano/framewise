@@ -1165,7 +1165,7 @@ def text_lane(name):
             if not remote_text.pool.try_job('local', cfg):  # chat is waiting, or this host's share for jobs is in use
                 time.sleep(2)
                 continue
-            claimed = worker.claim_job(worker.TEXT_PIPELINES, remote_only=remote_text.remote_only(cfg))
+            claimed = worker.claim_job(worker.TEXT_PIPELINES, remote_only=local_leaves_to_remote(cfg))
             if not claimed:
                 remote_text.pool.release_job('local')
                 time.sleep(2)
@@ -1217,6 +1217,14 @@ def _server_free(server, cfg):
     elif not (remote_text.usable(cfg) and remote_text.online()):
         return False
     return remote_text.pool.jobs[server] < remote_text.pool.job_limit(server, cfg)
+
+
+def local_leaves_to_remote(cfg):
+    """Pipelines this host's claimers skip: those routed ``remote``, plus remote-first ones while the remote PC has a free lane."""
+    leave = remote_text.remote_only(cfg)
+    if remote_text.REMOTE_FIRST and _server_free('remote', cfg):
+        leave = (*leave, *(name for name in remote_text.remote_first(cfg) if name not in leave))
+    return leave
 
 
 def remote_lane(index):
@@ -1314,7 +1322,7 @@ def main():
             text_slot = remote_text.pool.try_job('local', main_cfg)
             main_pipelines = (*job_kinds.pipelines_for('inference'), *worker.TEXT_PIPELINES)
             try:
-                claimed = worker.claim_job(main_pipelines, remote_only=remote_text.remote_only(main_cfg), local_text_slot=text_slot)
+                claimed = worker.claim_job(main_pipelines, remote_only=local_leaves_to_remote(main_cfg), local_text_slot=text_slot)
             except Exception:
                 if text_slot:
                     remote_text.pool.release_job('local')

@@ -155,6 +155,22 @@ class RemoteTextTest(unittest.TestCase):
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES ('prep','e','prepare','{}')")
         self.assertIsNone(worker.claim_job(('prepare',)))
 
+    def test_sequence_director_goes_to_the_remote_while_it_has_a_free_lane(self):
+        cfg = self.configure()
+        self.publish_models()
+        self.assertEqual(remote_text.remote_first(cfg), ('sequence',))
+        with patch.object(inference_worker, '_server_free', return_value=True):
+            self.assertEqual(inference_worker.local_leaves_to_remote(cfg), ('sequence',))
+        # No free remote lane (or the remote is down): this host takes the job.
+        with patch.object(inference_worker, '_server_free', return_value=False):
+            self.assertEqual(inference_worker.local_leaves_to_remote(cfg), ())
+        self.publish_models(state='offline', models=())
+        self.assertEqual(remote_text.remote_first(cfg), ())
+        # A saved local route for the pipeline wins over the default.
+        self.publish_models()
+        local = self.configure(routes={'sequence': {'mode': 'local', 'model': ''}})
+        self.assertEqual(remote_text.remote_first(local), ())
+
     def test_disabled_server_routes_nothing(self):
         cfg = self.configure(routes={'review_answers': {'mode': 'remote', 'model': 'bonsai2'}}, enabled=False)
         self.assertEqual(remote_text.remote_only(cfg), ())

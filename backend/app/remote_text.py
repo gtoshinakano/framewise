@@ -110,6 +110,14 @@ def remote_only(cfg):
     return tuple(pipeline for pipeline, route in effective_routes(cfg).items() if route['mode'] == 'remote')
 
 
+REMOTE_FIRST = ('sequence',)  # the sequence director: the remote PC takes these whenever it has a free lane
+
+
+def remote_first(cfg):
+    """Shared (``any``) pipelines that this host's lanes leave to the remote while it can start them; a saved ``local`` route is respected."""
+    return tuple(pipeline for pipeline in REMOTE_FIRST if effective_routes(cfg).get(pipeline, {}).get('mode') == 'any')
+
+
 def remote_pipelines(cfg):
     """Pipelines a remote lane may claim (local-provider jobs only)."""
     return tuple(pipeline for pipeline, route in effective_routes(cfg).items() if route['mode'] in ('remote', 'any'))
