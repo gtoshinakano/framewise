@@ -8,6 +8,9 @@ description: "Queue one Framewise analysis step for a range of cuts with scripts
 Work from the repository root. Everything goes through `scripts/fw`, which talks to the Framewise API on the LAN
 (`FRAMEWISE_URL`, default `http://192.168.0.6:8080`). Do not open the browser, click the UI or call the API with curl for these.
 
+Drawing or naming a box on the Target frames of specific cuts is not a queue step — use the
+`framewise-target-frames` skill, which clicks the app itself.
+
 ## 1. Name the episode
 
 `scripts/fw episodes` lists `id  Project / Episode`. Pass the id, or text such as `"Seishun Buta Yarou / Episode 6"`.
