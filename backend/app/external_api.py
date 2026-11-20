@@ -102,7 +102,8 @@ class Transcript(BaseModel):
     confidence: str | None = Field(None, description="Model evidence for speaker attribution: high, medium or low.")
     evidence_json: str | None = Field(None, description="JSON-encoded voice scores and attribution evidence.")
     deleted: bool = Field(description="True for a deletion revision returned in transcript history.")
-    origin: str
+    origin: str = Field(description="model, manual_edit, assistant_edit, or srt_edit (respelled from a real subtitle file; "
+                        "times and words_json are the transcription's, the text may differ from the words).")
     model_id: str | None
     job_id: str | None
     parent_id: str | None

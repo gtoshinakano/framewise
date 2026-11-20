@@ -20,7 +20,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 
-const DEFAULT_URL = 'http://192.168.0.6:8080'
+const DEFAULT_URL = 'http://chopper.local:8080'
 const WAIT_JOB = 600000       // a queued detection may wait for the GPU
 const WAIT_BOX = 30000        // point detection loads its detector on the first call
 const CHROMIUM = process.env.CHROMIUM_PATH || '/usr/bin/chromium'
@@ -43,7 +43,7 @@ function usage() {
   --dry-run          print the plan, change nothing
   --headed           show the window (needs a display)
   --cdp URL          attach to a Chromium started with --remote-debugging-port
-  --url URL          app address (default FRAMEWISE_URL, then .env APP_BIND_IP, then ${DEFAULT_URL})`)
+  --url URL          app address (default FRAMEWISE_URL, then ${DEFAULT_URL})`)
 }
 
 function parseArgs(argv) {
@@ -52,13 +52,14 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (!arg.startsWith('--')) { out.extra?.push(arg) ?? (out.extra = [arg]); continue }
-    const [key, inline] = arg.slice(2).split('=')
+    const [key, ...rest] = arg.slice(2).split('=')
+    const inline = rest.length ? rest.join('=') : undefined
     if (flags.has(key)) { out[key] = true; continue }
     const value = inline !== undefined ? inline : argv[++i]
-  if (value === undefined || value.startsWith('--')) fail(`--${key} needs a value`)
+    if (value === undefined || value.startsWith('--')) fail(`--${key} needs a value`)
     out[key] = value
   }
-  if (!out.url) out.url = process.env.FRAMEWISE_URL || fromEnvFile() || DEFAULT_URL
+  out.url = (out.url || process.env.FRAMEWISE_URL || DEFAULT_URL).replace(/\/+$/, '')
   if (!out.episode) fail('--episode is required')
   if (out.cut === null) fail('--cut is required')
   const [first, last] = String(out.cut).split('-')
@@ -79,18 +80,6 @@ function parseList(text) {
     for (let n = from; n <= to; n++) out.add(n)
   }
   return out
-}
-
-function fromEnvFile() {
-  for (const dir of [process.cwd(), path.dirname(process.cwd())]) {
-    const file = path.join(dir, '.env')
-    if (!fs.existsSync(file)) continue
-    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
-      const [key, ...rest] = line.split('=')
-      if (key?.trim() === 'APP_BIND_IP' && rest.join('=').trim()) return `http://${rest.join('=').trim()}:8080`
-    }
-  }
-  return ''
 }
 
 function fail(message) {
@@ -156,9 +145,14 @@ function pathToFileUrl(file) {
 
 /** The editor's cut numbers are 1-based over the active cuts, in cut_index order. */
 async function cutIds(url, episode, wanted) {
-  const response = await api(url, { path: `/v1/episodes/${episode}/cuts?limit=500` })
-  if (!response.ok) fail(`Could not read the cuts: ${response.detail}`)
-  const cuts = response.value.items.slice().sort((a, b) => a.cut_index - b.cut_index)
+  const cuts = []
+  for (let offset = 0; offset != null;) {
+    const response = await api(url, { path: `/v1/episodes/${episode}/cuts?limit=500&offset=${offset}` })
+    if (!response.ok) fail(`Could not read the cuts: ${response.detail}`)
+    cuts.push(...response.value.items)
+    offset = response.value.next_offset
+  }
+  cuts.sort((a, b) => a.cut_index - b.cut_index)
   return wanted.map(number => ({ number, cut: cuts[number - 1], total: cuts.length }))
 }
 
@@ -206,7 +200,7 @@ function slotName(state, slot) {
 function plan(state, wanted, framesWanted, mode, allowUnmatched) {
   const actions = []
   if (!state.run) { actions.push({ kind: 'blocked', why: 'no run yet: press Detect characters (--detect) or wait for the queue' }); return actions }
-  if (state.job?.status === 'running' || state.job?.status === 'queued') { actions.push({ kind: 'blocked', why: `detection is ${state.job.status}; wait or cancel it` }); return actions }
+  if (active(state.job)) { actions.push({ kind: 'blocked', why: `detection is ${state.job.status}; wait or cancel it` }); return actions }
   if (state.run.stale) { actions.push({ kind: 'blocked', why: `the run is stale (${state.run.stale_reason || 'the frames changed'}); detect again` }); return actions }
   const cast = firstScreen(state)
   if (!cast.length) { actions.push({ kind: 'person', why: 'the opening frame has no boxes, so no one is on the first screen: box them in Characters in this cut first' }); return actions }
@@ -237,8 +231,10 @@ function plan(state, wanted, framesWanted, mode, allowUnmatched) {
     const useful = frame.candidates.filter(item => !absurd(item.box, frame.size))
     const suggested = useful.find(item => item.suggested_slot === chosen.slot)
     if (suggested) { actions.push({ kind: 'promote', slot: chosen.slot, frame: frame.index, ordinal: frame.ordinal, candidate: suggested, from: 'the tracker suggests this colour' }); continue }
-    const other = allowUnmatched ? useful.find(item => !item.suggested_slot) : null
-    if (other) { actions.push({ kind: 'promote', slot: chosen.slot, frame: frame.index, ordinal: frame.ordinal, candidate: other, from: 'a crop no one has a colour for' }); continue }
+    // Promote on a crop without a suggested colour opens a new colour, so draw its box instead: a drawn box takes a
+    // free colour the cut already has, and is then moved to the chosen one.
+    const other = allowUnmatched ? useful.find(item => item.suggested_slot == null) : null
+    if (other) { actions.push({ kind: 'drag', slot: chosen.slot, frame: frame.index, ordinal: frame.ordinal, box: clamp(other.box, frame.size), from: 'a crop no one has a colour for' }); continue }
     const carried = carriedBox(state, chosen.slot, frame.index)
     const support = useful.find(item => carried ? overlaps(item.box, carried) : true) ?? useful[0] ?? null
     const inPicture = !!seen && !NOT_VISIBLE.test(seen)
@@ -256,6 +252,9 @@ function plan(state, wanted, framesWanted, mode, allowUnmatched) {
   }
   return actions
 }
+
+/** `state.job` is the cut's latest detection job, finished or not. */
+function active(job) { return job?.status === 'queued' || job?.status === 'running' }
 
 function carriedBox(state, slot, frameIndex) {
   for (let index = frameIndex - 1; index >= 1; index--) {
@@ -374,11 +373,11 @@ async function dragBox(page, card, size, box) {
   return { ok: true }
 }
 /**
- * Click Accept or Promote on one row of a frame card's Suggested changes list. `nth` is the
+ * Click Accept on one row of a frame card's Suggested changes list (only crops the tracker gave a colour). `nth` is the
  * candidate's place in the run's own list for that frame.
  */
 async function clickSuggestion(page, screen, nth, candidate) {
-  const label = candidate.suggested_slot != null ? 'Accept' : 'Promote'
+  const label = 'Accept'
   const row = screen.locator('ul[aria-label="Suggested changes"] li').nth(nth)
   if (!(await row.locator(`button:has-text("${label}")`).count())) return { ok: false, why: `that crop offers no ${label} button (the colour may be full or the cut locked)` }
   const wait = page.waitForResponse(response => response.url().includes('/candidates/') && response.method() === 'POST', { timeout: WAIT_BOX })
@@ -459,65 +458,87 @@ async function inspect(url, episode, numbers) {
       console.log(`  F${frame.index}${frame.mirror ? ' (opening)' : ''}  ord ${frame.ordinal}  colours ${people}${frame.candidates.length ? `  ${frame.candidates.length} candidate(s)` : ''}`)
     }
   }
+  return 0
 }
 
 async function draw(url, episode, numbers, opts) {
   const rows = []
   const work = []
-  for (const item of await cutIds(url, episode, numbers)) {
-    if (!item.cut) { rows.push({ ok: false, text: `cut ${item.number} does not exist (${item.total} active cuts)` }); continue }
-    const state = await loadState(url, episode, item.cut.id)
-    const actions = plan(state, opts.character, opts.framesSet, opts.mode, !!opts['allow-unmatched'])
-    const character = actions.find(action => action.kind === 'character')
-    console.log(`\ncut ${item.number} (${item.cut.id.slice(0, 8)}): ${character ? `the first screen shows ${character.name} (colour ${character.slot + 1})` : 'no character to work on'}`)
-    for (const action of actions) {
-      if (action.kind === 'character') { console.log(`  keep colour ${action.slot + 1} as ${action.name}${state.run.slots.find(s => s.slot === action.slot)?.character_name ? ' (already named)' : ''}`); continue }
-      if (action.kind === 'drag') { console.log(`  drag ${JSON.stringify(action.box)} from ${action.from}`); continue }
-      if (action.kind === 'pick') { console.log(`  double-click ${JSON.stringify(action.point)} (${action.from}) so the detector finds their box`); continue }
-      if (action.kind === 'promote') { console.log(`  accept the crop ${JSON.stringify(action.candidate.box)} (${action.from}) for colour ${action.slot + 1}`); continue }
-      const needs = action.kind === 'person' || (action.kind === 'blocked' && !action.frame)
-      console.log(`  ${needs ? 'a person is needed' : 'skipped'}${action.frame ? ` on F${action.frame}` : ''}: ${action.why}`)
-      rows.push({ ok: !needs, needs, skipped: action.kind === 'blocked' && !!action.frame, frame: action.frame, text: action.why })
+  let session = null
+  const browserPage = async () => {
+    if (!session) {
+      const { browser, context } = await openBrowser(opts)
+      session = { browser, page: await context.newPage() }
     }
-    const doable = actions.filter(action => action.kind === 'pick' || action.kind === 'drag' || action.kind === 'promote' || action.kind === 'character')
-    if (doable.length) work.push({ item, state, actions: doable })
+    return session.page
   }
-  if (opts['dry-run']) {
-    console.log(`\ndry run: ${work.length ? 'nothing was clicked' : 'nothing to click'}`)
-    return rows.some(row => row.needs) ? 2 : 0
-  }
-  if (!work.length) return rows.some(row => row.needs) ? 2 : 0
-  const { browser, context } = await openBrowser(opts)
-  const page = await context.newPage()
   try {
+    for (const item of await cutIds(url, episode, numbers)) {
+      if (!item.cut) { rows.push({ ok: false, text: `cut ${item.number} does not exist (${item.total} active cuts)` }); continue }
+      let state = await loadState(url, episode, item.cut.id)
+      if (opts.detect) {
+        if (opts['dry-run']) {
+          console.log(`\ncut ${item.number}: would ${active(state.job) ? `wait for the ${state.job.status} detection` : 'press Detect characters and wait for it'}; the plan below is from the current run`)
+        } else {
+          await detect(await browserPage(), url, episode, item, state)
+          state = await loadState(url, episode, item.cut.id)
+        }
+      }
+      const actions = plan(state, opts.character, opts.framesSet, opts.mode, !!opts['allow-unmatched'])
+      const character = actions.find(action => action.kind === 'character')
+      console.log(`\ncut ${item.number} (${item.cut.id.slice(0, 8)}): ${character ? `the first screen shows ${character.name} (colour ${character.slot + 1})` : 'no character to work on'}`)
+      for (const action of actions) {
+        if (action.kind === 'character') { console.log(`  keep colour ${action.slot + 1} as ${action.name}${state.run.slots.find(s => s.slot === action.slot)?.character_name ? ' (already named)' : ''}`); continue }
+        if (action.kind === 'drag') { console.log(`  F${action.frame}: drag ${JSON.stringify(action.box)} from ${action.from}`); continue }
+        if (action.kind === 'pick') { console.log(`  F${action.frame}: double-click ${JSON.stringify(action.point)} (${action.from}) so the detector finds their box`); continue }
+        if (action.kind === 'promote') { console.log(`  F${action.frame}: accept the crop ${JSON.stringify(action.candidate.box)} (${action.from}) for colour ${action.slot + 1}`); continue }
+        const needs = action.kind === 'person' || (action.kind === 'blocked' && !action.frame)
+        console.log(`  ${needs ? 'a person is needed' : 'skipped'}${action.frame ? ` on F${action.frame}` : ''}: ${action.why}`)
+        rows.push({ ok: !needs, needs, skipped: action.kind === 'blocked' && !!action.frame, frame: action.frame, text: action.why })
+      }
+      const doable = actions.filter(action => action.kind === 'pick' || action.kind === 'drag' || action.kind === 'promote' || action.kind === 'character')
+      if (doable.some(action => action.kind !== 'character')) work.push({ item, state, actions: doable })
+    }
+    if (opts['dry-run']) {
+      console.log(`\ndry run: ${work.length ? 'nothing was clicked' : 'nothing to click'}`)
+      return rows.some(row => row.needs) ? 2 : 0
+    }
     for (const job of work) {
-      const cutId = job.item.cut.id
-      if (opts.detect) await detect(page, url, episode, job.item, job.state)
+      const page = await browserPage()
       const { screen } = await openScreen(page, url, episode, job.item.number)
       await ready(screen, job.state.list)
-      for (const action of job.actions) await runAction(page, screen, url, cutId, job.state, action, opts, rows)
+      for (const action of job.actions) await runAction(page, screen, url, job.item.cut.id, job.state, action, opts, rows)
     }
   } finally {
-    await page.close()
-    if (!opts.cdp) await browser.close()
+    if (session) {
+      await session.page.close()
+      if (!opts.cdp) await session.browser.close()
+    }
   }
   console.log('\nresult:')
   for (const row of rows) reportLine(row)
   return rows.some(row => row.needs) ? 2 : rows.some(row => !row.ok && !row.needs) ? 1 : 0
 }
 
+/** Press Detect characters (or wait for the detection already queued) until that job finishes. */
 async function detect(page, url, episode, item, state) {
-  if (state.run && !state.run.stale && !state.job?.status) return
-  await openScreen(page, url, episode, item.number)
-  await page.locator('section[aria-label="Target frames"]')
-    .getByRole('button', { name: /^(Detect characters|Detect again|Evaluate and detect)$/ }).click()
+  const waiting = active(state.job) ? state.job.id : null
+  if (!waiting) {
+    const { screen } = await openScreen(page, url, episode, item.number)
+    await screen.getByRole('button', { name: /^(Detect characters|Detect again|Evaluate and detect)$/ }).click()
+  }
   const until = Date.now() + WAIT_JOB
   while (Date.now() < until) {
-    const now = await loadState(url, episode, item.cut.id)
-    if (now.run && !now.job?.status && now.selection?.revision === state.selection?.revision) return
+    const read = await api(url, { path: `/cuts/${item.cut.id}/target-detections` })
+    const job = read.ok ? read.value.job : null
+    // the job that was waiting, or the one the click queued (a newer id than the cut's latest before it)
+    if (job && !active(job) && (waiting ? true : job.id !== state.job?.id)) {
+      if (job.status === 'done') return
+      throw new Error(`the detection for cut ${item.number} ${job.status}${job.error ? `: ${job.error.slice(0, 200)}` : ''}`)
+    }
     await new Promise(done => setTimeout(done, 5000))
   }
-  throw new Error(`the detection job for cut ${item.number} did not finish`)
+  throw new Error(`the detection job for cut ${item.number} did not finish in ${WAIT_JOB / 60000} minutes`)
 }
 
 async function runAction(page, screen, url, cutId, state, action, opts, rows) {
@@ -526,7 +547,7 @@ async function runAction(page, screen, url, cutId, state, action, opts, rows) {
     const slot = state.run.slots.find(item => item.slot === action.slot)
     if (slot?.character_name === action.name) { rows.push({ ok: true, text: `cut: colour ${action.slot + 1} already ${action.name}` }); return }
     await setName(page, screen, action.slot, action.name)
-    const named = await poll(() => boxOn(url, cutId, undefined, action.slot)?.slot?.character_name === action.name, 20000,
+    const named = await poll(async () => (await boxOn(url, cutId, undefined, action.slot))?.slot?.character_name === action.name, 20000,
       `colour ${action.slot + 1} did not take ${action.name}`).catch(() => false)
     rows.push({ ok: !!named, text: `cut: colour ${action.slot + 1} is now ${action.name}` })
     return
@@ -587,7 +608,7 @@ async function name(url, episode, numbers, opts) {
       if (!named) {
         try {
           await setName(page, screen, slot, opts.character)
-          named = await poll(() => boxOn(url, item.cut.id, undefined, slot)?.slot?.character_name === opts.character, 20000,
+          named = await poll(async () => (await boxOn(url, item.cut.id, undefined, slot))?.slot?.character_name === opts.character, 20000,
             `colour ${slot + 1} did not take ${opts.character}`).catch(() => false)
         } catch (error) {
           rows.push({ ok: false, text: `cut ${item.number}: ${String(error.message).slice(0, 200)}` }); continue

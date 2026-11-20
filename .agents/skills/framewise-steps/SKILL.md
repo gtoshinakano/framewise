@@ -5,11 +5,18 @@ description: "Queue one Framewise analysis step for a range of cuts with scripts
 
 # Framewise: one step over a cut range
 
-Work from the repository root. Everything goes through `scripts/fw`, which talks to the Framewise API on the LAN
-(`FRAMEWISE_URL`, default `http://192.168.0.6:8080`). Do not open the browser, click the UI or call the API with curl for these.
+Work from the repository root. Everything goes through `scripts/fw`, which talks to the Framewise API on chopper.local
+(see below). Do not open the browser, click the UI or call the API with curl for these.
 
 Drawing or naming a box on the Target frames of specific cuts is not a queue step — use the
 `framewise-target-frames` skill, which clicks the app itself.
+
+## Where this runs
+
+The Framewise server is `chopper.local` (`http://chopper.local:8080`; `FRAMEWISE_URL` overrides it). The skill only
+talks to it over HTTP, so it works the same from any machine on the LAN. When you are not on chopper (`hostname`),
+there is no Docker, container or worker on this machine: never build, restart or `docker compose` anything. If the
+server needs a rebuild, tell the user to do it on chopper.
 
 ## 1. Name the episode
 
@@ -55,9 +62,11 @@ For progress at any time: `scripts/fw queue EP` or `scripts/fw status EP`.
 
 ## Errors
 
-- `this server does not understand cut ranges yet`: the host runs older code. Tell the user to rebuild and restart
-  `video-analyzer` on the host; never fall back to queuing the whole episode instead.
+- `this server does not understand cut ranges yet`: chopper runs older code. Tell the user to rebuild and restart
+  `video-analyzer` on chopper; never fall back to queuing the whole episode instead.
 - `HTTP 409 Cuts are still being detected`: wait (`scripts/fw wait EP`) and try again.
+- `cannot reach http://chopper.local:8080`: the server is down or the name does not resolve here. Tell the user; do
+  not swap in an IP address you guessed.
 - Any other error: show it to the user. Do not retry in a loop.
 
 ## Never

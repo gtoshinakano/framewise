@@ -23,7 +23,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results, episode_events
-from . import audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range
+from . import audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range, transcript_corrections
 from .transcript_parts import manual_metadata
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
@@ -276,6 +276,29 @@ class TranscriptSplitInput(BaseModel):
     at: float = Field(gt=0, allow_inf_nan=False, description="Episode seconds where the line is divided.")
     left: SplitPart
     right: SplitPart
+
+
+class CorrectionSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal['srt'] = 'srt'
+    file: str = Field(default="", max_length=500, description="The source file's name, kept as evidence.")
+    offset: float | None = Field(default=None, allow_inf_nan=False, description="Seconds added to the source's times to match the episode.")
+
+
+class TranscriptCorrection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    segment_id: str = Field(min_length=1)
+    text: str | None = Field(default=None, max_length=20000, description="The corrected text; omitted keeps the text.")
+    character_context_id: str | None = Field(default=None, description="Another character for the line; omitted keeps the speaker.")
+    cues: list[int] = Field(default_factory=list, max_length=50, description="Numbers of the source cues the line matched.")
+    srt_text: str = Field(default="", max_length=2000, description="The source's words for the line.")
+    note: str = Field(default="", max_length=500, description="Why the line was changed.")
+
+
+class TranscriptCorrections(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: CorrectionSource = Field(default_factory=CorrectionSource)
+    corrections: list[TranscriptCorrection] = Field(min_length=1, max_length=transcript_corrections.MAX_CORRECTIONS)
 
 
 class AssignVoiceInput(BaseModel):
@@ -1446,6 +1469,18 @@ def merge_transcript_segments(episode_id: str, body: TranscriptMergeInput):
         except line_edit.LineEditError as exc:
             raise HTTPException(exc.status, exc.message)
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
+
+
+@app.post("/api/episodes/{episode_id}/transcript/corrections")
+def correct_transcript(episode_id: str, body: TranscriptCorrections):
+    """Respell current lines (and, rarely, name another character) from a checked source such as a real .srt.
+
+    Times and aligner words are kept; lines changed since the plan was made come back under ``skipped``.
+    """
+    episode = require_episode(episode_id)
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        return transcript_corrections.apply(conn, episode, body.source.model_dump(), [item.model_dump() for item in body.corrections])
 
 
 @app.post("/api/transcript-segments/{segment_id}/split")

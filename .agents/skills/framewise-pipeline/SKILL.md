@@ -5,8 +5,8 @@ description: "Run a Framewise episode through the analysis pipeline automaticall
 
 # Framewise: the gated pipeline
 
-Work from the repository root with `scripts/fw` (it talks to the Framewise API on the LAN). The order is fixed and
-lives in fw itself; do not invent another one:
+Work from the repository root with `scripts/fw` (it talks to the Framewise API on chopper.local). The order is fixed
+and lives in fw itself; do not invent another one:
 
 1. setup (media, cut detection, transcription, subtitles, boxes and recognition)
 2. speaker attribution if it is stale
@@ -21,6 +21,13 @@ lives in fw itself; do not invent another one:
 11. done: hand over to the `framewise-review` skill for the final checklist
 
 Failed runs are also a checkpoint: the flow stops until each one is retried or dismissed.
+
+## Where this runs
+
+The Framewise server is `chopper.local` (`http://chopper.local:8080`; `FRAMEWISE_URL` overrides it). The skill only
+talks to it over HTTP, so it works the same from any machine on the LAN. When you are not on chopper (`hostname`),
+there is no Docker, container or worker on this machine: never build, restart or `docker compose` anything. If the
+server needs a rebuild, tell the user to do it on chopper.
 
 ## Run it
 

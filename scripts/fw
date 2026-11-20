@@ -11,7 +11,8 @@
     scripts/fw drive "Episode 6"                 # repeat next/wait until a person is needed
 
 Cut numbers are the editor's (1-based). RANGE is 100-120, 100..120, 7, 5- (to the end), -10 or all (the default).
-Only the HTTP API is used (FRAMEWISE_URL, else http://<APP_BIND_IP in .env>:8080, else http://192.168.0.6:8080).
+Only the HTTP API is used: FRAMEWISE_URL, else http://chopper.local:8080 (the server). It runs the same from any machine
+on the LAN, and nothing on the machine it runs from needs rebuilding or restarting.
 It queues, waits, retries, dismisses, cancels and reads. It never edits labels, boxes, transcript text, answers,
 dialogue or sequences, and never restarts containers.
 
@@ -24,13 +25,12 @@ import os
 import re
 import sys
 import time
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 OK, ERROR, BLOCKED, BUSY = 0, 1, 2, 3
-DEFAULT_URL = 'http://192.168.0.6:8080'
+DEFAULT_URL = 'http://chopper.local:8080'
 POLL_SECONDS = 15
 # speaker_attribution leaves this reason itself when some windows went unanswered; running it again would not settle it.
 UNANSWERED_ATTRIBUTION = 'Some lines could not be attributed'
@@ -42,16 +42,7 @@ class Failure(Exception):
 
 
 def base_url():
-    if url := os.environ.get('FRAMEWISE_URL'):
-        return url.rstrip('/')
-    try:
-        for line in (Path(__file__).resolve().parent.parent / '.env').read_text().splitlines():
-            key, _, value = line.partition('=')
-            if key.strip() == 'APP_BIND_IP' and value.strip():
-                return f'http://{value.strip()}:8080'
-    except OSError:
-        pass
-    return DEFAULT_URL
+    return (os.environ.get('FRAMEWISE_URL') or DEFAULT_URL).rstrip('/')
 
 
 class Api:

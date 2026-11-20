@@ -14,9 +14,13 @@ headless Chromium and does the work in the Target frames tab with real clicks an
 node .agents/skills/framewise-target-frames/target-frames.mjs <inspect|draw|name> --episode <id> --cut <n|a-b> [options]
 ```
 
-The app address comes from `FRAMEWISE_URL`, then `.env` `APP_BIND_IP`, then `http://192.168.0.6:8080`.
-Playwright is found from `PLAYWRIGHT_MODULE`, then the `playwright` package, then the mise install; Chromium is
-`CHROMIUM_PATH` (default `/usr/bin/chromium`). No auth, no cookies: the app is the LAN server.
+The app is `http://chopper.local:8080` unless `FRAMEWISE_URL` or `--url` says otherwise. Playwright is found from
+`PLAYWRIGHT_MODULE`, then the `playwright` package, then the mise install; Chromium is `CHROMIUM_PATH` (default
+`/usr/bin/chromium`) on the machine you run from. No auth, no cookies: the app is the LAN server.
+
+When you are not on chopper (`hostname`), only the browser runs here: there is no Docker, container or worker on this
+machine, so never build, restart or `docker compose` anything. A 503 from point detection means the inference worker
+on chopper is down: tell the user, do not try to start it.
 
 ## The rule: the character is always the one on the first screen
 
@@ -53,7 +57,7 @@ Then decide, always with `--dry-run` first: it prints the plan and the refusals 
 | add the character to cuts 5 to 10 | `... draw --episode <id> --cut 5-10` (only when the opening frame shows one person) |
 | only frames 3 and 5-7 | `... draw --episode <id> --cut 9 --frames 3,5-7` |
 | drag their last box instead of asking the detector | `... draw --episode <id> --cut 9 --mode carry` |
-| also take a crop the tracker found for nobody | `... draw --episode <id> --cut 9 --allow-unmatched` |
+| also use a crop the tracker found for nobody | `... draw --episode <id> --cut 9 --allow-unmatched` |
 | detect again first, then draw | `... draw --episode <id> --cut 9 --detect` |
 | mark each frame you fixed reviewed | `... draw --episode <id> --cut 9 --mark-reviewed` |
 | name colour 2 on cuts 9 to 12 | `... name --episode <id> --cut 9-12 --slot 1 --character "Rio Futaba"` |
@@ -68,8 +72,9 @@ chosen one.
 `draw` picks one of three, in this order, per frame that lacks the chosen colour:
 
 1. **Accept the app's own suggestion** — a tracker candidate whose `suggested_slot` is the chosen colour:
-   click `Accept`/`Promote` in that frame's *Suggested changes* list. Nothing is invented: the app already
-   picked the place and the colour.
+   click `Accept` in that frame's *Suggested changes* list. Nothing is invented: the app already picked the
+   place and the colour. With `--allow-unmatched`, a crop with no suggested colour is next: its box is drawn
+   (not Promoted, because Promote opens a new colour) and moved to the chosen colour.
 2. **Double-click where they were** (`--mode pick`, default) — the point is the centre of a crop the tracker
    found there, or of their box on the previous frame. The app's CPU detector answers the box and adds it
    like a drawn one. This needs the inference worker's point-detect thread: when it is not running the API
@@ -99,6 +104,9 @@ After a box lands the driver re-reads the API; if it arrived in another colour i
 - **`--allow-unmatched` is not set** — a crop the tracker found for nobody is left alone; only the app's own
   colour suggestion is taken automatically.
 
+`--detect` presses Detect characters before planning (or waits for a detection already queued) and plans from
+the new run; with `--dry-run` it only says it would, and the plan shown is from the current run.
+
 ## Exit codes, like `fw`
 
 `0` done or nothing to do · `1` an error · `2` a person is needed (a refusal, or a box the app could not find).
@@ -106,8 +114,8 @@ After a box lands the driver re-reads the API; if it arrived in another colour i
 ## What is not proven yet, so report it
 
 The read-only paths and the whole browser navigation are proven against the live app, and so is the
-double-click reaching the detector (it is the 503 that stops the box, not the driver). The **drag** and the
-**Accept/Promote click** have never been executed on a real episode: their selectors come from the app's own
+double-click reaching the detector (it is the 503 that stops the box, not the driver). The **drag**, the
+**Accept click** and **`--detect`** have never been executed on a real episode: their selectors come from the app's own
 source and are checked against the live DOM, but a run that actually writes should be watched with
 `--headed`, or a frame chosen where a wrong box is cheap to undo. Never run it on a cut the user has not
 named, and never use `--detect` without asking: it replaces the run and its automatic boxes.

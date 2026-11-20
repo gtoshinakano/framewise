@@ -12,6 +12,13 @@ Work from the repository root. Read the state with `scripts/fw` only:
 - `scripts/fw cut EP N`: one cut.
 - `scripts/fw failures EP`: failed runs with their errors.
 
+## Where this runs
+
+The Framewise server is `chopper.local` (`http://chopper.local:8080`; `FRAMEWISE_URL` overrides it). The skill only
+talks to it over HTTP, so it works the same from any machine on the LAN. When you are not on chopper (`hostname`),
+there is no Docker, container or worker on this machine: never build, restart or `docker compose` anything. If the
+server needs a rebuild, tell the user to do it on chopper.
+
 ## Write the checklist
 
 Turn the output into a short list for the user, in this order:
