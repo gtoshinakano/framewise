@@ -113,6 +113,8 @@ def suggested_delivery(on_screen, mouth, linked):
 def speech_lines(transcript, cut, keyframes):
     """The cut's merged transcript lines as ``S1…`` with clip-relative times, speaker, picture and mouth evidence, never the words."""
     from .assistant.transcript_edit import merged_transcript
+    from .transcript_parts import within
+    transcript = [part for row in transcript if (part := within(row, cut['start_time'], cut['end_time'])) is not None]
     duration = cut['end_time'] - cut['start_time']
     frames, segments = keyframes.get('frames') or [], keyframes.get('segments') or []
     lines = []
@@ -150,7 +152,7 @@ def gather(conn, cut_id):
     if not keyframes or not keyframe_view.is_keyframes(keyframes.get('content')):
         raise RuntimeError('This cut has no keyframe analysis; run Keyframes first')
     first = by_type.get('initial_frame')
-    transcript = _rows(conn, '''SELECT t.id,t.start_time,t.end_time,t.text,t.speaker_label,t.character_context_id,t.origin,c.title AS character_name
+    transcript = _rows(conn, '''SELECT t.id,t.start_time,t.end_time,t.text,t.words_json,t.speaker_label,t.character_context_id,t.origin,c.title AS character_name
                                FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id
                                WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>? AND trim(t.text)!=''
                                ORDER BY t.start_time,t.id''', (cut['episode_id'], cut['end_time'], cut['start_time']))

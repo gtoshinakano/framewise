@@ -38,7 +38,7 @@ def gather(conn, job):
             identities[name] = [stat.st_size, stat.st_mtime_ns]
         except OSError:
             pass
-    speech = db.all_rows("""SELECT id,start_time,end_time FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL
+    speech = db.all_rows("""SELECT id,start_time,end_time,text,words_json FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL
         AND deleted=0 ORDER BY start_time,end_time,id""", (job['episode_id'],), conn=conn)
     return {'episode': episode, 'media': identities, 'speech': speech}
 
@@ -46,10 +46,18 @@ def gather(conn, job):
 def inputs(conn, job):
     values = job.get('gathered') or gather(conn, job)
     # The detector uses speech times. Transcript spelling and speakers do not affect the strip.
-    return job_inputs.fingerprint({**values, 'speech': [(row['start_time'], row['end_time']) for row in values['speech']]})
+    return job_inputs.fingerprint({**values, 'speech': speech_spans(values['speech'])})
+
+
+def speech_spans(rows):
+    # Probe the aligned word times, without depending on their spelling.
+    from .transcript_parts import timings
+    return [span for row in rows for span in timings(row)]
 
 
 def invalidate(conn, job):
+    from .speaker_attribution import mark_stale
+    mark_stale(conn, job['episode_id'], 'Episode subtitles changed')
     conn.execute("""UPDATE analysis_results SET stale_reason='Episode subtitles changed' WHERE superseded_by IS NULL
         AND cut_id IN (SELECT id FROM cuts WHERE episode_id=? AND active=1)
         AND (json_extract(settings_json,'$.structured_type') IN ('initial_frame','keyframe_analysis','performance_beats','consistency_summary')
@@ -131,7 +139,7 @@ class Run:
     # -- stage 1: locate the strip -----------------------------------------------------------------
 
     def speech(self):
-        return [(row['start_time'], row['end_time']) for row in self.snapshot.data['speech']]
+        return speech_spans(self.snapshot.data['speech'])
 
     def locate(self):
         from . import inference_worker, single_cut_pipeline

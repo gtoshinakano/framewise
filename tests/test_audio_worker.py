@@ -6,6 +6,8 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 from app import audio_worker, db, worker
 
 
@@ -35,7 +37,10 @@ class AudioWorkerCase(unittest.TestCase):
             conn.execute("INSERT INTO context_items(id,project_id,kind,title) VALUES('c','p','character','Alice')")
         self.path = db.DATA_DIR / 'episode'
         self.path.mkdir()
-        (self.path / 'audio.wav').touch()
+        self.fake_clip(None, self.path / 'audio.wav', 0, 10)
+        self.addCleanup(patch.stopall)
+        patch.object(audio_worker, 'load_diarizer', return_value=object()).start()
+        patch.object(audio_worker, 'embed', return_value=np.array([1., 0.])).start()
         annotation = FakeAnnotation()
         self.output = types.SimpleNamespace(speaker_diarization=annotation, exclusive_speaker_diarization=annotation, speaker_embeddings=[Vector()])
 
@@ -100,7 +105,7 @@ class AudioWorkerTests(AudioWorkerCase):
 
         job = worker.enqueue('e', 'transcribe')
         claimed = worker.claim_job(('transcribe',))
-        stamp = types.SimpleNamespace(start_time=1.2, end_time=1.8, text='Hello')
+        stamp = types.SimpleNamespace(start_time=.65, end_time=1.3, text='Hello')
         fake_model = types.SimpleNamespace(transcribe=lambda **kwargs: [types.SimpleNamespace(text='Hello', language='English', time_stamps=[stamp])])
         qwen = types.SimpleNamespace(Qwen3ASRModel=types.SimpleNamespace(from_pretrained=lambda *a, **kw: fake_model))
         torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False), float32='float32', bfloat16='bf16')
@@ -109,6 +114,9 @@ class AudioWorkerTests(AudioWorkerCase):
         row = db.one('SELECT * FROM transcript_segments')
         self.assertEqual((row['text'], row['speaker_label'], row['character_context_id'], row['deleted']), ('Hello', 'SPEAKER_00', 'c', 0))
         self.assertAlmostEqual(row['start_time'], 1.2)
+        self.assertEqual(row['speaker_source'], 'voice')
+        self.assertEqual(row['confidence'], 'high')
+        self.assertEqual(json.loads(row['words_json'])[0][2], 'Hello')
         self.assertEqual(row['job_id'], job)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job,))['status'], 'done')
 
@@ -151,19 +159,20 @@ class AudioWorkerTests(AudioWorkerCase):
             with wave.open(str(target), 'wb') as out:
                 out.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
                 out.writeframes((b'\x01\x00' if start == 1 else b'\x02\x00') * round((end - start) * 16000))
-        def inspect(sample):
-            with wave.open(str(sample), 'rb') as wav:
-                self.assertEqual(wav.getnframes(), 40000)
-                self.assertEqual(wav.readframes(1), b'\x01\x00')
-                wav.setpos(16000)
-                self.assertEqual(wav.readframes(1), b'\x02\x00')
+        def inspect(_pipeline, sample):
+            self.assertEqual(len(sample), 40000)
+            self.assertEqual(sample[0], 1 / 32768)
+            self.assertEqual(sample[16000], 2 / 32768)
             return self.output
         with patch.object(audio_worker.media, 'episode_dir', return_value=self.path), patch.object(audio_worker, 'clip_audio', side_effect=clip), patch.object(audio_worker, 'diarize', side_effect=inspect):
             audio_worker.process(*claimed)
         sample = db.one('SELECT * FROM character_voice_samples')
         self.assertEqual(json.loads(sample['ranges_json']), ranges)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job,))['status'], 'done')
-        self.assertEqual(audio_worker.match_voices({'speaker': [1, 0]}, [{'character_id': sample['character_context_id'], 'embedding': json.loads(sample['embedding_json'])}])['speaker']['character_id'], 'c')
+        self.assertEqual(json.loads(sample['range_embeddings_json']), [
+            {'start': 1, 'end': 2, 'embedding': [1., 0.]},
+            {'start': 5, 'end': 6.5, 'embedding': [1., 0.]},
+        ])
 
     def test_upload_is_processed_without_episode_audio_and_cleaned(self):
         upload_id = '5ea4cdab-c60a-418c-b45f-14583b73bcf1'
@@ -203,8 +212,8 @@ class RangeRerunTests(AudioWorkerCase):
                         ('hand', 'manual_edit', 6.5, 7, 'Mine', 'SPEAKER_09'), ('after', 'model', 9, 10, 'After', 'SPEAKER_04')):
                 conn.execute("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,speaker_label,origin,model_id) VALUES(?,'e',?,?,?,?,?,?)",
                              (row[0], *row[2:6], row[1], model_id if row[1] == 'model' else None))
-        stamps = [types.SimpleNamespace(start_time=.5, end_time=1., text='Hello'), types.SimpleNamespace(start_time=2.6, end_time=3., text='there')]
-        self.model = types.SimpleNamespace(transcribe=lambda **kwargs: [types.SimpleNamespace(text='Hello there', language='English', time_stamps=stamps)])
+        stamps = [types.SimpleNamespace(start_time=.5, end_time=1., text='Hello.'), types.SimpleNamespace(start_time=2.6, end_time=3., text='there')]
+        self.model = types.SimpleNamespace(transcribe=lambda **kwargs: [types.SimpleNamespace(text='Hello. there', language='English', time_stamps=stamps)])
 
     def run_range(self, **extra):
         job = worker.enqueue('e', 'transcribe', {'range': {'start_time': 4, 'end_time': 8}, **extra})
@@ -221,14 +230,14 @@ class RangeRerunTests(AudioWorkerCase):
     def test_only_untouched_model_output_inside_the_interval_is_replaced(self):
         job, clipped = self.run_range()
         # Speakers are heard in the interval plus the audio around it; speech is read from the interval alone.
-        self.assertEqual([call.args[2:] for call in clipped.call_args_list], [(0., 10.), (4., 8.)])
+        clipped.assert_not_called()
         current = self.current()
         self.assertNotIn('wrong', current)
         self.assertEqual(current['hand']['text'], 'Mine')
         self.assertEqual({current[i]['text'] for i in ('before', 'after')}, {'Before', 'After'})
         new = [row for row in current.values() if row['job_id'] == job]
         # "there" lands on the hand-edited line, so it is not added over it.
-        self.assertEqual([(row['text'], row['speaker_label'], row['origin']) for row in new], [('Hello', 'SPEAKER_04', 'model')])
+        self.assertEqual([(row['text'], row['speaker_label'], row['origin']) for row in new], [('Hello.', 'SPEAKER_04', 'model')])
         self.assertAlmostEqual(new[0]['start_time'], 4.5)
         tombstone = db.one("SELECT * FROM transcript_segments WHERE parent_id='wrong'")
         self.assertEqual((tombstone['deleted'], tombstone['text'], tombstone['job_id']), (1, 'Wrnog', job))
@@ -238,7 +247,7 @@ class RangeRerunTests(AudioWorkerCase):
     def test_replace_manual_also_replaces_hand_edited_lines_but_keeps_history(self):
         job, _clipped = self.run_range(replace_manual=True)
         current = self.current()
-        self.assertEqual(sorted(row['text'].strip() for row in current.values()), ['After', 'Before', 'Hello', 'there'])
+        self.assertEqual(sorted(row['text'].strip() for row in current.values()), ['After', 'Before', 'Hello.', 'there'])
         self.assertIsNotNone(db.one("SELECT superseded_by FROM transcript_segments WHERE id='hand'")['superseded_by'])
         self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job,))['stage'], 'Complete · 2 new, 2 replaced')
 
@@ -282,9 +291,3 @@ class RangeRerunTests(AudioWorkerCase):
             audio_worker.process(*claimed)
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job,))['status'], 'failed')
         self.assertEqual(len(self.current()), 4)
-
-    def test_speech_windows_do_not_leave_a_tiny_tail(self):
-        self.assertEqual(audio_worker.speech_windows(0, 25), [(0, 25)])
-        self.assertEqual(audio_worker.speech_windows(0, 25.5), [(0, 25.5)])
-        self.assertEqual(audio_worker.speech_windows(10, 70), [(10, 35), (35, 60), (60, 70)])
-        self.assertEqual(audio_worker.speech_windows(5, 5), [])

@@ -1,8 +1,8 @@
 """Read, plan and apply Cut Assistance corrections of a cut's transcript.
 
 Transcript segments are revision chains like analysis results (``parent_id`` /
-``superseded_by``; deletions are tombstone revisions), and most of them are
-word-level fragments. The assistant therefore works on *lines*: fragments merged
+``superseded_by``; deletions are tombstone revisions), and may be sentence lines or
+legacy word fragments. The assistant works on *lines*: consecutive segments merged
 into speaker lines, numbered in time order exactly as ``get_transcript`` shows
 them. ``build_plan`` turns line-level edits into fragment-level operations and a
 readable before/after preview; ``apply`` writes them as ``assistant_edit``
@@ -20,6 +20,7 @@ import re
 import uuid
 
 from .. import db
+from ..transcript_parts import join_text, manual_metadata
 
 ORIGIN = 'assistant_edit'
 MAX_TEXT = 20000
@@ -37,13 +38,6 @@ def transcript_rows(cut):
                           LEFT JOIN context_items c ON c.id=t.character_context_id
                           WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>?
                           ORDER BY t.start_time,t.id''', (cut['episode_id'], cut['end_time'], cut['start_time']))
-
-
-def join_text(left, right):
-    """Join transcript fragments: no space between CJK fragments, one between Latin words."""
-    if left and right and left[-1].isascii() and left[-1].isalnum() and right[0].isascii() and right[0].isalnum():
-        return f'{left} {right}'
-    return left + right
 
 
 def merged_transcript(rows, gap=0.6):
@@ -360,7 +354,7 @@ def plan_stale(conn, payload_json):
         return True
 
 
-COLUMNS = '(id,episode_id,start_time,end_time,text,speaker_label,character_context_id,deleted,origin,model_id,job_id,parent_id)'
+COLUMNS = '(id,episode_id,start_time,end_time,text,speaker_label,character_context_id,deleted,origin,model_id,job_id,parent_id,words_json,speaker_source,confidence,evidence_json)'
 
 
 def apply(conn, payload_json):
@@ -374,16 +368,18 @@ def apply(conn, payload_json):
     for op in plan['ops']:
         new_id = str(uuid.uuid4())
         if op['op'] == 'insert':
-            conn.execute(f'INSERT INTO transcript_segments {COLUMNS} VALUES (?,?,?,?,?,?,?,0,?,NULL,NULL,NULL)',
+            conn.execute(f'INSERT INTO transcript_segments {COLUMNS} VALUES (?,?,?,?,?,?,?,0,?,NULL,NULL,NULL,NULL,\'manual\',NULL,NULL)',
                          (new_id, plan['episode_id'], op['start_time'], op['end_time'], op['text'], op['speaker_label'], op['character_context_id'], ORIGIN))
             invalidate_transcript(conn, plan['episode_id'], op['start_time'], op['end_time'])
             timing_changed = True
         else:
             old = conn.execute('SELECT * FROM transcript_segments WHERE id=?', (op['id'],)).fetchone()
             fields = old if op['op'] == 'delete' else op
-            conn.execute(f'INSERT INTO transcript_segments {COLUMNS} VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            metadata = manual_metadata(old, fields)
+            timing_changed |= metadata[0] != old['words_json']
+            conn.execute(f'INSERT INTO transcript_segments {COLUMNS} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                          (new_id, plan['episode_id'], fields['start_time'], fields['end_time'], fields['text'], fields['speaker_label'], fields['character_context_id'],
-                          int(op['op'] == 'delete'), ORIGIN, old['model_id'], old['job_id'], old['id']))
+                          int(op['op'] == 'delete'), ORIGIN, old['model_id'], old['job_id'], old['id'], *metadata))
             conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (new_id, old['id']))
             invalidate_transcript(conn, plan['episode_id'], old['start_time'], old['end_time'])
             if (old['start_time'], old['end_time']) != (fields['start_time'], fields['end_time']):

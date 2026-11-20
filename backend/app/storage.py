@@ -429,7 +429,7 @@ def job_outputs(job_id: str):
         if not job:
             raise HTTPException(404, 'Run not found')
         results = [dict(row) for row in conn.execute('SELECT a.id,a.cut_id,a.title,a.kind,a.origin,a.model_id,a.parent_id,a.superseded_by,c.cut_index,c.active FROM analysis_results a JOIN cuts c ON c.id=a.cut_id WHERE a.job_id=? ORDER BY a.rowid', (job_id,))]
-        segments = [dict(row) for row in conn.execute('SELECT id,start_time,end_time,text,speaker_label,model_id,parent_id,superseded_by,deleted FROM transcript_segments WHERE job_id=? ORDER BY start_time', (job_id,))]
+        segments = [dict(row) for row in conn.execute('SELECT id,start_time,end_time,text,speaker_label,model_id,parent_id,superseded_by,deleted,words_json,speaker_source,confidence,evidence_json FROM transcript_segments WHERE job_id=? ORDER BY start_time', (job_id,))]
         voices = [dict(row) for row in conn.execute('SELECT v.id,v.start_time,v.end_time,v.model_id,c.title AS character_name FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id WHERE v.id=?', (job_id,))]
         evidence = [dict(row) for row in conn.execute('SELECT cut_id,completed,evidence_json FROM analysis_job_cuts WHERE job_id=?', (job_id,))]
         for item in evidence:

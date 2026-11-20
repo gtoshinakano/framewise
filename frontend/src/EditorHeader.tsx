@@ -1,4 +1,4 @@
-import { AlertTriangle, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
+import { AlertTriangle, BookOpen, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
 import { LocalModelControl } from './LocalModelControl'
 import { VisualEngineControl } from './VisualEngineControl'
 import { Menu, type MenuEntry } from './Popover'
@@ -9,7 +9,7 @@ export type CharacterStep = 'character-boxes' | 'character-detection' | 'charact
 const go = (path: string) => { window.location.hash = path }
 
 /** The episode editor's top bar: where you are, the episode-wide actions grouped in menus, and the queue. */
-export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, onOpenSettings, onDeleteEpisode }: {
+export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, onOpenSettings, onOpenGlossary, onDeleteEpisode }: {
   projectId?: string
   projectTitle?: string
   episodeTitle?: string
@@ -30,6 +30,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   running: boolean
   onOpenQueue: (focus?: 'attention') => void
   onOpenSettings: () => void
+  onOpenGlossary: () => void
   onDeleteEpisode: () => void
 }) {
   const characterItems: MenuEntry[] = [
@@ -39,6 +40,8 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
     { key: 'recognize', icon: UserSearch, title: '2 · Recognize unlabeled boxes', hint: 'Compares first-frame boxes with every box you have labelled.', disabled: !!characterBlock, disabledReason: characterBlock, onSelect: () => onCharacterStep('character-detection') },
     'separator',
     { key: 'rerun', icon: RotateCcw, tone: 'caution', title: 'Redo automatic labels…', hint: 'Recognizes every cut again using your confirmed labels as examples. Manual labels and drawn boxes stay as they are.', disabled: !!characterBlock, disabledReason: characterBlock, onSelect: () => onCharacterStep('character-detection-rerun') },
+    'separator',
+    { key: 'glossary', icon: BookOpen, title: 'Name glossary…', disabled: !projectId, onSelect: onOpenGlossary },
   ]
   const cutItems: MenuEntry[] = [
     ...(hasCuts ? [{ key: 'prepare-episode', icon: ListChecks, title: 'Prepare episode…', onSelect: onPrepareEpisode }] : []),

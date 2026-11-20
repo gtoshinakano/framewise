@@ -13,6 +13,7 @@ EPISODE_TABLES = {
     'cuts': ('episode_id', 'data', None),
     'chunks': ('episode_id', 'data', None),
     'cut_edits': ('episode_id', 'data', None),
+    'episode_audio_ranges': ('episode_id', 'data', None),
     'transcript_segments': ('episode_id', 'data', None),
     'subtitle_runs': ('episode_id', 'data', 'status,language,band_json,error'),
     'subtitle_lines': ('episode_id', 'data', None),
@@ -90,6 +91,8 @@ def init_schema(conn):
     for action, row in (('INSERT', 'NEW'), ('UPDATE', 'NEW'), ('DELETE', 'OLD')):
         _trigger(conn, f'episode_events_job_lifecycle_{action}', 'jobs', action, 'status',
                  _bump_local('data', f'id={row}.episode_id'))
+    _trigger(conn, 'episode_events_audio_stale', 'episodes', 'UPDATE', 'transcript_stale_reason,speaker_attribution_stale_reason',
+             _bump_local('data', 'id=NEW.id'))
     _trigger(conn, 'episode_events_stale', 'analysis_results', 'UPDATE', 'stale_reason',
              _bump_local('stale', 'id=(SELECT episode_id FROM cuts WHERE id=NEW.cut_id)'))
     _trigger(conn, 'episode_events_subtitle_stale', 'subtitle_runs', 'UPDATE', 'stale_reason',

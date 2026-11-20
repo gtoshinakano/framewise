@@ -97,6 +97,10 @@ class Transcript(BaseModel):
     speaker_label: str
     character_context_id: str | None = Field(description="Optional ID of the corresponding character context item.")
     character_name: str | None = None
+    words_json: str | None = Field(None, description="JSON-encoded aligner words as [start, end, text] arrays, in episode seconds.")
+    speaker_source: str | None = None
+    confidence: str | None = Field(None, description="Model evidence for speaker attribution: high, medium or low.")
+    evidence_json: str | None = Field(None, description="JSON-encoded voice scores and attribution evidence.")
     deleted: bool = Field(description="True for a deletion revision returned in transcript history.")
     origin: str
     model_id: str | None

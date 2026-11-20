@@ -11,6 +11,7 @@ import uuid
 
 from . import db, media, prompt_context, sequence_compile, sequence_timeline, subtitle_store
 from .assistant.transcript_edit import merged_transcript
+from .transcript_parts import parts
 
 TYPES = ('compilation', 'bible', 'plan', 'shot', 'review')
 MAX_CONTENT = 2_000_000
@@ -77,13 +78,13 @@ def resnapshot(conn, sequence, cuts):
 
 def transcript_lines(conn, episode_id, start, end):
     """Current spoken lines overlapping ``[start, end)``, merged from word fragments, each with its fragments in ``parts``."""
-    rows = [dict(row) for row in conn.execute('''SELECT t.id,t.start_time,t.end_time,t.text,t.speaker_label,t.origin,t.character_context_id,c.title AS character_name
+    rows = [dict(row) for row in conn.execute('''SELECT t.id,t.start_time,t.end_time,t.text,t.words_json,t.speaker_label,t.origin,t.character_context_id,c.title AS character_name
         FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id
         WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>? ORDER BY t.start_time,t.id''', (episode_id, end, start))]
     by_id = {row['id']: row for row in rows}
     lines = merged_transcript([row for row in rows if str(row['text'] or '').strip()])
     for line in lines:
-        line['parts'] = [by_id[fragment] for fragment in line['ids']]
+        line['parts'] = [part for fragment in line['ids'] for part in parts(by_id[fragment])]
     return lines
 
 
@@ -108,9 +109,10 @@ def event_starts(conn, cuts):
 def source_fingerprint(conn, sequence, cuts):
     """``(hash, transcript fragments, subtitle rows)`` of the range: what a dialogue compilation is built from."""
     start, end = cuts[0]['start_time'], cuts[-1]['end_time']
-    fragments = [dict(row) for row in conn.execute("""SELECT id,start_time,end_time,text,speaker_label,character_context_id FROM transcript_segments
+    fragments = [dict(row) for row in conn.execute("""SELECT id,start_time,end_time,text,words_json,speaker_label,character_context_id FROM transcript_segments
         WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND start_time<? AND end_time>? ORDER BY start_time,id""", (sequence['episode_id'], end, start))]
     subtitles = subtitle_rows(conn, sequence['episode_id'], start, end)
+    fragments = [part for row in fragments for part in parts(row)]
     return sequence_compile.source_hash(fragments, subtitles), fragments, subtitles
 
 

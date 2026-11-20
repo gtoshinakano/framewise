@@ -13,6 +13,7 @@ export type RemoteServer = {
 // Text pipelines the remote lanes can take, in the order the cut workflow runs them.
 export const TEXT_JOB_TYPES: { pipeline: string; label: string }[] = [
   { pipeline: 'performance_beats', label: 'Performance beats' },
+  { pipeline: 'speaker_attribution', label: 'Speaker attribution' },
   { pipeline: 'consistency_summary', label: 'Consistency summary' },
   { pipeline: 'review_answers', label: 'Production decisions' },
   { pipeline: 'regen', label: 'Cut summary' },

@@ -84,7 +84,7 @@ function SegmentEditor({ draft, setDraft, characters, duration, currentTime, bus
   </div>
 }
 
-export default function TranscriptEditor({ episodeId, projectId, duration, currentTime, segments, selectedId, onSelect, onSaved, playRange, hasAudio, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection, view, onViewChange }: {
+export default function TranscriptEditor({ episodeId, projectId, duration, currentTime, segments, selectedId, onSelect, onSaved, playRange, hasAudio, transcriptStale, attributionStale, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection, view, onViewChange }: {
   episodeId: string
   projectId: string
   duration: number
@@ -95,6 +95,8 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
   onSaved: () => Promise<void>
   playRange: (start: number, end: number) => void
   hasAudio: boolean
+  transcriptStale: string | null
+  attributionStale: string | null
   subtitleLanguage: string | null
   subtitleRun: SubtitleRun | null
   jobs: Job[]
@@ -106,6 +108,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
   const [draft, setDraft] = useState<Draft | null>(null)
   const [characters, setCharacters] = useState<ContextItem[]>([])
   const [history, setHistory] = useState(false)
+  const [checkOnly, setCheckOnly] = useState(false)
   const [page, setPage] = useState(0)
   const [historySegments, setHistorySegments] = useState<TranscriptSegment[]>([])
   const [busy, setBusy] = useState(false)
@@ -196,18 +199,21 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
     catch (err) { setError((err as Error).message) }
     finally { setBusy(false) }
   }
-  const visibleSegments = history ? historySegments : segments
+  const needsCheck = (segment: TranscriptSegment) => segment.confidence === 'medium' || segment.confidence === 'low'
+  const checkCount = segments.filter(needsCheck).length
+  const visibleSegments = history ? historySegments : checkOnly ? segments.filter(needsCheck) : segments
   const pageCount = Math.max(1, Math.ceil(visibleSegments.length / PAGE_SIZE))
   const currentPage = Math.min(page, pageCount - 1)
   useEffect(() => {
     const index = visibleSegments.findIndex(segment => segment.id === selectedId)
     if (index >= 0) setPage(Math.floor(index / PAGE_SIZE))
-  }, [selectedId, history])
+  }, [selectedId, history, checkOnly])
   useEffect(() => { if (view === 'lines' && selectedId) document.getElementById(`transcript-row-${selectedId}`)?.scrollIntoView({ block: 'nearest' }) }, [selectedId, view, currentPage])
   const voiceStart = voiceRange.start, voiceEnd = voiceRange.end
   const voiceRangeValid = voiceStart !== null && voiceEnd !== null && voiceEnd > voiceStart && voiceStart >= 0 && voiceEnd <= duration && !voiceRanges.some(range => voiceStart < range.end_time && voiceEnd > range.start_time)
   const totalVoiceDuration = voiceRanges.reduce((sum, range) => sum + range.end_time - range.start_time, 0)
   const transcribing = jobs.find(job => job.pipeline === 'transcribe' && ['queued', 'running'].includes(job.status))
+  const attributing = jobs.some(job => job.pipeline === 'speaker_attribution' && ['queued', 'running'].includes(job.status))
   const subtitling = jobs.some(job => job.pipeline === 'subtitles' && ['queued', 'running'].includes(job.status))
   const characterName = (id: string | null) => characters.find(character => character.id === id)?.title
   return <div className="flex h-full min-h-0 flex-col">
@@ -215,11 +221,15 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
       <p className="text-xs font-semibold uppercase tracking-[.14em]" style={{ color: accent }}>Audio</p>
       <SegmentedControl className="mt-2 w-full" label="Audio views" value={view} onChange={onViewChange} options={[
         { value: 'lines', label: 'Lines', icon: AudioLines, badge: <span className="muted font-mono text-[10px]">{segments.length}</span> },
-        { value: 'tools', label: 'Tools', icon: Wrench, badge: transcribing || subtitling ? <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#f5c678]" aria-label="Working" /> : undefined },
+        { value: 'tools', label: 'Tools', icon: Wrench, badge: transcribing || subtitling || attributing ? <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#f5c678]" aria-label="Working" /> : undefined },
         { value: 'voices', label: 'Voices', icon: Mic },
       ]} />
     </div>
     {error && <p role="alert" className="mx-4 mt-3 flex items-start justify-between gap-2 text-xs text-[#ff9fa7]">{error}<button onClick={() => setError('')} aria-label="Dismiss"><X size={13} /></button></p>}
+    {(transcriptStale || attributionStale) && <div className="space-y-1 border-b hairline px-4 py-2 text-xs text-[#f5c678]">
+      {transcriptStale && <div className="flex flex-wrap items-center justify-between gap-1"><span>{transcriptStale}</span><button type="button" className="btn btn-quiet !py-1 !text-xs" disabled={busy || !!transcribing} onClick={() => void queueAudio('/transcribe')}>Transcribe again</button></div>}
+      {attributionStale && <div className="flex flex-wrap items-center justify-between gap-1"><span>{attributionStale}</span><button type="button" className="btn btn-quiet !py-1 !text-xs" disabled={busy || attributing} onClick={() => void queueAudio('/speaker-attribution')}>Attribute speakers again</button></div>}
+    </div>}
     <div className="scrollbar min-h-0 flex-1 overflow-y-auto">
       {view === 'lines' && <div className="p-4">
         <div className="mb-3 flex items-center justify-between gap-2">
@@ -229,6 +239,10 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
             <IconButton icon={Plus} label="Add a line at the playhead" text="Add" size="sm" disabled={!duration || busy} onClick={addAtPlayhead} />
           </div>
         </div>
+        {!history && <label className="mb-3 flex items-center gap-2 text-xs">
+          <input type="checkbox" className="accent-[#d18c9e]" checked={checkOnly} onChange={event => { setCheckOnly(event.target.checked); setPage(0); close() }} />
+          Lines to check <span className="muted tabular-nums">{checkCount}</span>
+        </label>}
         {draft && !draft.id && <div className="mb-2"><div className="rounded-t-lg border border-[#7a4a57] bg-[#2a1d23] px-3 py-2 text-xs font-semibold">New line</div>
           <SegmentEditor draft={draft} setDraft={setDraft} characters={characters} duration={duration} currentTime={currentTime} busy={busy} onSave={() => void save()} onDelete={() => void remove()} onCancel={close} playRange={playRange} /></div>}
         <div className="space-y-1.5">
@@ -238,17 +252,18 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
               <button aria-expanded={open} onClick={() => { if (open) close(); else { onSelect(segment.id); setDraft(segment) } }}
                 className={`w-full border p-2.5 text-left ${open ? 'rounded-t-lg border-[#7a4a57] bg-[#2a1d23]' : selectedId === segment.id ? 'rounded-lg border-[#7a4a57] bg-[#241a1f]' : 'rounded-lg border-[#2c323d] bg-[#181d26] hover:border-[#56464d]'}`}>
                 <span className="flex justify-between gap-2 font-mono text-[10px] tabular-nums text-[#c7aab2]"><span>{formatTimecode(segment.start_time, { precision: 1 })} – {formatTimecode(segment.end_time, { precision: 1 })}</span><span className="font-sans">{segment.deleted ? 'Deleted' : segment.superseded_by ? 'Earlier revision' : formatDuration(segment.end_time - segment.start_time)}</span></span>
-                <span className="mt-0.5 line-clamp-2 text-xs"><strong className="font-semibold" style={{ color: accent }}>{characterName(segment.character_context_id) || segment.speaker_label || 'Speaker'}</strong> {segment.text}</span>
+                <span className="mt-0.5 line-clamp-2 text-xs"><strong className="font-semibold" style={{ color: accent }}>{characterName(segment.character_context_id) || segment.speaker_label || 'Speaker'}</strong>
+                  {needsCheck(segment) && <span className="mx-1 rounded border border-[#735a35] bg-[#342818] px-1 py-0.5 text-[9px] text-[#f5c678]" title={`Speaker confidence: ${segment.confidence}`}>check</span>} {segment.text}</span>
               </button>
               {open && draft && <SegmentEditor draft={draft} setDraft={setDraft} characters={characters} duration={duration} currentTime={currentTime} busy={busy} onSave={() => void save()} onDelete={() => void remove()} onCancel={close} playRange={playRange} />}
             </div>
-          }) : <div className="muted rounded-lg border border-dashed hairline p-5 text-center text-xs">No transcript lines yet. Transcribe the episode under Tools.</div>}
+          }) : <div className="muted rounded-lg border border-dashed hairline p-5 text-center text-xs">{checkOnly && !history && segments.length ? 'No lines with medium or low speaker confidence.' : 'No transcript lines yet. Transcribe the episode under Tools.'}</div>}
         </div>
         {pageCount > 1 && <div className="mt-3 flex items-center justify-between text-xs"><button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} className="btn btn-quiet !px-2.5 !py-1">Previous</button><span className="muted">Page {currentPage + 1} of {pageCount}</span><button disabled={currentPage >= pageCount - 1} onClick={() => setPage(currentPage + 1)} className="btn btn-quiet !px-2.5 !py-1">Next</button></div>}
       </div>}
       {view === 'tools' && <>
         <Section id="audio.transcribe" title="Transcribe whole episode" icon={AudioLines} accent={accent} badge={transcribing ? <span className="ml-1 text-[10px] normal-case tracking-normal text-[#f5c678]">{transcribing.status === 'queued' ? 'queued' : 'running'}</span> : null}>
-          <p className="muted text-[11px] leading-4">Extracts the audio and transcribes all speech with speaker labels. Lines you edited by hand stay in the history.</p>
+          <p className="muted text-[11px] leading-4">Transcribes speech outside the excluded audio ranges and identifies speakers. Hand-edited lines are kept.</p>
           <button disabled={busy || (!hasAudio && !preparing)} onClick={() => queueAudio('/transcribe')} className="btn btn-primary mt-3 w-full !py-2"><AudioLines size={14} /> Transcribe whole episode</button>
           {!hasAudio && !preparing && <p className="muted mt-2 text-[11px]">{duration > 0 ? 'This video has no audio track.' : 'Prepare the video first.'}</p>}
         </Section>

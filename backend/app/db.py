@@ -203,6 +203,31 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS project_name_glossary (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            spelling TEXT NOT NULL,
+            reading TEXT NOT NULL,
+            character_context_id TEXT REFERENCES context_items(id) ON DELETE CASCADE,
+            part TEXT CHECK(part IN ('family','given')),
+            CHECK((character_context_id IS NULL) = (part IS NULL))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS project_name_glossary_cast_idx
+            ON project_name_glossary(project_id,character_context_id,part,spelling,reading) WHERE character_context_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS project_name_glossary_other_idx
+            ON project_name_glossary(project_id,spelling,reading) WHERE character_context_id IS NULL;
+        CREATE TABLE IF NOT EXISTS episode_audio_ranges (
+            id TEXT PRIMARY KEY,
+            episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            start_time REAL NOT NULL,
+            end_time REAL NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('OP','ED','repeat','manual')),
+            source TEXT NOT NULL CHECK(source IN ('fingerprint','user')),
+            matched_episodes_json TEXT,
+            suppressed INTEGER NOT NULL DEFAULT 0,
+            CHECK(start_time >= 0 AND end_time > start_time)
+        );
+        CREATE INDEX IF NOT EXISTS episode_audio_ranges_time_idx ON episode_audio_ranges(episode_id,start_time);
         CREATE INDEX IF NOT EXISTS transcript_episode_time_idx ON transcript_segments(episode_id,start_time,end_time);
         CREATE TABLE IF NOT EXISTS subtitle_runs (
             id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
@@ -443,6 +468,15 @@ def init_db():
                     db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
         result_columns = {row["name"] for row in db.execute("PRAGMA table_info(analysis_results)")}
         columns = {row["name"] for row in db.execute("PRAGMA table_info(transcript_segments)")}
+        episode_columns = {row["name"] for row in db.execute("PRAGMA table_info(episodes)")}
+        for name in ("transcript_stale_reason", "speaker_attribution_stale_reason"):
+            if name not in episode_columns:
+                db.execute(f"ALTER TABLE episodes ADD COLUMN {name} TEXT")
+        for name in ("words_json", "speaker_source", "confidence", "evidence_json"):
+            if name not in columns:
+                db.execute(f"ALTER TABLE transcript_segments ADD COLUMN {name} TEXT")
+        if "range_embeddings_json" not in {row["name"] for row in db.execute("PRAGMA table_info(character_voice_samples)")}:
+            db.execute("ALTER TABLE character_voice_samples ADD COLUMN range_embeddings_json TEXT")
         migrating = "status" in result_columns or "status" in columns
         remote_columns = {row["name"] for row in db.execute("PRAGMA table_info(remote_text_server)")}
         if "token" not in remote_columns:  # basic-auth username/password gave way to a Bearer token
@@ -520,6 +554,8 @@ def init_db():
         ):
             if column not in job_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+        from .name_glossary import seed
+        seed(db)
         migrate_queue_dependencies(db)
         checkpoint_columns = {row['name'] for row in db.execute('PRAGMA table_info(analysis_job_cuts)')}
         if 'source_cut_json' not in checkpoint_columns:

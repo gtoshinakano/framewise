@@ -1,7 +1,7 @@
 import { CUT_FILTERS, cutsNeedingAction, matchesAnyFilter, nextNeedingAction, type CutFilterKey, type FilterDisplay } from './cutFilters'
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { AudioLines, ChevronLeft, ChevronRight, Clapperboard, CircleHelp, Crosshair, Layers3, MessageSquareText, Minus, Plus, Scissors, SkipForward } from 'lucide-react'
-import type { AudioSelection, Chunk, Cut, TranscriptSegment, Waveform } from './api'
+import { AudioLines, ChevronLeft, ChevronRight, Clapperboard, CircleHelp, Crosshair, Layers3, MessageSquareText, Music2, Minus, Plus, Scissors, SkipForward } from 'lucide-react'
+import type { AudioSelection, Chunk, Cut, EpisodeAudioRange, TranscriptSegment, Waveform } from './api'
 import type { AnalysisQueueState } from './analysisQueueStates'
 import type { SequenceSummary } from './sequenceApi'
 import { ActiveFilterChips, CutFilterPopover } from './CutFilterPopover'
@@ -28,6 +28,8 @@ type Props = {
   cuts: Cut[]
   cutQueueStates: Map<string, AnalysisQueueState>
   transcript: TranscriptSegment[]
+  audioRanges: EpisodeAudioRange[]
+  onEditAudioRange: (range?: EpisodeAudioRange) => void
   currentTime: number
   seekRevision: number
   selectedCutId: string | null
@@ -294,6 +296,17 @@ export function Timeline(props: Props) {
       })}{!cuts.length && <div className="muted flex h-full items-center justify-center text-xs">Run hard-cut detection to create timeline segments</div>}{playhead >= 0 && playhead <= 100 && <div className="pointer-events-none absolute inset-y-0 w-px bg-[#eee7ff]" style={{ left: `${playhead}%` }} />}</div>
       <LaneLabel icon={<AudioLines size={15} />} label="Audio waveform: drag to seek, Shift-drag to select audio to transcribe again" />
       <WaveformCanvas waveform={waveform} duration={duration} start={start} span={span} currentTime={currentTime} onSeek={onSeek} hasAudio={hasAudio} preparing={preparing} selection={audioSelection} onSelect={onSelectAudio} />
+      <IconButton icon={Plus} label="Add excluded audio range" size="sm" disabled={!hasAudio || !duration}
+        onClick={() => props.onEditAudioRange()} />
+      <div role="group" aria-label="OP/ED and excluded audio" className="relative h-7 overflow-hidden rounded-md bg-[#1b202b]">
+        {!props.audioRanges.some(visible) && <span className="muted flex h-full items-center px-2 text-[11px]">No OP/ED or excluded audio in this window</span>}
+        {props.audioRanges.filter(visible).map(range => {
+          const label = `${range.kind === 'repeat' ? 'Repeat' : range.kind === 'manual' ? 'Excluded' : range.kind} · ${formatTimecode(range.start_time)}–${formatTimecode(range.end_time)}`
+          return <button type="button" key={range.id} aria-label={`Edit ${label}`} title={label} onClick={() => props.onEditAudioRange(range)}
+            className="absolute inset-y-0 overflow-hidden rounded border border-[#7b683c] bg-[#524224] px-1 text-left text-[10px] text-[#f6d891] hover:bg-[#68532b]"
+            style={blockStyle(range, start, span)}><span className="flex items-center gap-1 truncate"><Music2 size={11} className="shrink-0" />{label}</span></button>
+        })}
+      </div>
       <LaneLabel icon={<MessageSquareText size={15} />} label="Speech: click a line to edit it" />
       <div className="relative h-10 overflow-hidden rounded-md bg-[#1b202b]">{transcript.some(visible) ? transcript.filter(visible).map(segment => <button key={segment.id} title={`${segment.speaker_label || 'Speaker'}: ${segment.text}`} onClick={() => onSelectTranscript(segment)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedTranscriptId === segment.id ? 'bg-[#c2828e88] text-white' : 'bg-[#8d506566] text-[#f0c8d0]'}`} style={blockStyle(segment, start, span)}><span className="block truncate">{segment.speaker_label || 'Speaker'}</span><span className="block truncate text-[9px] opacity-70">{segment.text}</span></button>) : <div className="muted flex h-full items-center justify-center text-xs">No speech annotations in this window</div>}<SelectionBand selection={audioSelection} start={start} span={span} /></div>
       <LaneLabel icon={<Layers3 size={15} />} label="Chunks" />

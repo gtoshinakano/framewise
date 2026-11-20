@@ -233,6 +233,33 @@ class AudioApiTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/episodes/e/transcript/assign-voice', json={'character_context_id': 'c'}).json(), {'updated': 1})
         self.assertIsNone(next(row for row in self.client.get('/api/episodes/e/transcript').json() if row['text'] == 'Other')['character_context_id'])
 
+    def test_edit_and_delete_an_auto_range_preserves_the_user_override(self):
+        from app import audio_ranges
+        with db.connect() as conn:
+            audio_ranges.replace_fingerprints(conn, 'e', [
+                {'start_time': 1, 'end_time': 5, 'kind': 'OP', 'matched_episodes': ['other-episode']},
+            ])
+            conn.execute("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text) VALUES('m','e',5,6,'hello')")
+        path = '/api/episodes/e/audio-ranges'
+        result = self.client.get(path).json()
+        self.assertEqual(result[0]['source'], 'fingerprint')
+        current = self.client.put(f"{path}/{result[0]['id']}", json={'start_time': 2, 'end_time': 6, 'kind': 'OP'})
+        self.assertEqual(current.status_code, 200)
+        self.assertEqual([(row['source'], row['start_time']) for row in current.json()], [('user', 2)])
+        self.assertEqual(self.client.delete(f"{path}/{current.json()[0]['id']}").json(), [])
+        self.assertEqual(db.one("SELECT transcript_stale_reason FROM episodes WHERE id='e'")['transcript_stale_reason'],
+                         'Excluded audio ranges changed')
+        self.assertEqual(len(db.all_rows("SELECT 1 FROM episode_audio_ranges WHERE source='user' AND suppressed=1")), 1)
+
+    def test_glossary_changes_are_scoped_to_the_project(self):
+        path = '/api/projects/p/name-glossary'
+        result = self.client.post(path, json={'spelling': '峰ヶ原高校', 'reading': 'みねがはらこうこう'})
+        self.assertEqual(result.status_code, 200)
+        entry = result.json()[0]
+        self.assertEqual(self.client.get('/api/projects/other/name-glossary').json(), [])
+        self.assertEqual(self.client.delete('/api/projects/other/name-glossary/' + entry['id']).status_code, 404)
+        self.assertEqual(self.client.delete(path + '/' + entry['id']).json(), [])
+
     def test_many_generated_words_are_loaded_at_analysis_start(self):
         with db.connect() as conn:
             conn.executemany("INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,origin) VALUES(?, 'e',?,?,?,'model')",

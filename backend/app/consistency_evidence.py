@@ -120,9 +120,13 @@ def episode_context(conn, cut):
 
 def spoken_lines(segments, start, end):
     """Transcript lines overlapping ``[start, end)`` with fragments of one speaker merged: ``[{t0, t1, speaker, character_id, who}]``, episode seconds."""
+    from .transcript_parts import within
     lines = []
     for segment in sorted(segments or [], key=lambda item: item.get('start_time') or 0):
         if segment.get('deleted') or not str(segment.get('text') or '').strip():
+            continue
+        segment = within(segment, start, end)
+        if segment is None:
             continue
         t0, t1 = float(segment['start_time']), float(segment['end_time'])
         if t1 <= start or t0 >= end:
@@ -333,7 +337,7 @@ def gather(cut_id, by_type, conn=None):
     cut = conn.execute('SELECT c.*,e.width,e.height FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE c.id=?', (cut_id,)).fetchone()
     if not cut:
         return [], None, 9 / 16
-    segments = [dict(row) for row in conn.execute("""SELECT t.start_time,t.end_time,t.text,t.speaker_label,t.character_context_id,c.title AS character_name
+    segments = [dict(row) for row in conn.execute("""SELECT t.start_time,t.end_time,t.text,t.words_json,t.speaker_label,t.character_context_id,c.title AS character_name
                                                      FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id
                                                      WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.start_time<? AND t.end_time>?
                                                      ORDER BY t.start_time""", (cut['episode_id'], cut['end_time'], cut['start_time']))]

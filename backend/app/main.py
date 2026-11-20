@@ -23,6 +23,8 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results, episode_events
+from . import audio_ranges, name_glossary, speaker_attribution
+from .transcript_parts import manual_metadata
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
 from .inference_worker import SUMMARY_TITLE, SUMMARY_TEXT_SYSTEM, SYSTEM_PROMPT, SUMMARY_SYSTEM, PRODUCTION_BRIEF_SYSTEM
@@ -332,6 +334,7 @@ def episode_response(episode_id: str):
     episode["archived_cuts"] = [serialize_cut(cut) for cut in db.all_rows("SELECT * FROM cuts WHERE episode_id=? AND active=0 ORDER BY start_time,cut_index", (episode_id,))]
     episode["chunks"] = db.all_rows("SELECT * FROM chunks WHERE episode_id=? ORDER BY chunk_index", (episode_id,))
     with db.connect() as conn:
+        episode["audio_ranges"] = audio_ranges.public(conn, episode_id)
         episode["cut_history"] = cut_history.state(conn, episode_id)
         run = subtitle_store.current_run(episode_id, conn)
         episode["subtitles"] = {"language": episode.get("subtitle_language"),
@@ -1248,13 +1251,133 @@ def get_voice_sample_audio(sample_id: str):
     return preview_voice_ranges(media.episode_dir(sample['project_id'], sample['episode_id']) / 'audio.wav', ranges)
 
 
+class GlossaryInput(BaseModel):
+    spelling: str = Field(min_length=1, max_length=120)
+    reading: str = Field(min_length=1, max_length=120)
+    character_context_id: str | None = None
+    part: Literal['family', 'given'] | None = None
+
+
+@app.get('/api/projects/{project_id}/name-glossary')
+def get_name_glossary(project_id: str):
+    require_project(project_id)
+    with db.connect() as conn:
+        return name_glossary.rows(conn, project_id)
+
+
+def glossary_changed(conn, project_id):
+    for episode in conn.execute('SELECT id FROM episodes WHERE project_id=?', (project_id,)).fetchall():
+        speaker_attribution.mark_stale(conn, episode['id'], 'Name glossary changed')
+
+
+def save_glossary_entry(project_id, body, entry_id=None):
+    require_project(project_id)
+    spelling, reading = body.spelling.strip(), body.reading.strip()
+    if not spelling or not re.fullmatch(r'[ぁ-ゖァ-ヺー]+', reading):
+        raise HTTPException(422, 'Enter a spelling and a kana reading.')
+    if bool(body.character_context_id) != bool(body.part):
+        raise HTTPException(422, 'Choose a family or given name for a character name.')
+    values = (spelling, reading, body.character_context_id, body.part)
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if body.character_context_id and not conn.execute("""SELECT 1 FROM context_items WHERE id=? AND project_id=? AND kind='character'""",
+                                                        (body.character_context_id, project_id)).fetchone():
+            raise HTTPException(422, 'Choose a character from this project.')
+        try:
+            if entry_id:
+                cursor = conn.execute("""UPDATE project_name_glossary SET spelling=?,reading=?,character_context_id=?,part=?
+                    WHERE id=? AND project_id=?""", (*values, entry_id, project_id))
+                if not cursor.rowcount:
+                    raise HTTPException(404, 'Glossary entry not found')
+            else:
+                conn.execute("""INSERT INTO project_name_glossary(spelling,reading,character_context_id,part,id,project_id)
+                    VALUES (?,?,?,?,?,?)""", (*values, str(uuid.uuid4()), project_id))
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, 'This glossary entry already exists.') from exc
+        glossary_changed(conn, project_id)
+        return name_glossary.rows(conn, project_id)
+
+
+@app.post('/api/projects/{project_id}/name-glossary')
+def create_glossary_entry(project_id: str, body: GlossaryInput):
+    return save_glossary_entry(project_id, body)
+
+
+@app.put('/api/projects/{project_id}/name-glossary/{entry_id}')
+def update_glossary_entry(project_id: str, entry_id: str, body: GlossaryInput):
+    return save_glossary_entry(project_id, body, entry_id)
+
+
+@app.delete('/api/projects/{project_id}/name-glossary/{entry_id}')
+def delete_glossary_entry(project_id: str, entry_id: str):
+    with db.connect() as conn:
+        cursor = conn.execute('DELETE FROM project_name_glossary WHERE id=? AND project_id=?', (entry_id, project_id))
+        if not cursor.rowcount:
+            raise HTTPException(404, 'Glossary entry not found')
+        glossary_changed(conn, project_id)
+        return name_glossary.rows(conn, project_id)
+
+
+@app.post('/api/episodes/{episode_id}/speaker-attribution')
+def rerun_speaker_attribution(episode_id: str):
+    require_episode(episode_id)
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        dependencies = worker.pending_jobs(conn, episode_id, ('transcribe', 'subtitles'))
+        return {'job_id': speaker_attribution.insert(conn, episode_id, dependencies=dependencies)}
+
+
+class AudioRangeInput(BaseModel):
+    start_time: float
+    end_time: float
+    kind: Literal['OP', 'ED', 'repeat', 'manual'] = 'manual'
+
+
+@app.get('/api/episodes/{episode_id}/audio-ranges')
+def get_audio_ranges(episode_id: str):
+    require_episode(episode_id)
+    with db.connect() as conn:
+        return audio_ranges.public(conn, episode_id)
+
+
+def save_audio_range(episode_id, body, range_id=None):
+    episode = require_episode(episode_id)
+    if not 0 <= body.start_time < body.end_time <= (episode['duration'] or 0):
+        raise HTTPException(422, 'Set a range within the episode.')
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if range_id and not audio_ranges.remove(conn, episode_id, range_id):
+            raise HTTPException(404, 'Audio range not found')
+        audio_ranges.add(conn, episode_id, body.start_time, body.end_time, body.kind)
+        return audio_ranges.public(conn, episode_id)
+
+
+@app.post('/api/episodes/{episode_id}/audio-ranges')
+def create_audio_range(episode_id: str, body: AudioRangeInput):
+    return save_audio_range(episode_id, body)
+
+
+@app.put('/api/episodes/{episode_id}/audio-ranges/{range_id}')
+def update_audio_range(episode_id: str, range_id: str, body: AudioRangeInput):
+    return save_audio_range(episode_id, body, range_id)
+
+
+@app.delete('/api/episodes/{episode_id}/audio-ranges/{range_id}')
+def delete_audio_range(episode_id: str, range_id: str):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not audio_ranges.remove(conn, episode_id, range_id):
+            raise HTTPException(404, 'Audio range not found')
+        return audio_ranges.public(conn, episode_id)
+
+
 @app.post("/api/episodes/{episode_id}/transcript")
 def create_transcript_segment(episode_id: str, body: TranscriptInput):
     episode = require_episode(episode_id)
     validate_transcript(episode, body)
     segment_id = str(uuid.uuid4())
     with db.connect() as conn:
-        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id) VALUES (?,?,?,?,?,?,?)",
+        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,speaker_source) VALUES (?,?,?,?,?,?,?,'manual')",
                      (segment_id, episode_id, body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id))
         structured_results.invalidate_transcript(conn, episode_id, body.start_time, body.end_time)
         subtitle_store.invalidate_probes(conn, episode_id)
@@ -1269,17 +1392,19 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
     episode = require_episode(segment["episode_id"])
     validate_transcript(episode, body)
     new_id = str(uuid.uuid4())
+    metadata = manual_metadata(segment, body.model_dump())
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         current = conn.execute("SELECT superseded_by,deleted FROM transcript_segments WHERE id=?", (segment_id,)).fetchone()
         if not current or current["superseded_by"] or current["deleted"]:
             raise HTTPException(409, "This transcript segment is deleted or has a newer revision")
-        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                     (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, "manual_edit", segment["model_id"], segment["job_id"], segment_id))
+        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id,words_json,speaker_source,confidence,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, "manual_edit", segment["model_id"], segment["job_id"], segment_id, *metadata))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
         structured_results.invalidate_transcript(conn, episode['id'], segment['start_time'], segment['end_time'])
         if (segment['start_time'], segment['end_time']) != (body.start_time, body.end_time):
             structured_results.invalidate_transcript(conn, episode['id'], body.start_time, body.end_time)
+        if metadata[0] != segment['words_json'] or (segment['start_time'], segment['end_time']) != (body.start_time, body.end_time):
             subtitle_store.invalidate_probes(conn, episode['id'])
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
 
@@ -1294,8 +1419,8 @@ def delete_transcript_segment(segment_id: str):
             raise HTTPException(404, "Transcript segment not found")
         if old["superseded_by"] or old["deleted"]:
             raise HTTPException(409, "This transcript segment is deleted or has a newer revision")
-        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,deleted,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                     (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], 1, "manual_edit", old["model_id"], old["job_id"], segment_id))
+        conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,deleted,origin,model_id,job_id,parent_id,words_json,speaker_source,confidence,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], 1, "manual_edit", old["model_id"], old["job_id"], segment_id, *manual_metadata(old, old)))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
         structured_results.invalidate_transcript(conn, old['episode_id'], old['start_time'], old['end_time'])
         subtitle_store.invalidate_probes(conn, old['episode_id'])
@@ -1315,8 +1440,8 @@ def assign_voice(episode_id: str, body: AssignVoiceInput):
             ORDER BY start_time,id""", (episode_id, body.speaker_label)).fetchall()
         for line in lines:
             new_id = str(uuid.uuid4())
-            conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                         (new_id, line["episode_id"], line["start_time"], line["end_time"], line["text"], line["speaker_label"], body.character_context_id, "manual_edit", line["model_id"], line["job_id"], line["id"]))
+            conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id,words_json,speaker_source,confidence,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (new_id, line["episode_id"], line["start_time"], line["end_time"], line["text"], line["speaker_label"], body.character_context_id, "manual_edit", line["model_id"], line["job_id"], line["id"], line["words_json"], "manual", None, line["evidence_json"]))
             conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, line["id"]))
         if lines:
             structured_results.invalidate_transcript(conn, episode_id)

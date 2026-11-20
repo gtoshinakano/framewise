@@ -359,7 +359,7 @@ def _selection_invalidates(conn, job):
 
 
 def _transcription_scope(payload):
-    return Scope(frozenset({'prepared_audio', 'voices', 'transcript'}), frozenset({'transcript'}))
+    return Scope(frozenset({'prepared_audio', 'voices', 'transcript', 'context', 'audio_ranges'}), frozenset({'transcript'}))
 
 
 def _voice_scope(payload):
@@ -380,6 +380,21 @@ def _audio_inputs(conn, job):
 def _audio_invalidates(conn, job):
     from . import audio_worker
     audio_worker.invalidate(conn, job)
+
+
+def _speaker_gather(conn, job):
+    from . import speaker_attribution
+    return speaker_attribution.gather(conn, job)
+
+
+def _speaker_inputs(conn, job):
+    from . import speaker_attribution
+    return speaker_attribution.inputs(conn, job)
+
+
+def _speaker_invalidates(conn, job):
+    from . import speaker_attribution
+    speaker_attribution.invalidate(conn, job)
 
 
 def _subtitle_gather(conn, job):
@@ -615,6 +630,11 @@ KINDS = {kind.pipeline: kind for kind in (
          lane='text', handler='sequence_pipeline.process', resources=frozenset({'text'}), scope=_sequence_scope,
          priority_class=lambda payload: 'interactive' if payload.get('shot_key') and not payload.get('batch') else 'batch',
          inputs=_sequence_inputs, gather=_sequence_gather, invalidates=_sequence_invalidates),
+    Kind('speaker_attribution', 'Speaker attribution', True, audio_range=_transcribe_range, cancel_running=_always, retry=_always,
+         keys=lambda payload, cut_ids: [_transcribe_key(payload).replace('transcribe:', 'speaker_attribution:')],
+         lane='text', handler='speaker_attribution.process', resources=frozenset({'text'}),
+         scope=lambda payload: Scope(frozenset({'transcript', 'subtitles', 'detections', 'context', 'cut_boundaries'}), frozenset({'transcript'})),
+         priority_class=lambda payload: 'batch', inputs=_speaker_inputs, gather=_speaker_gather, invalidates=_speaker_invalidates),
     Kind('subtitles', 'Subtitle extraction', True, cancel_running=_always,
          keys=lambda payload, cut_ids: [f"subtitles:{payload.get('language') or ''}"], lane='inference', handler='subtitle_pipeline.process', resources=frozenset({'gpu'}),
          scope=lambda payload: Scope(frozenset({'original', 'proxy', 'transcript'}), frozenset({'subtitles'})),
