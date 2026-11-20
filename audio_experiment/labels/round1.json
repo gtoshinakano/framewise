@@ -1,0 +1,1526 @@
+{
+ "about": "Spot-check labels of 2026-11-20, as time spans so they apply to any run. \"typical\": the dry-run page (episode openings, consecutive lines, made on the dry run line ids); \"hard\": the disagreement picks of audio-20261119-2055. Made by listening, before any round-2 answer existed.",
+ "labels": [
+  {
+   "episode": 1,
+   "start": 29.08,
+   "end": 40.52,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L1",
+   "text": "この先に記されていることは正直信じられないようなことだと思うけど、全部本当のことなので必ず最後まで読むように必ずと"
+  },
+  {
+   "episode": 1,
+   "start": 42.04,
+   "end": 42.68,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L2",
+   "text": "。なんだこれ"
+  },
+  {
+   "episode": 1,
+   "start": 44.36,
+   "end": 48.04,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L3",
+   "text": "。5月6日、野生のバニーガールに出会った。"
+  },
+  {
+   "episode": 1,
+   "start": 174.24,
+   "end": 174.97,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L5",
+   "text": "うん、うん。なんだあれや。"
+  },
+  {
+   "episode": 1,
+   "start": 189.08,
+   "end": 192.05,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L6",
+   "text": "驚いた。君にはまだ私が見えてるだん"
+  },
+  {
+   "episode": 1,
+   "start": 195.16,
+   "end": 195.56,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L7",
+   "text": "。それじゃ。"
+  },
+  {
+   "episode": 1,
+   "start": 200.0,
+   "end": 202.72,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L8",
+   "text": "あの桜島先輩ですよね"
+  },
+  {
+   "episode": 1,
+   "start": 203.978,
+   "end": 208.538,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L14",
+   "text": "私を先輩と呼ぶってことは、君ミネガハラ高校の生徒なの？"
+  },
+  {
+   "episode": 1,
+   "start": 204.0,
+   "end": 208.48,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L9",
+   "text": "。私を先輩と呼ぶってことは、君ミネガハラ高校の生徒なの"
+  },
+  {
+   "episode": 1,
+   "start": 209.418,
+   "end": 211.578,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L15",
+   "text": "二年一組の安沢川サクタです。"
+  },
+  {
+   "episode": 1,
+   "start": 209.44,
+   "end": 216.24,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L10",
+   "text": "？二年一組の安沢川サクタです。安沢川サービスエリアの安沢川に花咲太郎のサクタ"
+  },
+  {
+   "episode": 1,
+   "start": 212.458,
+   "end": 216.218,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L16",
+   "text": "安沢川サービスエリアの安沢川に花咲く太郎のサクタ。"
+  },
+  {
+   "episode": 1,
+   "start": 216.56,
+   "end": 222.56,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L11",
+   "text": "。私は桜島マイ。桜島マイの桜島に桜島マイのマイ"
+  },
+  {
+   "episode": 1,
+   "start": 217.098,
+   "end": 218.538,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L17",
+   "text": "私は桜島マイ。"
+  },
+  {
+   "episode": 1,
+   "start": 219.178,
+   "end": 222.538,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L18",
+   "text": "桜島マイの桜島に桜島マイのマイ。"
+  },
+  {
+   "episode": 1,
+   "start": 222.96,
+   "end": 224.96,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L12",
+   "text": "。知ってます。先輩ゆう。"
+  },
+  {
+   "episode": 1,
+   "start": 225.0,
+   "end": 225.56,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L13",
+   "text": "有名人だし"
+  },
+  {
+   "episode": 1,
+   "start": 226.28,
+   "end": 227.72,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L14",
+   "text": "。一つ忠告してあげる"
+  },
+  {
+   "episode": 1,
+   "start": 228.6,
+   "end": 230.04,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L15",
+   "text": "。今日見たことは忘れなさい"
+  },
+  {
+   "episode": 1,
+   "start": 230.672,
+   "end": 233.472,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L23",
+   "text": "それとコンリン在私にかかわらないように。"
+  },
+  {
+   "episode": 1,
+   "start": 288.016,
+   "end": 305.936,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L35",
+   "text": "の国見はバニーガール好きかいやそうでもないなら大好きかあ大好きだ例えば図書館で魅力的なバニーガールに出会ったら国見はどうする二度見するなだよのその後眼見するだよの"
+  },
+  {
+   "episode": 1,
+   "start": 326.93,
+   "end": 329.49,
+   "speaker": "Yuuma Kunimi",
+   "set": "hard",
+   "from": "audio-20261119-2055:L39",
+   "text": "うーん、そら有名人じゃん。"
+  },
+  {
+   "episode": 1,
+   "start": 329.81,
+   "end": 330.69,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L40",
+   "text": "まあそうだよな。"
+  },
+  {
+   "episode": 1,
+   "start": 331.41,
+   "end": 334.13,
+   "speaker": "Yuuma Kunimi",
+   "set": "hard",
+   "from": "audio-20261119-2055:L41",
+   "text": "ガツダを休止中とはいえ芸能人じゃん。"
+  },
+  {
+   "episode": 1,
+   "start": 334.53,
+   "end": 334.77,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L42",
+   "text": "まあ。"
+  },
+  {
+   "episode": 1,
+   "start": 357.187,
+   "end": 358.707,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L48",
+   "text": "いつも一人通過そう。"
+  },
+  {
+   "episode": 1,
+   "start": 362.947,
+   "end": 363.587,
+   "speaker": "Yuuma Kunimi",
+   "set": "hard",
+   "from": "audio-20261119-2055:L51",
+   "text": "じゃあ南作た。"
+  },
+  {
+   "episode": 1,
+   "start": 456.32,
+   "end": 458.48,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L68",
+   "text": "ああ病院送り事件ね。"
+  },
+  {
+   "episode": 1,
+   "start": 479.263,
+   "end": 479.903,
+   "speaker": "Saki Kamisato",
+   "set": "hard",
+   "from": "audio-20261119-2055:L75",
+   "text": "絶対死ね！"
+  },
+  {
+   "episode": 1,
+   "start": 480.783,
+   "end": 481.503,
+   "speaker": "Saki Kamisato",
+   "set": "hard",
+   "from": "audio-20261119-2055:L76",
+   "text": "ありえない最低。"
+  },
+  {
+   "episode": 1,
+   "start": 880.936,
+   "end": 882.936,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L181",
+   "text": "思春期症候群ね。"
+  },
+  {
+   "episode": 1,
+   "start": 946.478,
+   "end": 947.918,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L198",
+   "text": "どうして脱ぐの？"
+  },
+  {
+   "episode": 1,
+   "start": 948.238,
+   "end": 949.438,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L199",
+   "text": "何もしないって言ったじゃない？"
+  },
+  {
+   "episode": 1,
+   "start": 949.758,
+   "end": 951.518,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L200",
+   "text": "不潔、変態、露出狂！"
+  },
+  {
+   "episode": 1,
+   "start": 1021.369,
+   "end": 1023.289,
+   "speaker": "Kaede Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L221",
+   "text": "お兄ちゃん。"
+  },
+  {
+   "episode": 1,
+   "start": 1091.516,
+   "end": 1093.916,
+   "speaker": "Kaede Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L243",
+   "text": "子は鳴すのです。"
+  },
+  {
+   "episode": 1,
+   "start": 1212.935,
+   "end": 1217.895,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L273",
+   "text": "なあ国見、桜島マイガ活動休止を宣言した理由って知ってるか。"
+  },
+  {
+   "episode": 1,
+   "start": 1218.455,
+   "end": 1222.135,
+   "speaker": "Yuuma Kunimi",
+   "set": "hard",
+   "from": "audio-20261119-2055:L274",
+   "text": "表向きには勉強に専念するためじゃなかったか。"
+  },
+  {
+   "episode": 1,
+   "start": 1291.459,
+   "end": 1293.779,
+   "speaker": "Rio Futaba",
+   "set": "hard",
+   "from": "audio-20261119-2055:L295",
+   "text": "牧野晴子のことは復帰れたんだ。"
+  },
+  {
+   "episode": 1,
+   "start": 1452.31,
+   "end": 1454.63,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L333",
+   "text": "いつからハラベコキャラに転身したんですか？"
+  },
+  {
+   "episode": 2,
+   "start": 2.592,
+   "end": 7.872,
+   "speaker": "Rio Futaba",
+   "set": "hard",
+   "from": "audio-20261119-2055:L1",
+   "text": "これは青春気象校軍ではなく、あくまで量子力学の世界における解釈だよ。"
+  },
+  {
+   "episode": 2,
+   "start": 8.912,
+   "end": 20.592,
+   "speaker": "Rio Futaba",
+   "set": "hard",
+   "from": "audio-20261119-2055:L2",
+   "text": "この中に猫と、さらに1時間に1度の確率で放射線を発する放射性原子と、その放射線を感知して毒ガスを発生する装置を一緒に入れておく。"
+  },
+  {
+   "episode": 2,
+   "start": 20.0,
+   "end": 20.56,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L1",
+   "text": "入れておく。"
+  },
+  {
+   "episode": 2,
+   "start": 21.44,
+   "end": 24.32,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L2",
+   "text": "これで蓋をして3 0分待つ。"
+  },
+  {
+   "episode": 2,
+   "start": 26.68,
+   "end": 29.64,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L3",
+   "text": "さて、ここに3 0分待った箱を用意した。"
+  },
+  {
+   "episode": 2,
+   "start": 30.04,
+   "end": 31.24,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L4",
+   "text": "料理番組か。"
+  },
+  {
+   "episode": 2,
+   "start": 31.64,
+   "end": 33.8,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L5",
+   "text": "箱の中の猫はどうなってると思う？"
+  },
+  {
+   "episode": 2,
+   "start": 34.52,
+   "end": 36.28,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L6",
+   "text": "生きているか死んでいるか。"
+  },
+  {
+   "episode": 2,
+   "start": 36.68,
+   "end": 41.96,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L7",
+   "text": "1時間に1回の確率で毒ガスが出るわけだから、3 0分だとゴブゴブだろ？"
+  },
+  {
+   "episode": 2,
+   "start": 42.52,
+   "end": 45.64,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L8",
+   "text": "今の状態を確定するためには見るしかない。"
+  },
+  {
+   "episode": 2,
+   "start": 46.12,
+   "end": 49.96,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L9",
+   "text": "つまり蓋を開けて確認するまで、猫は半分生きてい。"
+  },
+  {
+   "episode": 2,
+   "start": 53.12,
+   "end": 54.64,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L11",
+   "text": "も同じってことか。"
+  },
+  {
+   "episode": 2,
+   "start": 56.0,
+   "end": 60.08,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L12",
+   "text": "観測者によって確認されるまで存在は確定しない。"
+  },
+  {
+   "episode": 2,
+   "start": 157.92,
+   "end": 161.44,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L13",
+   "text": "この絵面は完璧にカップルだよな。"
+  },
+  {
+   "episode": 2,
+   "start": 161.44,
+   "end": 162.08,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L14",
+   "text": "何か言った？"
+  },
+  {
+   "episode": 2,
+   "start": 162.56,
+   "end": 163.36,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L15",
+   "text": "いえ、何も。"
+  },
+  {
+   "episode": 2,
+   "start": 163.76,
+   "end": 164.4,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L16",
+   "text": "大丈夫よ。"
+  },
+  {
+   "episode": 2,
+   "start": 165.04,
+   "end": 167.44,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L17",
+   "text": "どうせ私の姿は周りには見えてないから。"
+  },
+  {
+   "episode": 2,
+   "start": 169.68,
+   "end": 174.72,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L18",
+   "text": "今マイさんが握っている人参は、マイさんが見えてない人にはどう見えてるんですか？"
+  },
+  {
+   "episode": 2,
+   "start": 175.48,
+   "end": 176.52,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L19",
+   "text": "見えてないみたいよ。"
+  },
+  {
+   "episode": 2,
+   "start": 178.6,
+   "end": 182.44,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L20",
+   "text": "ほらね、多分私が触れたものは見えなくなるの"
+  },
+  {
+   "episode": 2,
+   "start": 183.4,
+   "end": 183.41,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L21",
+   "text": "よ。"
+  },
+  {
+   "episode": 2,
+   "start": 183.48,
+   "end": 186.68,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L22",
+   "text": "じゃあ、僕がマイさんに触れたらどうなるのかな。"
+  },
+  {
+   "episode": 2,
+   "start": 187.72,
+   "end": 190.76,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L23",
+   "text": "それは私と手をつなぎたいっていうアピール？"
+  },
+  {
+   "episode": 2,
+   "start": 191.24,
+   "end": 192.84,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L24",
+   "text": "いや、あくまで実験。"
+  },
+  {
+   "episode": 2,
+   "start": 193.8,
+   "end": 195.72,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L25",
+   "text": "そんな理由なら繋いであげない。"
+  },
+  {
+   "episode": 2,
+   "start": 196.04,
+   "end": 199.48,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L26",
+   "text": "あ、本当はマイさんと手をつなぎたいだけです。"
+  },
+  {
+   "episode": 2,
+   "start": 200.56,
+   "end": 201.04,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L27",
+   "text": "それで、"
+  },
+  {
+   "episode": 2,
+   "start": 202.96,
+   "end": 206.72,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L28",
+   "text": "女子と手すらつないだことのない僕の初めてをもらってください。"
+  },
+  {
+   "episode": 2,
+   "start": 208.8,
+   "end": 212.88,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L29",
+   "text": "若干気持ち悪いけど、ま、合格にしてあげる。"
+  },
+  {
+   "episode": 2,
+   "start": 216.48,
+   "end": 218.8,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L30",
+   "text": "今、エロいこと考えてるでしょう。"
+  },
+  {
+   "episode": 2,
+   "start": 219.28,
+   "end": 222.08,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L31",
+   "text": "マイさんの想像の百倍はエロいこと考えてる。"
+  },
+  {
+   "episode": 2,
+   "start": 224.16,
+   "end": 227.24,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L32",
+   "text": "でも、おと今のマイさんはそれくらい平気だよね。"
+  },
+  {
+   "episode": 2,
+   "start": 227.56,
+   "end": 228.2,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L33",
+   "text": "そうね。"
+  },
+  {
+   "episode": 2,
+   "start": 228.677,
+   "end": 232.997,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L33",
+   "text": "年下の男の子にエッチな妄想をされるくらいなんでもない。"
+  },
+  {
+   "episode": 2,
+   "start": 228.68,
+   "end": 230.12,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L34",
+   "text": "年下の男の子にエッチ"
+  },
+  {
+   "episode": 2,
+   "start": 235.397,
+   "end": 235.397,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L36",
+   "text": "ん？"
+  },
+  {
+   "episode": 2,
+   "start": 271.1,
+   "end": 277.02,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L50",
+   "text": "それで大喧嘩になって、芸能活動中止ってやり方でお母さんに返しをした。"
+  },
+  {
+   "episode": 2,
+   "start": 337.391,
+   "end": 338.431,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L68",
+   "text": "目をそらすな。"
+  },
+  {
+   "episode": 2,
+   "start": 338.431,
+   "end": 339.151,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L69",
+   "text": "出てた出てた。"
+  },
+  {
+   "episode": 2,
+   "start": 373.883,
+   "end": 375.643,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L78",
+   "text": "あの女の連絡先を残しなさい。"
+  },
+  {
+   "episode": 2,
+   "start": 382.955,
+   "end": 383.995,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L81",
+   "text": "突然失礼します。"
+  },
+  {
+   "episode": 2,
+   "start": 464.93,
+   "end": 465.73,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L106",
+   "text": "荷物ありがとう。"
+  },
+  {
+   "episode": 2,
+   "start": 588.007,
+   "end": 588.887,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L148",
+   "text": "いやおわいこって"
+  },
+  {
+   "episode": 2,
+   "start": 590.727,
+   "end": 592.567,
+   "speaker": "Tomoe Koga",
+   "set": "hard",
+   "from": "audio-20261119-2055:L150",
+   "text": "あたし友達との約束があるの。"
+  },
+  {
+   "episode": 2,
+   "start": 599.127,
+   "end": 602.007,
+   "speaker": "Tomoe Koga",
+   "set": "hard",
+   "from": "audio-20261119-2055:L155",
+   "text": "ああちょっと"
+  },
+  {
+   "episode": 2,
+   "start": 602.567,
+   "end": 604.247,
+   "speaker": "Police Officer",
+   "set": "hard",
+   "from": "audio-20261119-2055:L156",
+   "text": "君何やってんの。"
+  },
+  {
+   "episode": 2,
+   "start": 605.238,
+   "end": 606.358,
+   "speaker": "Tomoe Koga",
+   "set": "hard",
+   "from": "audio-20261119-2055:L157",
+   "text": "ああ、もう最悪。"
+  },
+  {
+   "episode": 2,
+   "start": 622.358,
+   "end": 624.278,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L163",
+   "text": "やば、遅刻だ、じゃな。"
+  },
+  {
+   "episode": 2,
+   "start": 645.547,
+   "end": 646.027,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L166",
+   "text": "何を？"
+  },
+  {
+   "episode": 2,
+   "start": 748.062,
+   "end": 748.702,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L197",
+   "text": "鎌倉は？"
+  },
+  {
+   "episode": 2,
+   "start": 765.835,
+   "end": 771.035,
+   "speaker": "Shoko Makinohara",
+   "set": "hard",
+   "from": "audio-20261119-2055:L201",
+   "text": "人の目の高さから見える水平線までの距離は約4キロメートルなんです"
+  },
+  {
+   "episode": 2,
+   "start": 833.647,
+   "end": 834.207,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L221",
+   "text": "来たみたい。"
+  },
+  {
+   "episode": 2,
+   "start": 842.382,
+   "end": 848.142,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L224",
+   "text": "芸能界復帰の話、他の事務所との契約のこと、ちゃんと話しておかないとね。"
+  },
+  {
+   "episode": 2,
+   "start": 873.448,
+   "end": 874.248,
+   "speaker": "Sakurajima Mai Mother",
+   "set": "hard",
+   "from": "audio-20261119-2055:L228",
+   "text": "あなたなの？"
+  },
+  {
+   "episode": 2,
+   "start": 890.727,
+   "end": 891.367,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L236",
+   "text": "誰って。"
+  },
+  {
+   "episode": 2,
+   "start": 900.247,
+   "end": 900.487,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L242",
+   "text": "寝る。"
+  },
+  {
+   "episode": 2,
+   "start": 901.607,
+   "end": 902.727,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L243",
+   "text": "今日ここで会う約束を。"
+  },
+  {
+   "episode": 2,
+   "start": 902.727,
+   "end": 903.367,
+   "speaker": "Sakurajima Mai Mother",
+   "set": "hard",
+   "from": "audio-20261119-2055:L244",
+   "text": "これでしょ。"
+  },
+  {
+   "episode": 2,
+   "start": 919.342,
+   "end": 919.982,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L250",
+   "text": "もういい。"
+  },
+  {
+   "episode": 2,
+   "start": 920.222,
+   "end": 920.622,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L251",
+   "text": "なんで。"
+  },
+  {
+   "episode": 2,
+   "start": 922.382,
+   "end": 924.062,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L253",
+   "text": "お願いもうやめて。"
+  },
+  {
+   "episode": 2,
+   "start": 975.149,
+   "end": 975.869,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L272",
+   "text": "今日はありがとう。"
+  },
+  {
+   "episode": 2,
+   "start": 1024.772,
+   "end": 1026.692,
+   "speaker": "Kaede Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L288",
+   "text": "もしもし、どうしたんですか？"
+  },
+  {
+   "episode": 2,
+   "start": 1156.792,
+   "end": 1157.592,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L337",
+   "text": "知らない。"
+  },
+  {
+   "episode": 2,
+   "start": 1185.169,
+   "end": 1186.609,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L350",
+   "text": "だよな、知らないよ。"
+  },
+  {
+   "episode": 2,
+   "start": 1220.173,
+   "end": 1220.973,
+   "speaker": "Rio Futaba",
+   "set": "hard",
+   "from": "audio-20261119-2055:L367",
+   "text": "厚佐川は"
+  },
+  {
+   "episode": 2,
+   "start": 1234.735,
+   "end": 1234.975,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L373",
+   "text": "なんで？"
+  },
+  {
+   "episode": 2,
+   "start": 1297.765,
+   "end": 1299.205,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L395",
+   "text": "絶対忘れない。"
+  },
+  {
+   "episode": 2,
+   "start": 1424.328,
+   "end": 1446.248,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L435",
+   "text": "語れない、眠れない、とろいめな愛、あなたの見てる正体、誰も読めない。"
+  },
+  {
+   "episode": 3,
+   "start": 21.44,
+   "end": 22.56,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L1",
+   "text": "眠れなかったの？"
+  },
+  {
+   "episode": 3,
+   "start": 23.2,
+   "end": 24.88,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L2",
+   "text": "一睡もできませんでした。"
+  },
+  {
+   "episode": 3,
+   "start": 25.4,
+   "end": 27.0,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L3",
+   "text": "私のせいだって言いたいの？"
+  },
+  {
+   "episode": 3,
+   "start": 27.48,
+   "end": 31.4,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L4",
+   "text": "マイさんは神経ずぶと過ぎ、よく熟睡できましたね。"
+  },
+  {
+   "episode": 3,
+   "start": 32.04,
+   "end": 38.52,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L5",
+   "text": "子どもの頃から撮影であちこちに行ってたから、それにサクタが隣に寝てるくらいなんともないの。"
+  },
+  {
+   "episode": 3,
+   "start": 39.0,
+   "end": 43.56,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L6",
+   "text": "いいことを聞いたので、次の機会にはいろいろといたずらしようと思います。"
+  },
+  {
+   "episode": 3,
+   "start": 43.8,
+   "end": 46.04,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L7",
+   "text": "そんな度胸なんてないくせに。"
+  },
+  {
+   "episode": 3,
+   "start": 47.48,
+   "end": 49.97,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L8",
+   "text": "藤沢まで戻って昼おから学校行くへんで。"
+  },
+  {
+   "episode": 3,
+   "start": 50.0,
+   "end": 53.28,
+   "speaker": "Mai Sakurajima",
+   "set": "typical",
+   "from": "dry-run:L9",
+   "text": "しょ準備するからちょっと外に出てなさい。"
+  },
+  {
+   "episode": 3,
+   "start": 57.2,
+   "end": 62.8,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L10",
+   "text": "一夜明けてもやっぱりマイさんは僕以外の誰の目にも見えていないようだ。"
+  },
+  {
+   "episode": 3,
+   "start": 168.01,
+   "end": 170.73,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L12",
+   "text": "いつも通りだよな。"
+  },
+  {
+   "episode": 3,
+   "start": 170.73,
+   "end": 171.37,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L13",
+   "text": "マイさんのことが。"
+  },
+  {
+   "episode": 3,
+   "start": 174.485,
+   "end": 175.365,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L18",
+   "text": "教室見てくる。"
+  },
+  {
+   "episode": 3,
+   "start": 178.52,
+   "end": 179.32,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L14",
+   "text": "阿津佐川、"
+  },
+  {
+   "episode": 3,
+   "start": 180.6,
+   "end": 181.56,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L15",
+   "text": "悪い知らせだよ。"
+  },
+  {
+   "episode": 3,
+   "start": 182.36,
+   "end": 186.04,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L16",
+   "text": "私たち以外桜島先輩のことを忘れているかもしれない。"
+  },
+  {
+   "episode": 3,
+   "start": 186.68,
+   "end": 188.92,
+   "speaker": "Yuuma Kunimi",
+   "set": "typical",
+   "from": "dry-run:L17",
+   "text": "少なくとも国見は覚えていなかった。"
+  },
+  {
+   "episode": 3,
+   "start": 189.48,
+   "end": 190.2,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L18",
+   "text": "本当か。"
+  },
+  {
+   "episode": 3,
+   "start": 192.28,
+   "end": 192.77,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L20",
+   "text": "昨日の。"
+  },
+  {
+   "episode": 3,
+   "start": 193.96,
+   "end": 194.28,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L21",
+   "text": "な、"
+  },
+  {
+   "episode": 3,
+   "start": 194.68,
+   "end": 196.36,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L22",
+   "text": "桜島先輩知ってるよな。"
+  },
+  {
+   "episode": 3,
+   "start": 198.36,
+   "end": 199.96,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L24",
+   "text": "三年の桜島まゆせ。"
+  },
+  {
+   "episode": 3,
+   "start": 200.0,
+   "end": 200.32,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L25",
+   "text": "先輩だ。"
+  },
+  {
+   "episode": 3,
+   "start": 204.48,
+   "end": 206.0,
+   "speaker": "Tomoe Koga",
+   "set": "typical",
+   "from": "dry-run:L28",
+   "text": "え、わかんないよ。"
+  },
+  {
+   "episode": 3,
+   "start": 209.04,
+   "end": 210.08,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L31",
+   "text": "なんで忘れてんだ。"
+  },
+  {
+   "episode": 3,
+   "start": 210.635,
+   "end": 212.315,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L35",
+   "text": "芸能人の桜島先輩だぞ。"
+  },
+  {
+   "episode": 3,
+   "start": 210.64,
+   "end": 212.32,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L32",
+   "text": "芸能人の桜島先輩だぞ。"
+  },
+  {
+   "episode": 3,
+   "start": 213.195,
+   "end": 214.475,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L36",
+   "text": "おい、おい。"
+  },
+  {
+   "episode": 3,
+   "start": 213.2,
+   "end": 214.48,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L33",
+   "text": "おい、おい。"
+  },
+  {
+   "episode": 3,
+   "start": 216.64,
+   "end": 218.4,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L34",
+   "text": "一つだけ心当たりがある。"
+  },
+  {
+   "episode": 3,
+   "start": 219.84,
+   "end": 221.12,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L35",
+   "text": "昨日の夜は寝たか？"
+  },
+  {
+   "episode": 3,
+   "start": 221.84,
+   "end": 223.04,
+   "speaker": "Sakuta Azusagawa",
+   "set": "typical",
+   "from": "dry-run:L36",
+   "text": "一睡もしてない。"
+  },
+  {
+   "episode": 3,
+   "start": 223.36,
+   "end": 224.96,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L37",
+   "text": "私も一睡もしてない。"
+  },
+  {
+   "episode": 3,
+   "start": 227.08,
+   "end": 230.12,
+   "speaker": "Rio Futaba",
+   "set": "typical",
+   "from": "dry-run:L38",
+   "text": "ただの結果でしかないけど、理由はそこにある"
+  },
+  {
+   "episode": 3,
+   "start": 385.874,
+   "end": 385.954,
+   "speaker": "Kaede Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L77",
+   "text": "お"
+  },
+  {
+   "episode": 3,
+   "start": 489.412,
+   "end": 490.052,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L96",
+   "text": "眠るな。"
+  },
+  {
+   "episode": 3,
+   "start": 503.699,
+   "end": 503.779,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L99",
+   "text": "は？"
+  },
+  {
+   "episode": 3,
+   "start": 604.209,
+   "end": 605.569,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L126",
+   "text": "目が覚めるな。"
+  },
+  {
+   "episode": 3,
+   "start": 656.515,
+   "end": 657.235,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L139",
+   "text": "妹さんは"
+  },
+  {
+   "episode": 3,
+   "start": 862.738,
+   "end": 862.978,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L192",
+   "text": "お、"
+  },
+  {
+   "episode": 3,
+   "start": 911.243,
+   "end": 911.723,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L204",
+   "text": "あい"
+  },
+  {
+   "episode": 3,
+   "start": 953.432,
+   "end": 957.592,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L206",
+   "text": "こっちは受けおいて、こっちは守るっていうような意味に。"
+  },
+  {
+   "episode": 3,
+   "start": 1002.39,
+   "end": 1003.75,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L214",
+   "text": "学校を取り巻く空気。"
+  },
+  {
+   "episode": 3,
+   "start": 1061.711,
+   "end": 1062.911,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L223",
+   "text": "もう無視なんかさせない。"
+  },
+  {
+   "episode": 3,
+   "start": 1082.581,
+   "end": 1084.741,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L227",
+   "text": "いいかお前ら、よく聞け。"
+  },
+  {
+   "episode": 3,
+   "start": 1086.181,
+   "end": 1091.461,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L228",
+   "text": "二年一組の出席番号一番、安佐川佐久他。"
+  },
+  {
+   "episode": 3,
+   "start": 1092.407,
+   "end": 1096.647,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L229",
+   "text": "三年一組の桜島舞先輩のことが、"
+  },
+  {
+   "episode": 3,
+   "start": 1099.687,
+   "end": 1104.005,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L230",
+   "text": "桜島先輩のことが好きだ。"
+  },
+  {
+   "episode": 3,
+   "start": 1126.106,
+   "end": 1128.426,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L235",
+   "text": "マイさん、好きだ。"
+  },
+  {
+   "episode": 3,
+   "start": 1132.586,
+   "end": 1134.826,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L237",
+   "text": "マイさん、好きだ。"
+  },
+  {
+   "episode": 3,
+   "start": 1135.226,
+   "end": 1137.386,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L238",
+   "text": "手をつないでシーリガハマを歩きたい。"
+  },
+  {
+   "episode": 3,
+   "start": 1137.946,
+   "end": 1140.426,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L239",
+   "text": "バニー・ガールの格好だってもう一度見たい。"
+  },
+  {
+   "episode": 3,
+   "start": 1140.986,
+   "end": 1145.226,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L240",
+   "text": "ぎゅっと抱きしめてみたいし、キスだってしたいんだ。"
+  },
+  {
+   "episode": 3,
+   "start": 1152.158,
+   "end": 1156.798,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L241",
+   "text": "ようするにさ、マイさん大大大大"
+  },
+  {
+   "episode": 3,
+   "start": 1158.238,
+   "end": 1161.598,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L242",
+   "text": "大好きだ。"
+  },
+  {
+   "episode": 3,
+   "start": 1212.273,
+   "end": 1213.393,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L254",
+   "text": "Why?"
+  },
+  {
+   "episode": 3,
+   "start": 1213.393,
+   "end": 1213.393,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L255",
+   "text": "Lie. I said I won't forget. I won't forget."
+  },
+  {
+   "episode": 3,
+   "start": 1217.259,
+   "end": 1217.579,
+   "speaker": "Sakuta Azusagawa",
+   "set": "hard",
+   "from": "audio-20261119-2055:L256",
+   "text": "ごめん。"
+  },
+  {
+   "episode": 3,
+   "start": 1304.499,
+   "end": 1312.819,
+   "speaker": "Mai Sakurajima",
+   "set": "hard",
+   "from": "audio-20261119-2055:L287",
+   "text": "サクタが同級生を病院送りにしたっていう噂、あれ、出たらめだから。"
+  }
+ ]
+}

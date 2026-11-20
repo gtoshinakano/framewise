@@ -7,6 +7,9 @@
 #   run.sh dry-run                                         whole pipeline with fake models on the CPU over a 3.5-minute excerpt (workers untouched)
 #   run.sh report [ID]                                     rebuild report.html / report.md / spotcheck.html on the host (stdlib python3)
 #   run.sh serve                                           serve the reports on the LAN (http.server, port 8095)
+#   run.sh round2 [--base ID] [--run-id ID | --resume ID]  round 2 on top of a finished round-1 run (about 40 min; workers stopped for its GPU phases)
+#   run.sh round2-dry                                      round 2 with fakes on the CPU, on top of the dry run
+#   run.sh report2 [ID] [spotcheck-export.json ...]        rebuild a round-2 report on the host, with labels/*.json and any exports of its spot check
 #
 # One GPU process at a time: this host's kernel crashed once with two. `start` requires an idle queue, stops the inference worker AND the audio
 # worker, waits for the VRAM to drain, and runs the phases one container after the other (audio models, then Qwen, ...). A detached watcher starts
@@ -27,6 +30,7 @@ HOST_IP=$(grep -E '^APP_BIND_IP=' .env 2>/dev/null | cut -d= -f2 || true)
 HOST_IP=${HOST_IP:-192.168.0.6}
 BASE="http://${HOST_IP}:${PORT}/runs"
 PHASES_MINUTES="prepare:40 glossary:25 audio:130 qwen:240 second:40 lfm3:30 final:20"
+PHASES2_MINUTES="music:30 voice:30 qwen2:120 final2:20"
 DEFAULT_HOURS=6.9
 
 vram_mib() {
@@ -114,7 +118,7 @@ drive() {  # drive <run id> <end epoch> [excerpt args...]
   say() { echo "$(date +%T) $*" | tee -a "$RUNS/$id/log.txt"; }
   local abort_gpu=0
   gpu_ids="--group-add $(getent group video | cut -d: -f3) --group-add $(getent group render | cut -d: -f3)"
-  for item in $PHASES_MINUTES; do
+  for item in ${AEX_PHASES:-$PHASES_MINUTES}; do
     local phase=${item%%:*} cap=${item##*:} now deadline
     echo "$phase" >"$state"
     now=$(date +%s)
@@ -122,8 +126,8 @@ drive() {  # drive <run id> <end epoch> [excerpt args...]
     deadline=$(( now + cap * 60 )); [ "$deadline" -gt "$end" ] && deadline=$end
     local devices=""
     case "$phase" in
-      prepare|final)
-        [ "$phase" = final ] && start_workers ;;
+      prepare|final|final2)
+        [ "$phase" != prepare ] && start_workers ;;
       *)
         if [ "$abort_gpu" = 1 ]; then say "phase $phase skipped: the GPU phases were aborted"; continue; fi
         devices="--device /dev/kfd --device /dev/dri $gpu_ids --security-opt seccomp=unconfined"
@@ -192,6 +196,70 @@ case "${1:-}" in
     ;;
   _drive)
     shift; drive "$@" ;;
+  round2)
+    shift
+    RUN_ID="audio-r2-$(date +%Y%m%d-%H%M)"; HOURS=3; RESUME=0; BASE_ID=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --base) BASE_ID=$2; shift 2 ;;
+        --run-id) RUN_ID=$2; shift 2 ;;
+        --resume) RUN_ID=$2; RESUME=1; shift 2 ;;
+        --hours) HOURS=$2; shift 2 ;;
+        *) echo "unknown option $1"; exit 2 ;;
+      esac
+    done
+    [ -z "$BASE_ID" ] && [ -f "$RUNS/$RUN_ID/base.txt" ] && BASE_ID=$(cat "$RUNS/$RUN_ID/base.txt")
+    [ -z "$BASE_ID" ] && BASE_ID=$(ls -t "$RUNS"/*/results.json 2>/dev/null | grep -v '/dry-run' | head -1 | xargs -r dirname | xargs -r basename)
+    [ -n "$BASE_ID" ] && [ -f "$RUNS/$BASE_ID/prep.json" ] && [ -f "$RUNS/$BASE_ID/ep3/qwen/Q1.json" ] || { echo "no finished round-1 run to build on (--base ID)"; exit 1; }
+    if docker ps -a --format '{{.Names}}' | grep -qx "$EXP"; then
+      [ "$(docker inspect -f '{{.State.Running}}' "$EXP")" = "true" ] && { echo "An experiment is already running: $0 status"; exit 1; }
+      docker rm "$EXP" >/dev/null
+    fi
+    if [ -f "$RUNS/$RUN_ID/driver.pid" ] && kill -0 "$(cat "$RUNS/$RUN_ID/driver.pid")" 2>/dev/null; then echo "run $RUN_ID is still driven by pid $(cat "$RUNS/$RUN_ID/driver.pid")"; exit 1; fi
+    if [ "$RESUME" = 0 ] && [ -d "$RUNS/$RUN_ID" ]; then echo "run id $RUN_ID exists; use --resume $RUN_ID"; exit 1; fi
+    if ! state=$(queue_idle); then echo "queue: $state. Try again when it is idle."; exit 1; fi
+    echo "queue: $state"
+    docker run --rm --entrypoint sh -v "$PWD/.models:/m:ro" "$IMAGE" -c 'test -f /m/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf && test -x /m/llamacpp-runtime/llama-server && test -f /m/lfm3-omni-2b/mmproj-LFM3-Omni-2B-BF16.gguf' \
+      || { echo "The Qwen3.6 or LFM3-Omni model file or llama-server is missing under .models."; exit 1; }
+    prepare_dirs "$RUN_ID"
+    mkdir -p "$RUNS/$RUN_ID"; chmod 777 "$RUNS/$RUN_ID"
+    echo "$BASE_ID" >"$RUNS/$RUN_ID/base.txt"; chmod 666 "$RUNS/$RUN_ID/base.txt"
+    END=$(( $(date +%s) + $(python3 -c "print(int($HOURS*3600))") ))
+    serve
+    AEX_PHASES="$PHASES2_MINUTES" nohup setsid bash "$0" _drive "$RUN_ID" "$END" --base "$BASE_ID" >>"$RUNS/$RUN_ID/driver.log" 2>&1 < /dev/null &
+    DRIVER=$!
+    echo "$DRIVER" >"$RUNS/$RUN_ID/driver.pid"; chmod 666 "$RUNS/$RUN_ID/driver.pid"
+    nohup setsid bash -c "while kill -0 $DRIVER 2>/dev/null; do sleep 15; done; docker rm -f $EXP >/dev/null 2>&1; sleep 3; docker start $AUDIO $INFER >/dev/null 2>&1" \
+      >"audio_experiment/watcher.log" 2>&1 < /dev/null &
+    echo
+    echo "Round 2:   $RUN_ID   (base $BASE_ID)"
+    echo "Report:    $BASE/$RUN_ID/report.html      (spot check: $BASE/$RUN_ID/spotcheck.html)"
+    echo "Hard stop: $(date -d "@$END" '+%Y-%m-%d %H:%M')   (expected to finish in about 40 min)"
+    echo "Status:    $0 status        Stop: $0 stop        Resume: $0 round2 --resume $RUN_ID"
+    ;;
+  round2-dry)
+    shift
+    [ -f "$RUNS/dry-run/prep.json" ] || { echo "run $0 dry-run first: round 2 builds on it"; exit 1; }
+    prepare_dirs dry-run-r2
+    docker run --rm --entrypoint sh -v "$PWD/$RUNS:/runs" "$IMAGE" -c 'rm -rf /runs/dry-run-r2'
+    mkdir -p "$RUNS/dry-run-r2"; chmod 777 "$RUNS/dry-run-r2"; echo dry-run >"$RUNS/dry-run-r2/base.txt"
+    # shellcheck disable=SC2046
+    docker run --rm --init --entrypoint python $(docker_env) $(docker_mounts dry-run-r2) "$IMAGE" /work/experiment.py all2 --dry --run-id dry-run-r2 --base dry-run "$@"
+    code=$?
+    serve
+    echo "Report: $BASE/dry-run-r2/report.html"
+    exit $code
+    ;;
+  report2)
+    id=${2:-}
+    [ -z "$id" ] && id=$(ls -t "$RUNS"/*/base.txt 2>/dev/null | head -1 | xargs -r dirname | xargs -r basename)
+    [ -n "$id" ] && [ -f "$RUNS/$id/base.txt" ] || { echo "no round-2 run found"; exit 1; }
+    args=(); for f in audio_experiment/labels/*.json; do [ -f "$f" ] && args+=(--labels "$f"); done
+    for f in "${@:3}"; do args+=(--id-labels "$f"); done
+    python3 audio_experiment/round2_analysis.py "$RUNS/$id" --base "$RUNS/$(cat "$RUNS/$id/base.txt")" "${args[@]}"
+    serve
+    echo "Report: $BASE/$id/report.html"
+    ;;
   status)
     latest=$(ls -t "$RUNS"/*/progress.json 2>/dev/null | grep -v dry-run | head -1 || true)
     id=""; [ -n "$latest" ] && id=$(basename "$(dirname "$latest")")
@@ -246,6 +314,6 @@ PY
   serve)
     serve; echo "$BASE/index.html" ;;
   *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac

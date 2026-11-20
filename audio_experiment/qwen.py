@@ -95,6 +95,13 @@ class Client:
         except (OSError, ValueError, urllib.error.URLError):
             return {}
 
+    def audio_label(self, wav_data, question):
+        """One short audio clip (wav bytes) with a one-word question; for LFM3-Omni (round 1 probe, round 2 music map)."""
+        import base64
+        body = {'messages': [{'role': 'user', 'content': [{'type': 'input_audio', 'input_audio': {'data': base64.b64encode(wav_data).decode(), 'format': 'wav'}},
+                                                          {'type': 'text', 'text': question}]}], 'max_tokens': 8, 'temperature': 0}
+        return self._post(body)['choices'][0]['message']['content'].strip().lower()
+
     def _post(self, body):
         request = urllib.request.Request(self.url + '/v1/chat/completions', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'}, method='POST')
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -172,20 +179,27 @@ def validate(answer, window, names):
     return result, errors
 
 
-def user_message(window, names, profile_text=None, before=()):
+def user_message(window, names, profile_text=None, before=(), shown=None):
     parts = ['Characters of this episode: ' + ', '.join(names) + '.']
     if profile_text:
         parts.append('How each character speaks (counted from other lines of this series):\n' + profile_text)
     if before:
         parts.append('Context, already decided, do not answer: ' + json.dumps(list(before), ensure_ascii=False))
-    parts.append('Lines to attribute (' + str(len(window)) + '):\n' + json.dumps(window, ensure_ascii=False))
+    if shown is not None:   # round 2: the whole conversation is shown, only `window` is asked
+        parts.append('Conversation (' + str(len(shown)) + ' lines; a line with "decided" already has its speaker and is not answered):\n' + json.dumps(shown, ensure_ascii=False))
+        parts.append('Answer these ' + str(len(window)) + ' lines, in this order: ' + json.dumps([line['id'] for line in window]))
+    else:
+        parts.append('Lines to attribute (' + str(len(window)) + '):\n' + json.dumps(window, ensure_ascii=False))
     return '\n\n'.join(parts)
 
 
-def call_window(client, window, names, profile_text=None, before=(), max_tokens=6144, key='', system=None):
-    """One window through the model with the validator retry; returns {answers, attempts, seconds, ...}."""
+def call_window(client, window, names, profile_text=None, before=(), max_tokens=6144, key='', system=None, shown=None):
+    """One window through the model with the validator retry; returns {answers, attempts, seconds, ...}.
+
+    `shown` (round 2): the conversation the model reads, of which only `window` is answered.
+    """
     schema_ = answer_schema([l['id'] for l in window], names)
-    messages = [{'role': 'system', 'content': system or SYSTEM}, {'role': 'user', 'content': user_message(window, names, profile_text, before)}]
+    messages = [{'role': 'system', 'content': system or SYSTEM}, {'role': 'user', 'content': user_message(window, names, profile_text, before, shown)}]
     attempts, answers = [], {}
     started = time.monotonic()
     for number in range(1, MAX_ATTEMPTS + 1):
@@ -210,8 +224,8 @@ def call_window(client, window, names, profile_text=None, before=(), max_tokens=
                          'finish': reply.get('finish_reason'), 'grammar': reply.get('grammar'), 'errors': errors})
         if not errors:
             break
-        shown = raw if reply.get('finish_reason') != 'length' else (raw or '')[:1200] + ' …'
-        messages = messages[:2] + [{'role': 'assistant', 'content': shown},
+        echoed = raw if reply.get('finish_reason') != 'length' else (raw or '')[:1200] + ' …'
+        messages = messages[:2] + [{'role': 'assistant', 'content': echoed},
                                    {'role': 'user', 'content': 'The answer was rejected:\n- ' + '\n- '.join(errors[:10]) + '\nAnswer again with the complete corrected JSON object.'}]
         answers = {}
     return {'answers': answers, 'attempts': attempts, 'seconds': round(time.monotonic() - started, 1), 'ok': bool(answers) and not attempts[-1]['errors']}

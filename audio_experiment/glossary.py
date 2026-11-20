@@ -13,7 +13,20 @@ VERIFIED = {
     'Saki Kamisato': {'ja': '上里沙希', 'names': ['沙希', 'サキ', '上里']},
     'Fumika Nanjou': {'ja': '南条文香', 'names': ['文香', 'フミカ', '南条']},
 }
-HONORIFICS = ['さん', 'くん', '君', 'ちゃん', '先輩', 'せんぱい', 'さま', '様', '先生']
+# Round 2: the verified spellings split into family / given name with their kana readings (standard readings of these names).
+# Used by names.py (kana -> kanji, and the Qwen name pass, which never saw the Japanese spellings in round 1).
+PARTS = {
+    'Sakuta Azusagawa': [('梓川', 'あずさがわ'), ('咲太', 'さくた')],
+    'Mai Sakurajima': [('桜島', 'さくらじま'), ('麻衣', 'まい')],
+    'Kaede Azusagawa': [('梓川', 'あずさがわ'), ('かえで', 'かえで')],
+    'Rio Futaba': [('双葉', 'ふたば'), ('理央', 'りお')],
+    'Yuuma Kunimi': [('国見', 'くにみ'), ('佑真', 'ゆうま')],
+    'Tomoe Koga': [('古賀', 'こが'), ('朋絵', 'ともえ')],
+    'Shoko Makinohara': [('牧之原', 'まきのはら'), ('翔子', 'しょうこ')],
+    'Saki Kamisato': [('上里', 'かみさと'), ('沙希', 'さき')],
+    'Fumika Nanjou': [('南条', 'なんじょう'), ('文香', 'ふみか')],
+}
+HONORIFICS =['さん', 'くん', '君', 'ちゃん', '先輩', 'せんぱい', 'さま', '様', '先生']
 
 # first-person pronouns grouped by reading class (orthographic variants of one pronoun are one class)
 PRONOUNS = {

@@ -9,6 +9,36 @@ Status: written on 2026-11-19 **before** the first real run. The measured-today 
 _No real run has finished yet. `run.sh report <id>` replaces this block with the run's verdict, the ranking table and the time estimate._
 <!-- verdict:end -->
 
+## Round 1 scored against labels (2026-11-20)
+
+Run `audio-20261119-2055` (116 min). The report's own anchors (voice-sample ranges) cannot judge the voice methods: each character has ONE sample whose
+ranges sit seconds apart, so leaving out only the overlapping range still left the same scene in. Instead, 169 lines were labelled by listening:
+`typical` (dry-run page: episode openings, consecutive lines, mapped onto this run's lines by time; the 7 lines labelled on both pages agree) and
+`hard` (the report's disagreement picks). Both are in `labels/round1.json`.
+
+| method | typical (75) | hard (91) |
+|---|---|---|
+| Q1 Qwen with everything | 96% | 71% |
+| Q1s (shifted windows) | 97% | 77% |
+| Q2 without subtitles | 96% | 57% |
+| Q3 profiles / R1 episode voices | 96% | 68% |
+| B0 stored transcript | 93% | 48% |
+| V3 voice only | 89% (98.5% when it answers) | 43% (87% when it answers) |
+| voice when it decides, else Q1 (offline) | 97% | 78% |
+
+* Voice and Qwen agree on 76% of all 1,092 lines and are then ~98% right; they disagree on 2% (the voice is right ~70% there); on 22% the voice decides
+  nothing, almost all lines under 0.8 s, and Qwen gets ~70% of those. Qwen overruled a clear voice match in 11 of its 26 hard-line errors.
+* Qwen's confidence is not usable (high on 70% of its hard-line errors); it almost never says low or unknown, so R1 re-decided 5–17 lines per episode
+  and the second-opinion stage read 0 lines.
+* Subtitles help on hard lines (+14 points); speech profiles (Q3), R1 as built and the diarization variants did not.
+* Pause-cut windows: unfinished lines 347 → 24 (Ep1), speaker switches inside a sentence 31 → 15 (Ep2). Names as ASR context barely help
+  (梓川 and 咲太 never appear); Qwen's text fixes wrote wrong names (安積川, 相坂, 作矢) because its prompt had no Japanese spellings.
+* The ED ranges start ~25 s late (Ep2 L435 and Ep3 L313 are lyrics kept as dialogue); LFM3 heard that stretch as singing and every sampled dialogue window as speech.
+* Leaving out every reference within 60 s moves voice-only from 89% to 88% on typical lines: the leak was real but small.
+* Possible label slips to re-check: Ep3 L22 「少なくとも国見は覚えていなかった。」 (labelled Yuuma, sounds like Sakuta's narration) and Ep2 L435 (ED lyrics, labelled Mai).
+
+Round 2 (README) tests what this points to. Its thresholds were picked on these labels, so only labels from the round-2 spot check are a clean test.
+
 ## Measured before the run (CPU, stored data, 2026-11-19)
 
 * **The stored transcript** is 3,084 / 3,160 / 2,772 word rows for Episodes 1 / 2 / 3 (median row 2 characters), 402 / 451 / 376 lines after the app's own merge. The transcribe job took 285-291 s per episode.

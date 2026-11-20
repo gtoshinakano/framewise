@@ -44,6 +44,29 @@ Report: `http://192.168.0.6:8095/runs/<id>/report.html` (all runs: `.../runs/ind
 
 Stages inside a phase are ordered by value and check the deadline; whatever is skipped is listed in the report under "Changed, skipped and caveats".
 
+## Round 2 (2026-11-20)
+
+Round 2 builds on a finished round-1 run (its checkpoints are read, never changed) and keeps its line ids, so labels made on either run apply.
+It tests the four changes the round-1 labels pointed to (see FINDINGS.md):
+
+* **Voice first.** A line whose own voice match is clear (top ≥ 0.45, gap ≥ 0.06, every reference within 60 s of the clip left out) is final; Qwen never answers it.
+* **Short lines get a usable clip.** A line the voice did not settle is embedded again from its clip grown into the silence around it (≤ 1 s each side, never into a neighbour) and from its diarization turn (≤ 3 s past the line).
+* **Q4:** Qwen answers only the open lines, but reads the whole conversation with the decided speakers in it (round 1's R1 sent the weak lines alone).
+* **Names:** kana readings of the verified names are spelled deterministically (`names.py`), then a Qwen pass that is given every spelling and reading may only swap a misheard name; any other change is rejected.
+* **OP/ED edges:** LFM3 labels every 5 s; a fingerprint range grows over the adjacent singing (music only between singing), and ≥ 20 s of singing becomes a range.
+
+Confidence comes from agreement (voice decided and round-1 Qwen agrees → high), never from Qwen's own field.
+
+```bash
+audio_experiment/run.sh round2-dry                       # fakes, CPU, on top of the dry run (run.sh dry-run first)
+audio_experiment/run.sh round2 [--base audio-20261119-2055]   # about 40 min; phases music (LFM3), voice (pyannote), qwen2 (Qwen3.6), final2 (CPU)
+audio_experiment/run.sh report2 [ID] [labels-export.json ...]  # rebuild on the host with labels/*.json plus exports of the round-2 spot check
+```
+
+Labels: `labels/round1.json` holds the 2026-11-20 spot checks as time spans (`typical`: the dry-run page, `hard`: round 1's disagreement picks). The round-2
+spot check lists lines that round 2 changed or left low-confidence; its export uses the base run's line ids and is scored as set `round2`, the only labels
+the thresholds were not chosen on. Files: `round2.py` (stages), `round2_rules.py` (pure rules), `round2_analysis.py` (results2.json and the report), `names.py`.
+
 ## Variants
 
 * **B0** the stored transcript merged with the app's rule (`merged_transcript`, gap 0.6 s); its job duration from `jobs`. **A0** (Episode 3 only): the current pipeline re-run (D0 + 25 s windows) for a fair time baseline.

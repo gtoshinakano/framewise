@@ -116,6 +116,11 @@ class FakeClient:
         if hint.get('task') == 'glossary':
             proposals = [{'name': n, 'japanese': '', 'reading': '', 'sure': False} for n in hint['names']]
             return {'content': json.dumps({'characters': proposals}), 'finish_reason': 'stop', 'usage': {}, 'timings': {}, 'grammar': True}
+        if hint.get('task') == 'names':     # round 2: a misheard family name of the protagonists, as seen in round 1
+            fixes = [{'id': l['id'], 'ja': l['ja'].replace(wrong, '梓川')} for l in hint['window'] for wrong in ('安沢川', '安佐川') if wrong in l['ja']]
+            if hint.get('attempt') == 1 and hint['window']:
+                fixes.append({'id': hint['window'][0]['id'], 'ja': hint['window'][0]['ja'] + '追加'})   # rejected: more than a name
+            return {'content': json.dumps({'fixes': fixes}, ensure_ascii=False), 'finish_reason': 'stop', 'usage': {}, 'timings': {}, 'grammar': True}
         if hint.get('task') == 'speaker':
             window, names = hint['window'], hint['names']
             out = []
@@ -135,3 +140,13 @@ class FakeClient:
             return {'content': json.dumps({'lines': out}, ensure_ascii=False), 'finish_reason': 'stop', 'usage': {'prompt_tokens': 1000, 'completion_tokens': 300},
                     'timings': {'predicted_per_second': 50.}, 'grammar': True}
         return {'content': '{}', 'finish_reason': 'stop', 'usage': {}, 'timings': {}, 'grammar': False}
+
+
+def music_labeller(ranges_by_episode):
+    """Round 2 dry run: 'singing' inside the base OP/ED ranges and 15 s before each (so the extension is exercised), else 'speech'."""
+    def label(n, start, end, clip):
+        for r in ranges_by_episode.get(str(n), []):
+            if L.overlap(start, end, r['start'] - 15., r['end']) > 0:
+                return 'Singing.'
+        return 'speech'
+    return label

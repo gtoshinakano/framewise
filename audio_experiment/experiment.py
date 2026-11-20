@@ -4,6 +4,8 @@
   experiment.py phase <prepare|glossary|audio|qwen|second|lfm3|final> --run-id ID [options]   one phase (one process, one container)
   experiment.py all --dry --run-id dry-run --excerpt 20 230                                      every phase with fake models, CPU
   experiment.py rescore ID --labels labels.json                                                  scores again with spot-check labels (stdlib)
+  experiment.py phase <music|voice|qwen2|final2> --run-id ID --base BASE_ID                       round 2 on top of a finished round-1 run
+  experiment.py all2 --dry --run-id dry-run-r2 --base dry-run                                     every round-2 phase with fakes, CPU
 Every phase is resumable: finished checkpoints are skipped.
 """
 import argparse
@@ -20,6 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
 
 PHASES = ['prepare', 'glossary', 'audio', 'qwen', 'second', 'lfm3', 'final']
+PHASES2 = ['music', 'voice', 'qwen2', 'final2']
+LABELS = Path(__file__).resolve().parent / 'labels'
+
 
 
 @contextmanager
@@ -100,8 +105,25 @@ def update_index(root):
         pass
 
 
+def phase_final2(ctx):
+    import round2_analysis
+    run = ctx.run
+    run.progress('final2', 'running', 0, 2)
+    timed = round2_analysis.load_labels(sorted(str(p) for p in LABELS.glob('*.json')), [], ctx.base)
+    results = round2_analysis.write(run, ctx.base, timed)
+    if results is None:
+        run.note('final2: nothing to analyse', 'warn')
+        return
+    run.progress('final2', 'running', 1, 2, 'audio clips')
+    make_clips(run, results)
+    update_index(run.dir.parent)
+    run.progress('final2', 'done', 2, 2)
+
+
 def build_ctx(args, run):
     import stages
+    if args.phase in PHASES2 or args.phase == 'all2':
+        return build_ctx2(args, run)
     models = None
     factory = None
     prep_for_fake = None
@@ -123,6 +145,31 @@ def build_ctx(args, run):
     else:
         factory = real_client
     return stages.Ctx(run, models=models, client_factory=factory, episodes=args.episodes, excerpt=args.excerpt, dry=args.dry)
+
+
+def build_ctx2(args, run):
+    import round2
+    if not args.base:
+        raise SystemExit('round 2 needs --base <round-1 run id>')
+    base = common.Run(args.root, args.base)
+    if not base.done('prep.json'):
+        raise SystemExit(f'the base run {args.base} has no prep.json')
+    models = None
+    if args.phase in ('voice', 'all2'):
+        if args.dry:
+            import fake_backend
+            prep = base.load('prep.json')
+            holder = {int(n): e for n, e in prep['episodes'].items()}
+            owner = {}
+            for sample in prep.get('samples', []):
+                owner.setdefault(sample['episode'], []).extend((r['start'], r['end'], sample['character']) for r in sample['ranges'])
+            holder['_sample_owner'] = owner
+            models = fake_backend.FakeModels(holder)
+        else:
+            import backends
+            models = backends.RealModels(device=os.environ.get('AEX_DEVICE') or None)
+    excerpt = args.excerpt or (base.load('prep.json') or {}).get('excerpt')
+    return round2.Ctx2(run, base, models=models, client_factory=fake_client(None) if args.dry else real_client, episodes=args.episodes, excerpt=excerpt, dry=args.dry)
 
 
 def run_phase(name, ctx, args):
@@ -147,6 +194,21 @@ def run_phase(name, ctx, args):
             stages.stage_lfm3(ctx)
         elif name == 'final':
             phase_final(ctx)
+        elif name == 'music':
+            import round2
+            label = None
+            if ctx.dry:
+                import fake_backend
+                label = fake_backend.music_labeller({str(n): ctx.base_ranges(n) for n in ctx.episodes})
+            round2.stage_music(ctx, label)
+        elif name == 'voice':
+            import round2
+            round2.stage_voice(ctx)
+        elif name == 'qwen2':
+            import round2
+            round2.stage_qwen2(ctx)
+        elif name == 'final2':
+            phase_final2(ctx)
     finally:
         peak = sampler.finish()
         run.timing(f'phase.{name}', time.monotonic() - started, peak_vram_mib=peak)
@@ -156,10 +218,11 @@ def run_phase(name, ctx, args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='cmd', required=True)
-    for cmd in ('phase', 'all'):
+    for cmd in ('phase', 'all', 'all2'):
         p = sub.add_parser(cmd)
         if cmd == 'phase':
-            p.add_argument('phase', choices=PHASES)
+            p.add_argument('phase', choices=PHASES + PHASES2)
+        p.add_argument('--base', default=None, help='round 2: the finished round-1 run it builds on')
         p.add_argument('--run-id', required=True)
         p.add_argument('--root', default=os.environ.get('AEX_RUNS', '/report/runs'))
         p.add_argument('--db', default=os.environ.get('AEX_DB', '/priv/app.sqlite3'))
@@ -177,6 +240,12 @@ def main():
         import report
         sys.exit(report.main(['report', str(Path(args.root) / args.run_id), '--labels', args.labels]))
     run = common.Run(args.root, args.run_id, deadline=args.deadline, dry=args.dry)
+    if args.cmd == 'all2':
+        for name in PHASES2:
+            args.phase = name
+            ctx = build_ctx(args, run)
+            run_phase(name, ctx, args)
+        return
     if args.cmd == 'all':
         args.phase = 'all'
         for name in PHASES:
