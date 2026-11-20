@@ -100,12 +100,6 @@ function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proje
   const [resultsRevision, setResultsRevision] = useState(0)
   const [config, setConfig] = useState<AnalysisConfig | null>(null)
   const video = useRef<HTMLVideoElement>(null)
-  function playSegment(time: number) {
-    const player = video.current
-    if (!player) return
-    player.currentTime = Math.min(Math.max(time, cut.start_time), Math.max(cut.start_time, cut.end_time - 0.001))
-    void player.play().catch(() => {})
-  }
   const [editorTarget, setEditorTarget] = useState<HTMLElement | null>(null)
   const [framesOpen, setFramesOpen] = useState(false)
   const [runVideoOpen, setRunVideoOpen] = useState(false)
@@ -146,7 +140,7 @@ function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proje
         <div ref={setCharactersTarget} className={tab === 'run' ? 'block' : 'hidden'} />
         {tab === 'run' && <button type="button" className="btn btn-quiet self-start" onClick={() => setRunVideoOpen(value => !value)}>{runVideoOpen ? 'Hide video preview' : 'Load video preview'}</button>}
         {(tab === 'results' || runVideoOpen) && <div className={`shrink-0 ${tab === 'run' ? 'mx-auto w-full lg:max-w-[82vh]' : 'mx-auto w-full max-w-sm lg:max-w-none'}`}>{<div className="relative aspect-video overflow-hidden rounded-xl border hairline bg-black">{proxyReady ? <video ref={video} className="h-full w-full" controls preload={tab === 'run' ? 'none' : 'metadata'} src={mediaUrl(episodeId, 'proxy')} aria-label="Play this cut" onLoadedMetadata={event => { event.currentTarget.currentTime = cut.start_time }} onSeeking={event => { const player = event.currentTarget; if (player.currentTime < cut.start_time - 0.002) player.currentTime = cut.start_time; else if (player.currentTime > cut.end_time + 0.002) player.currentTime = cut.end_time }} /> : <div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div>}{proxyReady && <PlayheadReadout video={video} start={cut.start_time} end={cut.end_time} />}{tab === 'results' && <FrameTools cut={cut} results={results} frameVersion={frameVersion} onPreview={() => setFramesOpen(true)} />}</div>}</div>}
-        {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} onPlaySegment={playSegment} canPlay={proxyReady} projectId={projectId} episodeId={episodeId} onChanged={onStarted} />}
+        {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} canPlay={proxyReady} projectId={projectId} episodeId={episodeId} onChanged={onStarted} />}
       </div>
     </div>
     {framesOpen && <FramesDialog cut={cut} results={results} frameVersion={frameVersion} onClose={() => setFramesOpen(false)} />}

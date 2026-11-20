@@ -23,7 +23,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results, episode_events
-from . import audio_ranges, name_glossary, speaker_attribution
+from . import audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range
 from .transcript_parts import manual_metadata
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
@@ -256,6 +256,26 @@ class TranscriptInput(BaseModel):
     text: str = Field(min_length=1, max_length=20000)
     speaker_label: str = Field(default="", max_length=200)
     character_context_id: str | None = None
+
+
+class TranscriptMergeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    segment_ids: list[str] = Field(min_length=2, max_length=50, description="The current lines to join, in any order.")
+    text: str = Field(min_length=1, max_length=20000, description="The text of the joined line.")
+    speaker_label: str = Field(default="", max_length=200)
+    character_context_id: str | None = None
+
+
+class SplitPart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=20000)
+
+
+class TranscriptSplitInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    at: float = Field(gt=0, allow_inf_nan=False, description="Episode seconds where the line is divided.")
+    left: SplitPart
+    right: SplitPart
 
 
 class AssignVoiceInput(BaseModel):
@@ -1412,6 +1432,32 @@ def delete_transcript_segment(segment_id: str):
         structured_results.invalidate_transcript(conn, old['episode_id'], old['start_time'], old['end_time'])
         subtitle_store.invalidate_probes(conn, old['episode_id'])
     return {"ok": True}
+
+
+@app.post("/api/episodes/{episode_id}/transcript/merge")
+def merge_transcript_segments(episode_id: str, body: TranscriptMergeInput):
+    """Join several current lines into one revision; the sources are superseded by it."""
+    episode = require_episode(episode_id)
+    require_character(episode, body.character_context_id)
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            new_id = line_edit.merge(conn, episode_id, body.segment_ids, body.text, body.speaker_label, body.character_context_id)
+        except line_edit.LineEditError as exc:
+            raise HTTPException(exc.status, exc.message)
+    return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
+
+
+@app.post("/api/transcript-segments/{segment_id}/split")
+def split_transcript_segment(segment_id: str, body: TranscriptSplitInput):
+    """Divide one current line in two at a time; the original is superseded by the first part."""
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            left_id, right_id = line_edit.split(conn, segment_id, body.at, body.left.text, body.right.text)
+        except line_edit.LineEditError as exc:
+            raise HTTPException(exc.status, exc.message)
+    return [serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (item,))) for item in (left_id, right_id)]
 
 
 @app.post("/api/episodes/{episode_id}/transcript/assign-voice")
@@ -2920,6 +2966,16 @@ def retry_analysis(job_id: str):
             SELECT ?,cut_id,window_index,start_time,end_time,model_revision,content_json FROM analysis_video_windows WHERE job_id=?""", (retry_id, job_id))
         worker.sync_episode_status(conn, job['episode_id'])
     return {'job_id': retry_id}
+
+
+@app.get("/api/episodes/{episode_id}/waveform-range")
+def get_waveform_range(episode_id: str, start: float, end: float, bins: int = 500):
+    """Peaks of one stretch of the audio (at most 300 s), fine enough to place a line's edges."""
+    episode = require_episode(episode_id)
+    try:
+        return waveform_range.peaks(media.episode_dir(episode["project_id"], episode_id) / "audio.wav", start, end, bins)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.get("/api/episodes/{episode_id}/waveform")
