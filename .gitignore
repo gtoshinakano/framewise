@@ -31,3 +31,8 @@ frontend/public/analysis-experiments/**/*.webp
 analysis_experiments/watcher.log
 frontend/public/multiframe-experiment/
 multiframe_experiment/watcher.log
+
+# audio experiment (audio_experiment/): runs, the private database copy and the watcher log are not tracked
+frontend/public/audio-experiment/
+audio_experiment/work/
+audio_experiment/watcher.log
