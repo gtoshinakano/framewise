@@ -6,3 +6,13 @@ frontend/dist
 data
 .env
 .models
+# Not used by any image: keeps the build context small (audio_experiment alone is ~2 GB)
+audio_experiment
+analysis_experiments
+multiframe_experiment
+qwen_experiment
+graphify-out
+tests
+docs
+scripts
+deploy

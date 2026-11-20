@@ -1,4 +1,15 @@
 services:
+  # Build-only: the dependency stage (ROCm PyTorch and the model libraries) shared by both workers.
+  # `scale: 0` means `up` never starts it; it is listed under the worker profiles so compose can build it first
+  # for the audio worker (additional_contexts), also when COMPOSE_PROFILES is set.
+  inference-deps:
+    profiles: ["build-base", "inference", "audio"]
+    scale: 0
+    build:
+      context: .
+      dockerfile: Dockerfile.inference.rocm
+      target: deps
+    image: framewise-inference-rocm:deps
   inference-worker:
     profiles: ["inference"]
     build:

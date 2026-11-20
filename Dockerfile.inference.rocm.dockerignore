@@ -1,0 +1,4 @@
+# Worker images only COPY backend/app: send nothing else to the builder.
+*
+!backend/app
+**/__pycache__

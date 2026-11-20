@@ -1,5 +1,6 @@
 # Separate image prevents audio packages from changing visual inference.
-FROM framewise-inference-rocm:local
+# `inference_deps` is the dependency stage of Dockerfile.inference.rocm (compose builds it first: additional_contexts).
+FROM inference_deps
 USER root
 # pyannote.audio 4.0.5 supports the existing ROCm PyTorch; audio decoding
 # uses CPU TorchCodec while all neural inference runs on the GPU. Keep the
