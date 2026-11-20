@@ -87,9 +87,9 @@ for today's transcript. Confidence buckets: high 96 %, medium 82 %, low 73 %. Ti
   `source='fingerprint'` rows. Shown on the timeline; changing them marks the transcript stale.
 * **Name glossary (per project):** rows `(spelling, reading, character_context_id nullable)`. A row with a character is a cast name part (family or given name,
   give the part: `family`/`given`); a row without one is another proper noun (峰ヶ原高校, places). Entered by the user (Context library or Characters menu);
-  never proposed by a model (round 1's model proposals invented a name). For this project seed nothing automatically; `glossary.PARTS` holds the user's
-  verified spellings with their standard readings, to type in or to load with a one-off script the user runs. Characters without glossary rows are simply
-  skipped by steps 6 and 8.
+  never proposed by a model (round 1's model proposals invented a name). **Seed this project's glossary once** (decided by the user, 2026-11-20) from
+  `glossary.PARTS` (the user's verified spellings with their standard readings, matched to characters by title) plus the other name 峰ヶ原高校
+  (みねがはらこうこう), with a one-off idempotent step; no other project is seeded. Characters without glossary rows are skipped by steps 6 and 8.
 
 ## Jobs
 
@@ -127,7 +127,7 @@ approval state.
 
 1. Ported unit tests pass, plus the name fixture test.
 2. Rebuild and recreate the API, the audio worker and the inference worker (AGENTS: check no job is running first), re-transcribe Episodes 1–3 of the project
-   `d66e89d5-…` (the one the labels come from) after entering its glossary, let `speaker_attribution` finish, then run
+   `d66e89d5-…` (the one the labels come from) after seeding its glossary, let `speaker_attribution` finish, then run
    `python3 audio_experiment/score_app.py`. Today it prints typical 94 %, hard 48 %, all 69 %. Expect about typical ≥ 95 %, hard ≥ 78 %, all ≥ 86 %
    (round 2: 97 / 81 / 88, with the turn source removed 89 % overall). It also prints the verified spellings found: 梓川, 咲太 and 麻衣 should each appear
    dozens of times.
