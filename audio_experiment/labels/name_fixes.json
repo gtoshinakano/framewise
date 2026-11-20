@@ -1,0 +1,464 @@
+{
+ "about": "Every name fix the Qwen pass of round 2 (audio-r2-20261120-0208) made, with a verdict written by Claude from the text and the series (not by listening, not confirmed by the user). The input text is after the deterministic aliases. A validator for the app should accept every \"ok\" fix and reject every \"wrong\" one; \"unsure\" ones are not tested.",
+ "counts": {
+  "ok": 48,
+  "wrong": 12,
+  "unsure": 2
+ },
+ "fixes": [
+  {
+   "episode": 3,
+   "id": "L19",
+   "before": "安佐川、",
+   "after": "梓川、",
+   "verdict": "ok"
+  },
+  {
+   "episode": 3,
+   "id": "L29",
+   "before": "三年の桜島まゆ先輩だ。",
+   "after": "三年の桜島麻衣先輩だ。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 3,
+   "id": "L97",
+   "before": "安佐川、その目の下のクマは一夜漬けか。",
+   "after": "梓川、その目の下のクマは一夜漬けか。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 3,
+   "id": "L202",
+   "before": "の消滅が全校生徒の無自覚な無視に起因するのであれば、それを上回る存在理由を安沢川が作り出せばいい。",
+   "after": "の消滅が全校生徒の無自覚な無視に起因するのであれば、それを上回る存在理由を梓川が作り出せばいい。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 3,
+   "id": "L203",
+   "before": "つまり全校生徒の無意識を安沢川の愛が上回ればいいという話だ。",
+   "after": "つまり全校生徒の無意識を梓川の愛が上回ればいいという話だ。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 3,
+   "id": "L208",
+   "before": "阿武沢はどうした？",
+   "after": "梓川はどうした？",
+   "verdict": "ok"
+  },
+  {
+   "episode": 3,
+   "id": "L228",
+   "before": "二年一組の出席番号一番、安佐川佐久他。",
+   "after": "二年一組の出席番号一番、梓川咲太。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 3,
+   "id": "L229",
+   "before": "三年一組の桜島舞先輩のことが、",
+   "after": "三年一組の桜島麻衣先輩のことが、",
+   "verdict": "ok"
+  },
+  {
+   "episode": 3,
+   "id": "L232",
+   "before": "恥の書き残だよタク。",
+   "after": "恥の書き残だよ咲太。",
+   "verdict": "unsure",
+   "why": "タク → 咲太 is plausible but unconfirmed"
+  },
+  {
+   "episode": 3,
+   "id": "L301",
+   "before": "さすが安佐川、青春ぶたやろうだね。",
+   "after": "さすが梓川、青春ぶたやろうだね。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 3,
+   "id": "L310",
+   "before": "安佐川が証明したようにさ、",
+   "after": "梓川が証明したようにさ、",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L21",
+   "before": "じゃあ、僕がおまえさんに触れたらどうなるのかな。",
+   "after": "じゃあ、僕が桜島麻衣さんに触れたらどうなるのかな。",
+   "verdict": "wrong",
+   "why": "a misheard 麻衣さん; the fix adds the family name nobody said",
+   "expected_name_form": "…僕が麻衣さんに触れたら…"
+  },
+  {
+   "episode": 2,
+   "id": "L25",
+   "before": "あ、本当はまえさんと手をつなぎたいだけです。",
+   "after": "あ、本当は桜島麻衣さんと手をつなぎたいだけです。",
+   "verdict": "wrong",
+   "why": "a misheard 麻衣さん; the fix adds the family name nobody said",
+   "expected_name_form": "…本当は麻衣さんと…"
+  },
+  {
+   "episode": 2,
+   "id": "L27",
+   "before": "女子とテスラ繋いだことのない僕の初めてをもらってください。",
+   "after": "女子と桜島麻衣繋いだことのない僕の初めてをもらってください。",
+   "verdict": "wrong",
+   "why": "テスラ is 手すら (not even a hand); no name was spoken"
+  },
+  {
+   "episode": 2,
+   "id": "L70",
+   "before": "帰り次回の時、いじめの取材できたアナウンサーの知り合いがいて、何条ふみかっていう。",
+   "after": "帰り次回の時、いじめの取材できたアナウンサーの知り合いがいて、南条文香っていう。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L80",
+   "before": "佐久田君はテレビなめすぎ。",
+   "after": "咲太君はテレビなめすぎ。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L82",
+   "before": "以前お世話になったことのある桜島舞と申します。",
+   "after": "以前お世話になったことのある桜島麻衣と申します。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L94",
+   "before": "その際は恩借と南条さんの独占取材を確約します。",
+   "after": "その際は桜島と南条さんの独占取材を確約します。",
+   "verdict": "wrong",
+   "why": "恩借 is a misheard word (御社 or similar), not a name"
+  },
+  {
+   "episode": 2,
+   "id": "L170",
+   "before": "クンが抜けてますよ。",
+   "after": "国見が抜けてますよ。",
+   "verdict": "wrong",
+   "why": "クン is the honorific くん (「くんが抜けてますよ」), not 国見"
+  },
+  {
+   "episode": 2,
+   "id": "L187",
+   "before": "妹の帰れが死神騎士王軍になったとき、誰も信じてくれなくて。",
+   "after": "妹のかえでが死神騎士王軍になったとき、誰も信じてくれなくて。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L192",
+   "before": "だから僕も前さんにとってその人のように慣れたらって。",
+   "after": "だから僕も麻衣さんにとってその人のように慣れたらって。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L207",
+   "before": "ミネガハラ高校の制服を着ていました。",
+   "after": "牧之原高校の制服を着ていました。",
+   "verdict": "wrong",
+   "why": "ミネガハラ高校 is the school 峰ヶ原高校, not a character name",
+   "expected_name_form": "峰ヶ原高校"
+  },
+  {
+   "episode": 2,
+   "id": "L208",
+   "before": "もしかしてその人を追いかけてミネガハラ高校を受験したわけ？",
+   "after": "もしかしてその人を追いかけて牧之原高校を受験したわけ？",
+   "verdict": "wrong",
+   "why": "ミネガハラ高校 is the school 峰ヶ原高校, not a character name",
+   "expected_name_form": "峰ヶ原高校"
+  },
+  {
+   "episode": 2,
+   "id": "L213",
+   "before": "ミネガハラ高校にそんな生徒は存在してなかったんです。",
+   "after": "牧之原高校にそんな生徒は存在してなかったんです。",
+   "verdict": "wrong",
+   "why": "ミネガハラ高校 is the school 峰ヶ原高校, not a character name",
+   "expected_name_form": "峰ヶ原高校"
+  },
+  {
+   "episode": 2,
+   "id": "L231",
+   "before": "安佐川佐々太と言います。",
+   "after": "梓川咲太と言います。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L257",
+   "before": "桜島まゆをご存知ですか。",
+   "after": "桜島麻衣をご存知ですか。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L262",
+   "before": "桜島舞誰それ。",
+   "after": "桜島麻衣誰それ。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L264",
+   "before": "桜島舞を知らないんですか。",
+   "after": "桜島麻衣を知らないんですか。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L280",
+   "before": "サクター以外には見えなくて忘れられてることが分かって何になるのよ。",
+   "after": "咲太以外には見えなくて忘れられてることが分かって何になるのよ。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L305",
+   "before": "ねえサクター。",
+   "after": "ねえ咲太。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L322",
+   "before": "あの桜島まゆをご存知ですか。",
+   "after": "あの桜島麻衣をご存知ですか。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L357",
+   "before": "二葉の携帯番号を教えてくれ。",
+   "after": "双葉の携帯番号を教えてくれ。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L367",
+   "before": "厚佐川は",
+   "after": "梓川は",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L370",
+   "before": "ありがとうとごめんと助けてくれを言えるのが厚佐川のいいところだって。",
+   "after": "ありがとうとごめんと助けてくれを言えるのが梓川のいいところだって。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L392",
+   "before": "僕だってあの桜島舞とこんな遠い町に来るとは思ってませんでした。",
+   "after": "僕だってあの桜島麻衣とこんな遠い町に来るとは思ってませんでした。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L414",
+   "before": "ねえサクター。",
+   "after": "ねえ咲太。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 2,
+   "id": "L419",
+   "before": "俺ゴフマ。",
+   "after": "俺佑真。",
+   "verdict": "wrong",
+   "why": "ゴフマ does not sound like ゆうま; no name was spoken"
+  },
+  {
+   "episode": 2,
+   "id": "L428",
+   "before": "相手が僕じゃなくても、マイサなら何だって余裕だと思う。",
+   "after": "相手が僕じゃなくても、麻衣なら何だって余裕だと思う。",
+   "verdict": "wrong",
+   "why": "the replacement swallowed the さ of さん (麻衣さんなら)",
+   "expected_name_form": "麻衣さんなら"
+  },
+  {
+   "episode": 2,
+   "id": "L431",
+   "before": "さっきのガサクタが私のファーストキスを奪える最初で最後のチャンスだったのに。",
+   "after": "さっきの咲太が私のファーストキスを奪える最初で最後のチャンスだったのに。",
+   "verdict": "wrong",
+   "why": "the replacement swallowed the particle が"
+  },
+  {
+   "episode": 1,
+   "id": "L9",
+   "before": "なんだリア。",
+   "after": "なんだ理央。",
+   "verdict": "unsure",
+   "why": "なんだリア — maybe なんだ、リア充…; 理央 is unconfirmed"
+  },
+  {
+   "episode": 1,
+   "id": "L15",
+   "before": "二年一組の安沢川サクタです。",
+   "after": "二年一組の梓川咲太です。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L16",
+   "before": "安沢川サービスエリアの安沢川に花咲く太郎のサクタ。",
+   "after": "梓川サービスエリアの梓川に花咲く太郎の咲太。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L18",
+   "before": "桜島マイの桜島に桜島マイのマイ。",
+   "after": "桜島麻衣の桜島に桜島麻衣の麻衣。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L44",
+   "before": "サクタがマキノハラ証拠以外の女子に興味を持つのは喜ばしいことなんだが、さすがにあの人は無理だろう。",
+   "after": "咲太が牧之原翔子以外の女子に興味を持つのは喜ばしいことなんだが、さすがにあの人は無理だろう。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L49",
+   "before": "ユーマ、おはよう。",
+   "after": "佑真、おはよう。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L50",
+   "before": "お、神里。",
+   "after": "お、上里。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L51",
+   "before": "じゃあ南作た。",
+   "after": "じゃあ南条た。",
+   "verdict": "wrong",
+   "why": "「じゃあ南作た」 is 「じゃあまたな」; no name was spoken"
+  },
+  {
+   "episode": 1,
+   "id": "L65",
+   "before": "担当直入に言うけど今後ユーマとは喋んないで",
+   "after": "担当直入に言うけど今後佑真とは喋んないで",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L66",
+   "before": "別に国見と神里さんが付き合ってるのを邪魔してるつもりはないんだけど",
+   "after": "別に国見と上里さんが付き合ってるのを邪魔してるつもりはないんだけど",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L69",
+   "before": "クラスで浮いてる安沢川なんかと一緒にいるとユーマの株が下がるからユーマが可哀想だから。",
+   "after": "クラスで浮いてる梓川なんかと一緒にいると佑真の株が下がるから佑真が可哀想だから。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L70",
+   "before": "その理屈だと現在進行形で上砂とさんも株が大暴落してるけどいいわけ。",
+   "after": "その理屈だと現在進行形で上里さんも株が大暴落してるけどいいわけ。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L78",
+   "before": "あれ絶対桜島舞だよな。",
+   "after": "あれ絶対桜島麻衣だよな。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L106",
+   "before": "ねえ、安坂君。",
+   "after": "ねえ、梓川君。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L139",
+   "before": "テレビで桜島舞を見かけない日はありませんでした。",
+   "after": "テレビで桜島麻衣を見かけない日はありませんでした。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L142",
+   "before": "どこに行ってもあの桜島舞って言われて注目されて。",
+   "after": "どこに行ってもあの桜島麻衣って言われて注目されて。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L194",
+   "before": "じゃあマイ。",
+   "after": "じゃあ麻衣。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L214",
+   "before": "妹の帰デです。",
+   "after": "妹のかえでです。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L232",
+   "before": "はえで、お前は壮大な勘違いをしているぞ。",
+   "after": "かえで、お前は壮大な勘違いをしているぞ。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L240",
+   "before": "えっと、はじめまして、安沢川カエデです。",
+   "after": "えっと、はじめまして、梓川かえでです。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L304",
+   "before": "女子トイレにでも忍び込もうとしてるわけさすが安佐川豚やろうだねスカトロ趣味はない。",
+   "after": "女子トイレにでも忍び込もうとしてるわけさすが梓川豚やろうだねスカトロ趣味はない。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L317",
+   "before": "安沢川も箱の中の猫の話くらい聞いたことあるでしょ。",
+   "after": "梓川も箱の中の猫の話くらい聞いたことあるでしょ。",
+   "verdict": "ok"
+  },
+  {
+   "episode": 1,
+   "id": "L320",
+   "before": "桜島舞は芸能界では確かに存在し、みんなから観測されていた。",
+   "after": "桜島麻衣は芸能界では確かに存在し、みんなから観測されていた。",
+   "verdict": "ok"
+  }
+ ]
+}
