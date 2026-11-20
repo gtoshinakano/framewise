@@ -59,7 +59,14 @@ def _trigger(conn, name, table, action, columns, body):
         fields = columns.split(',')
         action += ' OF ' + columns
         when = 'WHEN ' + ' OR '.join(f'NEW.{field} IS NOT OLD.{field}' for field in fields)
-    conn.execute(f'CREATE TRIGGER IF NOT EXISTS {name} AFTER {action} ON {table} {when} BEGIN {body}; END')
+    statement = f'CREATE TRIGGER {name} AFTER {action} ON {table} {when} BEGIN {body}; END'
+    stored = conn.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)).fetchone()
+    if stored is not None and ' '.join((stored[0] or '').split()) == ' '.join(statement.split()):
+        return
+    # A trigger kept from an older column list can name a column that no longer exists, which makes every
+    # matching UPDATE fail (it silently froze the remote server's status). Replace it when the definition changed.
+    conn.execute(f'DROP TRIGGER IF EXISTS {name}')
+    conn.execute(statement)
 
 
 def _bump_local(field, where):
