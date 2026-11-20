@@ -87,6 +87,8 @@ from .queue_api import router as queue_router
 app.include_router(queue_router)
 from .visual_models_api import router as visual_models_router
 app.include_router(visual_models_router)
+from .point_detect_api import first_frame_spec, router as point_detect_router
+app.include_router(point_detect_router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
 
@@ -1792,7 +1794,7 @@ async def character_detection_frame(run_id: str, position: Literal['first', 'las
     source = media.episode_dir(run['project_id'], run['episode_id']) / f"original{run['original_ext']}"
     if not frame or not source.is_file():
         raise HTTPException(404, 'Frame unavailable')
-    spec = {'source': source, 'time': frame['time'], 'start': run['cut_start'], 'end': run['cut_end'], 'width': 1280, 'last': False, 'seek_tolerance': .000002}
+    spec = first_frame_spec(source, run, frame)
     try:
         headers = frame_cache.http_headers(spec, request)
         if frame_cache.unchanged(request, headers):

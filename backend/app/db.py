@@ -429,6 +429,8 @@ def init_db():
         assistant_store.init_schema(db)
         from . import chat_gateway_schema
         chat_gateway_schema.init_schema(db)
+        from . import point_detect
+        point_detect.init_schema(db)
         sequence_columns = {row["name"] for row in db.execute("PRAGMA table_info(sequences)")}
         if "reviewed_compilation_id" not in sequence_columns:
             # Workflow gate: the compilation revision the user confirmed. Not an approval status on results.

@@ -52,6 +52,7 @@ class LocalTextTest(unittest.TestCase):
              patch.object(local_text_runtime, 'text_job_concurrency', return_value=1), \
              patch.object(inference_worker, 'start_assistant') as start_assistant, \
              patch.object(inference_worker, 'start_chat_gateway') as start_gateway, \
+             patch.object(inference_worker, 'start_point_detect') as start_point_detect, \
              patch.object(inference_worker, 'start_remote_text'), \
              patch.object(inference_worker.remote_text, 'config', return_value={'enabled': False, 'base_url': '', 'routes': {}, 'parallel': 1, 'prefer': 'local', 'chat_reserve': 1, 'assistant_fallback': ''}), \
              patch.object(inference_worker.threading, 'Thread', side_effect=[job_thread, model_thread]) as threads, \
@@ -61,6 +62,7 @@ class LocalTextTest(unittest.TestCase):
                 inference_worker.main()
         start_assistant.assert_called_once_with()
         start_gateway.assert_called_once_with()
+        start_point_detect.assert_called_once_with()
         self.assertIs(threads.call_args_list[1].kwargs['target'], runtime.heartbeat)
         job_thread.start.assert_called_once(); model_thread.start.assert_called_once()
         job_thread.join.assert_called_once(); model_thread.join.assert_called_once()

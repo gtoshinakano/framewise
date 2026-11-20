@@ -8,6 +8,9 @@ import type { CharacterSummary } from './runState'
 import { PoseDetailCard } from './PoseDetailCard'
 import { NewCharacterDialog, type NewCharacter, type NewCharacterResult } from './NewCharacterDialog'
 import { BOX_COLORS } from './boxColors'
+import { PickLayer, PickMarker } from './BoxEditor'
+import { detectAt, NOTHING_FOUND, type Point } from './pointDetect'
+import { useToast } from './Toasts'
 
 type Frame = { position: 'first' | 'last'; time: number; image_size: [number, number] }
 type Candidate = { character_id: string; character_name: string; score: number }
@@ -81,6 +84,8 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
   const [resize, setResize] = useState<Resize | null>(null)
   // Last pointer position over a frame, in image pixels, for the "@" shortcut.
   const hover = useRef<{ position: 'first' | 'last'; point: [number, number] } | null>(null)
+  const [picking, setPicking] = useState<{ position: 'first' | 'last'; point: Point } | null>(null)
+  const toast = useToast()
   const job = jobs.find(item => item.pipeline === 'character_detect' && item.cuts?.some(cut => cut.id === cutId))
   const active = job?.status === 'queued' || job?.status === 'running'
   // Detections are per cut; characters and references are per project and come from the shared cache first.
@@ -179,7 +184,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     const rect = event.currentTarget.getBoundingClientRect()
     return [Math.max(0, Math.min(frame.image_size[0], (event.clientX - rect.left) * frame.image_size[0] / rect.width)), Math.max(0, Math.min(frame.image_size[1], (event.clientY - rect.top) * frame.image_size[1] / rect.height))]
   }
-  function svgPoint(event: React.PointerEvent<SVGElement>, frame: Frame): [number, number] {
+  function svgPoint(event: React.MouseEvent<SVGElement>, frame: Frame): [number, number] {
     const rect = event.currentTarget.ownerSVGElement!.getBoundingClientRect()
     return [Math.max(0, Math.min(frame.image_size[0], (event.clientX - rect.left) * frame.image_size[0] / rect.width)), Math.max(0, Math.min(frame.image_size[1], (event.clientY - rect.top) * frame.image_size[1] / rect.height))]
   }
@@ -214,6 +219,20 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     const box: Box = [Math.round(Math.min(start[0], end[0])), Math.round(Math.min(start[1], end[1])), Math.round(Math.max(start[0], end[0])), Math.round(Math.max(start[1], end[1]))]
     setStart(null); setCurrent(null); setDrawing(null)
     if (box[2] - box[0] < 4 || box[3] - box[1] < 4) return
+    addBox(frame, box)
+  }
+  /** A double-click on a person: the detector finds their box and it is added like a drawn one, without a name. */
+  async function pick(frame: Frame, point: Point) {
+    if (!run || picking) return
+    setPicking({ position: frame.position, point })
+    try {
+      const box = await detectAt({ surface: 'first', run_id: run.id, position: frame.position }, point)
+      if (box) addBox(frame, box)
+      else toast({ message: NOTHING_FOUND })
+    } catch (reason) { toast({ message: `Could not find the person: ${(reason as Error).message}`, tone: 'error' }) } finally { setPicking(null) }
+  }
+  function addBox(frame: Frame, box: Box) {
+    if (!run) return
     const id = `pending-${++nextTemporaryBoxId}`
     setRun(previous => previous && { ...previous, detections: [...previous.detections, { id, position: frame.position, box, character_context_id: null, character_name: null, label_source: null, match_reason: null, is_reference: false }] })
     enqueueEdit(async () => {
@@ -257,7 +276,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
         <label className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold leading-4 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#c3aeff] ${noChars ? 'border-[#6b5a2f] bg-[#2a2314] text-[#e6c58b]' : 'border-[#353c48] bg-[#1b202a] text-[#929aa9] hover:border-[#6b5a2f] hover:text-[#e6c58b]'} ${working ? 'opacity-60' : ''}`} title={noChars ? 'Marked as having no characters. Batch detection and cut analysis ignore this shot’s boxes. Untick to use them again.' : 'Tick if nobody appears in this shot. Batch detection skips it and cut analysis ignores any boxes.'}>
           <input type="checkbox" className="m-0 h-3.5 w-3.5 cursor-pointer accent-[#e6c58b]" checked={noChars} disabled={working || priorSaving} onChange={event => void toggleNoCharacters(event.target.checked)} />
           {noChars && <UserX size={12} aria-hidden />}{noChars ? 'No characters in this shot · skipped' : 'No characters in this shot'}
-        </label></h3><p className="muted mt-1 text-[11px]">Finds people in the first frame and names them from your labelled boxes. Your labels and drawn boxes are kept.</p></div>
+        </label></h3><p className="muted mt-1 text-[11px]">Finds people in the first frame and names them from your labelled boxes. Double-click a person the detector missed to box them; Detect characters names the new boxes later. Your labels and drawn boxes are kept.</p></div>
       <div className="flex items-center gap-2"><ActionButton icon={<ScanFace size={14} />} pending={detecting} disabled={working || !!saving || priorSaving} onClick={() => void detect()} title="Find and name the people in this cut's first frame">Detect characters</ActionButton></div>
     </div>
     {noChars && <p role="status" className="flex items-start gap-2 rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#e6c58b]"><UserX size={14} className="mt-0.5 shrink-0" aria-hidden />Marked as no characters. These frames are dimmed, their boxes are disabled, and they are ignored by batch detection and cut analysis. Untick the chip to edit them again.</p>}
@@ -293,6 +312,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
       }
       return <div key={frame.position} className="space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs text-[#d5dbe5]">{frame.position === 'first' ? 'First' : 'Last'} frame · {frame.time.toFixed(2)}s</strong><div className="flex items-center gap-2">{run.stale && boundaryChanged && <ActionButton compact variant="danger" icon={<Trash2 size={12} />} disabled={working || !!saving || hasReference} onClick={() => void removeStaleFrame(frame.position)} title={hasReference ? 'Remove the saved project reference first' : `Remove this outdated ${frame.position} frame and its character boxes from the stale run`}>Remove frame</ActionButton>}<button type="button" className="inline-flex items-center gap-1 text-xs text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked} onClick={() => { setDrawing(drawing === frame.position ? null : frame.position); setStart(null); setCurrent(null) }}>{drawing === frame.position ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing === frame.position ? 'Cancel drawing' : 'Draw box'}<kbd className="ml-1 rounded border border-[#3b4352] px-1 font-mono text-[10px] leading-4 text-[#929aa9]" title="Hover a frame and press @ to start a box, press @ again to finish it">@</kbd></button></div></div>
         <div onPointerMove={event => { const rect = event.currentTarget.getBoundingClientRect(); hover.current = { position: frame.position, point: [Math.max(0, Math.min(frame.image_size[0], (event.clientX - rect.left) * frame.image_size[0] / rect.width)), Math.max(0, Math.min(frame.image_size[1], (event.clientY - rect.top) * frame.image_size[1] / rect.height))] } }} onPointerLeave={() => { hover.current = null }} className={`relative overflow-hidden bg-black ${noChars ? 'pointer-events-none select-none' : ''}`} aria-disabled={noChars || undefined} style={{ aspectRatio: `${frame.image_size[0]} / ${frame.image_size[1]}` }}><img src={img} alt={`${frame.position} detected frame`} loading="lazy" decoding="async" className={`absolute inset-0 h-full w-full transition-[filter,opacity] ${noChars ? 'opacity-35 grayscale' : ''}`} /><svg viewBox={`0 0 ${frame.image_size[0]} ${frame.image_size[1]}`} className={`absolute inset-0 h-full w-full ${noChars ? 'opacity-40 grayscale' : ''} ${drawing === frame.position ? 'touch-none cursor-crosshair' : 'pointer-events-none'}`} aria-label={`${frame.position} frame character boxes`} onPointerDown={event => { if (drawing !== frame.position) return; event.currentTarget.setPointerCapture(event.pointerId); const p = coords(event, frame); setStart(p); setCurrent(p) }} onPointerMove={event => { if (drawing === frame.position && start) setCurrent(coords(event, frame)) }} onPointerUp={event => { if (drawing === frame.position && start) void finish(frame, coords(event, frame)) }}>
+          {!locked && !picking && drawing !== frame.position && <PickLayer size={frame.image_size} onPick={event => void pick(frame, svgPoint(event, frame))} />}
           {people.map((person, index) => {
             const color = BOX_COLORS[index % BOX_COLORS.length]
             const box = resize?.id === person.id ? resize.box : person.box
@@ -315,8 +335,9 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
                 <path d={`M${cx - radius * .42} ${cy - radius * .42} L${cx + radius * .42} ${cy + radius * .42} M${cx + radius * .42} ${cy - radius * .42} L${cx - radius * .42} ${cy + radius * .42}`} stroke="#fff" strokeWidth={Math.max(2, radius / 6)} strokeLinecap="round" fill="none" />
               </g>}</g>
           })}
-          {drawing === frame.position && start && current && <rect x={Math.min(start[0], current[0])} y={Math.min(start[1], current[1])} width={Math.abs(start[0] - current[0])} height={Math.abs(start[1] - current[1])} fill="none" stroke="white" strokeWidth="3" />}</svg></div>
-        {!people.length && <p className="muted text-xs">No people detected. Use Draw box to add one.</p>}
+          {drawing === frame.position && start && current && <rect x={Math.min(start[0], current[0])} y={Math.min(start[1], current[1])} width={Math.abs(start[0] - current[0])} height={Math.abs(start[1] - current[1])} fill="none" stroke="white" strokeWidth="3" />}
+          {picking?.position === frame.position && <PickMarker size={frame.image_size} at={picking.point} />}</svg></div>
+        {!people.length && <p className="muted text-xs">No people detected. Double-click a person or use Draw box to add one.</p>}
         {people.map((person, index) => {
           const color = BOX_COLORS[index % BOX_COLORS.length]
           return <div key={person.id} className={`rounded-lg border hairline bg-[#1e2430] p-2 text-xs transition-opacity ${noChars ? 'opacity-45' : ''}`} aria-disabled={noChars || undefined} style={{ borderLeft: `4px solid ${noChars ? '#4a5262' : color}` }}>

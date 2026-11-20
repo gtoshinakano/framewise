@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import type { PointerEvent } from 'react'
+import type { MouseEvent, PointerEvent } from 'react'
 import type { Box } from './targetView'
 
 export type EditorBox = { id: string; box: Box; color: string; label: string }
@@ -12,12 +12,14 @@ const MIN_SIDE = 8
 /**
  * The SVG layer over one frame: boxes you can move, resize and remove, and a drawing mode for a person the
  * detector missed. Coordinates are image pixels (`size`), whatever size the frame is shown at. Changes are
- * reported when the pointer is released; the caller saves them.
+ * reported when the pointer is released; the caller saves them. With `onPick`, a double-click outside the boxes
+ * reports the point so the caller can find the person there; `picking` marks it while that runs.
  */
-export function BoxEditor({ size, boxes, editable, drawing, onDrawn, onChange, onRemove, label, selectedId, onSelect }: {
+export function BoxEditor({ size, boxes, editable, drawing, onDrawn, onChange, onRemove, label, selectedId, onSelect, onPick, picking }: {
   size: [number, number]; boxes: EditorBox[]; editable: boolean; drawing: boolean
   onDrawn: (box: Box) => void; onChange: (id: string, box: Box) => void; onRemove: (id: string) => void; label: string
   selectedId?: string; onSelect?: (id: string) => void
+  onPick?: (point: [number, number]) => void; picking?: [number, number] | null
 }) {
   const svg = useRef<SVGSVGElement>(null)
   const [drag, setDrag] = useState<Drag | null>(null)
@@ -25,7 +27,7 @@ export function BoxEditor({ size, boxes, editable, drawing, onDrawn, onChange, o
   const [current, setCurrent] = useState<[number, number] | null>(null)
   const handleSize = Math.max(10, size[0] / 80)
 
-  function point(event: PointerEvent): [number, number] {
+  function point(event: MouseEvent): [number, number] {
     const rect = svg.current!.getBoundingClientRect()
     return [Math.max(0, Math.min(size[0], (event.clientX - rect.left) * size[0] / rect.width)), Math.max(0, Math.min(size[1], (event.clientY - rect.top) * size[1] / rect.height))]
   }
@@ -64,6 +66,7 @@ export function BoxEditor({ size, boxes, editable, drawing, onDrawn, onChange, o
   return <svg ref={svg} viewBox={`0 0 ${size[0]} ${size[1]}`} aria-label={label} className={`absolute inset-0 h-full w-full ${drawing ? 'touch-none cursor-crosshair' : 'pointer-events-none'}`}
     onPointerDown={event => { if (!drawing) return; event.currentTarget.setPointerCapture(event.pointerId); const p = point(event); setStart(p); setCurrent(p) }}
     onPointerMove={event => { if (drawing && start) setCurrent(point(event)) }} onPointerUp={endDrawing} onPointerCancel={() => { setStart(null); setCurrent(null) }}>
+    {onPick && editable && !drawing && !picking && <PickLayer size={size} onPick={event => onPick(point(event))} />}
     {boxes.map(item => {
       const box = drag?.id === item.id ? drag.box : item.box
       const movable = editable && !drawing
@@ -86,5 +89,22 @@ export function BoxEditor({ size, boxes, editable, drawing, onDrawn, onChange, o
       </g>
     })}
     {drawing && start && current && <rect x={Math.min(start[0], current[0])} y={Math.min(start[1], current[1])} width={Math.abs(start[0] - current[0])} height={Math.abs(start[1] - current[1])} fill="none" stroke="white" strokeWidth="3" />}
+    {picking && <PickMarker size={size} at={picking} />}
   </svg>
+}
+
+/** Under the boxes, so a double-click on a box still belongs to the box; anywhere else it asks for the person there. */
+export function PickLayer({ size, onPick }: { size: [number, number]; onPick: (event: MouseEvent<SVGRectElement>) => void }) {
+  return <rect x={0} y={0} width={size[0]} height={size[1]} fill="transparent" style={{ pointerEvents: 'all' }} onDoubleClick={event => { event.preventDefault(); onPick(event) }}>
+    <title>Double-click a person to box them</title>
+  </rect>
+}
+
+/** Where the user double-clicked, while the detector looks there. */
+export function PickMarker({ size, at }: { size: [number, number]; at: [number, number] }) {
+  const r = Math.max(10, size[0] / 60)
+  return <g className="animate-pulse" aria-label="Finding the person here" role="status">
+    <circle cx={at[0]} cy={at[1]} r={r} fill="none" stroke="white" strokeWidth="3" />
+    <circle cx={at[0]} cy={at[1]} r={r / 4} fill="white" />
+  </g>
 }

@@ -100,7 +100,8 @@ class AniRefDetector:
             raise RuntimeError('The configured AniRef model does not have the expected person class')
         self.device = device
 
-    def detect(self, images, confidence=0.25, iou=0.7):
+    def detect(self, images, confidence=0.25, iou=0.7, scores=False):
+        """Person boxes per image; with ``scores`` each entry is ``(box, confidence)``."""
         if not images:
             return []
         # Ultralytics preserves each source image's coordinate system in xyxy.
@@ -112,14 +113,15 @@ class AniRefDetector:
         for image, result in zip(images, results):
             width, height = image.size
             boxes = []
-            for coords in result.boxes.xyxy.cpu().tolist():
+            confidences = result.boxes.conf.cpu().tolist()
+            for coords, score in zip(result.boxes.xyxy.cpu().tolist(), confidences):
                 if len(coords) != 4 or any(not math.isfinite(value) for value in coords):
                     continue
                 x1, y1, x2, y2 = coords
                 box = [max(0, min(width, x1)), max(0, min(height, y1)),
                        max(0, min(width, x2)), max(0, min(height, y2))]
                 if box[0] < box[2] and box[1] < box[3]:
-                    boxes.append(box)
+                    boxes.append((box, float(score)) if scores else box)
             frames.append(boxes)
         return frames
 

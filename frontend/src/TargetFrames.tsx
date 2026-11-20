@@ -6,6 +6,8 @@ import { BetweenFrames } from './BetweenFrames'
 import { BoxEditor, type EditorBox } from './BoxEditor'
 import { boxColor } from './boxColors'
 import { cachedCharacters, loadCharacters } from './runCache'
+import { detectAt, NOTHING_FOUND, type Point } from './pointDetect'
+import { useToast } from './Toasts'
 import { ActionButton, StaleChip, StatusChip } from './RunUi'
 import { boxesInFrame, canDraw, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, REVIEW_LABELS, slotChip, slotName, type Box, type TargetBox, type TargetCandidate, type TargetDetections, type TargetFrameInfo, type TargetRun } from './targetView'
 
@@ -128,6 +130,8 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
   const [drawing, setDrawing] = useState<number | null>(null)
   const [onlyFlagged, setOnlyFlagged] = useState(true)
   const [selectedBox, setSelectedBox] = useState<string>()
+  const [picking, setPicking] = useState<{ ordinal: number; point: Point } | null>(null)
+  const toast = useToast()
   const chain = useRef<Promise<void>>(Promise.resolve())
   useEffect(() => { void loadCharacters(projectId).then(setCharacters).catch(() => {}) }, [projectId])
   useEffect(() => { setOnlyFlagged(true); setSelectedBox(undefined); setDrawing(null) }, [cutId, selection?.revision])
@@ -169,6 +173,16 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
   }
   const reslot = (id: string, slot: number) => edit(() => api(`/target-detections/${id}/slot`, { method: 'PUT', body: JSON.stringify({ slot }) }))
   const draw = (ordinal: number, box: Box) => { setDrawing(null); edit(() => api(`/target-runs/${live!.id}/boxes`, { method: 'POST', body: JSON.stringify({ frame_ordinal: ordinal, box }) })) }
+  /** A double-click on a person: the detector finds their box and it is added like a drawn one, without a name. */
+  async function pick(ordinal: number, point: Point) {
+    if (!live || picking) return
+    setPicking({ ordinal, point })
+    try {
+      const box = await detectAt({ surface: 'target', run_id: live.id, frame_ordinal: ordinal }, point)
+      if (box) draw(ordinal, box)
+      else toast({ message: NOTHING_FOUND })
+    } catch (reason) { toast({ message: `Could not find the person: ${(reason as Error).message}`, tone: 'error' }) } finally { setPicking(null) }
+  }
   const cast = (value: boolean) => edit(() => api(`/cuts/${cutId}/target-cast`, { method: 'PUT', body: JSON.stringify({ locked: value }) }))
   const ignore = (slot: number, value = true) => edit(() => api(`/target-slots/${live!.id}/${slot}/ignored`, { method: 'PUT', body: JSON.stringify({ ignored: value }) }))
   const swap = (slot: number, other: number, ordinal: number) => edit(() => api(`/target-slots/${live!.id}/${slot}/swap-from`, { method: 'POST', body: JSON.stringify({ other, frame_ordinal: ordinal }) }))
@@ -262,7 +276,8 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
         return <div key={frame.source_frame_index} className="space-y-1.5">
           <FrameCard index={index} frame={frame} src={frameUrl(cutId, frame.source_frame_index, selection.revision)} info={info} run={live}
             drawing={drawing === frame.source_frame_index} locked={locked} onDrawing={on => setDrawing(on ? frame.source_frame_index : null)}
-            onDraw={box => draw(frame.source_frame_index, box)} onMove={move} onRemove={remove} onReslot={reslot} described={described} slotOf={slotOf}
+            onDraw={box => draw(frame.source_frame_index, box)} onPick={point => void pick(frame.source_frame_index, point)}
+            picking={picking?.ordinal === frame.source_frame_index ? picking.point : null} onMove={move} onRemove={remove} onReslot={reslot} described={described} slotOf={slotOf}
             selectedBox={selectedBox} onSelect={setSelectedBox} onIgnore={ignore} onSwap={swap} onReview={review} onDecide={decide} maxBoxes={maxBoxes}
             onRemoveFrame={index > 0 ? () => dropFrame(frame.source_frame_index) : undefined} frameLocked={saving > 0 || all.length <= 2} />
           {after && <PairChanges segment={after} slotOf={slotOf} />}
@@ -322,10 +337,10 @@ function KeyframeHeader({ state, analysis }: { state: KeyframeAnalysisState; ana
   </div>
 }
 
-function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, onDraw, onMove, onRemove, onReslot, described, slotOf,
+function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, onDraw, onPick, picking, onMove, onRemove, onReslot, described, slotOf,
   selectedBox, onSelect, onIgnore, onSwap, onReview, onDecide, maxBoxes, onRemoveFrame, frameLocked }: {
   index: number; frame: TargetFrame; src: string; info?: TargetFrameInfo; run: TargetRun | null; drawing: boolean; locked: boolean
-  onDrawing: (on: boolean) => void; onDraw: (box: Box) => void; onMove: (id: string, box: Box) => void; onRemove: (id: string) => void; onReslot: (id: string, slot: number) => void
+  onDrawing: (on: boolean) => void; onDraw: (box: Box) => void; onPick: (point: Point) => void; picking: Point | null; onMove: (id: string, box: Box) => void; onRemove: (id: string) => void; onReslot: (id: string, slot: number) => void
   described?: KeyframeAnalysis['frames'][number]; slotOf: (name: string) => number | null
   selectedBox?: string; onSelect: (id: string) => void; maxBoxes: number
   onIgnore: (slot: number) => void; onSwap: (slot: number, other: number, ordinal: number) => void; onReview: (ordinal: number, value: boolean) => void
@@ -355,7 +370,7 @@ function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, o
     <div className="relative w-full" style={{ aspectRatio: info ? `${info.image_size[0]} / ${info.image_size[1]}` : '16 / 9' }}>
       <img loading="lazy" className="absolute inset-0 h-full w-full object-contain" src={src} alt={`Target frame ${index + 1} at ${frame.relative_timestamp_seconds.toFixed(3)} seconds`} />
       {run && info && <BoxEditor size={info.image_size} boxes={editor} editable={!locked && !mirrored} drawing={drawing && !locked && !mirrored} label={`Frame ${index + 1} character boxes`}
-        onDrawn={onDraw} onChange={onMove} onRemove={onRemove} selectedId={selectedBox}
+        onDrawn={onDraw} onChange={onMove} onRemove={onRemove} selectedId={selectedBox} onPick={room ? onPick : undefined} picking={picking}
         onSelect={id => { onSelect(id); card.current?.focus({ preventScroll: true }) }} />}
     </div>
     <figcaption className="space-y-1.5 p-2 text-xs">
@@ -365,7 +380,7 @@ function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, o
           : <span className="muted">{frame.reason.replaceAll('_', ' ')}</span>}
           {run && info && <>
             <span className="muted tabular-nums">{mirrored ? boxes.length : `${boxes.length}/${maxBoxes}`}</span>
-            {!mirrored && <button type="button" className="inline-flex items-center gap-1 text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked || (!room && !drawing)} onClick={() => onDrawing(!drawing)}>{drawing ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing ? 'Cancel drawing' : 'Draw box'}</button>}
+            {!mirrored && <button type="button" className="inline-flex items-center gap-1 text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked || (!room && !drawing)} title="Drag a box around a person, or double-click the person on the frame to find their box" onClick={() => onDrawing(!drawing)}>{drawing ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing ? 'Cancel drawing' : 'Draw box'}</button>}
           </>}
           {onRemoveFrame && <ActionButton compact variant="danger" icon={<ImageMinus size={12} />} disabled={frameLocked} onClick={onRemoveFrame}
             aria-label={`Remove frame ${index + 1} from the analysis`} title={frameLocked ? 'A cut keeps at least two frames' : 'Remove this frame from the analysis; its boxes are kept in the correction log'} />}</span></div>

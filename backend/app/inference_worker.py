@@ -1138,6 +1138,14 @@ def start_chat_gateway():
     return chat_gateway_worker.start()
 
 
+def start_point_detect():
+    """Find the person under a double-clicked point on a frame (point_detect.py), on the CPU beside the job lanes."""
+    if os.environ.get('POINT_DETECT_WORKER', '1') == '0':
+        return None
+    from . import point_detect
+    return point_detect.start()
+
+
 def text_lane(name):
     """An extra worker thread that runs only local text jobs next to the main loop.
 
@@ -1295,6 +1303,7 @@ def main():
     visual_models.publish(force=True)  # the API can only see the model folders through this report
     start_assistant()
     start_chat_gateway()
+    start_point_detect()
     for number in range(1, local_text_runtime.text_job_concurrency()):
         threading.Thread(target=text_lane, args=(f'text-{number}',), daemon=True, name=f'text-lane-{number}').start()
     start_remote_text()
