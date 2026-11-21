@@ -23,6 +23,7 @@ Callers that are not a role (subtitle reading, the older character matcher) use 
 The API container cannot see the model folders (they are mounted into the inference worker only), so
 the worker publishes ``status()`` of every model to ``visual_model_state`` and the API reads that.
 """
+import dataclasses
 import json
 import os
 import time
@@ -53,8 +54,14 @@ class VisualModel:
     manifest: str | None = None  # model_manifest.json entry the installer downloads
     note: str = ''
     external: str = ''  # how to install the files the manifest does not list (another installer owns them)
+    # The model the text server keeps loaded (``local_text_runtime``): visual stages talk to that one server
+    # (``frame_model.model_server``) instead of starting their own, so nothing is unloaded between text and pictures.
+    # Its GGUF is the variant selected in the text engine dialog and its identity comes from ``resolve``.
+    resident: bool = False
 
     def path(self, name):
+        if self.resident and name == 'model':
+            return local_text_runtime.variant_path(local_text_runtime.selected_variant())
         env, default, *file_name = self.files[name]
         found = Path(os.environ.get(env) or default)
         return found / file_name[0] if file_name else found
@@ -76,16 +83,37 @@ def _lfm3():
         note='2.2B omni model: much faster, less detailed.')
 
 
+def _resident_identity(variant):
+    """(model id, revision) saved with a result made by the resident server running ``variant``."""
+    projector = MANIFEST['qwen36-vision']['files'][0]
+    info = local_text_runtime.VARIANTS[variant]
+    return info['id'], f"{info['revision']}+mmproj-sha256:{projector['sha256'][:12]}"
+
+
+def _resident_label(variant):
+    return f"Qwen3.6 35B-A3B · {local_text_runtime.VARIANTS[variant]['label'].split('·', 1)[-1].strip()} + vision"
+
+
 def _qwen36():
     projector = MANIFEST['qwen36-vision']['files'][0]
+    model_id, revision = _resident_identity(local_text_runtime.DEFAULT_VARIANT)
     return VisualModel(
-        key='qwen36-35b', label='Qwen3.6 35B-A3B · Q4_K_M + vision', short_name='Qwen3.6-35B-A3B',
-        model_id=local_text_runtime.MODEL_ID, revision=f"{local_text_runtime.MODEL_REVISION}+mmproj-sha256:{projector['sha256'][:12]}", runtime='llama-server',
+        key='qwen36-35b', label=_resident_label(local_text_runtime.DEFAULT_VARIANT), short_name='Qwen3.6-35B-A3B',
+        model_id=model_id, revision=revision, runtime='llama-server', resident=True,
         roles=('initial_frame', 'keyframe_analysis', 'character_profile'),
-        files={'model': ('QWEN36_MODEL_PATH', '/models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf'),
+        files={'model': ('QWEN36_MTP_MODEL_PATH', '/models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'),  # replaced by the selected variant's file in path()
                'projector': ('QWEN36_PROJECTOR_PATH', '/models/qwen3.6-35b/' + projector['name'])},
-        manifest='qwen36-vision', external='the text model comes from scripts/download-qwen36.sh',
-        note='The text model of Cut Assistance with its vision projector: about 2.5 times faster than Qwen3.5-27B on first frames.')
+        manifest='qwen36-vision', external='the text model comes from scripts/download-qwen36-mtp.sh or scripts/download-qwen36.sh',
+        note='The text model of Cut Assistance (MTP by default) with its vision projector, kept loaded for text and pictures alike.')
+
+
+def resolve(model):
+    """The model as the worker runs it now: a resident model carries the identity of the variant that is selected."""
+    if not model.resident:
+        return model
+    variant = local_text_runtime.selected_variant()
+    model_id, revision = _resident_identity(variant)
+    return dataclasses.replace(model, model_id=model_id, revision=revision, label=_resident_label(variant))
 
 
 MODELS = {model.key: model for model in (
@@ -109,7 +137,12 @@ GENERAL = 'qwen36-35b'  # for the callers that are not a role: subtitle reading 
 
 def general():
     """The image model of everything that has no role of its own."""
-    return MODELS[GENERAL]
+    return resolve(MODELS[GENERAL])
+
+
+def runs_resident(payload, roles):
+    """Whether a job's snapshotted models for ``roles`` all run on the resident server (nothing to unload for them)."""
+    return all(for_job(payload, role).resident for role in roles)
 
 
 def supports(key, role):
@@ -203,7 +236,7 @@ def for_job(payload, role):
     """The model a job runs for ``role``: its snapshot, else the default (jobs queued before the choice existed)."""
     models = payload.get('models') if isinstance(payload, dict) else None
     key = models.get(role) if isinstance(models, dict) else None
-    return MODELS[key if supports(key, role) else DEFAULTS[role]]
+    return resolve(MODELS[key if supports(key, role) else DEFAULTS[role]])
 
 
 def reported():
@@ -223,6 +256,7 @@ def overview():
     stale = age is None or age > STALE_SECONDS
     models = []
     for key, model in MODELS.items():
+        model = resolve(model)
         info = report.get(key) or {}
         models.append({'key': key, 'label': model.label, 'model_id': model.model_id, 'roles': list(model.roles), 'note': model.note,
                        'helper': not model.roles, 'install': f'python3 scripts/install-model.py {model.manifest}' if model.manifest else None,

@@ -93,7 +93,7 @@ class SubtitleJobTest(unittest.TestCase):
              patch.object(single_cut_pipeline, 'release_gpu_models'), patch.object(single_cut_pipeline, 'ensure_models_available'), \
              patch.object(subtitle_reader, 'extract_frame', return_value=b'jpeg'), patch.object(subtitle_scan, 'choose_probe_times', side_effect=capture_probes), \
              patch.object(subtitle_scan, 'scan_video', side_effect=scan_video), patch.object(subtitle_scan, 'outline_share_of', return_value=share), patch.object(subtitle_pipeline.media, 'probe', return_value={'width': 960, 'height': 540}), \
-             patch.object(subtitle_pipeline.frame_model, 'frame_server', return_value=nullcontext('http://fake')) as frame_server, patch.object(subtitle_pipeline.visual_models, 'require') as require, \
+             patch.object(subtitle_pipeline.frame_model, 'model_server', return_value=nullcontext('http://fake')) as frame_server, patch.object(subtitle_pipeline.visual_models, 'require') as require, \
              patch.object(subtitle_reader, 'read_events', side_effect=reader or self.read_script()):
             self.frame_server, self.require = frame_server, require
             subtitle_pipeline.process(*claimed)
@@ -321,8 +321,8 @@ class SubtitleJobTest(unittest.TestCase):
         self.queue()
         self.run_job()
         model = visual_models.general()
-        self.assertEqual(self.frame_server.call_args.args, model.server_files())
-        self.assertEqual(self.frame_server.call_args.kwargs['extra_args'], model.server_args)
+        self.assertEqual(self.frame_server.call_args.args, (model,))  # the resident server reads the strips; no private one is started
+        self.assertTrue(model.resident)
         self.require.assert_called_with(model.key)
         run = db.one('SELECT model_id,model_revision FROM subtitle_runs')
         self.assertEqual((run['model_id'], run['model_revision']), (model.model_id, model.revision))

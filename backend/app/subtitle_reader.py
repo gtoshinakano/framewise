@@ -127,13 +127,14 @@ def classify_reading(reading, language):
 
 # -- model call ------------------------------------------------------------------------------------
 
-def request_reading(server_url, jpeg, language, timeout=180, attempts=3):
+def request_reading(server_url, jpeg, language, timeout=180, attempts=3, thinking=False):
+    from .frame_model import thinking_kwargs
     image = base64.b64encode(jpeg).decode('ascii')
     body = json.dumps({'messages': [{'role': 'system', 'content': system_prompt(language)},
                                     {'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image}},
                                                                  {'type': 'text', 'text': USER_PROMPT}]}],
                        'temperature': 0, 'max_tokens': 400, 'response_format': {'type': 'json_object'},
-                       'chat_template_kwargs': {'enable_thinking': False}}).encode()
+                       'chat_template_kwargs': thinking_kwargs(thinking)}).encode()
     last = None
     for attempt in range(attempts):
         request = urllib.request.Request(server_url + '/v1/chat/completions', data=body, headers={'Content-Type': 'application/json'}, method='POST')

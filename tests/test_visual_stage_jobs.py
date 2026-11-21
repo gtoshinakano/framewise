@@ -60,7 +60,7 @@ class VisualStageJobsTest(unittest.TestCase):
              patch.object(inference_worker, 'get_model', side_effect=AssertionError('subtitle model loaded')), \
              patch.object(keyframe_analysis, 'load_pose', side_effect=AssertionError('keyframe stage started')), \
              patch.object(single_cut_pipeline.media, 'extract_cut_frame', side_effect=lambda source, target, sample, *a, **kw: sample), \
-             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')), \
+             patch.object(single_cut_pipeline.frame_model, 'model_server', return_value=nullcontext('server')), \
              patch.object(single_cut_pipeline.frame_model, 'describe_frame', return_value=frame) as describe:
             inference_worker.process(*worker.claim_job(('analyze',)))
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
@@ -112,7 +112,7 @@ class VisualStageJobsTest(unittest.TestCase):
         with patch('app.worker.time.time', return_value=100) as clock, \
              patch.object(single_cut_pipeline, 'ensure_models_available'), patch.object(single_cut_pipeline, 'release_gpu_models'), \
              patch.object(single_cut_pipeline.media, 'extract_cut_frame', return_value=0), \
-             patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('server')), \
+             patch.object(single_cut_pipeline.frame_model, 'model_server', return_value=nullcontext('server')), \
              patch.object(single_cut_pipeline.frame_model, 'describe_frame', side_effect=describe):
             claim = worker.claim_job(('analyze',))
             inference_worker.process(*claim)

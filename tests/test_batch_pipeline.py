@@ -3,6 +3,7 @@ import contextlib
 import unittest
 from unittest.mock import MagicMock, patch
 
+import tests.test_analysis as analysis_tests
 from app import anime_bulk, inference_worker, single_cut_pipeline as pipeline, worker
 
 
@@ -33,12 +34,15 @@ class FakeCutRun:
 
 
 class BatchPipelineTest(unittest.TestCase):
+    setUp = analysis_tests.AnalysisTest.setUp  # the default model is the resident one, whose identity comes from the selected variant
+    tearDown = analysis_tests.AnalysisTest.tearDown
+
     def test_frame_model_server_starts_once_for_all_cuts(self):
         log = []
         runs = [FakeCutRun(name, log) for name in ('a', 'b', 'c')]
         server = MagicMock()
         server.return_value.__enter__.return_value = 'server'
-        with patch.object(pipeline.frame_model, 'frame_server', server), \
+        with patch.object(pipeline.frame_model, 'model_server', server), \
              patch.object(pipeline, '_frame_stage') as frame_stage:
             pipeline._first_frame_stage(runs, '/scratch')
         self.assertEqual(server.call_count, 1)
@@ -47,7 +51,7 @@ class BatchPipelineTest(unittest.TestCase):
 
     def test_frame_server_is_skipped_when_no_frame_stage_is_needed(self):
         runs = [FakeCutRun('a', [], stages=('keyframe_analysis',))]
-        with patch.object(pipeline.frame_model, 'frame_server') as server:
+        with patch.object(pipeline.frame_model, 'model_server') as server:
             pipeline._first_frame_stage(runs, '/scratch')
         server.assert_not_called()
 
@@ -55,7 +59,7 @@ class BatchPipelineTest(unittest.TestCase):
         # last_frame (dropped 2026-11-12) and video_analysis (replaced by keyframes 2026-11-18) may still be named by older queued jobs.
         for stage in ('last_frame', 'video_analysis'):
             runs = [FakeCutRun('a', [], stages=(stage,))]
-            with patch.object(pipeline.frame_model, 'frame_server') as server, patch.object(pipeline.keyframe_analysis, 'load_pose') as pose:
+            with patch.object(pipeline.frame_model, 'model_server') as server, patch.object(pipeline.keyframe_analysis, 'load_pose') as pose:
                 pipeline._first_frame_stage(runs, '/scratch')
                 pipeline.keyframe_analysis.stage(runs, '/scratch', pipeline.visual_models.MODELS['qwen35-27b'])
             server.assert_not_called()
@@ -67,7 +71,7 @@ class BatchPipelineTest(unittest.TestCase):
         server = MagicMock()
         server.return_value.__enter__.return_value = 'http://server'
         with patch.object(pipeline.keyframe_analysis, 'load_pose', return_value=('pose', {'model_id': 'dwpose'})) as pose, \
-             patch.object(pipeline.frame_model, 'frame_server', server), patch.object(pipeline.keyframe_analysis, 'analyze') as analyze:
+             patch.object(pipeline.frame_model, 'model_server', server), patch.object(pipeline.keyframe_analysis, 'analyze') as analyze:
             pipeline.keyframe_analysis.stage(runs, '/scratch', pipeline.visual_models.MODELS['qwen35-27b'])
         pose.assert_called_once()
         self.assertEqual(server.call_count, 1)

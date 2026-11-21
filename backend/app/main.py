@@ -2569,7 +2569,7 @@ class TextGenerationSettings(BaseModel):
 def text_generation_settings(conn=None):
     row = db.one('SELECT text_provider,local_thinking,openrouter_model,local_model,openrouter_audio_model FROM text_generation_settings WHERE id=1', conn=conn)
     if not row:
-        return {**TextGenerationSettings().model_dump(), 'local_model': 'standard', 'openrouter_audio_model': DEFAULT_AUDIO_MODEL}
+        return {**TextGenerationSettings().model_dump(), 'local_model': 'mtp', 'openrouter_audio_model': DEFAULT_AUDIO_MODEL}
     row['local_thinking'] = bool(row['local_thinking'])
     return row
 

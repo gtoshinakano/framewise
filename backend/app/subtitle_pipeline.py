@@ -222,8 +222,8 @@ class Run:
 
         model = visual_models.general()
         visual_models.require(model.key)
-        with frame_model.frame_server(*model.server_files(), cancel_check=self.cancel_check, parallel=workers, context_per_slot=4096,
-                                      extra_args=model.server_args) as server:
+        workers = frame_model.workers(model, workers, 'Subtitle readers')
+        with frame_model.model_server(model, cancel_check=self.cancel_check, parallel=workers, context_per_slot=4096) as server:
             subtitle_reader.read_events(server, self.original, self.band, self.language, todo, save, workers=workers, cancel_check=self.cancel_check)
         self.timings['read_seconds'] = round(time.monotonic() - started, 1)
 

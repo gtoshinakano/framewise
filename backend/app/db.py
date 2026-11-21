@@ -91,7 +91,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS text_generation_settings (
             id INTEGER PRIMARY KEY CHECK(id=1), text_provider TEXT NOT NULL DEFAULT 'openrouter',
             local_thinking INTEGER NOT NULL DEFAULT 0, openrouter_model TEXT NOT NULL DEFAULT 'openrouter/free',
-            local_model TEXT NOT NULL DEFAULT 'standard',
+            local_model TEXT NOT NULL DEFAULT 'mtp',
             openrouter_audio_model TEXT NOT NULL DEFAULT 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free'
         );
         INSERT OR IGNORE INTO text_generation_settings(id) VALUES (1);
@@ -510,7 +510,7 @@ def init_db():
             ('character_detection_runs', 'input_json', "TEXT NOT NULL DEFAULT '{}'"),
             ('target_detection_runs', 'input_json', "TEXT NOT NULL DEFAULT '{}'"),
             ('cuts', 'no_characters', 'INTEGER NOT NULL DEFAULT 0'),
-            ('text_generation_settings', 'local_model', "TEXT NOT NULL DEFAULT 'standard'"),
+            ('text_generation_settings', 'local_model', "TEXT NOT NULL DEFAULT 'mtp'"),
             ('text_generation_settings', 'openrouter_audio_model',
              "TEXT NOT NULL DEFAULT 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free'"),
             ('local_text_model_state', 'variant', "TEXT NOT NULL DEFAULT ''"),

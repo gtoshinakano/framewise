@@ -193,6 +193,9 @@ class Kind:
     claim_order: int = 0
     affects_episode: bool = True
     handler: str | Callable | None = None
+    # A GPU job normally gets the whole device: the resident Qwen server is stopped for it. A job whose models all run on that
+    # resident server (single-cut visual analysis, a character profile) says False and keeps it loaded.
+    needs_device: Callable[[dict], bool] = lambda payload: True
 
     def name(self, payload):
         return self.label(payload) if self.label else self.title
@@ -218,6 +221,12 @@ class Kind:
             module, name = handler.rsplit('.', 1)
             handler = getattr(import_module('.' + module, __package__), name)
         return handler(job_id, owner)
+
+
+def _resident_models(payload, roles):
+    """Whether the models a job snapshotted for ``roles`` all run on the resident Qwen server (see ``visual_models``)."""
+    from . import visual_models
+    return visual_models.runs_resident(payload, roles)
 
 
 def _always(payload):
@@ -577,6 +586,7 @@ KINDS = {kind.pipeline: kind for kind in (
          # Older analysis workflows stop safely at their next checkpoint only when they are text-only.
          cancel_running=lambda payload: payload.get('workflow') == 'single_cut_v2' or payload.get('text_only') is True,
          retry=_always, lane='inference', resources=frozenset({'gpu'}), scope=_visual_scope,
+         needs_device=lambda payload: not (payload.get('workflow') == 'single_cut_v2' and _resident_models(payload, ('initial_frame', 'keyframe_analysis'))),
          priority_class=lambda payload: 'batch' if payload.get('batch') else 'interactive',
          inputs=analysis_context.visual_fingerprint, gather=analysis_context.visual, invalidates=_visual_invalidates),
     Kind('character_detect', 'Character detection', True, label=_character_label, cuts=_one_cut, keys=_character_keys,
@@ -589,6 +599,7 @@ KINDS = {kind.pipeline: kind for kind in (
     Kind('character_profile', 'Character description', True, cuts=_one_cut, cancel_running=_always, retry=_always,
          keys=lambda payload, cut_ids: [f"character_profile:{payload.get('character_context_id')}"],
          lane='inference', handler='character_profile.process', resources=frozenset({'gpu'}),
+         needs_device=lambda payload: not _resident_models(payload, ('character_profile',)),
          scope=lambda payload: Scope(frozenset({'original', 'cut_boundaries', 'detections', 'context'}),
                                      frozenset({f"context:{payload.get('character_context_id')}"}),
                                      frozenset({payload['cut_id']}) if payload.get('cut_id') else None),

@@ -248,7 +248,7 @@ class BatchQueueingTest(unittest.TestCase):
 
         with patch.object(pipeline, 'ensure_models_available'), patch.object(pipeline, 'release_gpu_models'), \
              patch.object(inference_worker, 'get_model', side_effect=AssertionError('the WeVisOne model belongs to the subtitle step, not to cut analysis')), \
-             patch.object(frame_model, 'frame_server', server), \
+             patch.object(frame_model, 'model_server', server), \
              patch.object(frame_model, 'describe_frame', side_effect=describe or default_describe), \
              patch.object(pipeline.keyframe_analysis, 'load_pose', load_pose), patch.object(pipeline.keyframe_analysis, 'analyze', analyze), \
              patch.object(pipeline.character_detection, 'crop_frame', return_value=b''), \

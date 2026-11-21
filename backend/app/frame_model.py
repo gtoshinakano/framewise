@@ -64,13 +64,48 @@ def frame_server(runtime, model, projector, startup_timeout=300, cancel_check=No
                     process.wait()
 
 
-def _chat_body(messages, schema, max_tokens):
+@contextmanager
+def model_server(model, cancel_check=None, parallel=1, context_per_slot=8192, extra_args=None):
+    """The llama-server URL for a stage that sends pictures to ``model`` (a ``visual_models.VisualModel``).
+
+    The resident Qwen 3.6 is the server that already answers text and chat, so it is used as it is: nothing is
+    stopped or started, and ``parallel``/``context_per_slot`` only describe the stage (its slots are those of
+    ``local_text_runtime.server_slots``). Any other model gets its own private server for the stage, as before; the caller
+    has then stopped the resident one (``needs_device`` of the job kind).
+    """
+    if model.resident:
+        from . import local_text_runtime
+        runtime = local_text_runtime.runtime
+        if runtime is None:
+            raise RuntimeError('Local text model worker is unavailable')
+        with runtime.visual_session(cancel_check) as url:
+            yield url
+        return
+    with frame_server(*model.server_files(), cancel_check=cancel_check, parallel=parallel, context_per_slot=context_per_slot,
+                      extra_args=model.server_args if extra_args is None else extra_args) as url:
+        yield url
+
+
+def workers(model, wanted, what='A visual stage'):
+    """How many requests a stage may send at once: its own setting, and for the resident server never more than its slots."""
+    if not model.resident:
+        return wanted
+    from . import local_text_runtime
+    return local_text_runtime.clamp_parallel(wanted, what)
+
+
+def thinking_kwargs(enabled=False):
+    """The per-request switch of Qwen's thinking. Pictures are described without it unless a call asks for it."""
+    return {'enable_thinking': bool(enabled)}
+
+
+def _chat_body(messages, schema, max_tokens, thinking=False):
     response_format = {'type': 'json_schema', 'json_schema': {'name': 'frame', 'strict': True, 'schema': schema}} if schema else {'type': 'json_object'}
-    return {'messages': messages, 'temperature': 0, 'max_tokens': max_tokens, 'response_format': response_format, 'chat_template_kwargs': {'enable_thinking': False}}
+    return {'messages': messages, 'temperature': 0, 'max_tokens': max_tokens, 'response_format': response_format, 'chat_template_kwargs': thinking_kwargs(thinking)}
 
 
 def describe_frame(server_url, image_path, subtitle_regions=None, character_context=None, cancel_check=None, usage_out=None, subtitle_language=None,
-                   people=(), frame_label='first frame'):
+                   people=(), frame_label='first frame', thinking=False):
     """Return a validated frame description from a still, never audio.
 
     ``people`` are the user-marked characters of this frame (``ref``, ``name``, ``box``, ids); the model
@@ -94,11 +129,11 @@ def describe_frame(server_url, image_path, subtitle_regions=None, character_cont
             request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'}, method='POST')
             return request_json(request, cancel_check, timeout=600)
         try:
-            payload = ask(_chat_body(messages, schema, FRAME_MAX_TOKENS))
+            payload = ask(_chat_body(messages, schema, FRAME_MAX_TOKENS, thinking))
         except urllib.error.HTTPError as exc:
             if exc.code not in (400, 422, 500):
                 raise
-            payload = ask(_chat_body(messages, None, FRAME_MAX_TOKENS))  # a server that cannot build the grammar still answers in plain JSON
+            payload = ask(_chat_body(messages, None, FRAME_MAX_TOKENS, thinking))  # a server that cannot build the grammar still answers in plain JSON
         if usage_out is not None and isinstance(payload.get('usage'), dict):
             for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
                 if isinstance(payload['usage'].get(key), int):
@@ -123,7 +158,7 @@ def match_character(server_url, target_image, references, cancel_check=None):
     candidates = list({ref['character_context_id']: ref['title'] for ref in references}.items())
     content.append({'type': 'text', 'text': 'Compare the first image (target) against the labeled reference images above. Candidate character IDs and names: ' + json.dumps(candidates, ensure_ascii=False) + '. Return only JSON with exactly character_id, confidence, reason. character_id must be a candidate ID from this list or null; confidence must be high, medium, or low. Use null and low when uncertain. High requires strong distinctive visible similarity; similar clothing alone is not enough. Do not infer identity from names, text, or narrative.'})
     request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps({'messages': [{'role': 'user', 'content': content}],
-        'temperature': 0, 'max_tokens': 512, 'response_format': {'type': 'json_object'}, 'chat_template_kwargs': {'enable_thinking': False}}).encode(), headers={'Content-Type': 'application/json'}, method='POST')
+        'temperature': 0, 'max_tokens': 512, 'response_format': {'type': 'json_object'}, 'chat_template_kwargs': thinking_kwargs()}).encode(), headers={'Content-Type': 'application/json'}, method='POST')
     try:
         from .inference_worker import request_json
         choice = request_json(request, cancel_check, timeout=600)['choices'][0]

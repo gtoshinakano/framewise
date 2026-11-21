@@ -1,5 +1,6 @@
 """Keep model teardown and the idle text server inside the shared GPU boundary."""
 import fcntl
+import threading
 import time
 from contextlib import contextmanager
 
@@ -22,10 +23,32 @@ def acquire(check=None):
         raise
 
 
+_held = threading.local()
+
+
 @contextmanager
 def hold(check=None):
-    with acquire(check):
-        yield
+    with acquire(check) as handle:
+        stack = _held.__dict__.setdefault('stack', [])
+        stack.append(handle)
+        try:
+            yield
+        finally:
+            stack.remove(handle)
+
+
+def release_held():
+    """Let go of the device lock the calling thread holds through ``hold``, if it holds one.
+
+    A job that kept the GPU to itself (subtitle locating, the older character matcher) calls this before the resident
+    Qwen server loads: the server takes the lock for as long as it runs, and a second lock on the same file from the
+    same process would wait for the first one forever. The ``hold`` block still ends normally.
+    """
+    for handle in getattr(_held, 'stack', ()):
+        try:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        except (OSError, ValueError):
+            pass
 
 
 def audio_requested():

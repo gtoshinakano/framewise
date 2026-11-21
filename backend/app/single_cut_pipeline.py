@@ -337,10 +337,10 @@ def _first_frame_stage(runs, scratch, model=None):
     todo = [cut_run for cut_run in runs if not cut_run.failure and cut_run.needs('initial_frame')]
     if not todo:
         return
-    model = model or visual_models.MODELS[visual_models.DEFAULTS['initial_frame']]
-    with frame_model.frame_server(*model.server_files(), cancel_check=todo[0].cancel_check, parallel=FRAME_PARALLEL,
-                                  extra_args=model.server_args) as server:
-        _for_each(todo, lambda cut_run: _frame_stage(cut_run, server, scratch, model), parallel=FRAME_PARALLEL)
+    model = model or visual_models.for_job({}, 'initial_frame')
+    parallel = frame_model.workers(model, FRAME_PARALLEL, 'First frames')
+    with frame_model.model_server(model, cancel_check=todo[0].cancel_check, parallel=parallel) as server:
+        _for_each(todo, lambda cut_run: _frame_stage(cut_run, server, scratch, model), parallel=parallel)
 
 
 def marked_people(cut_run, position):
@@ -373,7 +373,7 @@ def marked_people(cut_run, position):
 
 
 def _frame_stage(cut_run, server, scratch, model=None):
-    model = model or visual_models.MODELS[visual_models.DEFAULTS['initial_frame']]
+    model = model or visual_models.for_job({}, 'initial_frame')
     if not cut_run.needs('initial_frame'):
         return
     with cut_run.stage('initial_frame', 'Initial frame'):
@@ -392,6 +392,6 @@ def _frame_stage(cut_run, server, scratch, model=None):
         data['frame_time'] = actual
         data['subtitle_regions'] = regions
         cut_run.save('initial_frame', data, model.model_id, FRAME_INSTRUCTION,
-                     {'model_revision': model.revision, 'visual_model': model.key, 'image_width': 1280, 'generation_seconds': time.monotonic() - started, 'usage': usage,
+                     {'model_revision': model.revision, 'visual_model': model.key, 'thinking': False, 'image_width': 1280, 'generation_seconds': time.monotonic() - started, 'usage': usage,
                       'frame_mode': 'full', 'marked_characters': len(people), 'frame_contract': data.get('contract'),
                      'pose': pose_detail.stats(data.get('visible_characters'))})

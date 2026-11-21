@@ -21,6 +21,9 @@ def report(**available):
 
 
 class RegistryTest(unittest.TestCase):
+    setUp = analysis_tests.AnalysisTest.setUp  # a resident model names the variant that is selected, which is read from the database
+    tearDown = analysis_tests.AnalysisTest.tearDown
+
     def test_defaults_are_todays_models_and_every_role_has_one(self):
         self.assertEqual(visual_models.DEFAULTS, {'initial_frame': 'qwen36-35b', 'keyframe_analysis': 'qwen36-35b', 'character_profile': 'qwen36-35b'})
         for role, key in visual_models.DEFAULTS.items():
@@ -102,10 +105,14 @@ class RegistryTest(unittest.TestCase):
 
 
 class Qwen36Test(unittest.TestCase):
+    setUp = analysis_tests.AnalysisTest.setUp
+    tearDown = analysis_tests.AnalysisTest.tearDown
+
     def test_it_is_the_text_model_with_its_vision_projector(self):
         self.assertEqual(set(QWEN36.roles), set(visual_models.ROLES))
-        self.assertEqual(QWEN36.model_id, local_text_runtime.MODEL_ID)  # the same weights the chat runs on
-        self.assertEqual(QWEN36.path('model').name, 'Qwen3.6-35B-A3B-Q4_K_M.gguf')
+        self.assertTrue(QWEN36.resident)  # the server the chat runs on, kept loaded: visual stages do not start their own
+        self.assertEqual(QWEN36.model_id, local_text_runtime.VARIANTS['mtp']['id'])  # the same weights (MTP by default)
+        self.assertEqual(QWEN36.path('model').name, 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf')
         entry = visual_models.MANIFEST['qwen36-vision']
         self.assertEqual([item['name'] for item in entry['files']], [QWEN36.path('projector').name])  # the text model has its own installer
         self.assertEqual(len(entry['files'][0]['sha256']), 64)
@@ -118,13 +125,13 @@ class Qwen36Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             server, model, projector = folder / 'llama-server', folder / 'text.gguf', folder / QWEN36.path('projector').name
-            env = {'QWEN35_SERVER_PATH': str(server), 'QWEN36_MODEL_PATH': str(model), 'QWEN36_PROJECTOR_PATH': str(projector)}
+            env = {'QWEN35_SERVER_PATH': str(server), 'QWEN36_MTP_MODEL_PATH': str(model), 'QWEN36_PROJECTOR_PATH': str(projector)}
             with patch.dict('os.environ', env):
                 self.assertEqual(visual_models.status('qwen36-35b'), {'available': False, 'detail': 'Not installed'})
                 projector.touch()
                 missing = visual_models.status('qwen36-35b')
                 self.assertFalse(missing['available'])
-                self.assertEqual(missing['detail'], 'text.gguf is missing (the text model comes from scripts/download-qwen36.sh)')  # not "Downloading 100%"
+                self.assertEqual(missing['detail'], 'text.gguf is missing (the text model comes from scripts/download-qwen36-mtp.sh or scripts/download-qwen36.sh)')  # not "Downloading 100%"
                 projector.unlink()
                 model.touch()
                 self.assertEqual(visual_models.status('qwen36-35b')['detail'], 'Not installed')
@@ -139,7 +146,7 @@ class Qwen36Test(unittest.TestCase):
                     visual_models.require('qwen36-35b')
 
     def test_callers_without_a_role_use_it_too(self):
-        self.assertIs(visual_models.general(), QWEN36)
+        self.assertEqual(visual_models.general(), QWEN36)
         self.assertFalse(hasattr(frame_model, 'default_server_files'))  # subtitle reading and the older matcher read the registry now
 
     @unittest.skipUnless(INSTALLER.is_file(), 'scripts/ is not mounted next to tests/ (mount it read-only to run this)')

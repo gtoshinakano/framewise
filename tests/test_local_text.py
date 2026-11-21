@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch, Mock
 
 import tests.test_analysis as analysis_tests
-from app import db, worker, inference_worker, local_text_runtime
+from app import db, worker, inference_worker, local_text_runtime, visual_models
 
 
 class LocalTextTest(unittest.TestCase):
@@ -53,7 +53,7 @@ class LocalTextTest(unittest.TestCase):
              patch.object(inference_worker, 'start_assistant') as start_assistant, \
              patch.object(inference_worker, 'start_chat_gateway') as start_gateway, \
              patch.object(inference_worker, 'start_point_detect') as start_point_detect, \
-             patch.object(inference_worker, 'start_remote_text'), \
+             patch.object(inference_worker, 'start_remote_text'), patch.object(visual_models, 'publish'), \
              patch.object(inference_worker.remote_text, 'config', return_value={'enabled': False, 'base_url': '', 'routes': {}, 'parallel': 1, 'prefer': 'local', 'chat_reserve': 1, 'assistant_fallback': ''}), \
              patch.object(inference_worker.threading, 'Thread', side_effect=[job_thread, model_thread]) as threads, \
              patch.object(inference_worker, 'process_regen'), \
@@ -207,7 +207,7 @@ class LocalTextTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             model = Path(folder)/'model.gguf'
             model.with_name(model.name+'.partial').write_bytes(b'download-in-progress')
-            with patch.dict(os.environ, {'QWEN36_MODEL_PATH': str(model)}):
+            with patch.dict(os.environ, {'QWEN36_MODEL_PATH': str(model), 'QWEN36_MTP_MODEL_PATH': str(model)}):
                 runtime=local_text_runtime.LocalTextRuntime()
                 runtime.reconcile()
                 self.assertEqual(db.one('SELECT state FROM local_text_model_state WHERE id=1')['state'],'downloading')
@@ -226,7 +226,7 @@ class LocalTextTest(unittest.TestCase):
             partial.write_bytes(b'incomplete')
             old = time.time() - 301
             os.utime(partial, (old, old))
-            with patch.dict(os.environ, {'QWEN36_MODEL_PATH': str(model)}):
+            with patch.dict(os.environ, {'QWEN36_MODEL_PATH': str(model), 'QWEN36_MTP_MODEL_PATH': str(model)}):
                 runtime = local_text_runtime.LocalTextRuntime()
                 runtime.reconcile()
                 status = self.client.get('/api/local-text-model').json()
@@ -316,12 +316,17 @@ class LocalTextTest(unittest.TestCase):
         from pathlib import Path
         import tempfile
         with tempfile.TemporaryDirectory() as folder:
-            mtp = Path(folder) / 'mtp.gguf'
+            mtp, standard = Path(folder) / 'mtp.gguf', Path(folder) / 'standard.gguf'
+            standard.write_bytes(b'x')
             partial = mtp.with_name('mtp.gguf.partial'); partial.write_bytes(b'x' * 1000)
-            with patch.dict(os.environ, {'QWEN36_MTP_MODEL_PATH': str(mtp)}):
+            with patch.dict(os.environ, {'QWEN36_MTP_MODEL_PATH': str(mtp), 'QWEN36_MODEL_PATH': str(standard)}):
                 runtime = local_text_runtime.LocalTextRuntime()
                 variants = self.client.get('/api/local-text-model').json()['variants']
                 self.assertFalse(variants['mtp']['available']); self.assertIn('Downloading', variants['mtp']['detail'])
+                # MTP is the default choice, so it is already selected: the standard build serves while the file is missing
+                self.assertEqual(self.client.get('/api/text-generation-settings').json()['local_model'], 'mtp')
+                self.assertEqual(runtime.target_variant(), 'standard')
+                self.assertEqual(self.client.put('/api/text-generation-settings', json={'text_provider': 'local', 'local_model': 'standard'}).status_code, 200)
                 self.assertEqual(self.client.put('/api/text-generation-settings', json={'text_provider': 'local', 'local_model': 'mtp'}).status_code, 409)
                 self.assertEqual(self.client.get('/api/text-generation-settings').json()['local_model'], 'standard')
                 partial.rename(mtp); runtime.publish_variants()
@@ -332,6 +337,52 @@ class LocalTextTest(unittest.TestCase):
                 self.assertEqual(self.client.put('/api/text-generation-settings', json={'text_provider': 'local'}).json()['local_model'], 'mtp')
                 mtp.unlink()
                 self.assertEqual(runtime.target_variant(), 'standard')
+
+    def test_resident_server_slots_context_pool_and_unified_kv(self):
+        names = ('QWEN36_SLOTS', 'TEXT_JOB_CONCURRENCY', 'FRAME_PARALLEL', 'KEYFRAME_PARALLEL', 'SUBTITLE_READ_PARALLEL', 'QWEN36_CONTEXT_SIZE', 'QWEN36_KV_UNIFIED')
+        clean = {name: value for name, value in os.environ.items() if name not in names}
+        with patch.dict(os.environ, clean, clear=True):
+            # the defaults keep today's concurrency: the server is as wide as the widest stage (frames and subtitles read 4 at once)
+            self.assertEqual((local_text_runtime.text_job_concurrency(), local_text_runtime.server_slots(), local_text_runtime.context_pool()), (2, 4, 65536))
+            self.assertTrue(local_text_runtime.kv_unified())
+            with patch.dict(os.environ, {'FRAME_PARALLEL': '6', 'SUBTITLE_READ_PARALLEL': '20'}):
+                self.assertEqual(local_text_runtime.server_slots(), 8)  # the widest stage; subtitle readers are capped at 8 by their stage
+            with patch.dict(os.environ, {'QWEN36_SLOTS': '3'}):
+                self.assertEqual(local_text_runtime.server_slots(), 3)
+                self.assertEqual(local_text_runtime.clamp_parallel(4, 'frames'), 3)
+                self.assertEqual(local_text_runtime.clamp_parallel(2, 'keyframes'), 2)
+            with patch.dict(os.environ, {'QWEN36_KV_UNIFIED': '0', 'QWEN36_SLOTS': 'many'}):
+                self.assertFalse(local_text_runtime.kv_unified())
+                self.assertEqual(local_text_runtime.server_slots(), 4)  # a bad value falls back to the derived width
+
+    def test_server_command_has_slots_unified_kv_mtp_projector_and_no_reasoning_switch(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            files = {name: Path(folder) / name for name in ('llama-server', 'mtp.gguf', 'proj.gguf')}
+            for path in files.values():
+                path.write_bytes(b'x')
+            env = {'QWEN35_SERVER_PATH': str(files['llama-server']), 'QWEN36_MTP_MODEL_PATH': str(files['mtp.gguf']), 'QWEN36_PROJECTOR_PATH': str(files['proj.gguf'])}
+            started = []
+            class Server:
+                def poll(self): return None
+                def terminate(self): pass
+                def wait(self, timeout=None): pass
+            with patch.dict(os.environ, env), patch.object(local_text_runtime.subprocess, 'Popen', side_effect=lambda command, **kwargs: started.append(command) or Server()), \
+                 patch.object(local_text_runtime.urllib.request, 'urlopen', side_effect=OSError), \
+                 patch.object(local_text_runtime.time, 'sleep', side_effect=RuntimeError('stop waiting')), \
+                 patch.object(local_text_runtime.gpu_device, 'acquire', return_value=Mock()):
+                runtime = local_text_runtime.LocalTextRuntime()
+                with self.assertRaises(RuntimeError):
+                    runtime.ensure()
+            command = started[0]
+            self.assertEqual(command[command.index('-m') + 1], str(files['mtp.gguf']))
+            self.assertEqual(command[command.index('--parallel') + 1], str(local_text_runtime.server_slots()))
+            self.assertEqual(command[command.index('--ctx-size') + 1], '65536')
+            for flag in ('--kv-unified', '--jinja', '--mmproj', '--spec-type'):
+                self.assertIn(flag, command)
+            self.assertNotIn('--reasoning', command)  # thinking is chosen by each request, the budget is only the ceiling
+            self.assertIn('--reasoning-budget', command)
 
     def test_model_switch_waits_for_running_requests_and_chat_sessions(self):
         runtime = local_text_runtime.LocalTextRuntime()

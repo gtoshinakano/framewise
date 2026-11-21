@@ -74,7 +74,7 @@ def fake_models(ask=None, pose=None, calls=None):
         content = answer if isinstance(answer, str) else json.dumps(answer)
         return {'content': content, 'finish_reason': 'stop', 'usage': {'prompt_tokens': 100, 'completion_tokens': 50}, 'timings': {}, 'grammar': True}
     with patch.object(keyframe_analysis.frame_cache, 'render', side_effect=frame_bytes), \
-         patch.object(single_cut_pipeline.frame_model, 'frame_server', return_value=nullcontext('http://server')), \
+         patch.object(single_cut_pipeline.frame_model, 'model_server', return_value=nullcontext('http://server')), \
          patch.object(keyframe_analysis, 'load_pose', return_value=(pose, {'model_id': 'yzd-v/DWPose', **({} if pose else {'missing': 'Not installed'})})), \
          patch.object(keyframe_analysis, 'chat', side_effect=chat):
         yield calls

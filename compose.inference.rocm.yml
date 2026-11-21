@@ -56,10 +56,17 @@ services:
       # Same model with multi-token-prediction heads (speculative decoding); choose it in the text engine dialog.
       QWEN36_MTP_MODEL_PATH: /models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
       QWEN36_MTP_ARGS: ${QWEN36_MTP_ARGS:---spec-type draft-mtp --spec-draft-n-max 3}
+      # One resident Qwen 3.6 server (MTP by default) serves text, pictures, subtitles and chat. QWEN36_SLOTS is its number of
+      # parallel slots; empty means as many as the widest stage below needs (4). QWEN36_CONTEXT_SIZE is the KV pool; with
+      # QWEN36_KV_UNIFIED=1 every slot shares it, so the extra slots do not shrink the room of a text job
+      # (TEXT_JOB_CONCURRENCY slots of CONTEXT_SIZE / TEXT_JOB_CONCURRENCY tokens). Recreate this container after changing any of them.
+      QWEN36_SLOTS: ${QWEN36_SLOTS:-}
+      QWEN36_KV_UNIFIED: ${QWEN36_KV_UNIFIED:-1}
       QWEN36_CONTEXT_SIZE: ${QWEN36_CONTEXT_SIZE:-65536}
       QWEN36_THINKING_BUDGET: ${QWEN36_THINKING_BUDGET:-2048}
       TEXT_JOB_CONCURRENCY: ${TEXT_JOB_CONCURRENCY:-2}
       FRAME_PARALLEL: ${FRAME_PARALLEL:-4}
+      SUBTITLE_READ_PARALLEL: ${SUBTITLE_READ_PARALLEL:-4}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ASSISTANT_ENDPOINTS: ${ASSISTANT_ENDPOINTS:-}
     volumes:

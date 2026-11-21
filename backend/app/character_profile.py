@@ -117,9 +117,9 @@ def images(original, frame, cut_start, cut_end, box, scratch):
         return encoded[0], encoded[1]
 
 
-def _body(messages, with_schema):
+def _body(messages, with_schema, thinking=False):
     response_format = {'type': 'json_schema', 'json_schema': {'name': 'character_profile', 'strict': True, 'schema': schema()}} if with_schema else {'type': 'json_object'}
-    return {'messages': messages, 'temperature': 0, 'max_tokens': MAX_TOKENS, 'response_format': response_format, 'chat_template_kwargs': {'enable_thinking': False}}
+    return {'messages': messages, 'temperature': 0, 'max_tokens': MAX_TOKENS, 'response_format': response_format, 'chat_template_kwargs': frame_model.thinking_kwargs(thinking)}
 
 
 def describe(server_url, frame_jpeg, crop_jpeg, text, cancel_check=None, usage_out=None):
@@ -207,7 +207,7 @@ def process(job_id, owner):
         usage, started = {}, time.monotonic()
         model = visual_models.for_job(payload, 'character_profile')
         worker.stage(job_id, owner, episode_id, f'Starting {model.short_name}')
-        with frame_model.frame_server(*model.server_files(), cancel_check=cancel_check, extra_args=model.server_args) as server:
+        with frame_model.model_server(model, cancel_check=cancel_check) as server:
             worker.stage(job_id, owner, episode_id, 'Describing features')
             profile = describe(server, frame_jpeg, crop_jpeg, text, cancel_check=cancel_check, usage_out=usage)
         cut_number = row['cut_index'] + 1

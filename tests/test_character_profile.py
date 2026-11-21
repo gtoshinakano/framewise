@@ -79,7 +79,7 @@ class CharacterProfileTest(unittest.TestCase):
         claimed = worker.claim_job(('character_profile',))
         self.assertIsNotNone(claimed)
         with patch.object(character_profile, 'images', return_value=(b'frame', b'crop')), \
-             patch.object(frame_model, 'frame_server', return_value=nullcontext('http://model')), \
+             patch.object(frame_model, 'model_server', return_value=nullcontext('http://model')), \
              patch.object(inference_worker, 'request_json', return_value=reply or model_reply()) as request:
             character_profile.process(*claimed)
         return claimed[0], request
@@ -112,11 +112,13 @@ class CharacterProfileTest(unittest.TestCase):
             conn.execute("DELETE FROM visual_model_settings")  # changed after queuing: the job keeps its snapshot
         claimed = worker.claim_job(('character_profile',))
         with patch.object(character_profile, 'images', return_value=(b'frame', b'crop')), \
-             patch.object(frame_model, 'frame_server', return_value=nullcontext('http://model')) as server, \
+             patch.object(frame_model, 'model_server', return_value=nullcontext('http://model')) as server, \
              patch.object(inference_worker, 'request_json', return_value=model_reply()):
             character_profile.process(*claimed)
-        self.assertTrue(str(server.call_args.args[1]).endswith('LFM3-Omni-2B-BF16.gguf'))
-        self.assertEqual(server.call_args.kwargs['extra_args'], ('--reasoning', 'off'))
+        model = server.call_args.args[0]  # the stage asks for the job's model; model_server starts its private server with its own arguments
+        self.assertEqual(model.key, 'lfm3-omni-2b')
+        self.assertTrue(str(model.path('model')).endswith('LFM3-Omni-2B-BF16.gguf'))
+        self.assertEqual(model.server_args, ('--reasoning', 'off'))
         result = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (claimed[0],))['payload_json'])['result']
         self.assertEqual((result['model_id'], result['visual_model']), ('LiquidAI/LFM3-Omni-2B-GGUF:BF16', 'lfm3-omni-2b'))
         self.assertIn('_Described by LFM3-Omni-2B', db.one('SELECT content FROM context_items WHERE id=?', (created['character']['id'],))['content'])
@@ -132,7 +134,7 @@ class CharacterProfileTest(unittest.TestCase):
             return ANSWER
 
         with patch.object(character_profile, 'images', return_value=(b'frame', b'crop')), \
-             patch.object(frame_model, 'frame_server', return_value=nullcontext('http://model')), \
+             patch.object(frame_model, 'model_server', return_value=nullcontext('http://model')), \
              patch.object(character_profile, 'describe', side_effect=describe):
             character_profile.process(*claimed)
         job = db.one('SELECT status,stage,attempt_count FROM jobs WHERE id=?', (claimed[0],))

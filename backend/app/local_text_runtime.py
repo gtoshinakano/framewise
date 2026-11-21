@@ -17,10 +17,12 @@ from . import db, gpu_device
 
 MODEL_ID = 'Qwen/Qwen3.6-35B-A3B:Q4_K_M'
 MODEL_REVISION = 'ggml-org:7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5'
-DEFAULT_VARIANT = 'standard'
-# Two builds of the same Qwen3.6-35B-A3B text model. ``mtp`` carries the multi-token-prediction
+DEFAULT_VARIANT = 'mtp'
+LEGACY_VARIANT = 'standard'  # what a stored result without a variant was made with
+# Two builds of the same Qwen3.6-35B-A3B model. ``mtp`` carries the multi-token-prediction
 # head that llama.cpp uses as its own draft model (speculative decoding); it is a larger file, so
-# it lives beside the standard one and the user switches between them in the text engine dialog.
+# it lives beside the standard one. ``mtp`` is the default since 2026-11-21 and the one resident server
+# for text, vision, subtitles and chat; ``standard`` stays selectable in the text engine dialog as a rollback.
 VARIANTS = {
     'standard': {'label': 'Qwen 3.6 35B A3B · Q4_K_M', 'id': MODEL_ID, 'revision': MODEL_REVISION, 'size': 20419565568},
     'mtp': {'label': 'Qwen 3.6 35B A3B · UD-Q4_K_M + MTP', 'id': 'unsloth/Qwen3.6-35B-A3B-MTP:UD-Q4_K_M',
@@ -31,10 +33,13 @@ PROJECTOR_DEFAULT = '/models/qwen3.6-35b/mmproj-Qwen3.6-35B-A3B-BF16.gguf'
 
 
 def known_variant(variant):
-    """A local variant name, or a ``remote:<model>`` name kept as it is (see ``remote_text``)."""
+    """A local variant name, or a ``remote:<model>`` name kept as it is (see ``remote_text``).
+
+    A stored value that names no variant (results saved before variants existed) was made by the standard build.
+    """
     if isinstance(variant, str) and variant.startswith('remote:'):
         return variant
-    return variant if variant in VARIANTS else DEFAULT_VARIANT
+    return variant if variant in VARIANTS else LEGACY_VARIANT
 
 
 def model_id_for(variant):
@@ -96,6 +101,27 @@ def vision_status(runtime, variant):
     return True, ''
 
 
+def desired_variant():
+    """The variant the user selected in the text engine dialog (the default when nothing valid is saved)."""
+    row = db.one('SELECT local_model FROM text_generation_settings WHERE id=1')
+    chosen = row['local_model'] if row else None
+    return chosen if chosen in VARIANTS else DEFAULT_VARIANT
+
+
+def resolve_variant(want):
+    """``want``, or the other variant while ``want`` is not installed and the other one is."""
+    if not variant_path(want).is_file():
+        other = next((name for name in VARIANTS if name != want), want)
+        if variant_path(other).is_file():
+            return other
+    return want
+
+
+def selected_variant():
+    """The variant new work runs on: the selected one, or the other installed one while it is missing."""
+    return resolve_variant(desired_variant())
+
+
 class ServerExited(RuntimeError):
     """The llama-server process ended while it was starting."""
 
@@ -115,12 +141,62 @@ def variant_status(variant):
     return {'available': False, 'detail': 'Not installed'}
 
 
-def text_job_concurrency():
-    """Text jobs that may run at once; the llama-server gets one slot for each."""
+def _env_int(name, default, ceiling=None):
     try:
-        return max(1, int(os.environ.get('TEXT_JOB_CONCURRENCY', '2')))
+        value = max(1, int(os.environ.get(name, default)))
     except ValueError:
-        return 2
+        value = default
+    return min(value, ceiling) if ceiling else value
+
+
+def text_job_concurrency():
+    """Text jobs that may run at once (the share of the server's slots that text jobs and chat use)."""
+    return _env_int('TEXT_JOB_CONCURRENCY', 2)
+
+
+def server_slots():
+    """Slots of the one resident llama-server (``--parallel``).
+
+    The server also reads pictures for the visual stages, which run several requests at once
+    (``FRAME_PARALLEL``, ``KEYFRAME_PARALLEL``, ``SUBTITLE_READ_PARALLEL``), so by default it has as many
+    slots as the widest of them. ``QWEN36_SLOTS`` overrides it; stages ask for ``min(their setting, slots)``.
+    """
+    widest = max(text_job_concurrency(), _env_int('FRAME_PARALLEL', 4), _env_int('KEYFRAME_PARALLEL', 2), _env_int('SUBTITLE_READ_PARALLEL', 4, 8))
+    return _env_int('QWEN36_SLOTS', widest)
+
+
+def context_pool():
+    """``--ctx-size`` of the server: with a unified KV cache it is one pool shared by every slot."""
+    return _env_int('QWEN36_CONTEXT_SIZE', 65536)
+
+
+def server_context():
+    """``--ctx-size`` for the resident server.
+
+    Unified: the pool itself. Not unified: llama-server splits ``--ctx-size`` evenly, so it is sized so that each slot
+    still has the share a text job budgets (``pool // TEXT_JOB_CONCURRENCY``); that costs more memory.
+    """
+    if kv_unified():
+        return context_pool()
+    return context_pool() // text_job_concurrency() * server_slots()
+
+
+def kv_unified():
+    """Share one KV pool between the slots (``--kv-unified``), so more slots do not shrink the room of each text job.
+
+    llama-server splits ``--ctx-size`` evenly between explicit slots unless it is unified; with the pool shared a
+    slot may use up to the pool while the others are idle. ``QWEN36_KV_UNIFIED=0`` goes back to an even split.
+    """
+    return os.environ.get('QWEN36_KV_UNIFIED', '1').strip().lower() not in ('0', 'false', 'off', 'no')
+
+
+def clamp_parallel(wanted, what='stage'):
+    """Threads a stage may use against the server: never more than its slots (the rest would only queue)."""
+    slots = server_slots()
+    if wanted > slots:
+        logging.getLogger('framewise.text').warning('%s asks for %d parallel requests but the server has %d slots (QWEN36_SLOTS); using %d', what, wanted, slots, slots)
+        return slots
+    return wanted
 
 
 class GpuBusy(Exception):
@@ -159,15 +235,11 @@ class LocalTextRuntime:
             pass  # a locked database must not stop the worker loop
 
     def desired_variant(self):
-        row = db.one('SELECT local_model FROM text_generation_settings WHERE id=1')
-        return known_variant(row['local_model'] if row else None)
+        return desired_variant()
 
     def target_variant(self):
-        """The variant new work should use: the selected one, or the standard one while it is not installed."""
-        want = self.desired_variant()
-        if want != DEFAULT_VARIANT and not variant_path(want).is_file():
-            return DEFAULT_VARIANT
-        return want
+        """The variant new work should use: the selected one, or the other installed one while it is not installed."""
+        return resolve_variant(self.desired_variant())
 
     def can_switch(self):
         """Nothing is generating or holding a chat session, other than the calling thread."""
@@ -328,6 +400,33 @@ class LocalTextRuntime:
                 self.held.count -= 1
                 self.changed.notify_all()
 
+    @contextmanager
+    def visual_session(self, cancel_check=None):
+        """Yield the resident server's URL for one visual stage (pictures, subtitle strips, a character profile).
+
+        The same server answers text and chat, so a visual job neither stops it nor starts a private one. The
+        session counts like a chat turn: the server is not stopped or switched under it. It is not held back by
+        ``device_busy()``, because the visual job itself raised that flag to keep new chat turns out. A server that
+        could not load the vision projector is an error here: the stage would send pictures to a model that cannot see them.
+        """
+        with self.lock:
+            gpu_device.release_held()  # a job that had the whole GPU hands it to the server it is about to need
+            url = self._ensure(cancel_check)
+            if not url:
+                raise RuntimeError('The Qwen 3.6 server could not be started')
+            if not self.vision:
+                reason = vision_status(self, self.variant)[1] or 'the server did not report vision in /props'
+                raise RuntimeError(f'Qwen 3.6 is running without its vision projector ({reason}), so it cannot read pictures')
+            self.chat_users += 1
+            self.held.count = getattr(self.held, 'count', 0) + 1
+        try:
+            yield url
+        finally:
+            with self.changed:
+                self.chat_users -= 1
+                self.held.count -= 1
+                self.changed.notify_all()
+
     def ensure(self, cancel_check=None, idle_load=False):
         with self.lock:
             return self._ensure(cancel_check, idle_load)
@@ -386,15 +485,18 @@ class LocalTextRuntime:
         env = os.environ.copy()
         env.pop('OPENROUTER_API_KEY', None)
         env['LD_LIBRARY_PATH'] = str(runtime.parent) + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
-        tags = [name for name, on in (('MTP', variant == 'mtp'), ('vision', with_vision)) if on]
+        slots = server_slots()
+        tags = [name for name, on in (('MTP', variant == 'mtp'), ('vision', with_vision)) if on] + [f'{slots} slots']
         loading = 'Loading Qwen 3.6 into GPU memory' + (f" ({', '.join(tags)})" if tags else '')
         self.publish('loading', loading)
         try:
             self.device = gpu_device.acquire(cancel_check)
-            self.process = subprocess.Popen([str(runtime), '-m', str(model), '--host', '127.0.0.1', '--port', str(port),
-                '--n-gpu-layers', '99', '--ctx-size', os.environ.get('QWEN36_CONTEXT_SIZE', '65536'), '--parallel', str(text_job_concurrency()), '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048'),
-                *(['--mmproj', str(projector_path())] if with_vision else []), *variant_args(variant)],
-                stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT, env=env)
+            command = [str(runtime), '-m', str(model), '--host', '127.0.0.1', '--port', str(port),
+                '--n-gpu-layers', '99', '--ctx-size', str(server_context()), '--parallel', str(slots), *(['--kv-unified'] if kv_unified() else []),
+                '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048'),
+                *(['--mmproj', str(projector_path())] if with_vision else []), *variant_args(variant)]
+            logging.getLogger('framewise.text').info('Starting llama-server: %s', ' '.join(command[1:]))
+            self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT, env=env)
             self.url = f'http://127.0.0.1:{port}'
             deadline = time.monotonic() + 600
             while True:

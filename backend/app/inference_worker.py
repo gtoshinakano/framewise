@@ -1092,7 +1092,7 @@ def process_character_detection(job_id, owner):
                 character_ids = list(dict.fromkeys(ref['character_context_id'] for ref in prepared))
                 matcher = visual_models.general()
                 visual_models.require(matcher.key)
-                with frame_model.frame_server(*matcher.server_files(), cancel_check=lambda: check_summary_lease(job_id, owner), extra_args=matcher.server_args) as server:
+                with frame_model.model_server(matcher, cancel_check=lambda: check_summary_lease(job_id, owner)) as server:
                     for index, detection in enumerate(pending):
                         worker.stage(job_id, owner, episode['id'], f'Comparing character {index + 1}/{len(pending)}')
                         frame = next(frame for frame in frames if frame['position'] == detection['position'])
@@ -1353,13 +1353,15 @@ def main():
                     job_episode = db.one('SELECT episode_id FROM jobs WHERE id=?', (job_id,))['episode_id']
                     with contextlib.ExitStack() as devices:
                         if use_gpu:
-                            local_text_runtime.runtime.begin_gpu_work()
-                            local_text_runtime.runtime.stop('Released for visual analysis')
-                            if not mixed_legacy_analysis:
-                                devices.enter_context(gpu_device.hold(cancel_check))
-                                if kind == 'character_detect' and not payload.get('workflow'):
-                                    from .single_cut_pipeline import release_gpu_models
-                                    devices.callback(release_gpu_models)
+                            local_text_runtime.runtime.begin_gpu_work()  # new chat turns wait (or fall back) while the job runs
+                            if kind_entry.needs_device(payload):
+                                local_text_runtime.runtime.stop('Released for visual analysis')
+                                if not mixed_legacy_analysis:
+                                    devices.enter_context(gpu_device.hold(cancel_check))
+                                    if kind == 'character_detect' and not payload.get('workflow'):
+                                        from .single_cut_pipeline import release_gpu_models
+                                        devices.callback(release_gpu_models)
+                            # else: every model of the job runs on the resident Qwen server, which stays loaded for it
                         elif uses_local_text:
                             devices.enter_context(local_text_runtime.runtime.chat_session(cancel_check=cancel_check))
                         if kind_entry.handler:

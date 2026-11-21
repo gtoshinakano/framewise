@@ -70,7 +70,7 @@ class CharacterDetectionAPITest(unittest.TestCase):
         job_id, owner = worker.claim_job(('character_detect',))
         with patch.object(inference_worker, 'get_model', return_value=object()), patch.object(single_cut_pipeline, 'release_gpu_models'), \
              patch.object(character_detection, 'detect_boundary_people', return_value=frames), patch.object(character_detection, 'crop_frame', return_value=b'image'), \
-             patch.object(frame_model, 'frame_server', return_value=nullcontext('server')), patch.object(visual_models, 'require'), \
+             patch.object(frame_model, 'model_server', return_value=nullcontext('server')), patch.object(visual_models, 'require'), \
              patch.object(frame_model, 'match_character', return_value={'character_id':'ctx','confidence':'high','reason':'same hair'}):
             inference_worker.process_character_detection(job_id, owner)
         run = self.client.get('/api/cuts/c1/character-detections').json()

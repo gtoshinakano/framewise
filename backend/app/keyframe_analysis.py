@@ -145,12 +145,13 @@ def _clip(text):
     return text if len(text or '') <= RAW_LIMIT else text[:RAW_LIMIT] + ' …[clipped]'
 
 
-def chat(server_url, messages, schema, cancel_check=None):
+def chat(server_url, messages, schema, cancel_check=None, thinking=False):
     """One chat call with the json_schema grammar, plain JSON when the server cannot build it. Returns the reply fields."""
+    from . import frame_model
     from .inference_worker import request_json
 
     def ask(fmt):
-        body = {'messages': messages, 'temperature': 0, 'max_tokens': MAX_TOKENS, 'response_format': fmt, 'chat_template_kwargs': {'enable_thinking': False}}
+        body = {'messages': messages, 'temperature': 0, 'max_tokens': MAX_TOKENS, 'response_format': fmt, 'chat_template_kwargs': frame_model.thinking_kwargs(thinking)}
         request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'}, method='POST')
         return request_json(request, cancel_check, timeout=900)
     grammar = True
@@ -503,7 +504,7 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
                 for name in usage:
                     usage[name] += attempt.get(name) or 0
         timings['total'] = round(time.monotonic() - started, 2)
-        extra = {'model_revision': model.revision, 'visual_model': model.key, 'keyframe_contract': CONTRACT, 'method': method, 'run_id': run_id,
+        extra = {'model_revision': model.revision, 'visual_model': model.key, 'thinking': False, 'keyframe_contract': CONTRACT, 'method': method, 'run_id': run_id,
                  'selection_key': key, 'roster_source': roster_source, 'prompt_version': keyframe_prompts.PROMPT_VERSION, **settings,
                  'windows': len([w for w in windows if len(w['frames']) > 1]), 'retries': retries, 'keyframes': len(frames),
                  'dwpose': pose_provenance, 'generation_seconds': timings['total'], 'timings': timings, 'usage': usage}
@@ -534,8 +535,8 @@ def stage(runs, scratch, model):
     if not todo:
         return
     pose, pose_provenance = load_pose()
-    with frame_model.frame_server(*model.server_files(), cancel_check=todo[0].cancel_check, parallel=PARALLEL,
-                                  context_per_slot=CONTEXT_PER_SLOT, extra_args=model.server_args) as server:
+    with frame_model.model_server(model, cancel_check=todo[0].cancel_check, parallel=frame_model.workers(model, PARALLEL, 'Keyframe windows'),
+                                  context_per_slot=CONTEXT_PER_SLOT) as server:
         single_cut_pipeline._for_each(todo, lambda cut_run: analyze(cut_run, server, scratch, model, pose, pose_provenance))
 
 
