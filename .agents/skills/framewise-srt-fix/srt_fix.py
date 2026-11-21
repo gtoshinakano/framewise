@@ -799,8 +799,27 @@ def cmd_apply(api, args):
         print(f'dry run: {sum(len(item["items"]) for item in corrections)} proposal(s) on {len(corrections)} line(s) would be sent')
         return OK
     print(f'applied {applied} proposal(s), skipped {skipped}')
+    print_links(api, plan)
     print(f"open the episode: {api.url}/#/episode/{plan['episode']['id']}")
     return OK
+
+
+def print_links(api, plan):
+    """Links to the cuts holding the lines a person should look at: every speaker change that was sent and every line the
+    server skipped. Each opens the cut on its Results tab, where the spoken words are listed."""
+    episode = {'id': plan['episode']['id']}
+    wanted = [(entry, 'speaker changed') for entry in plan['items'] if entry['kind'] == 'speaker' and entry.get('applied')]
+    wanted += [(entry, f"skipped: {entry['skipped']}") for entry in plan['items'] if entry.get('skipped')]
+    if not wanted:
+        return
+    print('lines to look at (each link opens the cut that holds the line):')
+    try:
+        for entry, why in wanted[:fw.LINK_LIMIT]:
+            print(f"- {stamp(entry.get('start') or 0)} #{entry['id']} {why}: {fw.url_at_time(api, episode, entry.get('start') or 0) or '(no cut at that time)'}")
+    except Failure as exc:
+        print(f'(no links: {exc})')
+    if len(wanted) > fw.LINK_LIMIT:
+        print(f'… {len(wanted) - fw.LINK_LIMIT} more in the plan (show PLAN --ids)')
 
 
 def parser():

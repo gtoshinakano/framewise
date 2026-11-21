@@ -152,11 +152,14 @@ def report(conn, episode_id, from_cut=None, to_cut=None):
     checks = {'auto_labels': [], 'no_boxes': [], 'stale_results': [], 'picture_contradictions': []}
     # visual_missing: the visual job still has a stage to run. beats_missing: keyframes without beats built from them.
     # Stale beats are neither: re-running them is the user's call, so they are listed under checks.stale_results.
+    # first_frame_missing / keyframes_missing split visual_missing into its two stages; analysis_off lists the cuts left out of it all.
     progress = {'cuts': len(cuts), 'enabled': 0, 'boxes_missing': [], 'target_missing': [], 'visual_missing': [],
-                'beats_missing': [], 'consistency_missing': [], 'summary_missing': []}
+                'first_frame_missing': [], 'keyframes_missing': [], 'beats_missing': [], 'consistency_missing': [],
+                'summary_missing': [], 'analysis_off': []}
     for cut in cuts:
         number = cut['cut_index'] + 1
         if not cut['analysis_enabled']:
+            progress['analysis_off'].append(number)
             continue
         progress['enabled'] += 1
         if not cut['no_characters']:
@@ -176,6 +179,10 @@ def report(conn, episode_id, from_cut=None, to_cut=None):
                 progress['target_missing'].append(number)
             if target := _target_review(conn, cut):
                 gates['target_frames'].append({'cut': number, 'cut_id': cut['id'], **target})
+        if not cut['has_initial_frame']:
+            progress['first_frame_missing'].append(number)
+        if not (cut['has_keyframes'] or cut['has_video']):
+            progress['keyframes_missing'].append(number)
         if not cut['has_initial_frame'] or not (cut['has_keyframes'] or cut['has_video']):
             progress['visual_missing'].append(number)
         elif cut['has_keyframes'] and not cut['has_beats']:

@@ -106,7 +106,7 @@ def install(key, entry, verify_only=False):
             ok = False
             continue
         partial = final.with_name(final.name + '.partial')
-        url = f'https://huggingface.co/{entry["repo"]}/resolve/{entry["revision"]}/{item["name"]}?download=true'
+        url = f'https://huggingface.co/{entry["repo"]}/resolve/{entry["revision"]}/{item.get("path", item["name"])}?download=true'  # `path`: where the file lives in the repository when it is not the file name
         token = os.environ.get('HF_TOKEN') or None
         if entry.get('gated') and not token:
             raise SystemExit(f'{entry["repo"]} is a gated repository: set HF_TOKEN to an access token and run this again')

@@ -4,7 +4,8 @@ A *role* is one step that reads pictures: the first-frame description, the keyfr
 between the keyframes of a cut) and the character profile of a new character. Each role can run on any model that lists it in ``roles``.
 The user picks one per role (``visual_model_settings``); every queued job snapshots the choice in
 ``payload.models`` so changing it never affects queued or running work, and a job without the key
-(queued before the choice existed) runs on ``DEFAULTS``.
+(queued before the choice existed) runs on ``DEFAULTS``. A saved choice or snapshot that names a model that is no longer
+registered (Qwen3.5-27B, removed 2026-11-21) falls back to the default through ``supports``/``for_job``.
 
 To add a model: add its download to ``model_manifest.json`` (used by ``scripts/install-model.py``),
 add a ``VisualModel`` here and mount its folder in the inference compose file. Nothing else names a model.
@@ -16,9 +17,13 @@ them); a saved choice or a job snapshot for that role is ignored.
 
 **Qwen3.6-35B-A3B with its vision projector is the default of every role since 2026-11-18** (``qwen_experiment/``: the same first
 frames took a median 6.7 s against 17.5 s on Qwen3.5-27B). It is the text model's own GGUF plus a projector, so it needs nothing
-else on disk, and the same projector lets the chat model of Cut Assistance look at frames (``local_text_runtime``). Qwen3.5-27B stays
-selectable. The keyframe prompt was measured on Qwen3.5 only: re-run ``multiframe_experiment/`` before trusting a change in quality.
+else on disk, and the same projector lets the chat model of Cut Assistance look at frames (``local_text_runtime``). **Inkling 2 Mini**
+(added 2026-11-21) is the alternative: it takes the same roles, with its own llama.cpp build. The keyframe prompt was measured on
+Qwen3.5 and checked on Qwen3.6 only: re-run ``multiframe_experiment/`` before trusting Inkling's quality.
 Callers that are not a role (subtitle reading, the older character matcher) use ``general()``.
+
+A model that is also a text engine (``VisualModel.variants``) is *resident* while that engine is selected in the text engine dialog:
+the server that answers text and chat answers its pictures too. With another engine selected it runs on a private server.
 
 The API container cannot see the model folders (they are mounted into the inference worker only), so
 the worker publishes ``status()`` of every model to ``visual_model_state`` and the API reads that.
@@ -35,7 +40,6 @@ from . import db, frame_model, local_text_runtime
 ROLES = ('initial_frame', 'keyframe_analysis', 'character_profile')
 ROLE_LABELS = {'initial_frame': 'First frame', 'keyframe_analysis': 'Keyframes (motion)', 'character_profile': 'Character profile'}
 MANIFEST = json.loads((Path(__file__).with_name('model_manifest.json')).read_text())
-SERVER_ENV, SERVER_DEFAULT = 'QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'  # the one bundled llama.cpp build serves every GGUF model
 PUBLISH_SECONDS = 30
 STALE_SECONDS = 180
 
@@ -54,21 +58,42 @@ class VisualModel:
     manifest: str | None = None  # model_manifest.json entry the installer downloads
     note: str = ''
     external: str = ''  # how to install the files the manifest does not list (another installer owns them)
-    # The model the text server keeps loaded (``local_text_runtime``): visual stages talk to that one server
-    # (``frame_model.model_server``) instead of starting their own, so nothing is unloaded between text and pictures.
-    # Its GGUF is the variant selected in the text engine dialog and its identity comes from ``resolve``.
+    # ``local_text_runtime`` variants whose model file this is. The model the text server keeps loaded answers visual stages itself
+    # (``frame_model.model_server``): nothing is unloaded between text and pictures. That holds while the text engine selected in the
+    # text engine dialog is one of ``variants`` (``resident``, set by ``resolve``); with another engine selected the model runs on a
+    # private server for the stage, like any other model. Its files and identity are those of the variant (``variant()``).
+    variants: tuple = ()
+    projector_file: tuple = ()  # (manifest key, file name) of the projector whose checksum goes into a result's revision
     resident: bool = False
 
+    def variant(self):
+        """The text-server variant this model runs as: the selected engine when it is one of ``variants``, else the first installed one."""
+        selected = local_text_runtime.selected_variant()
+        if selected in self.variants:
+            return selected
+        return next((name for name in self.variants if local_text_runtime.variant_path(name).is_file()), self.variants[0])
+
     def path(self, name):
-        if self.resident and name == 'model':
-            return local_text_runtime.variant_path(local_text_runtime.selected_variant())
+        if self.variants and name == 'model':
+            return local_text_runtime.variant_path(self.variant())
+        if self.variants and name == 'projector':
+            return local_text_runtime.projector_path(self.variant())
         env, default, *file_name = self.files[name]
         found = Path(os.environ.get(env) or default)
         return found / file_name[0] if file_name else found
 
     def server_files(self):
         """(llama-server, model, projector) for ``frame_model.frame_server``."""
-        return Path(os.environ.get(SERVER_ENV) or SERVER_DEFAULT), self.path('model'), self.path('projector')
+        if self.variants:
+            return local_text_runtime.server_path(self.variant()), self.path('model'), self.path('projector')
+        return local_text_runtime._configured(local_text_runtime.QWEN_SERVER), self.path('model'), self.path('projector')  # LFM3 runs on the Qwen runtime build
+
+    def private_args(self):
+        """Arguments of the private server of a model that is not resident (everything beyond the model, projector, slots and context)."""
+        if self.variants:
+            variant = self.variant()
+            return tuple(a for a in local_text_runtime.server_flags(variant) if a != '--jinja') + tuple(local_text_runtime.variant_args(variant))
+        return self.server_args
 
 
 def _lfm3():
@@ -83,47 +108,58 @@ def _lfm3():
         note='2.2B omni model: much faster, less detailed.')
 
 
-def _resident_identity(variant):
-    """(model id, revision) saved with a result made by the resident server running ``variant``."""
-    projector = MANIFEST['qwen36-vision']['files'][0]
+def _identity(model, variant):
+    """(model id, revision) saved with a result made by ``model`` running as the text-server ``variant``."""
+    key, name = model.projector_file
+    projector = next(item for item in MANIFEST[key]['files'] if item['name'] == name)
     info = local_text_runtime.VARIANTS[variant]
     return info['id'], f"{info['revision']}+mmproj-sha256:{projector['sha256'][:12]}"
 
 
-def _resident_label(variant):
-    return f"Qwen3.6 35B-A3B · {local_text_runtime.VARIANTS[variant]['label'].split('·', 1)[-1].strip()} + vision"
+def _label(model, variant):
+    info = local_text_runtime.VARIANTS[variant]
+    return f"{model.short_name} · {info['label'].split('·', 1)[-1].strip()} + vision"
 
 
 def _qwen36():
-    projector = MANIFEST['qwen36-vision']['files'][0]
-    model_id, revision = _resident_identity(local_text_runtime.DEFAULT_VARIANT)
     return VisualModel(
-        key='qwen36-35b', label=_resident_label(local_text_runtime.DEFAULT_VARIANT), short_name='Qwen3.6-35B-A3B',
-        model_id=model_id, revision=revision, runtime='llama-server', resident=True,
-        roles=('initial_frame', 'keyframe_analysis', 'character_profile'),
-        files={'model': ('QWEN36_MTP_MODEL_PATH', '/models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'),  # replaced by the selected variant's file in path()
-               'projector': ('QWEN36_PROJECTOR_PATH', '/models/qwen3.6-35b/' + projector['name'])},
+        key='qwen36-35b', label='Qwen3.6-35B-A3B', short_name='Qwen3.6 35B-A3B', model_id='', revision='', runtime='llama-server',
+        roles=('initial_frame', 'keyframe_analysis', 'character_profile'), files={},
+        variants=('mtp', 'standard'), projector_file=('qwen36-vision', 'mmproj-Qwen3.6-35B-A3B-BF16.gguf'),
         manifest='qwen36-vision', external='the text model comes from scripts/download-qwen36-mtp.sh or scripts/download-qwen36.sh',
         note='The text model of Cut Assistance (MTP by default) with its vision projector, kept loaded for text and pictures alike.')
 
 
+def _inkling():
+    return VisualModel(
+        key='inkling2-mini', label='Inkling 2 Mini', short_name='Inkling 2 Mini', model_id='', revision='', runtime='llama-server',
+        roles=('initial_frame', 'keyframe_analysis', 'character_profile'), files={},
+        variants=('inkling',), projector_file=('inkling2-mini', 'mmproj-F16.gguf'), manifest='inkling2-mini',
+        note='Thinking Machines Lab, 26B looped mixture of experts (3.4B active) with its vision projector. Needs its own newer llama.cpp. '
+             'Resident (no model switch between text and pictures) while Inkling is also the text engine.')
+
+
 def resolve(model):
-    """The model as the worker runs it now: a resident model carries the identity of the variant that is selected."""
-    if not model.resident:
+    """The model as the worker runs it now: a model of the text server carries the identity of its variant and knows whether it is resident."""
+    if not model.variants:
         return model
-    variant = local_text_runtime.selected_variant()
-    model_id, revision = _resident_identity(variant)
-    return dataclasses.replace(model, model_id=model_id, revision=revision, label=_resident_label(variant))
+    variant = model.variant()
+    model_id, revision = _identity(model, variant)
+    return dataclasses.replace(model, model_id=model_id, revision=revision, label=_label(model, variant),
+                               resident=local_text_runtime.selected_variant() in model.variants)
 
 
-MODELS = {model.key: model for model in (
+def _seed(model):
+    """The registry copy of a text-server model carries its first variant's identity; ``resolve`` gives the one that is running."""
+    if not model.variants:
+        return model
+    model_id, revision = _identity(model, model.variants[0])
+    return dataclasses.replace(model, model_id=model_id, revision=revision, label=_label(model, model.variants[0]))
+
+
+MODELS = {model.key: _seed(model) for model in (
     _qwen36(),
-    VisualModel(key='qwen35-27b', label='Qwen3.5 27B · Q4_K_M', short_name='Qwen3.5-27B',
-                model_id=frame_model.MODEL_ID, revision=frame_model.MODEL_REVISION, runtime='llama-server',
-                roles=('initial_frame', 'keyframe_analysis', 'character_profile'),
-                files={'model': ('QWEN35_MODEL_PATH', '/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf'),
-                       'projector': ('QWEN35_PROJECTOR_PATH', '/models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf')},
-                note='The previous default: slower, the model the keyframe prompt was measured on.'),
+    _inkling(),
     _lfm3(),
     VisualModel(key='dwpose', label='DWPose · ONNX (CPU)', short_name='DWPose', model_id='yzd-v/DWPose',
                 revision=MANIFEST['dwpose']['revision'], runtime='onnx', roles=(),

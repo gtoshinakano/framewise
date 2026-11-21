@@ -22,6 +22,28 @@ and lives in fw itself; do not invent another one:
 
 Failed runs are also a checkpoint: the flow stops until each one is retried or dismissed.
 
+## Final report: the links to open
+
+A cut has its own address, so finish every report with **one URL per cut that needs a person**, built by `fw` and
+copied exactly (never typed by hand, never shortened):
+
+```
+These cuts require human review:
+First-frame boxes without a character (Characters panel):
+- cut 199: http://chopper.local:8080/#/episode/<episode id>/cut/<cut id>/analysis/characters
+Review questions to answer (Results → Your answers):
+- cut 204: http://chopper.local:8080/#/episode/<episode id>/cut/<cut id>/analysis
+```
+
+The address is `<server>/#/episode/<episode id>/cut/<cut id>[/analysis[/<place>]]`; cut ids never change, so the
+links stay valid. `<place>` is `characters` (first-frame boxes), `target-frames`, `run`, `assistant`; no place opens
+the Results tab (review, answers, Cut summary). Where the links come from:
+
+- `scripts/fw review EP RANGE` prints every checkpoint and check with its link, under what the person does there.
+- `scripts/fw links EP 199,204,210-212 --place target-frames` prints the links for any list of cuts.
+- `scripts/fw analysis EP RANGE --links` adds a link under each "Needs …" line.
+- `scripts/fw cut EP 199` gives one cut's links.
+
 ## Where this runs
 
 The Framewise server is `chopper.local` (`http://chopper.local:8080`; `FRAMEWISE_URL` overrides it). The skill only
@@ -43,8 +65,9 @@ Exit codes of `next`, `drive`, `wait` and `review`: `0` ok/done, `1` error, `2` 
 
 ## At a checkpoint (exit 2)
 
-Run `scripts/fw review EP` and tell the user exactly what is waiting, by cut number, and where in the UI to settle it
-(fw prints the place and the episode link). Then stop. Continue only when the user says they are done; `fw next` will
+Run `scripts/fw review EP` and tell the user exactly what is waiting, by cut number **with its link**, and where in
+the UI to settle it (fw prints each cut's URL under the heading of what the person does there, then the episode link).
+Copy those lines into your answer: the user opens them one by one. Then stop. Continue only when the user says they are done; `fw next` will
 then move on by itself. Never settle a checkpoint yourself, never work around it with the single-step commands, and
 never pass `--save` to answers in this flow.
 

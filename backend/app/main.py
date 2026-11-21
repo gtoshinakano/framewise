@@ -2562,7 +2562,7 @@ class TextGenerationSettings(BaseModel):
     text_provider: Literal['local', 'openrouter'] = 'openrouter'
     local_thinking: bool = False
     openrouter_model: str = Field(default='openrouter/free', min_length=1, max_length=200, pattern=r'^[a-zA-Z0-9_./:-]+$')
-    local_model: Literal['standard', 'mtp'] | None = None  # omitted keeps the current choice
+    local_model: Literal['standard', 'mtp', 'inkling'] | None = None  # omitted keeps the current choice
     openrouter_audio_model: Annotated[str | None, Field(min_length=1, max_length=200, pattern=r'^[a-zA-Z0-9_./:-]+$')] = None  # omitted keeps the current choice; the audio a cut is re-transcribed with
 
 
@@ -3116,6 +3116,11 @@ if static_dir.is_dir():
 
     @app.get("/episode/{episode_id}", include_in_schema=False)
     def episode_page(episode_id: str):
+        return FileResponse(static_dir / "index.html", media_type="text/html")
+
+    # /episode/<id>/cut/<cut id>[/analysis[/<place>]]: the page moves the path into the hash route (frontend/src/cutRoute.ts).
+    @app.get("/episode/{episode_id}/cut/{rest:path}", include_in_schema=False)
+    def cut_page(episode_id: str, rest: str):
         return FileResponse(static_dir / "index.html", media_type="text/html")
 
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")

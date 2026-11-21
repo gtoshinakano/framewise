@@ -84,9 +84,20 @@ class ReviewReportTest(unittest.TestCase):
         self.assertEqual(progress['boxes_missing'], [4])
         self.assertEqual(progress['target_missing'], [1, 3])
         self.assertEqual(progress['visual_missing'], [1])
+        self.assertEqual(progress['first_frame_missing'], [1])
+        self.assertEqual(progress['keyframes_missing'], [1])
+        self.assertEqual(progress['analysis_off'], [])
         self.assertEqual(progress['beats_missing'], [2])
         self.assertEqual(progress['summary_missing'], [])
         self.assertEqual(report['setup'], {'media': False, 'cuts': True, 'transcript': False, 'subtitles': False, 'boxes': False})
+
+    def test_cuts_with_analysis_off_are_listed_and_not_missing(self):
+        with db.connect() as conn:
+            conn.execute("UPDATE cuts SET analysis_enabled=0 WHERE id='c1'")
+        progress = self.get()['progress']
+        self.assertEqual(progress['analysis_off'], [1])
+        self.assertEqual(progress['first_frame_missing'], [])
+        self.assertEqual(progress['keyframes_missing'], [])
 
     def test_gates_clear_once_settled(self):
         with db.connect() as conn:

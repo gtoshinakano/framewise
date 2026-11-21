@@ -1,6 +1,6 @@
 """Isolated llama.cpp server for a vision model of ``visual_models`` and the still-image calls made to it.
 
-MODEL_ID/MODEL_REVISION are Qwen3.5-27B's, the previous default; the model a job really used is the registry's ``VisualModel``."""
+The model a job really used is the registry's ``VisualModel`` (its ``model_id``/``revision`` are saved with every result)."""
 import base64
 import json
 import os
@@ -15,8 +15,6 @@ from pathlib import Path
 
 from .visual_contracts import FRAME_INSTRUCTION, frame_schema, person_context, resolve_frame, series_note, subtitle_note
 
-MODEL_ID = 'Advantech-EIOT/Qwen3.5-27B-GGUF:Q4_K_M'
-MODEL_REVISION = '4d92249e905871588b9c64fddb8ea6498507fa90'
 FRAME_MAX_TOKENS = 3072  # detailed outfits make answers longer; the cap only stops a runaway
 
 
@@ -78,11 +76,11 @@ def model_server(model, cancel_check=None, parallel=1, context_per_slot=8192, ex
         runtime = local_text_runtime.runtime
         if runtime is None:
             raise RuntimeError('Local text model worker is unavailable')
-        with runtime.visual_session(cancel_check) as url:
+        with runtime.visual_session(cancel_check, model.variants) as url:
             yield url
         return
     with frame_server(*model.server_files(), cancel_check=cancel_check, parallel=parallel, context_per_slot=context_per_slot,
-                      extra_args=model.server_args if extra_args is None else extra_args) as url:
+                      extra_args=model.private_args() if extra_args is None else extra_args) as url:
         yield url
 
 
@@ -95,8 +93,11 @@ def workers(model, wanted, what='A visual stage'):
 
 
 def thinking_kwargs(enabled=False):
-    """The per-request switch of Qwen's thinking. Pictures are described without it unless a call asks for it."""
-    return {'enable_thinking': bool(enabled)}
+    """The per-request switch of the model's reasoning (Qwen and Inkling read different variables, see ``local_text_runtime``).
+
+    Pictures are described without it unless a call asks for it."""
+    from . import local_text_runtime
+    return local_text_runtime.thinking_kwargs(enabled)
 
 
 def _chat_body(messages, schema, max_tokens, thinking=False):

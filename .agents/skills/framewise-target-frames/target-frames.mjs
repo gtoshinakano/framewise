@@ -439,6 +439,28 @@ async function boxOn(url, cutId, ordinal, slot) {
   return { boxes, run, slot: run.slots.find(item => item.slot === slot) }
 }
 
+/** The address of a cut on its Target frames tab (frontend/src/cutRoute.ts); cut ids never change, so it stays valid. */
+const cutLink = (url, episode, cutId) => `${url}/#/episode/${episode}/cut/${cutId}/analysis/target-frames`
+
+/**
+ * After a run: one link per cut, so the user can open each one. Cuts that still need a person come first, then the
+ * ones that failed, then the rest of the cuts the run worked on.
+ */
+async function printLinks(url, episode, numbers, rows) {
+  const cutOf = row => Number(/^cut (\d+)/.exec(row.text)?.[1] ?? NaN)
+  const groups = [['needs you', rows.filter(row => row.needs)], ['failed', rows.filter(row => !row.ok && !row.needs && !row.skipped)],
+                  ['worked on', rows.filter(row => row.ok)]]
+  const seen = new Set()
+  const lines = []
+  const found = new Map((await cutIds(url, episode, numbers)).map(item => [item.number, item.cut]))
+  for (const [label, group] of groups) {
+    const cuts = [...new Set(group.map(cutOf).filter(number => Number.isFinite(number) && !seen.has(number)))]
+    cuts.forEach(number => seen.add(number))
+    if (cuts.length) lines.push(`${label}:`, ...cuts.map(number => `- cut ${number}: ${found.get(number) ? cutLink(url, episode, found.get(number).id) : '(cut not found)'}`))
+  }
+  if (lines.length) console.log(`\nopen on the Target frames tab:\n${lines.join('\n')}`)
+}
+
 function reportLine(row) {
   const mark = row.needs ? 'person' : row.skipped ? 'skip' : row.ok ? 'ok' : 'fail'
   const at = row.frame ? ` frame ${row.frame}` : ''
@@ -452,6 +474,7 @@ async function inspect(url, episode, numbers) {
     const cast = firstScreen(state)
     console.log(`\ncut ${item.number} (${item.cut.id.slice(0, 8)}) ${state.selection?.revision ? `${state.list.length} frames` : 'no keyframes'}` +
       `${state.run ? ` · run ${state.run.id.slice(0, 8)}${state.run.stale ? ' STALE' : ''}${state.job?.status ? ` · job ${state.job.status}` : ''}` : ' · no run'}`)
+    console.log(`  open: ${cutLink(url, episode, item.cut.id)}`)
     console.log(`  first screen: ${cast.length ? cast.map(slot => `colour ${slot.slot + 1} ${slotName(state, slot.slot)}`).join(', ') : 'nobody (no boxes on the opening frame)'}`)
     for (const frame of state.list) {
       const people = frame.boxes.map(box => `${box.slot + 1}${box.source === 'manual' ? '*' : ''}`).join(' ') || '-'
@@ -517,6 +540,7 @@ async function draw(url, episode, numbers, opts) {
   }
   console.log('\nresult:')
   for (const row of rows) reportLine(row)
+  await printLinks(url, episode, numbers, rows)
   return rows.some(row => row.needs) ? 2 : rows.some(row => !row.ok && !row.needs) ? 1 : 0
 }
 
@@ -622,6 +646,7 @@ async function name(url, episode, numbers, opts) {
   }
   console.log('\nresult:')
   for (const row of rows) reportLine(row)
+  await printLinks(url, episode, numbers, rows)
   return rows.some(row => row.needs) ? 2 : rows.some(row => !row.ok && !row.needs) ? 1 : 0
 }
 

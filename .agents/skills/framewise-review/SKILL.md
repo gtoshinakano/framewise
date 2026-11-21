@@ -12,6 +12,14 @@ Work from the repository root. Read the state with `scripts/fw` only:
 - `scripts/fw cut EP N`: one cut.
 - `scripts/fw failures EP`: failed runs with their errors.
 
+## Where the links lead
+
+Each cut has its own address: `<server>/#/episode/<episode id>/cut/<cut id>[/analysis[/<place>]]` (cut ids never
+change). `characters` opens the first-frame boxes, `target-frames` the Target frames tab, `run` the Run tab,
+`assistant` Cut Assistance, and no place the Results tab (review, answers, Cut summary). Unknown voices have no cut of
+their own: their link opens the cut that holds the first unassigned line (Results → Spoken words → Unknown voices).
+For a status by step ("what does each cut still need"), use the `analysis-status` skill.
+
 ## Where this runs
 
 The Framewise server is `chopper.local` (`http://chopper.local:8080`; `FRAMEWISE_URL` overrides it). The skill only
@@ -38,7 +46,10 @@ Turn the output into a short list for the user, in this order:
 3. **Failed runs**, with the error in one line each.
 4. The episode link fw prints.
 
-Group cut numbers into ranges (`12-15, 20`). Say "nothing waits for you" when both lists are empty.
+**Every cut in the checklist carries its link**, one line per cut (`- cut 199 · 2 box(es): URL`); `fw review` prints
+them already, copy them as they are. Where the output groups cuts into ranges for reading (stale results, analysis
+status), use `scripts/fw links EP 12-15,20 --place analysis` to get the URLs. Say "nothing waits for you" when both
+lists are empty.
 
 ## Rules
 

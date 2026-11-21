@@ -107,6 +107,15 @@ After a box lands the driver re-reads the API; if it arrived in another colour i
 `--detect` presses Detect characters before planning (or waits for a detection already queued) and plans from
 the new run; with `--dry-run` it only says it would, and the plan shown is from the current run.
 
+## Final report: the links to open
+
+After `inspect`, `draw` or `name` the driver prints one link per cut: `open:` under each cut of `inspect`, and an
+`open on the Target frames tab:` list after `draw`/`name`, grouped as *needs you* (a person is needed), *failed* and
+*worked on*. Copy that list into your report exactly; the user checks the result by opening each cut
+(`<server>/#/episode/<episode id>/cut/<cut id>/analysis/target-frames`, cut ids never change). A box the driver drew is
+a guess by position or detector, so every cut it worked on is a cut to look at, not only the refusals. For other cuts,
+`scripts/fw links EP 9,12 --place target-frames` builds the same addresses.
+
 ## Exit codes, like `fw`
 
 `0` done or nothing to do · `1` an error · `2` a person is needed (a refusal, or a box the app could not find).

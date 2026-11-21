@@ -9,6 +9,8 @@
     scripts/fw review "Episode 6"                # what waits for a person
     scripts/fw next "Episode 6" --go             # queue the next step of the gated flow
     scripts/fw drive "Episode 6"                 # repeat next/wait until a person is needed
+    scripts/fw analysis "Episode 6" 100-200      # what every cut still needs, per step, with --links the cut URLs
+    scripts/fw links "Episode 6" 199,204 --place target-frames   # one URL per cut, opening the place that needs it
 
 Cut numbers are the editor's (1-based). RANGE is 100-120, 100..120, 7, 5- (to the end), -10 or all (the default).
 Only the HTTP API is used: FRAMEWISE_URL, else http://chopper.local:8080 (the server). It runs the same from any machine
@@ -199,6 +201,49 @@ def ui_link(api, episode):
     return f"{api.url}/#/episode/{episode['id']}"
 
 
+# Where a cut link lands (frontend/src/cutRoute.ts). `cut` only selects the cut; the others open the Analysis dialog.
+PLACES = {'cut': '', 'analysis': '/analysis', 'run': '/analysis/run', 'characters': '/analysis/characters',
+          'target-frames': '/analysis/target-frames', 'assistant': '/analysis/assistant'}
+LINK_LIMIT = 25
+
+
+def cut_url(api, episode, cut_id, place='cut'):
+    """The address of one cut (cut ids never change): ``http://host:8080/#/episode/E/cut/C[/analysis[/place]]``."""
+    if place not in PLACES:
+        raise Failure(f"unknown place {place!r}: use {', '.join(PLACES)}")
+    return f"{api.url}/#/episode/{episode['id']}/cut/{cut_id}{PLACES[place]}"
+
+
+def cut_numbers(api, episode):
+    """{editor cut number: v1 cut} of the episode's active cuts, read once per fw run."""
+    cache = api.__dict__.setdefault('_cut_numbers', {})
+    if episode['id'] not in cache:
+        cache[episode['id']] = {cut['cut_index'] + 1: cut for cut in cuts(api, episode['id'])}
+    return cache[episode['id']]
+
+
+def url_for_number(api, episode, number, place='cut'):
+    cut = cut_numbers(api, episode).get(number)
+    return cut_url(api, episode, cut['id'], place) if cut else None
+
+
+def url_at_time(api, episode, seconds, place='analysis'):
+    """The cut that covers ``seconds`` of the episode (for things that belong to the audio, such as an unknown voice)."""
+    for cut in cut_numbers(api, episode).values():
+        if cut['start_time'] <= seconds < cut['end_time']:
+            return cut_url(api, episode, cut['id'], place)
+    return None
+
+
+def link_lines(api, episode, numbers, place, indent='  '):
+    """`- cut N: URL` for each number (at most LINK_LIMIT; `fw links` prints the rest)."""
+    numbers = sorted(set(numbers))
+    lines = [f"{indent}- cut {number}: {url_for_number(api, episode, number, place) or '(cut not found)'}" for number in numbers[:LINK_LIMIT]]
+    if len(numbers) > LINK_LIMIT:
+        lines.append(f"{indent}… {len(numbers) - LINK_LIMIT} more cuts: fw links EP {numbers_text(numbers[LINK_LIMIT:], limit=10**6).replace(', ', ',')} --place {place}")
+    return lines
+
+
 # --- steps -------------------------------------------------------------------------------------------------------
 
 def job_ids(result):
@@ -308,6 +353,45 @@ def gate_lines(report, names):
     return lines
 
 
+GATE_PLACES = {'first_frame': 'characters', 'target_frames': 'target-frames', 'decisions': 'analysis'}
+
+
+def gate_links(api, episode, report, names):
+    """The cut URLs behind ``gate_lines``: one `- cut N: URL` per cut, under the heading of its checkpoint."""
+    lines = []
+    for name in names:
+        items = report['gates'].get(name) or []
+        if not items:
+            continue
+        if name == 'voices':
+            lines += ['  unknown voices (Results → Spoken words → Unknown voices):']
+            lines += [f"  - {voice['speaker_label'] or '(no label)'}: {url_at_time(api, episode, voice['first_time']) or episode_link(api, episode)}" for voice in items[:LINK_LIMIT]]
+        else:
+            lines += [f"  {GATE_HEADINGS[name]}:"] + link_lines(api, episode, [item['cut'] for item in items], GATE_PLACES[name])
+    return lines
+
+
+def episode_link(api, episode):
+    return ui_link(api, episode)
+
+
+GATE_HEADINGS = {'first_frame': 'first-frame boxes without a character (Characters panel)',
+                 'target_frames': 'target frames to review (Target frames tab)',
+                 'decisions': 'review questions without saved answers (Results → Your answers)'}
+
+
+def blocked_links(api, episode, decision):
+    gate = decision.get('gate')
+    if decision.get('action') != 'blocked' or not decision.get('items'):
+        return []
+    if gate in GATE_PLACES or gate == 'voices':
+        return gate_links(api, episode, {'gates': {gate: decision['items']}}, (gate,))
+    if gate == 'failures':
+        return [f"  - {item['label']}: {url}" for item in decision['items'] for span in [item.get('cut_span')]
+                if span for url in [url_for_number(api, episode, span['first'])] if url]
+    return []
+
+
 def describe_result(step, span, result):
     if result.get('dry_run'):
         return ''
@@ -352,6 +436,7 @@ def cmd_step(api, args):
     text = describe_result(args.step, span, result)
     if warnings:
         text += '\nwarning: open checkpoints in this range (queued anyway because you asked):\n  ' + '\n  '.join(warnings)
+        text += '\n' + '\n'.join(gate_links(api, episode, report, UPSTREAM[args.step]))
     emit(args, {'step': args.step, 'range': span, 'result': result, 'warnings': warnings}, text)
     return ERROR if result.get('errors') and not job_ids(result) else OK
 
@@ -456,7 +541,8 @@ def cmd_next(api, args):
     elif decision['action'] == 'run':
         text += '\n(add --go to queue it)'
     if decision['action'] in ('blocked', 'done'):
-        text += f'\nopen the episode: {ui_link(api, episode)}'
+        links = blocked_links(api, episode, decision)
+        text += ('\n' + '\n'.join(links) if links else '') + f'\nopen the episode: {ui_link(api, episode)}'
     emit(args, decision, text)
     return {'run': OK, 'done': OK, 'blocked': BLOCKED, 'busy': BUSY}[decision['action']]
 
@@ -523,6 +609,7 @@ def cmd_drive(api, args):
             continue
         if decision['action'] != 'run':
             print(summary_line(decision))
+            print('\n'.join(blocked_links(api, episode, decision)))
             print(f'open the episode: {ui_link(api, episode)}')
             return BLOCKED if decision['action'] == 'blocked' else OK
         key = (decision['step'], tuple(decision.get('cuts') or ()))
@@ -603,42 +690,66 @@ def cmd_failures(api, args):
 
 
 def review_text(api, episode, report):
+    """The checklist for a person, one `- cut N: URL` line per cut so each can be opened straight away."""
     gates, checks = report['gates'], report['checks']
-    lines = [f"{episode['project']} / {episode['title']}" + (f" · {range_text((report['range']['from_cut'], report['range']['to_cut']))}" if report.get('range') else '')]
-    lines.append('CHECKPOINTS (the automatic flow waits for these):')
-    gate_text = {
-        'first_frame': lambda item: f"cut {item['cut']}: {item['unlabeled_boxes']} first-frame box(es) without a character (Characters panel)",
-        'target_frames': lambda item: f"cut {item['cut']}: " + ', '.join(
-            [f"frame {frame['ordinal']} {'/'.join(frame['flags'])}" for frame in item['frames']]
-            + ([f"{item['unnamed_people']} unnamed person(s)"] if item['unnamed_people'] else [])) + ' (Target frames tab)',
-        'voices': lambda item: f"voice {item['speaker_label'] or '(no label)'}: {item['lines']} line(s) without a character, first at {item['first_time']}s (Audio → Unknown voices)",
-        'decisions': lambda item: f"cut {item['cut']}: {item['questions']} review question(s) to answer" + (' (a suggested draft is ready)' if item['draft'] else '') + ' (Results → Your answers)'}
-    for name, render in gate_text.items():
-        lines += [f"  {render(item)}" for item in gates[name]]
-    if not any(gates.values()):
+    where = f" · {range_text((report['range']['from_cut'], report['range']['to_cut']))}" if report.get('range') else ''
+    lines = [f"{episode['project']} / {episode['title']}{where}"]
+
+    def section(title, items):
+        """items: [(cut number or None, detail, url)]; one `- cut N · detail: URL` line each."""
+        if not items:
+            return
+        lines.append(title)
+        for number, detail, url in items[:LINK_LIMIT * 2]:
+            label = ' · '.join(part for part in (f'cut {number}' if number is not None else '', detail) if part)
+            lines.append(f"  - {label}: {url or '(no link)'}")
+        if len(items) > LINK_LIMIT * 2:
+            lines.append(f'  … {len(items) - LINK_LIMIT * 2} more (fw review --json)')
+
+    def rows(entries, place, detail):
+        return [(item['cut'], detail(item), url_for_number(api, episode, item['cut'], place)) for item in entries]
+
+    lines.append('THESE NEED A PERSON (the automatic flow waits for them):')
+    start = len(lines)
+    section('First-frame boxes without a character (Characters panel):', rows(gates['first_frame'], 'characters',
+            lambda item: f"{item['unlabeled_boxes']} box(es)"))
+    section('Target frames to review (Target frames tab):', rows(gates['target_frames'], 'target-frames', lambda item: ', '.join(
+        [f"frame {frame['ordinal']} {'/'.join(frame['flags'])}" for frame in item['frames']]
+        + ([f"{item['unnamed_people']} unnamed person(s)"] if item['unnamed_people'] else []))))
+    section('Unknown voices (Results → Spoken words → Unknown voices; the link opens the cut of the first line):', [
+        (None, f"voice {voice['speaker_label'] or '(no label)'} · {voice['lines']} line(s), first at {voice['first_time']}s",
+         url_at_time(api, episode, voice['first_time'])) for voice in gates['voices']])
+    section('Review questions to answer (Results → Your answers):', rows(gates['decisions'], 'analysis', lambda item: f"{item['questions']} question(s)"
+            + (' (a suggested draft is ready)' if item['draft'] else '')))
+    if len(lines) == start:
         lines.append('  none')
-    lines.append('CHECKS (worth a look, nothing waits for them):')
-    found = len(lines)
-    if checks['auto_labels']:
-        lines.append(f"  automatic labels not confirmed by you: cuts {numbers_text(item['cut'] for item in checks['auto_labels'])}")
-    if checks['no_boxes']:
-        lines.append(f"  detected without any box (mark No characters if right): cuts {numbers_text(checks['no_boxes'])}")
-    for item in checks['stale_results']:
-        lines.append(f"  cut {item['cut']}: {item['title'] or 'result'} is stale ({item['reason']})")
-    for item in checks['picture_contradictions']:
-        lines += [f"  cut {item['cut']}: picture {check['picture']} contradicts \"{check['claim']}\" ({check['character']})" for check in item['checks']]
+    lines.append('WORTH A LOOK (nothing waits for them):')
+    start = len(lines)
+    section('Automatic labels you have not confirmed (Characters panel):', rows(checks['auto_labels'], 'characters', lambda item: f"{item['labels']} label(s)"))
+    section('Detected without any box (mark No characters if that is right):', [(number, '', url_for_number(api, episode, number, 'characters')) for number in checks['no_boxes']])
+    section('Stale results (the reason is why they changed; running them again is your call):', rows(
+        checks['stale_results'], 'analysis', lambda item: f"{item['title'] or 'result'} — {item['reason']}"))
+    section('Places where the pictures contradict the stored analysis:', [
+        (item['cut'], f"picture {check['picture']} contradicts \"{check['claim']}\" ({check['character']})", url_for_number(api, episode, item['cut'], 'analysis'))
+        for item in checks['picture_contradictions'] for check in item['checks']])
     if checks['lines_to_check']['count']:
-        lines.append(f"  {checks['lines_to_check']['count']} transcript line(s) with a medium/low speaker confidence (Audio → Lines to check)")
+        lines.append(f"Transcript lines with a medium or low speaker confidence (Audio → Lines to check): {checks['lines_to_check']['count']}")
+        lines += [f"  - {line['start_time']}s {line['speaker_label'] or ''}: {url_at_time(api, episode, line['start_time']) or '(no link)'}"
+                  for line in checks['lines_to_check'].get('lines', [])[:LINK_LIMIT]]
     for item in checks['sequences_unconfirmed']:
-        lines.append(f"  sequence {item['title'] or item['id']}: dialogue not confirmed")
-    for key, label in (('speaker_attribution_stale', 'speaker attribution'), ('transcript_stale', 'transcript')):
+        lines.append(f"Sequence {item['title'] or item['id']}: dialogue not confirmed (Sequences → Dialogue): {ui_link(api, episode)}")
+    for key, label in (('speaker_attribution_stale', 'Speaker attribution'), ('transcript_stale', 'Transcript')):
         if checks.get(key):
-            lines.append(f"  {label} is stale: {checks[key]}")
-    if len(lines) == found:
+            lines.append(f"{label} is stale: {checks[key]}")
+    if len(lines) == start:
         lines.append('  none')
     if report['failures']:
-        lines.append(f"FAILED RUNS: {len(report['failures'])} (fw failures)")
-    lines.append(f"ui: {ui_link(api, episode)}")
+        lines.append(f"FAILED RUNS ({len(report['failures'])}; fw failures, fw retry ID, fw dismiss ID):")
+        for item in report['failures']:
+            span = item.get('cut_span')
+            url = url_for_number(api, episode, span['first'], 'cut') if span else None
+            lines.append(f"  - {item['label']}" + (f" (cuts {span['first']}-{span['last']})" if span else '') + f": {item['error'][:120]}" + (f"\n    {url}" if url else ''))
+    lines.append(f"episode: {ui_link(api, episode)}")
     return '\n'.join(lines)
 
 
@@ -660,11 +771,140 @@ def cmd_cut(api, args):
         raise Failure(f'there is no active cut {number}')
     cut = found[0]
     report = review(api, episode['id'], (number, number))
-    missing = [name.replace('_missing', '') for name, numbers in report['progress'].items() if isinstance(numbers, list) and number in numbers]
+    missing = [name.replace('_missing', '').replace('_', ' ') for name, numbers in report['progress'].items()
+               if name.endswith('_missing') and isinstance(numbers, list) and number in numbers]
     text = '\n'.join([f"cut {number}  {cut['id']}  {cut['start_time']:.3f}-{cut['end_time']:.3f}s  analysis {'on' if cut['analysis_enabled'] else 'off'}",
-                      f"missing: {', '.join(missing) or 'nothing'}", review_text(api, episode, report)])
+                      f"missing: {', '.join(missing) or 'nothing'}",
+                      f"open: {cut_url(api, episode, cut['id'])}", f"results: {cut_url(api, episode, cut['id'], 'analysis')}", review_text(api, episode, report)])
     emit(args, {'cut': cut, 'review': report}, text)
     return OK
+
+
+# What each progress list of the review report means: (key, what the cut needs, step that queues it, place of the link)
+NEEDS = (('boxes_missing', 'first-frame character detection (boxes)', 'boxes', 'characters'),
+         ('target_missing', 'target-frames people detection', 'target-frames', 'target-frames'),
+         ('first_frame_missing', 'first-frame analysis', 'visual', 'run'),
+         ('keyframes_missing', 'keyframe analysis', 'visual', 'run'),
+         ('beats_missing', 'performance beats', 'beats', 'analysis'),
+         ('consistency_missing', 'consistency review', 'consistency', 'analysis'),
+         ('summary_missing', 'Cut summary', 'summary', 'analysis'))
+
+
+def analysis_status(report):
+    """The review report as a status: what each cut still needs (a step), what waits for a person, what is worth a look.
+
+    ``steps`` and ``person`` are lists of {key, text, cuts, step/place}; ``look`` has plain {text, cuts} entries.
+    A server older than first_frame_missing/keyframes_missing reports both as visual_missing.
+    """
+    progress, gates, checks = report['progress'], report['gates'], report['checks']
+    steps = []
+    split = 'first_frame_missing' in progress
+    for key, text, step, place in NEEDS:
+        if key in ('first_frame_missing', 'keyframes_missing') and not split:
+            continue
+        cuts_ = progress.get(key) or []
+        if cuts_:
+            steps.append({'key': key, 'text': f'Needs {text}', 'cuts': cuts_, 'step': step, 'place': place})
+    if not split and progress.get('visual_missing'):
+        steps.append({'key': 'visual_missing', 'text': 'Needs first-frame and keyframe analysis', 'cuts': progress['visual_missing'], 'step': 'visual', 'place': 'run'})
+    person = []
+    for key, text, place in (('first_frame', 'Needs character names on first-frame boxes', 'characters'),
+                             ('target_frames', 'Needs target frames reviewed (flagged frames or unnamed people)', 'target-frames'),
+                             ('decisions', 'Needs review questions answered', 'analysis')):
+        if gates.get(key):
+            person.append({'key': key, 'text': text, 'cuts': [item['cut'] for item in gates[key]], 'place': place})
+    if gates.get('voices'):
+        voices = ', '.join(f"{voice['speaker_label'] or '(no label)'} ({voice['lines']} lines)" for voice in gates['voices'])
+        person.append({'key': 'voices', 'text': f'Needs unknown voices assigned to a character: {voices}', 'cuts': [], 'place': 'analysis',
+                       'voices': gates['voices']})
+    look = []
+    for key, text, cuts_ in (
+            ('auto_labels', 'Automatic labels you have not confirmed', [item['cut'] for item in checks.get('auto_labels') or []]),
+            ('no_boxes', 'Detected without any box (mark No characters if that is right)', checks.get('no_boxes') or []),
+            ('stale_results', 'Stale results (running them again is your call)', [item['cut'] for item in checks.get('stale_results') or []]),
+            ('picture_contradictions', 'Pictures contradict the stored analysis', [item['cut'] for item in checks.get('picture_contradictions') or []])):
+        if cuts_:
+            look.append({'key': key, 'text': text, 'cuts': sorted(set(cuts_)),
+                         'place': 'characters' if key in ('auto_labels', 'no_boxes') else 'analysis'})
+    lines_to_check = (checks.get('lines_to_check') or {}).get('count')
+    if lines_to_check:
+        look.append({'key': 'lines_to_check', 'text': f'{lines_to_check} transcript line(s) with a medium or low speaker confidence (Audio → Lines to check)', 'cuts': []})
+    for key, text in (('speaker_attribution_stale', 'Speaker attribution is stale'), ('transcript_stale', 'The transcript is stale')):
+        if checks.get(key):
+            look.append({'key': key, 'text': f'{text}: {checks[key]}', 'cuts': []})
+    for item in checks.get('sequences_unconfirmed') or []:
+        look.append({'key': 'sequence', 'text': f"Sequence {item.get('title') or item['id']}: dialogue not confirmed", 'cuts': []})
+    return {'steps': steps, 'person': person, 'look': look}
+
+
+def cmd_analysis(api, args):
+    episode = find_episode(api, args.episode, args.latest)
+    span = parse_range(args.range)
+    report, state = review(api, episode['id'], span), queue(api, episode['id'])
+    status = analysis_status(report)
+    progress = report['progress']
+    setup_missing = [name for name, done in report['setup'].items() if not done]
+    lines = [f"{episode['project']} / {episode['title']}  ·  {range_text(span)}  ·  {progress['cuts']} cut(s), {progress['enabled']} with analysis on"]
+    lines.append('setup: ' + ('complete' if not setup_missing else 'MISSING ' + ', '.join(setup_missing) + ' (fw setup)'))
+    if progress.get('analysis_off'):
+        lines.append(f"analysis off (left out of everything below): cuts {numbers_text(progress['analysis_off'])}")
+
+    def render(heading, entries):
+        if not entries:
+            return
+        lines.append(heading)
+        for entry in entries:
+            numbers = entry['cuts']
+            lines.append(f"  {entry['text']}" + (f": cuts {numbers_text(numbers)}" if numbers else '') + (f"  [fw {entry['step']}]" if entry.get('step') else ''))
+            if args.links and numbers:
+                lines.extend(link_lines(api, episode, numbers, entry['place'], indent='    '))
+            for voice in entry.get('voices') or []:
+                if args.links:
+                    lines.append(f"    - {voice['speaker_label'] or '(no label)'}: {url_at_time(api, episode, voice['first_time']) or ui_link(api, episode)}")
+
+    render('NEEDS A STEP (queue it with the fw command in brackets):', status['steps'])
+    render('NEEDS A PERSON (the automatic flow waits for these):', status['person'])
+    render('WORTH A LOOK (nothing waits for these):', status['look'])
+    if not (status['steps'] or status['person'] or status['look']):
+        lines.append('nothing is missing and nothing waits for a person')
+    running = ', '.join(f"{run['label']} ({run['stage']})" for run in state.get('running') or []) or 'nothing'
+    lines.append(f"queue: running {running}; waiting {state.get('waiting_total', 0)}")
+    if report['failures']:
+        lines.append(f"failed runs: {len(report['failures'])} (fw failures)")
+        if args.links:
+            for item in report['failures']:
+                span_ = item.get('cut_span')
+                url = url_for_number(api, episode, span_['first']) if span_ else None
+                lines.append(f"  - {item['label']}: {item['error'][:100]}" + (f"  {url}" if url else ''))
+    lines.append(f"episode: {ui_link(api, episode)}")
+    emit(args, {'episode': {k: episode[k] for k in ('id', 'title', 'project')}, 'range': span, 'setup': report['setup'],
+                'analysis_off': progress.get('analysis_off', []), **status, 'queue': {'running': len(state.get('running') or []), 'waiting': state.get('waiting_total', 0)},
+                'failures': len(report['failures']), 'url': ui_link(api, episode)}, '\n'.join(lines))
+    return OK
+
+
+def parse_cut_list(text):
+    """'199,204,210-212' -> [199, 204, 210, 211, 212]"""
+    numbers = []
+    for part in (text or '').split(','):
+        first, last = parse_range(part.strip())
+        if first is None or last is None:
+            raise Failure(f'give cut numbers like 199,204,210-212 (got {part!r})')
+        numbers += range(first, last + 1)
+    return sorted(set(numbers))
+
+
+def cmd_links(api, args):
+    episode = find_episode(api, args.episode, args.latest)
+    numbers = parse_cut_list(args.cuts)
+    found = cut_numbers(api, episode)
+    missing = [number for number in numbers if number not in found]
+    items = [{'cut': number, 'id': found[number]['id'], 'url': cut_url(api, episode, found[number]['id'], args.place)} for number in numbers if number in found]
+    text = '\n'.join(f"- cut {item['cut']}: {item['url']}" for item in items)
+    if missing:
+        text += f"\nno active cut: {numbers_text(missing)}"
+    emit(args, {'items': items, 'missing': missing}, text or 'no cuts')
+    return ERROR if missing and not items else OK
 
 
 def cmd_retry(api, args):
@@ -720,6 +960,11 @@ def parser():
     episode_command('queue', cmd_queue, 'what runs and waits now')
     episode_command('failures', cmd_failures, 'failed runs that wait for a decision, with their errors')
     episode_command('review', cmd_review, 'what waits for a person (exit 2 when a checkpoint is open)', rng=True)
+    command = episode_command('analysis', cmd_analysis, 'what every cut still needs: steps, person checkpoints and checks, by cut number', rng=True)
+    command.add_argument('--links', action='store_true', help='add one URL per cut under each line (opens the cut at the place that needs it)')
+    command = episode_command('links', cmd_links, 'the URL of each cut (cut numbers as in the editor)')
+    command.add_argument('cuts', nargs='?', help='cut numbers: 199,204,210-212')
+    command.add_argument('--place', default='cut', choices=list(PLACES), help='where the link opens: the cut, or the Analysis dialog at results, run, characters, target-frames or assistant')
     command = episode_command('cut', cmd_cut, 'one cut: what it is missing and what waits for a person')
     command.add_argument('number', nargs='?', help='cut number as shown in the editor')
     for name, func, help_text in (('next', cmd_next, 'the next step of the gated flow (exit 2 blocked, 3 busy)'),
@@ -749,6 +994,8 @@ def main(argv=None):
             args.range, args.episode = args.episode, None
         elif hasattr(args, 'number') and args.number is None:
             args.number, args.episode = args.episode, None
+        elif hasattr(args, 'cuts') and args.cuts is None:
+            args.cuts, args.episode = args.episode, None
     api = Api(args.url.rstrip('/') if getattr(args, 'url', None) else base_url(), dry_run=getattr(args, 'dry_run', False))
     try:
         return args.func(api, args)

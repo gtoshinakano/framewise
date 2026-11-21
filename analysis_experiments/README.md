@@ -1,5 +1,7 @@
 # Pose-detail experiment
 
+> **2026-11-21:** the harness code (`run.sh`, `experiment.py`, `pose_schema.py`, ...) was deleted together with Qwen3-VL and `backend/app/video_model.py`, which it drove. `FINDINGS.md` stays as the record; the verdict it reached is implemented in `backend/app/pose_detail.py`. Recover the harness from git history before this date if needed.
+
 Question: can the models we already run (Qwen3.5-27B for the first frame, Qwen3-VL-8B for video) fill a structured
 per-character block — body/head yaw, head pitch/roll, eye gaze, eye openness, gaze target, mouth, eyebrows, expression,
 body pose, camera elevation, shot size — reliably enough to add it to the visual analysis?

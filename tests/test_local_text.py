@@ -362,7 +362,7 @@ class LocalTextTest(unittest.TestCase):
             files = {name: Path(folder) / name for name in ('llama-server', 'mtp.gguf', 'proj.gguf')}
             for path in files.values():
                 path.write_bytes(b'x')
-            env = {'QWEN35_SERVER_PATH': str(files['llama-server']), 'QWEN36_MTP_MODEL_PATH': str(files['mtp.gguf']), 'QWEN36_PROJECTOR_PATH': str(files['proj.gguf'])}
+            env = {'LLAMA_SERVER_PATH': str(files['llama-server']), 'QWEN36_MTP_MODEL_PATH': str(files['mtp.gguf']), 'QWEN36_PROJECTOR_PATH': str(files['proj.gguf'])}
             started = []
             class Server:
                 def poll(self): return None

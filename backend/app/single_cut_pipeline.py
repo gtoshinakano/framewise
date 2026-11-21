@@ -9,7 +9,7 @@ Work always runs stage by stage across all cuts, so each model is loaded once:
                             keyframes (keyframe_analysis.py); its commit queues the performance beats
 
 Which model runs each stage is the job's ``payload.models`` snapshot (visual_models.py): Qwen3.6-35B-A3B
-with its vision projector by default for both, or e.g. Qwen3.5-27B or LFM3-Omni-2B for the first frame. Results record the model that wrote them.
+with its vision projector by default for both, or e.g. Inkling 2 Mini or LFM3-Omni-2B for the first frame. Results record the model that wrote them.
 
 The video stage (Qwen3-VL-8B over the whole clip) was replaced by the keyframe stage on 2026-11-18, and the
 last frame is no longer described. Jobs queued before either change may still name video_analysis or
@@ -45,8 +45,6 @@ FRAME_PARALLEL = max(1, int(os.environ.get('FRAME_PARALLEL', '4')))
 def release_gpu_models():
     from . import inference_worker
     inference_worker._model = None
-    inference_worker._caption_model = None
-    inference_worker._caption_processor = None
     gc.collect()
     try:
         import torch

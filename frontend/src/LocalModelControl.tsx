@@ -5,12 +5,13 @@ import { useEpisodeEvents } from './episodeEvents'
 import { RemoteTextServer } from './RemoteTextServer'
 import { remoteBadge, variantLabel, type RemoteServer } from './remoteText'
 
-type Variant = 'standard' | 'mtp'
+type Variant = 'standard' | 'mtp' | 'inkling'
 type VariantInfo = { available: boolean; detail: string; label: string }
 type ModelStatus = { desired_loaded: boolean; state: string; detail: string; variant?: string; variants?: Partial<Record<Variant, VariantInfo>> }
 type TextSettings = { text_provider: 'local' | 'openrouter'; local_thinking: boolean; openrouter_model: string; local_model?: Variant; openrouter_audio_model?: string }
 type Comparison = { variant: string; results: number; avg_completion_tokens: number; avg_generation_seconds: number | null; overall_tokens_per_second: number | null; decode_tokens_per_second: number | null; draft_acceptance: number | null }
-const variantNames: Record<string, string> = { standard: 'Standard Q4_K_M', mtp: 'MTP (speculative)' }
+const variantNames: Record<string, string> = { standard: 'Qwen 3.6 · Standard Q4_K_M', mtp: 'Qwen 3.6 · MTP (speculative)', inkling: 'Inkling 2 Mini · UD-Q4_K_M' }
+const variantOrder: Variant[] = ['standard', 'mtp', 'inkling']
 const fixed = (value: number | null, suffix = '') => value === null ? '–' : `${value}${suffix}`
 const labels: Record<string, string> = { unloaded: 'Unloaded', downloading: 'Downloading', loading: 'Loading', loaded: 'Loaded', generating: 'Generating', unloading: 'Unloading', worker_offline: 'Worker offline', error: 'Error' }
 
@@ -58,9 +59,9 @@ export function LocalModelControl({ compact = false }: { compact?: boolean } = {
       <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="text-engine-title" className="max-h-[92vh] w-full max-w-2xl space-y-4 overflow-y-auto rounded-xl border hairline bg-[#1b202a] p-5 shadow-2xl outline-none">
         <div className="flex items-center justify-between"><h2 id="text-engine-title" className="text-base font-semibold">Text inference engine</h2><button type="button" onClick={() => setOpen(false)} aria-label="Close text engine settings" className="rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#303746]"><X size={18} /></button></div>
         <p className="muted text-xs">The selected engine is used for new text jobs. Jobs already queued keep their settings.</p>
-        {draft && <><label className="block"><span className="label">Provider</span><select className="field" value={draft.text_provider} onChange={event => setDraft({ ...draft, text_provider: event.target.value as TextSettings['text_provider'] })}><option value="local">Local Qwen 3.6 35B Q4_K_M</option><option value="openrouter">OpenRouter</option></select></label>
+        {draft && <><label className="block"><span className="label">Provider</span><select className="field" value={draft.text_provider} onChange={event => setDraft({ ...draft, text_provider: event.target.value as TextSettings['text_provider'] })}><option value="local">Local model (Qwen 3.6 or Inkling 2 Mini)</option><option value="openrouter">OpenRouter</option></select></label>
         <label className="block"><span className="label">Local model</span><select className="field" disabled={draft.text_provider !== 'local'} value={draft.local_model ?? 'standard'} onChange={event => setDraft({ ...draft, local_model: event.target.value as Variant })}>
-          {(['standard', 'mtp'] as Variant[]).map(name => { const info = status?.variants?.[name]; const blocked = name !== 'standard' && !info?.available && draft.local_model !== name
+          {variantOrder.map(name => { const info = status?.variants?.[name]; const blocked = name !== 'standard' && !info?.available && draft.local_model !== name
             return <option key={name} value={name} disabled={blocked}>{variantNames[name]}{info && name !== 'standard' ? ` · ${info.detail}` : ''}</option> })}
         </select><span className="muted mt-1 block text-[11px]">{status?.variant ? `Loaded now: ${variantNames[status.variant] || status.variant}. ` : ''}Switching restarts the model when no text job or chat is running; a running job finishes on the model it started with. Every result records the model, decode speed and, for MTP, how many drafted tokens were accepted.</span></label>
         <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={draft.local_thinking} disabled={draft.text_provider !== 'local'} onChange={event => setDraft({ ...draft, local_thinking: event.target.checked })} /> Enable local model thinking</label>

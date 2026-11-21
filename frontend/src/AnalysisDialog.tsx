@@ -14,12 +14,15 @@ import { ConsistencySummary } from './ConsistencySummary'
 import { PerformanceBeats } from './PerformanceBeats'
 import CutAssistant from './CutAssistant'
 
-type DialogTab = 'results' | 'run' | 'assistant'
+import type { DialogTab, RunSection } from './cutRoute'
 
-type DialogProps = { cut: Cut; cuts: Cut[]; previousCut?: Cut; nextCut?: Cut; onNavigate: (cut: Cut) => void; episodeId: string; projectId: string; proxyReady: boolean; waveform: Waveform | null; transcript: TranscriptSegment[]; hasAudio: boolean; preparingAudio: boolean; busy: boolean; jobs: Job[]; jobsKey: string; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }
+type DialogProps = { initialTab: DialogTab; initialSection: RunSection; onPlace: (tab: DialogTab, section: RunSection) => void; cut: Cut; cuts: Cut[]; previousCut?: Cut; nextCut?: Cut; onNavigate: (cut: Cut) => void; episodeId: string; projectId: string; proxyReady: boolean; waveform: Waveform | null; transcript: TranscriptSegment[]; hasAudio: boolean; preparingAudio: boolean; busy: boolean; jobs: Job[]; jobsKey: string; frameVersion: string; onStarted: () => Promise<void>; onClose: () => void }
 
-export default function AnalysisDialog({ cut, cuts, previousCut, nextCut, onNavigate, onClose, ...contentProps }: DialogProps) {
-  const [tab, setTab] = useState<DialogTab>(() => cut.active && cut.has_analysis_results === false ? 'run' : 'results')
+export default function AnalysisDialog({ cut, cuts, previousCut, nextCut, onNavigate, onClose, initialTab, initialSection, onPlace, ...contentProps }: DialogProps) {
+  const [tab, setTab] = useState<DialogTab>(initialTab)
+  const [section, setSection] = useState<RunSection>(initialSection)
+  // The editor keeps the address (a link to this cut and place) in step with these.
+  useEffect(() => { onPlace(tab, section) }, [tab, section, onPlace])
   const panel = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null
@@ -63,7 +66,7 @@ export default function AnalysisDialog({ cut, cuts, previousCut, nextCut, onNavi
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Analysis for ${title}`} className="flex h-[94vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden rounded-2xl border hairline bg-[#131720] shadow-2xl outline-none">
       <header className="grid grid-cols-[1fr_auto] items-center gap-3 border-b hairline px-5 py-3 lg:grid-cols-[1fr_auto_1fr]"><div className="min-w-0"><p className="text-[11px] font-semibold uppercase tracking-[.14em] text-[#a58ae8]">Cut analysis</p><h2 className="truncate text-base font-semibold">{title}</h2></div><div className="order-3 col-span-2 flex justify-center lg:order-none lg:col-span-1"><div className="flex gap-1 rounded-lg border hairline p-1" role="tablist">{([['results', 'Results'], ['run', 'Run settings'], ['assistant', 'Assistant']] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={`rounded-md px-5 py-1.5 text-xs font-semibold ${tab === value ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}>{label}</button>)}</div></div><div className="flex items-center justify-end gap-2"><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!previousCut} onClick={() => previousCut && onNavigate(previousCut)} aria-label="Previous cut analysis" aria-keyshortcuts="[" title="Previous cut (press [ )"><ArrowLeft size={14} /> Previous <kbd className="hidden rounded border border-[#3b4352] px-1 font-mono text-[10px] leading-4 text-[#929aa9] xl:inline">[</kbd></button><input type="number" min={1} max={cuts.length} step={1} value={cut.active ? jump : ''} disabled={!cut.active} onChange={event => setJump(event.target.value)} onBlur={goToCut} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} className="field !w-24 px-2.5 py-2 text-center" aria-label="Go to cut number" /><button type="button" className="btn btn-quiet px-2.5 py-2" disabled={!nextCut} onClick={() => nextCut && onNavigate(nextCut)} aria-label="Next cut analysis" aria-keyshortcuts="]" title="Next cut (press ] )"><kbd className="hidden rounded border border-[#3b4352] px-1 font-mono text-[10px] leading-4 text-[#929aa9] xl:inline">]</kbd> Next <ArrowRight size={14} /></button><button onClick={onClose} className="rounded-md p-1.5 text-[#aeb5c1] hover:bg-[#272e3a] hover:text-white" aria-label="Close analysis"><X size={18} /></button></div></header>
-      <AnalysisDialogContent key={cut.id} cut={cut} cuts={cuts} tab={tab} previousId={previousCut?.id} nextId={nextCut?.id} onPrevious={previousCut ? goPrevious : undefined} onNext={nextCut ? goNext : undefined} {...contentProps} />
+      <AnalysisDialogContent key={cut.id} cut={cut} cuts={cuts} tab={tab} section={section} onSection={setSection} previousId={previousCut?.id} nextId={nextCut?.id} onPrevious={previousCut ? goPrevious : undefined} onNext={nextCut ? goNext : undefined} {...contentProps} />
       {timelineOpen
         ? <AnalysisTimeline cutId={cut.id} onHide={() => setTimelineOpen(false)} />
         : <footer className="shrink-0 border-t hairline px-5 py-1.5 text-center"><button type="button" onClick={() => setTimelineOpen(true)} className="text-xs text-[#a58ae8] hover:text-[#c3aeff] hover:underline">Load Analysis timeline</button></footer>}
@@ -92,9 +95,9 @@ function PlayheadReadout({ video, start, end }: { video: RefObject<HTMLVideoElem
   return <span className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 font-mono text-xs tabular-nums text-white" title="Playhead position in seconds, counted from the start of this cut" aria-label={`Playhead ${seconds.toFixed(3)} seconds into the cut`}>{seconds.toFixed(3)}<span className="ml-0.5 text-[#aeb5c1]">s</span></span>
 }
 
-type ContentProps = Pick<DialogProps, 'cut' | 'cuts' | 'episodeId' | 'projectId' | 'proxyReady' | 'waveform' | 'transcript' | 'hasAudio' | 'preparingAudio' | 'busy' | 'jobs' | 'jobsKey' | 'frameVersion' | 'onStarted'> & { tab: DialogTab; previousId?: string; nextId?: string; onPrevious?: () => void; onNext?: () => void }
+type ContentProps = Pick<DialogProps, 'cut' | 'cuts' | 'episodeId' | 'projectId' | 'proxyReady' | 'waveform' | 'transcript' | 'hasAudio' | 'preparingAudio' | 'busy' | 'jobs' | 'jobsKey' | 'frameVersion' | 'onStarted'> & { tab: DialogTab; section: RunSection; onSection: (section: RunSection) => void; previousId?: string; nextId?: string; onPrevious?: () => void; onNext?: () => void }
 
-function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, projectId, proxyReady, waveform, transcript, hasAudio, preparingAudio, busy, jobs, jobsKey, frameVersion, onStarted, tab, onPrevious, onNext }: ContentProps) {
+function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, projectId, proxyReady, waveform, transcript, hasAudio, preparingAudio, busy, jobs, jobsKey, frameVersion, onStarted, tab, section, onSection, onPrevious, onNext }: ContentProps) {
   const [results, setResults] = useState<AnalysisResult[]>([])
   const [resultsLoaded, setResultsLoaded] = useState(false)
   const [resultsRevision, setResultsRevision] = useState(0)
@@ -133,7 +136,7 @@ function AnalysisDialogContent({ cut, cuts, previousId, nextId, episodeId, proje
           <CutSummaryPanel editorSlot={<div ref={setEditorTarget} className="editor-overlay" />} review={answers => <ConsistencySummary cutId={cut.id} result={consistency} loaded={resultsLoaded} jobs={jobs} disabled={!cut.active} onStarted={onStarted} answers={answers} lead={<PerformanceBeats cutId={cut.id} results={results} jobs={jobs} disabled={!cut.active} onStarted={onStarted} />} extra={<ResultEditor cutId={cut.id} refreshKey={`${jobsKey}:${resultsRevision}`} onLoaded={value => { setResults(value); setResultsLoaded(true) }} onChanged={onStarted} editorTarget={editorTarget} />} />} textProvider={config?.text_provider} cutId={cut.id} current={current} loaded={resultsLoaded} jobs={jobs} disabled={!cut.active || !cut.analysis_enabled} onStarted={onStarted} onSaved={onSummarySaved} />
         </div>
         <div hidden={tab !== 'run'}>{cut.active
-          ? <AnalysisControls jobs={jobs} cut={cut} cuts={cuts} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} results={results} stages={stages} prefetchIds={prefetchIds} charactersTarget={charactersTarget} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext}><CutRunHistory cutId={cut.id} jobs={jobs} stages={stages} onChanged={onStarted} /></AnalysisControls>
+          ? <AnalysisControls jobs={jobs} cut={cut} cuts={cuts} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} results={results} stages={stages} prefetchIds={prefetchIds} charactersTarget={charactersTarget} section={section} onSection={onSection} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext}><CutRunHistory cutId={cut.id} jobs={jobs} stages={stages} onChanged={onStarted} /></AnalysisControls>
           : <div className="space-y-4"><p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p><CutRunHistory cutId={cut.id} jobs={jobs} stages={stages} onChanged={onStarted} /></div>}</div>
       </div>
       <div className={`scrollbar flex flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-1 lg:min-h-0' : 'order-1 min-h-0'}`}>

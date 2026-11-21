@@ -32,6 +32,7 @@ import { IconButton } from './EditorUi'
 import { useCutEdits } from './useCutEdits'
 import { useEditorShortcuts } from './useEditorShortcuts'
 import { formatTimecode } from './timecode'
+import { defaultTab, editorPath, parseEditorRoute, routeFromLocation, type DialogTab, type EditorRoute, type RunSection } from './cutRoute'
 
 function formatTime(seconds?: number | null) {
   if (seconds == null || !Number.isFinite(seconds)) return '—'
@@ -39,12 +40,26 @@ function formatTime(seconds?: number | null) {
   return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
 }
 
+const ROUTE_EVENT = 'framewise:route'
+
 function useRoute() {
-  const current = () => window.location.hash.slice(1) || (/^\/(project|episode)\//.test(window.location.pathname) ? window.location.pathname : '/')
-  const [route, setRoute] = useState(current)
-  useEffect(() => { const onHash = () => setRoute(current()); window.addEventListener('hashchange', onHash); return () => window.removeEventListener('hashchange', onHash) }, [])
+  const current = () => routeFromLocation(window.location.hash, window.location.pathname)
+  const [route, setRoute] = useState(() => {
+    const first = current()
+    // A pasted path address (/episode/<id>/cut/<id>) becomes the hash address the app keeps in step with the editor.
+    if (!window.location.hash && first !== '/') window.history.replaceState(null, '', `/#${first}`)
+    return first
+  })
+  useEffect(() => {
+    const sync = () => setRoute(current())
+    window.addEventListener('hashchange', sync); window.addEventListener(ROUTE_EVENT, sync)
+    return () => { window.removeEventListener('hashchange', sync); window.removeEventListener(ROUTE_EVENT, sync) }
+  }, [])
   return route
 }
+
+/** Change the address without adding a history entry (the editor keeps it in step with the selected cut). */
+function replaceRoute(path: string) { window.history.replaceState(null, '', `#${path}`); window.dispatchEvent(new Event(ROUTE_EVENT)) }
 
 function go(path: string) { window.location.hash = path }
 
@@ -182,7 +197,7 @@ const MIN_TIMELINE = 160
 // What an editor reload fetches: the episode (with its sequences and waveform) and the transcript, which can run to megabytes.
 type EditorParts = { episode: boolean; transcript: boolean }
 const EVERYTHING: EditorParts = { episode: true, transcript: true }
-function Editor({ id }: { id: string }) {
+function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const toast = useToast()
   const [episode, setEpisode] = useState<Episode | null>(null)
   const [project, setProject] = useState<Project | null>(null)
@@ -199,6 +214,11 @@ function Editor({ id }: { id: string }) {
   const [loadError, setLoadError] = useState('')
   const [analysisOpen, setAnalysisOpen] = useState(false)
   const closeAnalysis = useCallback(() => setAnalysisOpen(false), [])
+  // Where the Analysis dialog is (tab and, on Run, the section). The dialog reads it when it opens and reports changes.
+  const [dialogPlace, setDialogPlace] = useState<{ tab: DialogTab; section: RunSection }>({ tab: route.tab, section: route.section })
+  const [dialogKey, setDialogKey] = useState(0)
+  const reportPlace = useCallback((tab: DialogTab, section: RunSection) => setDialogPlace(previous => previous.tab === tab && previous.section === section ? previous : { tab, section }), [])
+  const [routeApplied, setRouteApplied] = useState(false)
   const [activeTab, setActiveTab] = useState<InspectorTab>('cut')
   const [audioView, setAudioView] = useState<AudioView>('lines')
   const [sequences, setSequences] = useState<SequenceSummary[]>([])
@@ -304,8 +324,32 @@ function Editor({ id }: { id: string }) {
   const duration = episode?.duration || 0
   const cutFilters = useCutFilters()
   function seek(value: number) { const target = Math.max(0, Math.min(duration, value)); playbackEnd.current = null; if (video.current) video.current.currentTime = target; setTime(target); setSeekRevision(revision => revision + 1) }
-  function openCutAnalysis(cut: Cut) { selectCut(cut, true); setActiveTab('cut'); setAnalysisOpen(true) }
+  function openAnalysis(cut: Cut) { if (!analysisOpen) setDialogPlace({ tab: defaultTab(cut), section: 'characters' }); setAnalysisOpen(true) }
+  function openCutAnalysis(cut: Cut) { selectCut(cut, true); setActiveTab('cut'); openAnalysis(cut) }
   function selectCut(cut: Cut, keepAnalysisOpen = false) { if (!keepAnalysisOpen) setAnalysisOpen(false); video.current?.pause(); setSelectedId(cut.id); setActiveTab(current => current === 'sequences' ? current : 'cut'); seek(cut.first_frame_time) }
+  // The address and the editor follow each other. A link (route) wins when it changes: it selects its cut and opens the dialog
+  // where it says. Afterwards every cut and dialog change rewrites the address, so the address bar always holds a shareable link.
+  useEffect(() => {
+    if (!episode) return
+    const cut = route.cutId ? [...episode.cuts, ...episode.archived_cuts].find(item => item.id === route.cutId) : undefined
+    if (route.cutId && !cut) {
+      if (!routeApplied) toast({ tone: 'error', message: 'The cut in that link no longer exists.' })
+      setRouteApplied(true)
+      return
+    }
+    if (cut) {
+      if (cut.id !== selectedId) selectCut(cut, true)
+      if (!route.analysis) { if (analysisOpen) setAnalysisOpen(false) }
+      else if (!analysisOpen) { setDialogPlace({ tab: route.tab, section: route.section }); setAnalysisOpen(true) }
+      else if (dialogPlace.tab !== route.tab || dialogPlace.section !== route.section) { setDialogPlace({ tab: route.tab, section: route.section }); setDialogKey(key => key + 1) }
+    }
+    setRouteApplied(true)
+  }, [!!episode, route.cutId, route.analysis, route.tab, route.section])
+  useEffect(() => {
+    if (!episode || !routeApplied) return
+    const path = editorPath({ episodeId: id, cutId: selectedId, analysis: analysisOpen && !!selectedId, tab: dialogPlace.tab, section: dialogPlace.section })
+    if (path !== editorPath(route)) replaceRoute(path)
+  }, [!!episode, routeApplied, selectedId, analysisOpen, dialogPlace])
   function selectChunk(chunk: Chunk) { setSelectedChunkId(chunk.id); setActiveTab('chunk'); seek(chunk.start_time) }
   function selectTranscript(segment: TranscriptSegment) { setSelectedTranscriptId(segment.id); setActiveTab('audio'); setAudioView('lines'); seek(segment.start_time) }
   function selectAudio(range: AudioSelection | null) { setAudioSelection(range); if (range) { setActiveTab('audio'); setAudioView('tools') } }
@@ -421,7 +465,7 @@ function Editor({ id }: { id: string }) {
       </main>
       <aside id="inspector-panel" className="editor-inspector bg-[#131720]" role="tabpanel" aria-labelledby={`inspector-tab-${activeTab}`}>
         {activeTab === 'cut' ? selected ? <CutInspector cut={selected} cuts={episode.cuts} queueState={cutQueueStates.get(selected.id)} time={time} duration={duration} frameVersion={frameVersion}
-          sceneThreshold={episode.settings.scene_threshold ?? 0.32} detectionJob={cutDetectionJob} onSelect={selectCut} onPlay={playRange} onSeek={seek} onOpenAnalysis={() => setAnalysisOpen(true)}
+          sceneThreshold={episode.settings.scene_threshold ?? 0.32} detectionJob={cutDetectionJob} onSelect={selectCut} onPlay={playRange} onSeek={seek} onOpenAnalysis={() => { if (selected) openAnalysis(selected) }}
           onToggleAnalysis={() => void toggleAnalysis()} onSaveNotes={saveNotes} onApplyTiming={(start, end) => void cutEdits.edit('timing', selected.id, { start, end })} onDetectWithin={threshold => void detectWithin(threshold)}
           onCopy={text => { void navigator.clipboard?.writeText(text).then(() => toast({ message: `Copied ${text}`, duration: 2000 })).catch(() => {}) }} />
           : <div className="p-8 text-center"><div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[#282438] text-[#bca7ff]"><Scissors size={21} /></div><h2 className="text-sm font-semibold">Select a cut</h2><p className="muted mt-2 text-xs leading-5">Choose a segment in the timeline or the cut list to see its notes, frames and timing.</p></div>
@@ -448,7 +492,7 @@ function Editor({ id }: { id: string }) {
         </div>
       </div>
     </div>}
-    {episode && analysisOpen && selected && <AnalysisDialog cut={selected} cuts={episode.cuts} previousCut={selected.active ? adjacentCut(episode.cuts, selected, -1, cutFilters.active) : undefined} nextCut={selected.active ? adjacentCut(episode.cuts, selected, 1, cutFilters.active) : undefined} onNavigate={cut => selectCut(cut, true)} episodeId={id} projectId={episode.project_id} proxyReady={episode.proxy_ready} waveform={waveform} transcript={transcript} hasAudio={episode.has_audio} preparingAudio={jobs.some(job => job.pipeline === 'prepare' && active(job))} busy={analysisBusy} jobs={jobs} jobsKey={jobs.map(job => `${job.id}-${job.status}-${job.stage}`).join('|')} frameVersion={frameVersion} onStarted={refresh} onClose={closeAnalysis} />}
+    {episode && analysisOpen && selected && <AnalysisDialog key={dialogKey} initialTab={dialogPlace.tab} initialSection={dialogPlace.section} onPlace={reportPlace} cut={selected} cuts={episode.cuts} previousCut={selected.active ? adjacentCut(episode.cuts, selected, -1, cutFilters.active) : undefined} nextCut={selected.active ? adjacentCut(episode.cuts, selected, 1, cutFilters.active) : undefined} onNavigate={cut => selectCut(cut, true)} episodeId={id} projectId={episode.project_id} proxyReady={episode.proxy_ready} waveform={waveform} transcript={transcript} hasAudio={episode.has_audio} preparingAudio={jobs.some(job => job.pipeline === 'prepare' && active(job))} busy={analysisBusy} jobs={jobs} jobsKey={jobs.map(job => `${job.id}-${job.status}-${job.stage}`).join('|')} frameVersion={frameVersion} onStarted={refresh} onClose={closeAnalysis} />}
     {episode && sequenceOpen && <SequenceDialog key={sequenceOpen} sequenceId={sequenceOpen} episodeId={id} proxyReady={episode.proxy_ready} onClose={closeSequence} onChanged={refreshSequences} />}
     {episode && queueOpen && <QueueDrawer episodeId={id} focus={queueOpen === 'attention' ? 'attention' : null} onClose={closeQueue} onChanged={refresh} onSummary={setQueueSummary}
       onOpenCut={cutId => { const cut = [...episode.cuts, ...episode.archived_cuts].find(item => item.id === cutId); if (cut) openCutAnalysis(cut); else toast({ tone: 'error', message: 'That cut no longer exists.' }) }}
@@ -463,5 +507,7 @@ function Editor({ id }: { id: string }) {
 
 export default function App() {
   const route = useRoute()
-  return <ToastProvider>{route === '/storage' ? <Storage /> : route.startsWith('/project/') ? <ProjectView key={route} id={route.slice(9)} /> : route.startsWith('/episode/') ? <Editor key={route} id={route.slice(9)} /> : <Home />}</ToastProvider>
+  const editor = parseEditorRoute(route)
+  // The editor stays mounted while its address changes from cut to cut (key: the episode only).
+  return <ToastProvider>{route === '/storage' ? <Storage /> : route.startsWith('/project/') ? <ProjectView key={route} id={route.slice(9)} /> : editor ? <Editor key={editor.episodeId} id={editor.episodeId} route={editor} /> : <Home />}</ToastProvider>
 }

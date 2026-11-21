@@ -51,7 +51,7 @@ class VisionLaunchTest(unittest.TestCase):
         self.server, self.model, self.mtp, self.projector = (folder / name for name in ('llama-server', 'standard.gguf', 'mtp.gguf', 'mmproj.gguf'))
         for path in (self.server, self.model, self.mtp, self.projector):
             path.touch()
-        env = {'QWEN35_SERVER_PATH': str(self.server), 'QWEN36_MODEL_PATH': str(self.model), 'QWEN36_MTP_MODEL_PATH': str(self.mtp),
+        env = {'LLAMA_SERVER_PATH': str(self.server), 'QWEN36_MODEL_PATH': str(self.model), 'QWEN36_MTP_MODEL_PATH': str(self.mtp),
                'QWEN36_PROJECTOR_PATH': str(self.projector), 'QWEN36_MTP_ARGS': '--spec-type draft-mtp'}
         patcher = patch.dict('os.environ', env)
         patcher.start()

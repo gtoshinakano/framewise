@@ -30,5 +30,16 @@
     "files": [
       {"name": "mmproj-Qwen3.6-35B-A3B-BF16.gguf", "size": 902822144, "sha256": "360c746ddf38fb67c06f83a0a88742492aa231e59e335cd980e6302f59ea6089"}
     ]
+  },
+  "inkling2-mini": {
+    "repo": "unsloth/Inkling-2-Mini-GGUF",
+    "revision": "ae9327c5fbc7333116ba32eee78bb5d2bbefae4f",
+    "note": "Inkling 2 Mini (Thinking Machines Lab, Apache 2.0): the UD-Q4_K_M quant in Unsloth's looped layout, which Unsloth's llama.cpp build (b12588 or later) reads, and the F16 vision projector. A mainline llama.cpp build reads the files under Mainline_Support/ instead (set `path` to that .gguf_file).",
+    "dir_env": "INKLING_MODEL_DIR",
+    "default_dir": ".models/inkling-2-mini",
+    "files": [
+      {"name": "Inkling-2-Mini-UD-Q4_K_M.gguf", "size": 16610543328, "sha256": "f90c5a4df44d335ac9f9eea2a15c31d6c5a377b1b3cd9ff7fc2cf123f3cdf7e1"},
+      {"name": "mmproj-F16.gguf", "size": 639348160, "sha256": "3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f"}
+    ]
   }
 }

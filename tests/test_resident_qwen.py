@@ -12,8 +12,10 @@ from unittest.mock import Mock, patch
 import tests.test_analysis as analysis_tests
 from app import db, frame_model, gpu_device, job_kinds, local_text_runtime, visual_models
 
-QWEN36 = visual_models.MODELS['qwen36-35b']
-QWEN35 = visual_models.MODELS['qwen35-27b']
+import dataclasses
+
+QWEN36 = dataclasses.replace(visual_models.MODELS['qwen36-35b'], resident=True)  # what ``visual_models.resolve`` gives while a Qwen engine is selected
+OTHER = visual_models.MODELS['inkling2-mini']  # not resident while a Qwen engine is selected: it runs on a private server
 LFM = visual_models.MODELS['lfm3-omni-2b']
 
 
@@ -83,11 +85,11 @@ class ModelServerTest(unittest.TestCase):
         with patch.dict('os.environ', {'QWEN36_SLOTS': '3'}):
             self.assertEqual(frame_model.workers(QWEN36, 4), 3)
             self.assertEqual(frame_model.workers(QWEN36, 2), 2)
-            self.assertEqual(frame_model.workers(QWEN35, 4), 4)  # a private server is started with the stage's own number
+            self.assertEqual(frame_model.workers(OTHER, 4), 4)  # a private server is started with the stage's own number
 
     def test_thinking_is_off_for_pictures_unless_a_request_asks_for_it(self):
-        self.assertEqual(frame_model.thinking_kwargs(), {'enable_thinking': False})
-        self.assertEqual(frame_model.thinking_kwargs(True), {'enable_thinking': True})
+        self.assertEqual(frame_model.thinking_kwargs(), {'enable_thinking': False, 'reasoning_effort': 'none'})
+        self.assertEqual(frame_model.thinking_kwargs(True), {'enable_thinking': True, 'reasoning_effort': 'high'})
 
         def sent(**kwargs):
             with tempfile.TemporaryDirectory() as folder:
@@ -98,8 +100,8 @@ class ModelServerTest(unittest.TestCase):
                 with patch('urllib.request.urlopen', return_value=io.BytesIO(body)) as request:
                     frame_model.describe_frame('http://localhost:1', image, **kwargs)
             return json.loads(request.call_args.args[0].data)['chat_template_kwargs']
-        self.assertEqual(sent(), {'enable_thinking': False})
-        self.assertEqual(sent(thinking=True), {'enable_thinking': True})
+        self.assertEqual(sent(), {'enable_thinking': False, 'reasoning_effort': 'none'})
+        self.assertEqual(sent(thinking=True), {'enable_thinking': True, 'reasoning_effort': 'high'})
 
 
 class IdentityTest(unittest.TestCase):
@@ -119,11 +121,12 @@ class IdentityTest(unittest.TestCase):
         self.assertEqual(visual_models.general().model_id, standard.model_id)
         names = {item['key']: item for item in visual_models.overview()['models']}
         self.assertEqual(names['qwen36-35b']['label'], standard.label)  # the dialog says what the worker really runs
-        self.assertTrue(QWEN36.resident and not QWEN35.resident and not LFM.resident)
+        self.assertTrue(visual_models.resolve(visual_models.MODELS['qwen36-35b']).resident)
+        self.assertFalse(visual_models.resolve(OTHER).resident or visual_models.resolve(LFM).resident)
 
     def test_which_jobs_keep_the_server(self):
         self.assertTrue(visual_models.runs_resident({}, ('initial_frame', 'keyframe_analysis')))
-        self.assertFalse(visual_models.runs_resident({'models': {'keyframe_analysis': 'qwen35-27b'}}, ('initial_frame', 'keyframe_analysis')))
+        self.assertFalse(visual_models.runs_resident({'models': {'keyframe_analysis': 'inkling2-mini'}}, ('initial_frame', 'keyframe_analysis')))
         self.assertTrue(visual_models.runs_resident({'models': {'initial_frame': 'lfm3-omni-2b'}}, ('keyframe_analysis',)))
 
     def test_only_jobs_that_run_entirely_on_the_resident_server_leave_the_device_alone(self):
@@ -132,10 +135,10 @@ class IdentityTest(unittest.TestCase):
         self.assertFalse(analyze.needs_device(v2))
         self.assertFalse(analyze.needs_device({**v2, 'models': {'initial_frame': 'qwen36-35b'}}))
         self.assertTrue(analyze.needs_device({**v2, 'models': {'initial_frame': 'lfm3-omni-2b'}}))  # a private server needs the memory
-        self.assertTrue(analyze.needs_device({**v2, 'models': {'keyframe_analysis': 'qwen35-27b'}}))
+        self.assertTrue(analyze.needs_device({**v2, 'models': {'keyframe_analysis': 'inkling2-mini'}}))
         self.assertTrue(analyze.needs_device({'workflow': 'legacy'}))  # the older workflows load their torch models
         self.assertFalse(profile.needs_device({}))
-        self.assertTrue(profile.needs_device({'models': {'character_profile': 'qwen35-27b'}}))
+        self.assertTrue(profile.needs_device({'models': {'character_profile': 'inkling2-mini'}}))
         # torch models (detection, the subtitle strip locator) and audio still take the whole GPU
         for name in ('character_detect', 'subtitles', 'transcribe'):
             self.assertTrue(job_kinds.KINDS[name].needs_device({}), name)

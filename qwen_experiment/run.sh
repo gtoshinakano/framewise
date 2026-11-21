@@ -58,7 +58,7 @@ case "${1:-}" in
     docker exec "$WORKER" sh -c 'test -f "$QWEN35_MODEL_PATH" && test -f "$QWEN35_PROJECTOR_PATH" \
       && test -f /models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf \
       && test -f /models/qwen3.6-35b/mmproj-Qwen3.6-35B-A3B-BF16.gguf \
-      && test -x "$QWEN35_SERVER_PATH"' \
+      && test -x "$LLAMA_SERVER_PATH"' \
       || { echo "A model file, the Qwen 3.6 mmproj, or llama-server is missing."; exit 1; }
     echo "VRAM in use before: $(vram_mib) MiB; stopping $WORKER ..."
     docker stop -t 60 "$WORKER" >/dev/null

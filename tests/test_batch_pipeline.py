@@ -61,7 +61,7 @@ class BatchPipelineTest(unittest.TestCase):
             runs = [FakeCutRun('a', [], stages=(stage,))]
             with patch.object(pipeline.frame_model, 'model_server') as server, patch.object(pipeline.keyframe_analysis, 'load_pose') as pose:
                 pipeline._first_frame_stage(runs, '/scratch')
-                pipeline.keyframe_analysis.stage(runs, '/scratch', pipeline.visual_models.MODELS['qwen35-27b'])
+                pipeline.keyframe_analysis.stage(runs, '/scratch', pipeline.visual_models.MODELS['inkling2-mini'])
             server.assert_not_called()
             pose.assert_not_called()
         self.assertEqual(pipeline.ALL_STAGES, ('initial_frame', 'keyframe_analysis'))
@@ -72,12 +72,12 @@ class BatchPipelineTest(unittest.TestCase):
         server.return_value.__enter__.return_value = 'http://server'
         with patch.object(pipeline.keyframe_analysis, 'load_pose', return_value=('pose', {'model_id': 'dwpose'})) as pose, \
              patch.object(pipeline.frame_model, 'model_server', server), patch.object(pipeline.keyframe_analysis, 'analyze') as analyze:
-            pipeline.keyframe_analysis.stage(runs, '/scratch', pipeline.visual_models.MODELS['qwen35-27b'])
+            pipeline.keyframe_analysis.stage(runs, '/scratch', pipeline.visual_models.MODELS['inkling2-mini'])
         pose.assert_called_once()
         self.assertEqual(server.call_count, 1)
         self.assertEqual(server.call_args.kwargs['context_per_slot'], pipeline.keyframe_analysis.CONTEXT_PER_SLOT)
         self.assertEqual([call.args[0].name for call in analyze.call_args_list], ['a', 'b'])
-        self.assertTrue(all(call.args[1:] == ('http://server', '/scratch', pipeline.visual_models.MODELS['qwen35-27b'], 'pose', {'model_id': 'dwpose'})
+        self.assertTrue(all(call.args[1:] == ('http://server', '/scratch', pipeline.visual_models.MODELS['inkling2-mini'], 'pose', {'model_id': 'dwpose'})
                             for call in analyze.call_args_list))
 
     def test_run_batch_runs_stages_in_model_order_for_all_cuts(self):

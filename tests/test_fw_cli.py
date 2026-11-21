@@ -178,5 +178,137 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(api.calls, [('/api/episodes/ep-1111-2222/visual-analysis', {'from_cut': 2, 'to_cut': 4, 'only_missing': True}, None)])
 
 
+class LinksTest(unittest.TestCase):
+    def setUp(self):
+        self.api = FakeApi()
+        self.episode = dict(EPISODE, project='Bunny Girl')
+        self.base = 'http://framewise/#/episode/ep-1111-2222/cut/'
+
+    def test_cut_urls_name_the_place(self):
+        self.assertEqual(fw.cut_url(self.api, self.episode, 'c2'), self.base + 'c2')
+        self.assertEqual(fw.cut_url(self.api, self.episode, 'c2', 'analysis'), self.base + 'c2/analysis')
+        self.assertEqual(fw.cut_url(self.api, self.episode, 'c2', 'characters'), self.base + 'c2/analysis/characters')
+        self.assertEqual(fw.cut_url(self.api, self.episode, 'c2', 'target-frames'), self.base + 'c2/analysis/target-frames')
+        with self.assertRaises(fw.Failure):
+            fw.cut_url(self.api, self.episode, 'c2', 'nowhere')
+
+    def test_numbers_become_urls_by_the_editor_number(self):
+        self.assertEqual(fw.url_for_number(self.api, self.episode, 4, 'analysis'), self.base + 'c4/analysis')
+        self.assertIsNone(fw.url_for_number(self.api, self.episode, 99))
+        self.assertEqual(fw.url_at_time(self.api, self.episode, 5.0), self.base + 'c2/analysis')  # c2 is 4-6 s
+        self.assertIsNone(fw.url_at_time(self.api, self.episode, 500))
+
+    def test_cuts_are_read_once(self):
+        fw.url_for_number(self.api, self.episode, 1)
+        fw.url_for_number(self.api, self.episode, 2)
+        self.assertEqual(len(self.api.__dict__['_cut_numbers']), 1)
+
+    def test_link_lines_stop_after_the_limit_and_say_how_to_get_the_rest(self):
+        lines = fw.link_lines(self.api, self.episode, list(range(1, 6)), 'analysis')
+        self.assertEqual(len(lines), 5)
+        self.assertEqual(lines[0], '  - cut 1: ' + self.base + 'c1/analysis')
+        old, fw.LINK_LIMIT = fw.LINK_LIMIT, 2
+        try:
+            lines = fw.link_lines(self.api, self.episode, [1, 2, 3, 4, 5], 'cut')
+        finally:
+            fw.LINK_LIMIT = old
+        self.assertEqual(len(lines), 3)
+        self.assertIn('3-5 --place cut', lines[-1])
+
+    def test_review_lists_one_url_per_cut(self):
+        gates = {'first_frame': [{'cut': 4, 'cut_id': 'c4', 'unlabeled_boxes': 2}],
+                 'target_frames': [{'cut': 2, 'cut_id': 'c2', 'frames': [{'ordinal': 3, 'flags': ['low_match']}], 'unnamed_people': 1}],
+                 'voices': [{'speaker_label': 'SPEAKER_01', 'lines': 3, 'first_time': 5.0}],
+                 'decisions': [{'cut': 5, 'cut_id': 'c5', 'questions': 2, 'draft': True}]}
+        text = fw.review_text(self.api, self.episode, report(gates=gates, failures=[
+            {'id': 'j1', 'label': 'Cut summary', 'error': 'bad', 'cut_span': {'first': 1, 'last': 1}}],
+            checks__stale_results=[{'cut': 3, 'cut_id': 'c3', 'title': 'Cut summary', 'reason': 'Edited'}], checks__auto_labels=[], checks__no_boxes=[],
+            checks__picture_contradictions=[], checks__lines_to_check={'count': 0, 'lines': []}, checks__sequences_unconfirmed=[]))
+        self.assertIn(f'- cut 4 · 2 box(es): {self.base}c4/analysis/characters', text)
+        self.assertIn(f'- cut 2 · frame 3 low_match, 1 unnamed person(s): {self.base}c2/analysis/target-frames', text)
+        self.assertIn(f'- cut 5 · 2 question(s) (a suggested draft is ready): {self.base}c5/analysis', text)
+        self.assertIn(f'first at 5.0s: {self.base}c2/analysis', text)
+        self.assertIn(f'- cut 3 · Cut summary — Edited: {self.base}c3/analysis', text)
+        self.assertIn(self.base + 'c1', text)  # the failed run's first cut
+        self.assertTrue(text.rstrip().endswith('episode: http://framewise/#/episode/ep-1111-2222'))
+
+    def test_a_blocked_flow_prints_the_cuts_to_open(self):
+        decision = fw.plan(report(gates__first_frame=[{'cut': 4, 'cut_id': 'c4', 'unlabeled_boxes': 1}]), IDLE)
+        links = fw.blocked_links(self.api, self.episode, decision)
+        self.assertEqual(links[-1], '  - cut 4: ' + self.base + 'c4/analysis/characters')
+
+    def test_explicit_steps_print_links_with_their_warnings(self):
+        api = FakeApi(report(gates__first_frame=[{'cut': 4, 'cut_id': 'c4', 'unlabeled_boxes': 1}]))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fw.cmd_step(api, flags(step='visual', range='all'))
+        self.assertIn('warning: open checkpoints', out.getvalue())
+        self.assertIn(self.base + 'c4/analysis/characters', out.getvalue())
+
+    def test_links_command_takes_a_list(self):
+        self.assertEqual(fw.parse_cut_list('4,2,3-4'), [2, 3, 4])
+        with self.assertRaises(fw.Failure):
+            fw.parse_cut_list('5-')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fw.cmd_links(self.api, flags(cuts='2,9', place='target-frames'))
+        self.assertIn(f'- cut 2: {self.base}c2/analysis/target-frames', out.getvalue())
+        self.assertIn('no active cut: 9', out.getvalue())
+
+
+PROGRESS = {'cuts': 5, 'enabled': 4, 'boxes_missing': [1, 2], 'target_missing': [3], 'visual_missing': [1, 4], 'first_frame_missing': [1],
+            'keyframes_missing': [1, 4], 'beats_missing': [2], 'consistency_missing': [], 'summary_missing': [5], 'analysis_off': [3]}
+
+
+class AnalysisStatusTest(unittest.TestCase):
+    def test_every_step_is_listed_with_its_cuts(self):
+        status = fw.analysis_status(report(progress=PROGRESS))
+        steps = {item['key']: item for item in status['steps']}
+        self.assertEqual(steps['boxes_missing']['text'], 'Needs first-frame character detection (boxes)')
+        self.assertEqual(steps['boxes_missing']['cuts'], [1, 2])
+        self.assertEqual(steps['first_frame_missing']['cuts'], [1])
+        self.assertEqual(steps['keyframes_missing']['cuts'], [1, 4])
+        self.assertEqual(steps['keyframes_missing']['step'], 'visual')
+        self.assertEqual(steps['summary_missing']['place'], 'analysis')
+        self.assertNotIn('consistency_missing', steps)
+        self.assertNotIn('visual_missing', steps)  # split into its two stages
+
+    def test_an_older_server_reports_visual_analysis_as_one_step(self):
+        old = {key: value for key, value in PROGRESS.items() if key not in ('first_frame_missing', 'keyframes_missing', 'analysis_off')}
+        steps = fw.analysis_status(report(progress=old))['steps']
+        self.assertIn(('visual_missing', [1, 4]), [(item['key'], item['cuts']) for item in steps])
+        self.assertNotIn('keyframes_missing', [item['key'] for item in steps])
+
+    def test_people_and_checks(self):
+        gates = {'first_frame': [{'cut': 4, 'cut_id': 'c4', 'unlabeled_boxes': 1}], 'target_frames': [], 'decisions': [{'cut': 5, 'draft': False}],
+                 'voices': [{'speaker_label': None, 'lines': 2, 'first_time': 1.0}]}
+        checks = {'speaker_attribution_stale': 'Glossary changed', 'stale_results': [{'cut': 2, 'title': 'x', 'reason': 'y'}, {'cut': 2, 'title': 'z', 'reason': 'y'}],
+                  'lines_to_check': {'count': 3, 'lines': []}}
+        status = fw.analysis_status(report(progress=PROGRESS, gates=gates, checks=checks))
+        self.assertEqual([(item['key'], item['cuts']) for item in status['person']],
+                         [('first_frame', [4]), ('decisions', [5]), ('voices', [])])
+        self.assertIn('(no label) (2 lines)', status['person'][2]['text'])
+        look = {item['key']: item for item in status['look']}
+        self.assertEqual(look['stale_results']['cuts'], [2])
+        self.assertIn('3 transcript line(s)', look['lines_to_check']['text'])
+        self.assertIn('Glossary changed', look['speaker_attribution_stale']['text'])
+
+    def test_analysis_command_prints_the_needs_and_the_links(self):
+        api = FakeApi(report(progress=PROGRESS))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(fw.cmd_analysis(api, flags(links=True)), fw.OK)
+        text = out.getvalue()
+        self.assertIn('Needs first-frame character detection (boxes): cuts 1-2  [fw boxes]', text)
+        self.assertIn('Needs keyframe analysis: cuts 1, 4  [fw visual]', text)
+        self.assertIn('analysis off (left out of everything below): cuts 3', text)
+        self.assertIn('- cut 1: http://framewise/#/episode/ep-1111-2222/cut/c1/analysis/characters', text)
+        self.assertIn('- cut 5: http://framewise/#/episode/ep-1111-2222/cut/c5/analysis', text)
+        plain = io.StringIO()
+        with contextlib.redirect_stdout(plain):
+            fw.cmd_analysis(api, flags(links=False))
+        self.assertNotIn('/cut/', plain.getvalue())
+
+
 if __name__ == '__main__':
     unittest.main()

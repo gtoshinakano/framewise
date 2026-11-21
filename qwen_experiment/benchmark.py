@@ -34,7 +34,7 @@ from app import visual_contracts as vc  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 DB_PATH = DATA_DIR / "app.sqlite3"
-RUNTIME = Path(os.environ.get("QWEN35_SERVER_PATH", "/models/llamacpp/llama-server"))
+RUNTIME = Path(os.environ.get("LLAMA_SERVER_PATH", "/models/llamacpp/llama-server"))
 
 # The current first-frame model, exactly as the app configures it.
 M35_MODEL = Path(os.environ.get("QWEN35_MODEL_PATH", "/models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf"))

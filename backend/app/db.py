@@ -571,7 +571,7 @@ def init_db():
         db.execute('CREATE INDEX IF NOT EXISTS jobs_request_idx ON jobs(episode_id,pipeline,request_key) WHERE request_key IS NOT NULL')
         # 2026-11-18: Qwen3.6 with its vision projector became the default of every visual role (visual_models.py). A saved
         # 'qwen35-27b' was the old default being restored from the Visual engine dialog, so it would keep the new default
-        # from ever applying; drop those rows once. Choices of any other model, and later choices of Qwen3.5, stay.
+        # from ever applying; drop those rows once. Choices of any other model stay (Qwen3.5 itself was removed on 2026-11-21, so a later choice of it falls back to the default).
         if not db.execute("SELECT 1 FROM app_flags WHERE name='visual-default-qwen36'").fetchone():
             db.execute("DELETE FROM visual_model_settings WHERE model='qwen35-27b'")
             db.execute("INSERT INTO app_flags(name) VALUES ('visual-default-qwen36')")

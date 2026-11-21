@@ -51,6 +51,28 @@ Without `--redo`, cuts that already have the result are skipped. Use `--redo` on
 again, or all of them. When the request is unclear (which episode, which cuts, redo or not), run the command with
 `--dry-run` first, show the user the request it would send, and ask.
 
+## Final report: the links to open
+
+A cut has its own address, so finish every report with **one URL per cut that needs a person**, built by `fw` and
+copied exactly (never typed by hand, never shortened):
+
+```
+These cuts require human review:
+First-frame boxes without a character (Characters panel):
+- cut 199: http://chopper.local:8080/#/episode/<episode id>/cut/<cut id>/analysis/characters
+Review questions to answer (Results → Your answers):
+- cut 204: http://chopper.local:8080/#/episode/<episode id>/cut/<cut id>/analysis
+```
+
+The address is `<server>/#/episode/<episode id>/cut/<cut id>[/analysis[/<place>]]`; cut ids never change, so the
+links stay valid. `<place>` is `characters` (first-frame boxes), `target-frames`, `run`, `assistant`; no place opens
+the Results tab (review, answers, Cut summary). Where the links come from:
+
+- `scripts/fw review EP RANGE` prints every checkpoint and check with its link, under what the person does there.
+- `scripts/fw links EP 199,204,210-212 --place target-frames` prints the links for any list of cuts.
+- `scripts/fw analysis EP RANGE --links` adds a link under each "Needs …" line.
+- `scripts/fw cut EP 199` gives one cut's links.
+
 ## 3. Report and follow up
 
 fw prints what it queued, what it skipped and why, and the job ids. Tell the user, including any skipped or "not ready" cuts.
@@ -59,6 +81,12 @@ settle those items in the UI (unnamed boxes, flagged target frames, unknown voic
 
 To wait for the result: `scripts/fw wait EP --jobs ID,ID` (exit 0 done, 1 a job failed, with the error).
 For progress at any time: `scripts/fw queue EP` or `scripts/fw status EP`.
+
+**The report ends with links.** When the user asked you to run the step and wait for it, run
+`scripts/fw review EP RANGE` once the jobs have finished and put its "THESE NEED A PERSON" part (with its URLs) at the
+end of your answer. When you only queued the work, say so, and give the links fw printed under `warning: open
+checkpoints`: those cuts still need the person while the work runs. Cuts the step skipped or "not ready" are listed by
+number; add `scripts/fw links EP <numbers>` when the user will want to open them.
 
 ## Errors
 

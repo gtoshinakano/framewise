@@ -19,17 +19,36 @@ MODEL_ID = 'Qwen/Qwen3.6-35B-A3B:Q4_K_M'
 MODEL_REVISION = 'ggml-org:7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5'
 DEFAULT_VARIANT = 'mtp'
 LEGACY_VARIANT = 'standard'  # what a stored result without a variant was made with
-# Two builds of the same Qwen3.6-35B-A3B model. ``mtp`` carries the multi-token-prediction
-# head that llama.cpp uses as its own draft model (speculative decoding); it is a larger file, so
-# it lives beside the standard one. ``mtp`` is the default since 2026-11-21 and the one resident server
-# for text, vision, subtitles and chat; ``standard`` stays selectable in the text engine dialog as a rollback.
+QWEN_SERVER = ('LLAMA_SERVER_PATH', '/models/llamacpp/llama-server')
+QWEN_PROJECTOR = ('QWEN36_PROJECTOR_PATH', '/models/qwen3.6-35b/mmproj-Qwen3.6-35B-A3B-BF16.gguf')
+INKLING_ID = 'unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_M'
+# The local engines the text server can run, one at a time (the selected one is the *resident* server: it answers text jobs, chat and
+# the visual stages that run on a resident model, see ``visual_models``). ``standard`` and ``mtp`` are two builds of the same
+# Qwen3.6-35B-A3B model; ``mtp`` carries the multi-token-prediction head that llama.cpp uses as its own draft model (speculative
+# decoding); it is a larger file, so it lives beside the standard one. ``mtp`` is the default since 2026-11-21 and ``standard`` stays
+# selectable in the text engine dialog as a rollback. ``inkling`` is Inkling 2 Mini (Thinking Machines Lab, a 26B looped mixture of
+# experts with a vision projector, added 2026-11-21): it needs a newer llama.cpp than Qwen, so every variant names its own
+# ``server`` binary, and it switches its reasoning with ``reasoning_effort`` where Qwen uses ``enable_thinking`` (``thinking_kwargs``).
 VARIANTS = {
-    'standard': {'label': 'Qwen 3.6 35B A3B · Q4_K_M', 'id': MODEL_ID, 'revision': MODEL_REVISION, 'size': 20419565568},
+    'standard': {'label': 'Qwen 3.6 35B A3B · Q4_K_M', 'id': MODEL_ID, 'revision': MODEL_REVISION, 'size': 20419565568, 'family': 'qwen',
+                 'name': 'Qwen 3.6', 'server': QWEN_SERVER, 'projector': QWEN_PROJECTOR,
+                 'model': ('QWEN36_MODEL_PATH', '/models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf'),
+                 'install': 'scripts/download-qwen36.sh', 'projector_install': 'python3 scripts/install-model.py qwen36-vision'},
     'mtp': {'label': 'Qwen 3.6 35B A3B · UD-Q4_K_M + MTP', 'id': 'unsloth/Qwen3.6-35B-A3B-MTP:UD-Q4_K_M',
-            'revision': 'unsloth:5bc3e238d916f48a861bac2f8a1990a0e9b7e98d', 'size': 22663387424},
+            'revision': 'unsloth:5bc3e238d916f48a861bac2f8a1990a0e9b7e98d', 'size': 22663387424, 'family': 'qwen',
+            'name': 'Qwen 3.6', 'server': QWEN_SERVER, 'projector': QWEN_PROJECTOR,
+            'model': ('QWEN36_MTP_MODEL_PATH', '/models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'),
+            'install': 'scripts/download-qwen36-mtp.sh', 'projector_install': 'python3 scripts/install-model.py qwen36-vision'},
+    'inkling': {'label': 'Inkling 2 Mini · UD-Q4_K_M', 'id': INKLING_ID, 'revision': 'unsloth:ae9327c5fbc7333116ba32eee78bb5d2bbefae4f',
+                'size': 16610543328, 'family': 'inkling', 'name': 'Inkling 2 Mini',
+                'server': ('INKLING_SERVER_PATH', '/models/llamacpp-inkling/llama-server'),
+                'projector': ('INKLING_PROJECTOR_PATH', '/models/inkling-2-mini/mmproj-F16.gguf'),
+                'model': ('INKLING_MODEL_PATH', '/models/inkling-2-mini/Inkling-2-Mini-UD-Q4_K_M.gguf'),
+                'install': 'python3 scripts/install-model.py inkling2-mini', 'projector_install': 'python3 scripts/install-model.py inkling2-mini'},
 }
 MTP_DEFAULT_ARGS = '--spec-type draft-mtp --spec-draft-n-max 3'
-PROJECTOR_DEFAULT = '/models/qwen3.6-35b/mmproj-Qwen3.6-35B-A3B-BF16.gguf'
+# Thinking Machines' recommended sampling for Inkling: temperature 1.0 with no truncation. A request that names its own value wins.
+INKLING_SAMPLING = ('--temp', '1.0', '--top-p', '1.0', '--top-k', '0', '--min-p', '0.0')
 
 
 def known_variant(variant):
@@ -53,6 +72,28 @@ def revision_for(variant):
     return variant if variant.startswith('remote:') else VARIANTS[variant]['revision']
 
 
+def family(variant):
+    """``qwen`` or ``inkling``: what the variant's server flags, sampling and reasoning switch depend on."""
+    return VARIANTS[known_variant(variant)]['family'] if not str(variant).startswith('remote:') else 'remote'
+
+
+def thinking_kwargs(enabled=False):
+    """The per-request ``chat_template_kwargs`` that turn the local model's reasoning on or off.
+
+    Qwen reads ``enable_thinking`` and Inkling reads ``reasoning_effort``; each chat template ignores the other's
+    variable, so both are always sent and a request never needs to know which engine answers it. Inkling's lowest effort
+    is not a guaranteed "off" (its model card says so), which is why JSON answers are grammar-constrained as before.
+    """
+    return {'enable_thinking': bool(enabled), 'reasoning_effort': 'high' if enabled else 'none'}
+
+
+def sampling_extra(variant):
+    """Request fields for the sampling the engine's authors recommend (Cut Assistance chat)."""
+    if family(variant) == 'inkling':
+        return {'top_p': 1.0, 'top_k': 0, 'min_p': 0.0}
+    return {'top_p': 0.95, 'top_k': 20}
+
+
 def cancel_local(detail='Cancelled'):
     """Stop the local llama-server to abort a cancelled local generation.
 
@@ -63,39 +104,58 @@ def cancel_local(detail='Cancelled'):
         runtime.stop(detail)
 
 
+def _configured(entry):
+    env, default = entry
+    return Path(os.environ.get(env) or default)
+
+
 def variant_path(variant):
-    if known_variant(variant) == 'mtp':
-        return Path(os.environ.get('QWEN36_MTP_MODEL_PATH', '/models/qwen3.6-35b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'))
-    return Path(os.environ.get('QWEN36_MODEL_PATH', '/models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf'))
+    return _configured(VARIANTS[known_variant(variant)]['model'])
+
+
+def server_path(variant):
+    """The llama-server binary of the variant (Inkling has its own, newer build)."""
+    return _configured(VARIANTS[known_variant(variant)]['server'])
 
 
 def variant_args(variant):
-    """Extra llama-server arguments for a variant; the MTP flags can be replaced with QWEN36_MTP_ARGS."""
-    if known_variant(variant) != 'mtp':
-        return []
-    return shlex.split(os.environ.get('QWEN36_MTP_ARGS') or MTP_DEFAULT_ARGS)
+    """Extra llama-server arguments for a variant; the MTP flags can be replaced with QWEN36_MTP_ARGS, Inkling's with INKLING_ARGS."""
+    variant = known_variant(variant)
+    if variant == 'mtp':
+        return shlex.split(os.environ.get('QWEN36_MTP_ARGS') or MTP_DEFAULT_ARGS)
+    if variant == 'inkling':
+        return [*INKLING_SAMPLING, *shlex.split(os.environ.get('INKLING_ARGS') or '')]
+    return []
 
 
-def projector_path():
+def server_flags(variant):
+    """The flags every start of ``variant``'s server shares (the arguments after the model, host, port, slots and context)."""
+    if family(variant) == 'inkling':
+        return ['--jinja', '--no-context-shift']
+    return ['--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048')]
+
+
+def projector_path(variant=DEFAULT_VARIANT):
     """The vision projector that lets the text server read images (the same file ``visual_models`` gives the visual jobs)."""
-    return Path(os.environ.get('QWEN36_PROJECTOR_PATH', PROJECTOR_DEFAULT))
+    return _configured(VARIANTS[known_variant(variant)]['projector'])
 
 
-def vision_enabled():
+def vision_enabled(variant=DEFAULT_VARIANT):
     """Whether the text server should be started with the projector: it is installed and ``QWEN36_TEXT_VISION`` is not 0."""
     if os.environ.get('QWEN36_TEXT_VISION', '1').strip().lower() in ('0', 'false', 'off', 'no'):
         return False
-    return projector_path().is_file()
+    return projector_path(variant).is_file()
 
 
 def vision_status(runtime, variant):
     """``(chat can read images, why not)`` for the text server of ``variant``: what Cut Assistance shows beside the provider."""
+    info = VARIANTS[known_variant(variant)]
     if os.environ.get('QWEN36_TEXT_VISION', '1').strip().lower() in ('0', 'false', 'off', 'no'):
         return False, 'Turned off (QWEN36_TEXT_VISION=0)'
-    if not projector_path().is_file():
-        return False, 'The vision projector is not installed (python3 scripts/install-model.py qwen36-vision)'
+    if not projector_path(variant).is_file():
+        return False, f"The vision projector is not installed ({info['projector_install']})"
     if runtime is not None and variant in runtime.vision_failed:
-        return False, 'Qwen 3.6 would not start with the vision projector, so it runs without it'
+        return False, f"{info['name']} would not start with the vision projector, so it runs without it"
     if runtime is not None and runtime.process and runtime.process.poll() is None and runtime.variant == variant and not runtime.vision:
         return False, 'The running server did not load the vision projector'
     return True, ''
@@ -109,11 +169,11 @@ def desired_variant():
 
 
 def resolve_variant(want):
-    """``want``, or the other variant while ``want`` is not installed and the other one is."""
+    """``want``, or another installed variant (in registry order, so Qwen first) while ``want`` is not installed."""
     if not variant_path(want).is_file():
-        other = next((name for name in VARIANTS if name != want), want)
-        if variant_path(other).is_file():
-            return other
+        for other in VARIANTS:
+            if other != want and variant_path(other).is_file():
+                return other
     return want
 
 
@@ -130,6 +190,8 @@ def variant_status(variant):
     variant = known_variant(variant)
     model = variant_path(variant)
     if model.is_file():
+        if family(variant) == 'inkling' and not server_path(variant).is_file():  # its llama.cpp build is installed apart from Qwen's: without it every job would fail
+            return {'available': False, 'detail': f"llama-server is missing ({server_path(variant)})"}
         return {'available': True, 'detail': 'Installed'}
     partial = model.with_name(model.name + '.partial')
     if partial.is_file():
@@ -401,7 +463,7 @@ class LocalTextRuntime:
                 self.changed.notify_all()
 
     @contextmanager
-    def visual_session(self, cancel_check=None):
+    def visual_session(self, cancel_check=None, variants=None):
         """Yield the resident server's URL for one visual stage (pictures, subtitle strips, a character profile).
 
         The same server answers text and chat, so a visual job neither stops it nor starts a private one. The
@@ -413,10 +475,12 @@ class LocalTextRuntime:
             gpu_device.release_held()  # a job that had the whole GPU hands it to the server it is about to need
             url = self._ensure(cancel_check)
             if not url:
-                raise RuntimeError('The Qwen 3.6 server could not be started')
+                raise RuntimeError('The resident model server could not be started')
+            if variants and self.variant not in variants:  # the user selected another text engine while this stage waited
+                raise RuntimeError(f"The text engine was switched to {VARIANTS[self.variant]['name']} while this stage was waiting; queue it again")
             if not self.vision:
                 reason = vision_status(self, self.variant)[1] or 'the server did not report vision in /props'
-                raise RuntimeError(f'Qwen 3.6 is running without its vision projector ({reason}), so it cannot read pictures')
+                raise RuntimeError(f"{VARIANTS[self.variant]['name']} is running without its vision projector ({reason}), so it cannot read pictures")
             self.chat_users += 1
             self.held.count = getattr(self.held, 'count', 0) + 1
         try:
@@ -440,7 +504,7 @@ class LocalTextRuntime:
             self._stop(f'Switching to {VARIANTS[variant]["label"]}')
         else:
             self._stop()
-        runtime = Path(os.environ.get('QWEN35_SERVER_PATH', '/models/llamacpp/llama-server'))
+        runtime = server_path(variant)
         model = variant_path(variant)
         while not model.is_file():
             partial, detail = self.download_status(variant)
@@ -462,11 +526,12 @@ class LocalTextRuntime:
             time.sleep(2)
         if not runtime.is_file() or not model.is_file():
             self.failed = True
-            self.publish('error', 'Local text model or llama-server is not installed')
-            raise RuntimeError('Local text model or llama-server is not installed')
+            detail = f"{VARIANTS[variant]['name']} or its llama-server is not installed ({VARIANTS[variant]['install']})"
+            self.publish('error', detail)
+            raise RuntimeError(detail)
         # Chat looks at pictures through the same projector the visual jobs use. A build or a GPU that cannot start with it
         # must not take every text job down, so the server is started again without it and the reason is remembered.
-        attempts = [True, False] if vision_enabled() and variant not in self.vision_failed else [False]
+        attempts = [True, False] if vision_enabled(variant) and variant not in self.vision_failed else [False]
         for with_vision in attempts:
             try:
                 return self._launch(runtime, model, variant, with_vision, cancel_check, idle_load)
@@ -474,7 +539,7 @@ class LocalTextRuntime:
                 if not with_vision:
                     raise
                 self.vision_failed[variant] = str(exc)[-600:]
-                logging.getLogger('framewise.text').warning('Qwen 3.6 did not start with its vision projector; starting it without: %s', str(exc)[-400:])
+                logging.getLogger('framewise.text').warning('%s did not start with its vision projector; starting it without: %s', VARIANTS[variant]['name'], str(exc)[-400:])
 
     def _launch(self, runtime, model, variant, with_vision, cancel_check, idle_load):
         if idle_load and gpu_device.audio_requested():
@@ -487,14 +552,13 @@ class LocalTextRuntime:
         env['LD_LIBRARY_PATH'] = str(runtime.parent) + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
         slots = server_slots()
         tags = [name for name, on in (('MTP', variant == 'mtp'), ('vision', with_vision)) if on] + [f'{slots} slots']
-        loading = 'Loading Qwen 3.6 into GPU memory' + (f" ({', '.join(tags)})" if tags else '')
+        loading = f"Loading {VARIANTS[variant]['name']} into GPU memory" + (f" ({', '.join(tags)})" if tags else '')
         self.publish('loading', loading)
         try:
             self.device = gpu_device.acquire(cancel_check)
             command = [str(runtime), '-m', str(model), '--host', '127.0.0.1', '--port', str(port),
                 '--n-gpu-layers', '99', '--ctx-size', str(server_context()), '--parallel', str(slots), *(['--kv-unified'] if kv_unified() else []),
-                '--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048'),
-                *(['--mmproj', str(projector_path())] if with_vision else []), *variant_args(variant)]
+                *server_flags(variant), *(['--mmproj', str(projector_path(variant))] if with_vision else []), *variant_args(variant)]
             logging.getLogger('framewise.text').info('Starting llama-server: %s', ' '.join(command[1:]))
             self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT, env=env)
             self.url = f'http://127.0.0.1:{port}'

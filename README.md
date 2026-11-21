@@ -78,14 +78,13 @@ OpenRouter requests show their current evidence or summary step in the job stage
 
 The inference image must be validated on the target machine. Its pinned ROCm wheels target the Radeon AI PRO R9700 (`gfx1201`); another GPU architecture needs matching AMD wheels. The media API remains CPU-only. It sends the chosen context and visual descriptions to OpenRouter. Provider pricing and availability depend on the model you select; `openrouter/free` is the default, but its availability and rate limits can vary.
 
-1. Download the pinned WeVisOne-VL 4B detection model (about 9.7 GB) and Qwen3-VL 2B frame-caption model (about 4.3 GB). They are stored in `.models`, which is ignored by Git and persists across image rebuilds. The scripts resume partial files and verify the large model files. Set `WEVISONE_MODEL_DIR` and `CAPTION_MODEL_DIR` to use other persistent directories; use absolute paths when sharing them with Compose.
+1. Download the pinned WeVisOne-VL 4B detection model (about 9.7 GB). It is stored in `.models`, which is ignored by Git and persists across image rebuilds. The script resumes partial files and verifies the large model files. Set `WEVISONE_MODEL_DIR` to use another persistent directory; use absolute paths when sharing it with Compose.
 
    ```bash
    ./scripts/download-wevisone.sh
-   ./scripts/download-caption-model.sh
    ```
 
-   The keyframe analysis (the motion step of visual analysis) also uses DWPose body keypoints on the CPU (about 0.35 GB, pinned in `backend/app/model_manifest.json`). Without them it runs on Qwen3.5 alone and says so in each result. Install them on the host, then recreate the inference worker so it mounts `.models/dwpose`:
+   The keyframe analysis (the motion step of visual analysis) also uses DWPose body keypoints on the CPU (about 0.35 GB, pinned in `backend/app/model_manifest.json`). Without them it runs on the vision model alone and says so in each result. Install them on the host, then recreate the inference worker so it mounts `.models/dwpose`:
 
    ```bash
    python3 scripts/install-model.py dwpose

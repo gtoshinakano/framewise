@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, ChevronsRight, Drama, GalleryHorizontal, Image a
 import { api, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type VisualStage } from './api'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
 import { TargetFrames, useTargetDetections, useTargetSelection } from './TargetFrames'
+import type { RunSection } from './cutRoute'
 import { isJobActive, targetQueueMessage, unknownSlots, type TargetQueueResult } from './targetView'
 import { FrameImage } from './FrameImage'
 import { ANSWERS_BATCH_REASONS, CHAIN_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
@@ -32,11 +33,12 @@ type Props = {
   jobs: Job[]; cut: Cut; cuts: Cut[]; episodeId: string; busy: boolean; enabled: boolean
   results: AnalysisResult[]; stages: StageRow[]; prefetchIds: (string | undefined)[]
   charactersTarget: HTMLElement | null
+  section: RunSection; onSection: (section: RunSection) => void
   onStarted: () => Promise<void>; onConfigChange: (config: AnalysisConfig | null) => void
   onPrevious?: () => void; onNext?: () => void; children?: ReactNode
 }
 
-export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enabled, results, stages, prefetchIds, charactersTarget, onStarted, onConfigChange, onNext, jobs, children }: Props) {
+export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enabled, results, stages, prefetchIds, charactersTarget, section: characterTab, onSection: setCharacterTab, onStarted, onConfigChange, onNext, jobs, children }: Props) {
   const cutId = cut.id
   const targetFrames = useTargetSelection(cutId, `${cut.start_time}:${cut.end_time}`)
   const targetPeople = useTargetDetections(cutId, `${cut.start_time}:${cut.end_time}`, targetFrames.selection?.revision || '', () => void onStarted())
@@ -48,7 +50,6 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
   const [notice, setNotice] = useState<Notice | null>(null)
   const [optimistic, setOptimistic] = useState<Optimistic>({})
   const [characters, setCharacters] = useState<CharacterSummary | null>(null)
-  const [characterTab, setCharacterTab] = useState<'characters' | 'targets'>('characters')
   const [boundaryDraft, setBoundaryDraft] = useState<Partial<Record<'first' | 'last', { times: number[]; index: number; original: number }>>>({})
   const [boundaryLoading, setBoundaryLoading] = useState<'first' | 'last' | null>(null)
   const boundaryBase = useRef<{ start: number; end: number } | null>(null)

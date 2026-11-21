@@ -104,6 +104,10 @@ Tell the user:
 - review and variant items you rejected that look important, one line each;
 - the `info` notes worth a look (speech in the captions with no transcript line, with its time; names for unassigned
   lines);
+- the links `apply` prints under `lines to look at`: every speaker change that was sent and every skipped line, each
+  with the address of the cut that holds the line (`<server>/#/episode/<episode id>/cut/<cut id>/analysis`, Results →
+  Spoken words). For the `info` notes (captions with no transcript line, names for unassigned lines) build links for the
+  cuts at those times with `scripts/fw links EP <cut numbers>`;
 - the episode link the script prints.
 
 Keep the plan path in the report: it is the record of what was decided.

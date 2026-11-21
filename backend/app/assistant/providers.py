@@ -95,7 +95,8 @@ class LocalQwen(Provider):
         info.update(managed=True, context_limit=self.context_limit(), busy=bool(runtime and (runtime.gpu_busy or gpu_device.audio_requested())))
         variant = runtime.target_variant() if runtime else local_text_runtime.DEFAULT_VARIANT
         info['vision'], info['vision_detail'] = local_text_runtime.vision_status(runtime, variant)
-        info['models'] = [{'id': local_text_runtime.MODEL_ID, 'label': local_text_runtime.VARIANTS[variant]['label'], 'context': self.context_limit()}]
+        info['models'] = [{'id': local_text_runtime.model_id_for(variant), 'label': local_text_runtime.VARIANTS[variant]['label'], 'context': self.context_limit()}]
+        info['label'] = f"Local · {local_text_runtime.VARIANTS[variant]['name']}"
         fallback = gpu_fallback({'remote': RemoteLlama(), 'openrouter': OpenRouter()})
         # What answers a turn when visual work holds the GPU and the user allowed a fallback (see ``runner.connect``).
         info['gpu_fallback'] = {'provider': fallback[0].id, 'model': fallback[1], 'label': f'{fallback[0].label} · {fallback[1]}'} if fallback else None
@@ -146,8 +147,8 @@ class LocalQwen(Provider):
             if not url:
                 raise ProviderError('Local model is not ready')
             runtime.publish('generating', 'Cut Assistance chat')
-            endpoint = Endpoint(url + '/v1/chat/completions', local_text_runtime.MODEL_ID, context_limit=self.context_limit(), timeout=900, fixed_model=True,
-                                extra={'chat_template_kwargs': {'enable_thinking': bool(thinking)}, 'cache_prompt': True, 'top_p': 0.95, 'top_k': 20})
+            endpoint = Endpoint(url + '/v1/chat/completions', local_text_runtime.model_id_for(runtime.variant), context_limit=self.context_limit(), timeout=900, fixed_model=True,
+                                extra={'chat_template_kwargs': local_text_runtime.thinking_kwargs(thinking), 'cache_prompt': True, **local_text_runtime.sampling_extra(runtime.variant)})
             endpoint.extra['_load_seconds'] = 0 if loaded else round(time.monotonic() - started, 2)
             endpoint.extra['_server'] = 'local'
             endpoint.vision = bool(runtime.vision)

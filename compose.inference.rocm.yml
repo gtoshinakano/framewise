@@ -33,19 +33,20 @@ services:
       CCIP_VARIANT: ${CCIP_VARIANT:-}
       ANIME_REID_MIN_SIMILARITY: ${ANIME_REID_MIN_SIMILARITY:-}
       ANIME_REID_MIN_MARGIN: ${ANIME_REID_MIN_MARGIN:-}
-      CAPTION_MODEL_PATH: /models/qwen3-vl-2b
-      QWEN3_VIDEO_MODEL_PATH: /models/qwen3-vl-8b
-      QWEN35_SERVER_PATH: /models/llamacpp/llama-server
-      QWEN35_MODEL_PATH: /models/qwen3.5-27b/Q4_K_M/Qwen3.5-27B-Q4_K_M.gguf
-      QWEN35_PROJECTOR_PATH: /models/qwen3.5-27b/mmproj/mmproj-Qwen3.5-27B-BF16.gguf
+      LLAMA_SERVER_PATH: /models/llamacpp/llama-server
+      # Inkling 2 Mini needs a newer llama.cpp (inkling2_loop) than the Qwen runtime above: scripts/build-llamacpp-inkling.sh
+      # builds it into .models/llamacpp-inkling, python3 scripts/install-model.py inkling2-mini installs the files.
+      INKLING_SERVER_PATH: /models/llamacpp-inkling/llama-server
+      INKLING_MODEL_PATH: /models/inkling-2-mini/Inkling-2-Mini-UD-Q4_K_M.gguf
+      INKLING_PROJECTOR_PATH: /models/inkling-2-mini/mmproj-F16.gguf
       # Optional visual model (Visual engine dialog); install with: python3 scripts/install-model.py lfm3-omni-2b
       LFM3_OMNI_MODEL_PATH: /models/lfm3-omni-2b/LFM3-Omni-2B-BF16.gguf
       LFM3_OMNI_PROJECTOR_PATH: /models/lfm3-omni-2b/mmproj-LFM3-Omni-2B-BF16.gguf
       # Keyframe analysis: DWPose body keypoints on the CPU (install with: python3 scripts/install-model.py dwpose; recreate this
-      # container after the first install). Without them the keyframe stage runs on Qwen3.5 alone.
+      # container after the first install). Without them the keyframe stage runs on the vision model alone.
       DWPOSE_DIR: /models/dwpose
       DWPOSE_THREADS: ${DWPOSE_THREADS:-}
-      # Keyframe windows described at once by the Qwen3.5 server (16384 tokens each); lower to 1 if the server fails to start.
+      # Keyframe windows described at once by the vision model's server (16384 tokens each); lower to 1 if the server fails to start.
       KEYFRAME_PARALLEL: ${KEYFRAME_PARALLEL:-2}
       QWEN36_MODEL_PATH: /models/qwen3.6-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf
       # Vision projector of Qwen 3.6 (python3 scripts/install-model.py qwen36-vision). It makes Qwen 3.6 the default model of the
@@ -76,12 +77,11 @@ services:
       - ${ANIREF_MODEL_DIR:-./.models/aniref}:/models/aniref:ro
       - ${ANIME_REID_MODEL_DIR:-./.models/anime-reid}:/models/anime-reid:ro
       - ${CCIP_MODEL_DIR:-./.models/ccip}:/models/ccip:ro
-      - ${CAPTION_MODEL_DIR:-./.models/qwen3-vl-2b}:/models/qwen3-vl-2b:ro
-      - ${VIDEO_MODEL_DIR:-./.models/qwen3-vl-8b}:/models/qwen3-vl-8b:ro
-      - ${FRAME_MODEL_DIR:-./.models/qwen3.5-27b}:/models/qwen3.5-27b:ro
       - ${TEXT_MODEL_DIR:-./.models/qwen3.6-35b}:/models/qwen3.6-35b:ro
       - ${TEXT_MTP_MODEL_DIR:-./.models/qwen3.6-35b-mtp}:/models/qwen3.6-35b-mtp:ro
       - ${LLAMACPP_RUNTIME_DIR:-./.models/llamacpp-runtime}:/models/llamacpp:ro
+      - ${LLAMACPP_INKLING_DIR:-./.models/llamacpp-inkling}:/models/llamacpp-inkling:ro
+      - ${INKLING_MODEL_DIR:-./.models/inkling-2-mini}:/models/inkling-2-mini:ro
       - ${LFM3_OMNI_MODEL_DIR:-./.models/lfm3-omni-2b}:/models/lfm3-omni-2b:ro
       - ${DWPOSE_MODEL_DIR:-./.models/dwpose}:/models/dwpose:ro
     devices:

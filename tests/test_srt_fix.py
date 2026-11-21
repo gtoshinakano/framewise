@@ -126,6 +126,11 @@ class ApplyTests(unittest.TestCase):
         def __init__(self, missing=False):
             self.url, self.bodies, self.missing = 'http://server', [], missing
 
+        def get(self, path, params=None):
+            assert path.endswith('/cuts'), path
+            return {'items': [{'id': 'cut-a', 'cut_index': 0, 'start_time': 0.0, 'end_time': 20.0},
+                              {'id': 'cut-b', 'cut_index': 1, 'start_time': 20.0, 'end_time': 40.0}], 'next_offset': None}
+
         def post(self, path, params=None, body=None):
             if self.missing:
                 raise srt.Failure(f'POST {path}: HTTP 404: Not Found')
@@ -155,7 +160,13 @@ class ApplyTests(unittest.TestCase):
         speaker['accepted'] = True
         path = self.write_plan(items)
         api = self.FakeApi()
-        self.assertEqual(srt.cmd_apply(api, self.args(path)), srt.OK)
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(srt.cmd_apply(api, self.args(path)), srt.OK)
+        # the skipped speaker change at 30 s is listed with the link of the cut that holds it
+        self.assertIn('http://server/#/episode/e/cut/cut-b/analysis', out.getvalue())
         [body] = api.bodies
         self.assertEqual(body['source'], {'kind': 'srt', 'file': 'ep.srt', 'offset': 0.3})
         sent = {item['segment_id']: item for item in body['corrections']}
