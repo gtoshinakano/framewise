@@ -92,6 +92,8 @@ def _generate(spec):
     with tempfile.TemporaryDirectory(prefix='framewise-preview-') as tmp:
         output = Path(tmp) / 'frame.jpg'
         if spec.get('ordinal') is not None:
+            if not spec['start'] - .001 <= spec['time'] < spec['end']:
+                raise RuntimeError('That frame is not inside this cut')
             before = Path(spec['source']).stat()
             data = _target_frame(spec, output)
             after = Path(spec['source']).stat()

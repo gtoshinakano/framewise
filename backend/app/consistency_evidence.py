@@ -164,12 +164,13 @@ def _frame_size(edge, aspect):
     return edge, max(1, round(edge * aspect))
 
 
-def plan(cut, keyframes, segments, boxes, characters=(), neighbours=None, aspect=9 / 16):
+def plan(cut, keyframes, segments, boxes, characters=(), neighbours=None, aspect=9 / 16, exact=None):
     """References to every picture the reviewer gets, best first within each kind (pure).
 
     ``cut`` has ``id``, ``start_time``, ``end_time``; ``keyframes`` is the cut's keyframe result content or None;
     ``boxes`` are ``{character_id, t, box, size}`` in clip seconds; ``characters`` are ``{name, cut_id, at, crop}``
-    reference crops; ``neighbours`` maps ``previous``/``next`` to a cut id.
+    reference crops; ``neighbours`` maps ``previous``/``next`` to a cut id; ``exact`` maps a keyframe's source frame
+    number to its exact time, so each keyframe is cut by frame number and never from a rounded clip time.
     """
     duration = max(0.0, cut['end_time'] - cut['start_time'])
     pictures = []
@@ -182,7 +183,8 @@ def plan(cut, keyframes, segments, boxes, characters=(), neighbours=None, aspect
         first = index == 0 and t <= 0.05
         edge = FIRST_EDGE if first else KEYFRAME_EDGE
         pictures.append({'kind': 'keyframe', 'label': frame['label'], 'caption': f"keyframe {frame['label']}, {t:.2f} s into the cut" + (' (also the first frame)' if first else ''),
-                         'cut_id': cut['id'], 'at': ['first' if first else f'{t:.3f}s'], 't': round(t, 3), 'edge': edge, 'size': _frame_size(edge, aspect)})
+                         'cut_id': cut['id'], 'at': ['first' if first else f'{t:.3f}s'], 't': round(t, 3), 'edge': edge, 'size': _frame_size(edge, aspect),
+                         **({'ordinal': frame['ordinal'], 'time': exact[frame['ordinal']]} if (exact or {}).get(frame.get('ordinal')) is not None else {})})
     if not frames:
         pictures.append({'kind': 'keyframe', 'label': 'Last frame', 'caption': 'the last frame of the cut', 'cut_id': cut['id'], 'at': ['last'],
                          'edge': KEYFRAME_EDGE, 'size': _frame_size(KEYFRAME_EDGE, aspect)})
@@ -356,7 +358,10 @@ def gather(cut_id, by_type, conn=None):
             row = conn.execute('SELECT id FROM cuts WHERE episode_id=? AND active=1 AND cut_index=?', (cut['episode_id'], index)).fetchone()
             if row:
                 neighbours[side] = row['id']
-    return plan(dict(cut), keyframes, segments, boxes, characters, neighbours, aspect), keyframes, aspect
+    exact = {}
+    if keyframes and keyframes.get('run_id'):
+        exact = {row['ordinal']: row['frame_time'] for row in conn.execute('SELECT ordinal,frame_time FROM keyframe_analysis_frames WHERE run_id=?', (keyframes['run_id'],))}
+    return plan(dict(cut), keyframes, segments, boxes, characters, neighbours, aspect, exact), keyframes, aspect
 
 
 def _scaled(source, output, edge):
@@ -368,6 +373,11 @@ def _frame(folder, picture, name, index, edge):
     """One frame of a picture as a JPEG file, cropped when the picture has a crop."""
     located = images.locate(picture['cut_id'], name)
     spec = dict(located['spec'])
+    if picture.get('kind') == 'keyframe' and picture.get('ordinal') is not None and picture.get('time') is not None:
+        # The exact frame the keyframe analysis described, by its number in the video; the clip time is only a label.
+        if not spec['start'] - .001 <= picture['time'] < spec['end']:
+            raise images.FrameError(f"Keyframe {picture['label']} is not inside this cut")
+        spec.update(time=picture['time'], ordinal=picture['ordinal'])
     spec['width'] = 4096 if picture.get('crop') else edge
     path = folder / f'{index}.jpg'
     path.write_bytes(frame_cache.render(spec))

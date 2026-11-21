@@ -255,6 +255,11 @@ def extract_cut_frame(source: Path, output: Path, sample_time: float, start: flo
             if temp.is_file() and temp.stat().st_size:
                 timestamps = showinfo_times(result.stderr.splitlines())
                 actual = seek + next(timestamps, 0)
+                if not last and actual >= end - .000001:
+                    # A seek lands on the first frame at or after the time, so a time that rounds up past the cut's last
+                    # frame returns the next cut's first picture. Take the cut's last frame instead.
+                    temp.unlink(missing_ok=True)
+                    return extract_cut_frame(source, output, sample_time, start, end, width=width, last=True, quality=quality, seek_tolerance=seek_tolerance, probe_padding=probe_padding, timeout=timeout, exact_size=exact_size)
                 temp.replace(output)
                 return round(actual, 6)
             if seek == start:
