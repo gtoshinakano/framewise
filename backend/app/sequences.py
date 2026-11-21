@@ -312,6 +312,17 @@ def set_shot_voices(sequence_id: str, body: ShotVoicesInput):
     return detail_or_404(sequence_id)
 
 
+class MarkReadyInput(BaseModel):
+    shot_key: str | None = Field(default=None, description='One shot; omitted marks every written shot of the sequence.')
+
+
+@router.post('/sequences/{sequence_id}/mark-ready', responses={409: {'description': 'The sequence is not directed, or its cuts changed.'}, 404: {'description': 'That shot is not part of the plan.'}})
+def mark_shots_ready(sequence_id: str, body: MarkReadyInput):
+    """Keep the written prompts as they are and stop reporting them as stale: the current analysis, bible and plan become what they count as written from."""
+    edit(lambda conn: sequence_edit.mark_ready(conn, require(conn, sequence_id), body.shot_key))
+    return detail_or_404(sequence_id)
+
+
 def shot_frame_spec(sequence_id, shot_key=None, index=None, width=480):
     """Where a planned shot's initial frame lies in the source video, by shot key or one-based index."""
     with db.connect() as conn:

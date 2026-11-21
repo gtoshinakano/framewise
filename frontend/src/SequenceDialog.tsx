@@ -137,6 +137,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
           {where.key === 'review' && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" onClick={() => setTab('dialogue')}><Check size={13} /> Review dialogue</button>}
           {['direct', 'redirect', 'directing', 'analyse'].includes(where.key) && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('direct')} title="Queue the sequence bible and shot plan"><WandSparkles size={13} /> Direct sequence</button>}
           {(counts.needWriting > 0 || where.key === 'directing') && <button type="button" className="btn btn-primary !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('shots')} title="Writes missing and stale prompts and those failing the format check"><Sparkles size={13} /> Write shot prompts</button>}
+          {detail.shots.some(shot => shot.result && shot.stale.length > 0) && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void act('ready', () => sequenceApi.markReady(sequenceId))} title="Keep the written prompts as they are and stop marking them stale"><Check size={12} /> Mark stale shots ready</button>}
           {(counts.written > 0 || counts.step === 'shots' || counts.step === 'shot') && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void run('review')} title={reviewing ? 'Review already queued' : 'Get suggestions on continuity, speech and timing'}><RefreshCw size={12} /> Review continuity</button>}
           {detail.review?.stale_reason && <StaleChip reason={detail.review.stale_reason} />}
           {flagged.length > 0 && <button type="button" className="btn btn-quiet !px-3 !py-1.5 !text-xs" disabled={!!working} onClick={() => void reviseFlagged()} title="Rewrite shots using the review’s suggestions">Revise flagged shots ({new Set(flagged.map(issue => issue.shot_key)).size})</button>}
@@ -407,7 +408,8 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
     </div>
 
     {shot.speakers.length > 0 && <VoicesPanel detail={detail} shot={shot} working={working} act={act} />}
-    {shot.stale.length > 0 && <p className="shrink-0 rounded-lg bg-[#4a3a17] p-2.5 text-xs leading-5 text-[#ffd59a]">{staleText(shot.stale)}</p>}
+    {shot.stale.length > 0 && <div className="flex shrink-0 items-start gap-3 rounded-lg bg-[#4a3a17] p-2.5 text-xs leading-5 text-[#ffd59a]"><p className="flex-1">{staleText(shot.stale)}</p>
+      {shot.result && <button type="button" className="btn btn-quiet !px-2.5 !py-1 !text-[11px]" disabled={working} onClick={() => void act('ready', () => sequenceApi.markReady(detail.sequence.id, shot.key))} title="Keep this prompt as it is and stop marking it stale"><Check size={12} /> Mark ready</button>}</div>}
     {issues.length > 0 && detail.review && <div className="shrink-0 rounded-lg border border-[#5b4a2a] bg-[#241d12] p-3">
       <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-[#ffd59a]"><MessageSquare size={13} /> Review</p>
       <ul className="space-y-2">{issues.map(issue => {

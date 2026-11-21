@@ -174,6 +174,8 @@ export const sequenceApi = {
   /** Decide how one speaker is heard in one shot (null: the director decides); the shot is rewritten around it. */
   setVoices: (id: string, shotKey: string, speaker: string, segments: { from: number; delivery: Delivery }[] | null) =>
     api<SequenceDetail>(`/sequences/${id}/voices`, { method: 'PUT', body: JSON.stringify({ shot_key: shotKey, speaker, segments }) }),
+  /** Keep the written prompts and clear their stale marks (one shot, or every written shot when no key is given). */
+  markReady: (id: string, shotKey?: string) => api<SequenceDetail>(`/sequences/${id}/mark-ready`, { method: 'POST', body: JSON.stringify({ shot_key: shotKey ?? null }) }),
   /** Queue the ZIP (package, audio, initial frames, prompts) and wait until it can be downloaded; returns its URL. */
   async exportZip(id: string, episodeId: string, onStage?: (stage: string) => void) {
     const queued = await api<ExportStatus>(`/v1/sequences/${id}/exports`, { method: 'POST' })

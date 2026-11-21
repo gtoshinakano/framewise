@@ -450,6 +450,36 @@ def set_voices(conn, sequence, shot_key, speaker, segments):
     return revise(conn, sequence, row, {**plan, 'voices': voices}, current=current)
 
 
+def mark_ready(conn, sequence, shot_key=None):
+    """Accept written shots as they are: their prompts stay, and what they were written from becomes the current inputs.
+
+    A small change to the analysis, the bible or the plan marks a shot stale although its prompt still holds. This saves the
+    current fingerprints on the shot's current revision (nothing is rewritten, no job is queued) so it is no longer stale until
+    something changes again. ``shot_key`` limits it to one shot. Returns the keys that were brought up to date.
+    """
+    current = sequence_view.state(conn, sequence)
+    if current['cuts'] is None or current['changed']:
+        raise EditError(409, 'The cuts of this sequence changed; direct the sequence again')
+    if not current['bible'] or not current['shots']:
+        raise EditError(409, 'Direct the sequence first: it needs a bible and a shot plan')
+    shots = [shot for shot in current['shots'] if shot_key in (None, shot['key'])]
+    if shot_key is not None and not shots:
+        raise EditError(404, 'That shot is not part of the current plan')
+    done = []
+    for shot in shots:
+        row = current['shot_rows'].get(shot['key'])
+        if not row or not sequence_view.stale_reasons(current, shot, row):
+            continue
+        settings = store.loads(row['settings_json'], {})
+        settings['hashes'] = evidence.shot_hashes(current['ctx'], current['bible'], shot)
+        settings['hashes_accepted'] = True
+        conn.execute('UPDATE sequence_results SET settings_json=? WHERE id=?', (json.dumps(settings), row['id']))
+        done.append(shot['key'])
+    if done:
+        conn.execute('UPDATE sequences SET updated_at=CURRENT_TIMESTAMP WHERE id=?', (sequence['id'],))
+    return done
+
+
 def preview_shot(current, shot, content):
     """Validate and render a shot's direction against the current bible and plan.
 

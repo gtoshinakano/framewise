@@ -29,7 +29,7 @@ class SequencePosesTest(unittest.TestCase):
         self.assertEqual(direction.STILL_KEYS[:2], ('shot', 'placement'))
 
     def test_the_review_cares_about_state_facing_and_gaze_and_not_about_shades(self):
-        for needed in ('opens_with and ends_with', 'which way the torso and head face', 'brown-red against grey-red', 'never an issue unless it is a different garment'):
+        for needed in ('opens_with and ends_with', 'a cut is a jump', 'brown-red against grey-red', 'never an issue unless it is a different garment'):
             self.assertIn(needed, direction.REVIEW_SYSTEM)
 
     def test_pose_facts_shrink_with_the_detail_level(self):
