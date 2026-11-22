@@ -230,6 +230,68 @@ def init_db():
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE UNIQUE INDEX IF NOT EXISTS character_outfits_name_idx ON character_outfits(character_context_id,lower(name));
+        -- The autopilot (agent_log.py, docs/autopilot/HARNESS.md). A run is one agent session over an episode; each
+        -- decision it applied is logged in the transaction that applied it, with the target's state before and after,
+        -- so it can be undone while the target is unchanged. cut_id is plain text on purpose: a log entry must never
+        -- count as a reference that stops cut_history from removing a cut. This is provenance, never an approval status.
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id TEXT PRIMARY KEY,
+            episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            agent TEXT NOT NULL DEFAULT '',
+            purpose TEXT NOT NULL DEFAULT '',
+            policy_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','finished','undone')),
+            claude_items INTEGER NOT NULL DEFAULT 0,
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS agent_runs_episode_idx ON agent_runs(episode_id,started_at);
+        CREATE TABLE IF NOT EXISTS agent_decisions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+            episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            cut_id TEXT,
+            kind TEXT NOT NULL,
+            tier TEXT NOT NULL CHECK(tier IN ('rules','local','claude','human')),
+            target_table TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            before_json TEXT,
+            after_json TEXT,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            confidence REAL,
+            summary TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            undone_at TEXT,
+            overridden_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS agent_decisions_run_idx ON agent_decisions(run_id);
+        CREATE INDEX IF NOT EXISTS agent_decisions_episode_idx ON agent_decisions(episode_id,kind);
+        CREATE INDEX IF NOT EXISTS agent_decisions_target_idx ON agent_decisions(target_table,target_id);
+        CREATE TABLE IF NOT EXISTS agent_escalations (
+            id TEXT PRIMARY KEY,
+            episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+            kind TEXT NOT NULL,
+            group_key TEXT NOT NULL,
+            cut_ids_json TEXT NOT NULL DEFAULT '[]',
+            question TEXT NOT NULL,
+            options_json TEXT NOT NULL DEFAULT '[]',
+            proposal_json TEXT,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','dismissed')),
+            resolution_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS agent_escalations_open_idx ON agent_escalations(episode_id,kind,group_key) WHERE status='open';
+        -- What the user tells the autopilot once per project (autopilot_profile.py, the Autopilot profile dialog).
+        CREATE TABLE IF NOT EXISTS autopilot_profiles (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            profile_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS episode_audio_ranges (
             id TEXT PRIMARY KEY,
             episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,

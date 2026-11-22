@@ -1,4 +1,4 @@
-import { AlertTriangle, BookOpen, Shirt, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
+import { AlertTriangle, BookOpen, Bot, Shirt, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
 import { LocalModelControl } from './LocalModelControl'
 import { VisualEngineControl } from './VisualEngineControl'
 import { Menu, type MenuEntry } from './Popover'
@@ -9,7 +9,7 @@ export type CharacterStep = 'character-boxes' | 'character-detection' | 'charact
 const go = (path: string) => { window.location.hash = path }
 
 /** The episode editor's top bar: where you are, the episode-wide actions grouped in menus, and the queue. */
-export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, onOpenSettings, onOpenGlossary, onOpenOutfits, onDeleteEpisode }: {
+export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, onOpenSettings, onOpenGlossary, onOpenOutfits, onOpenAutopilot, onDeleteEpisode }: {
   projectId?: string
   projectTitle?: string
   episodeTitle?: string
@@ -32,6 +32,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   onOpenSettings: () => void
   onOpenGlossary: () => void
   onOpenOutfits: () => void
+  onOpenAutopilot: () => void
   onDeleteEpisode: () => void
 }) {
   const characterItems: MenuEntry[] = [
@@ -53,6 +54,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   ]
   const episodeItems: MenuEntry[] = [
     { key: 'settings', icon: Settings2, title: 'Processing settings…', hint: 'Preview size, frame interval, scene threshold and chunk length.', onSelect: onOpenSettings },
+    { key: 'autopilot', icon: Bot, title: 'Autopilot profile…', hint: 'What agents may apply for this project, how to settle review questions, which characters matter.', disabled: !projectId, onSelect: onOpenAutopilot },
     { key: 'projects', icon: FolderOpen, title: 'All projects', onSelect: () => go('/') },
     'separator',
     { key: 'delete', icon: Trash2, tone: 'danger', title: 'Delete episode…', hint: 'Removes the episode with all its media and analysis.', onSelect: onDeleteEpisode },

@@ -11,6 +11,9 @@
     scripts/fw drive "Episode 6"                 # repeat next/wait until a person is needed
     scripts/fw analysis "Episode 6" 100-200      # what every cut still needs, per step, with --links the cut URLs
     scripts/fw links "Episode 6" 199,204 --place target-frames   # one URL per cut, opening the place that needs it
+    scripts/fw agent start "Episode 6" --agent claude-code --purpose "line splits"   # an autopilot run (prints its id)
+    scripts/fw inbox "Episode 6"                 # what agents escalated to a person, and what they applied
+    scripts/fw agent undo RUN_ID                 # undo everything a run applied (what a person changed since stays)
 
 Cut numbers are the editor's (1-based). RANGE is 100-120, 100..120, 7, 5- (to the end), -10 or all (the default).
 Only the HTTP API is used: FRAMEWISE_URL, else http://chopper.local:8080 (the server). It runs the same from any machine
@@ -925,6 +928,109 @@ def cmd_cancel(api, args):
     return OK
 
 
+# --- autopilot: agent runs, escalations (docs/autopilot/HARNESS.md) --------------------------------------------
+
+def cut_ids_for(api, episode, text):
+    """Editor cut numbers (``12,14,20-22``) as cut ids."""
+    numbers, ids = parse_cut_list(text) if text else [], []
+    known = cut_numbers(api, episode)
+    for number in numbers:
+        if number not in known:
+            raise Failure(f'there is no cut {number} in this episode')
+        ids.append(known[number]['id'])
+    return ids
+
+
+def json_arg(text, name):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        raise Failure(f'{name} is not valid JSON: {exc}') from None
+
+
+def run_line(run):
+    counts = run.get('decisions') or {}
+    extra = f", {counts.get('total', 0)} decision(s)" + (f", {counts['undone']} undone" if counts.get('undone') else '') \
+        + (f", {counts['overridden']} changed by a person" if counts.get('overridden') else '') if counts else ''
+    return f"{run['id']}  {run['status']:<8} {run['started_at']}  {run['agent'] or '-'}: {run['purpose'] or '-'}{extra}"
+
+
+def cmd_agent(api, args):
+    if args.action == 'start':
+        episode = find_episode(api, args.target, args.latest)
+        run = api.post(f"/api/episodes/{episode['id']}/agent-runs", body={'agent': args.agent, 'purpose': args.purpose})
+        emit(args, run, run.get('id', ''))
+        return OK
+    if args.action == 'runs':
+        episode = find_episode(api, args.target, args.latest)
+        runs = api.get(f"/api/episodes/{episode['id']}/agent-runs")
+        emit(args, runs, '\n'.join(run_line(run) for run in runs) or 'no agent runs yet')
+        return OK
+    if not args.target:
+        raise Failure(f'fw agent {args.action} needs a run id')
+    if args.action == 'finish':
+        run = api.post(f'/api/agent-runs/{args.target}/finish', body={'summary': json_arg(args.summary, '--summary') or {}, 'claude_items': args.claude})
+        emit(args, run, run_line(run) if 'id' in run else '')
+        return OK
+    if args.action == 'undo':
+        if args.decision:
+            result = api.post(f'/api/agent-decisions/{args.target}/undo')
+            emit(args, result, 'undone' if result.get('undone') else 'already undone')
+            return OK
+        result = api.post(f'/api/agent-runs/{args.target}/undo')
+        lines = [f"undid {len(result.get('undone', []))} decision(s)"]
+        lines += [f"  kept (changed since): {item['summary'] or item['decision_id']}: {item['reason']}" for item in result.get('conflicts', [])]
+        emit(args, result, '\n'.join(lines))
+        return OK
+    raise Failure(f'unknown action {args.action!r}')
+
+
+def cmd_inbox(api, args):
+    episode = find_episode(api, args.episode, args.latest)
+    data = api.get(f"/api/episodes/{episode['id']}/escalations", {'status': args.status})
+    if args.json:
+        emit(args, data, '')
+        return OK
+    numbers = {cut['id']: number for number, cut in cut_numbers(api, episode).items()}
+    counts = data['counts']
+    lines = [f"{episode['project']} / {episode['title']}: {counts['open_total']} open question(s) for you, "
+             f"{counts['applied_total']} decision(s) applied by agents"]
+    if counts['applied']:
+        lines.append('applied: ' + ', '.join(f'{kind} {count}' for kind, count in sorted(counts['applied'].items())))
+    for item in data['items']:
+        cut_list = sorted(numbers[cut_id] for cut_id in item['cut_ids'] if cut_id in numbers)
+        lines.append(f"\n[{item['kind']}] {item['question']}  ({item['status']}, id {item['id']})")
+        if item['options']:
+            lines.append('  options: ' + ' | '.join(str(option) for option in item['options']))
+        if item['proposal']:
+            lines.append(f"  agent proposes: {json.dumps(item['proposal'], ensure_ascii=False)}")
+        if cut_list:
+            lines.append(f'  cuts {numbers_text(cut_list)}')
+            lines += [f"  - cut {number}: {cut_url(api, episode, cut_numbers(api, episode)[number]['id'], args.place)}" for number in cut_list[:LINK_LIMIT]]
+            if len(cut_list) > LINK_LIMIT:
+                lines.append(f'  … and {len(cut_list) - LINK_LIMIT} more')
+    print('\n'.join(lines))
+    return OK
+
+
+def cmd_escalate(api, args):
+    episode = find_episode(api, args.episode, args.latest)
+    body = {'kind': args.kind, 'group_key': args.group, 'question': args.question, 'cut_ids': cut_ids_for(api, episode, args.cuts),
+            'options': args.option or [], 'proposal': json_arg(args.proposal, '--proposal'), 'evidence': json_arg(args.evidence, '--evidence') or {},
+            'run_id': args.run}
+    item = api.post(f"/api/episodes/{episode['id']}/escalations", body=body)
+    emit(args, item, item.get('id', ''))
+    return OK
+
+
+def cmd_close(api, args):
+    item = api.post(f'/api/escalations/{args.escalation}/close', body={'status': args.status, 'resolution': json_arg(args.resolution, '--resolution')})
+    emit(args, item, f"{item.get('status', '')}: {item.get('question', '')}")
+    return OK
+
+
 # --- command line ------------------------------------------------------------------------------------------------
 
 def parser():
@@ -983,6 +1089,33 @@ def parser():
     command = episode_command('cancel', cmd_cancel, "cancel the episode's queued jobs")
     command.add_argument('--group', help='only this waiting group (see fw queue)')
     command.add_argument('--running', action='store_true', help='also stop running jobs at their next checkpoint')
+    command = sub.add_parser('agent', parents=[common], help='autopilot runs: start EP, finish RUN, runs EP, undo RUN (or --decision ID)')
+    command.add_argument('action', choices=('start', 'finish', 'runs', 'undo'))
+    command.add_argument('target', nargs='?', help='episode (start, runs) or run id (finish, undo)')
+    command.add_argument('--latest', action='store_true', help='the newest episode')
+    command.add_argument('--agent', default='', help='start: who runs it, e.g. claude-code')
+    command.add_argument('--purpose', default='', help='start: what this run does')
+    command.add_argument('--summary', help='finish: JSON summary of the run')
+    command.add_argument('--claude', type=int, default=0, help='finish: items sent to Claude as second reviewer')
+    command.add_argument('--decision', action='store_true', help='undo: the target is one decision id, not a run')
+    command.set_defaults(func=cmd_agent)
+    command = episode_command('inbox', cmd_inbox, 'what the agents escalated to a person, with cut links, and what they applied')
+    command.add_argument('--status', default='open', choices=('open', 'resolved', 'dismissed', 'all'))
+    command.add_argument('--place', default='analysis', choices=list(PLACES), help='where the cut links open')
+    command = episode_command('escalate', cmd_escalate, 'open (or update) one question for a person; one per kind and group')
+    command.add_argument('--kind', required=True, help='e.g. new_character, voice, review_answer, missed_cut')
+    command.add_argument('--group', required=True, help='what groups the cuts, e.g. face:cluster-3 or SPEAKER_04')
+    command.add_argument('--question', required=True)
+    command.add_argument('--cuts', help='cut numbers: 12,14,20-22')
+    command.add_argument('--option', action='append', help='an answer the person can pick (repeat)')
+    command.add_argument('--proposal', help="JSON: the agent's own answer")
+    command.add_argument('--evidence', help='JSON: why it asks')
+    command.add_argument('--run', help='the agent run that asks')
+    command = sub.add_parser('close', parents=[common], help='close an escalation: resolved or dismissed')
+    command.add_argument('escalation')
+    command.add_argument('--status', default='resolved', choices=('resolved', 'dismissed'))
+    command.add_argument('--resolution', help='JSON: what was decided')
+    command.set_defaults(func=cmd_close)
     return root
 
 

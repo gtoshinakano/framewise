@@ -14,6 +14,7 @@ import { Timeline } from './Timeline'
 import { AudioRangeDialog } from './AudioRangeDialog'
 import { NameGlossaryDialog } from './NameGlossaryDialog'
 import { OutfitsDialog } from './OutfitsDialog'
+import { AutopilotProfileDialog } from './AutopilotProfileDialog'
 import { CutGallery } from './CutGallery'
 import TranscriptEditor, { type AudioView } from './TranscriptEditor'
 import { SequencePanel } from './SequencePanel'
@@ -239,6 +240,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [glossaryOpen, setGlossaryOpen] = useState(false)
   const [outfitsOpen, setOutfitsOpen] = useState(false)
+  const [autopilotOpen, setAutopilotOpen] = useState(false)
   const [audioRange, setAudioRange] = useState<(Pick<EpisodeAudioRange, 'start_time' | 'end_time' | 'kind'> & { id?: string }) | null>(null)
   const [prepareOpen, setPrepareOpen] = useState(false)
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
@@ -443,7 +445,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const undo = () => { if (history?.undo && !historyReason) void cutEdits.undo() }
   const redo = () => { if (history?.redo && !historyReason) void cutEdits.redo() }
   const step = (direction: 1 | -1) => { if (!activeSelected || !episode) return; const target = episode.cuts[activeSelected.cut_index + direction]; if (target) selectCut(target) }
-  useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !glossaryOpen && !outfitsOpen && !audioRange && !prepareOpen && !queueOpen, {
+  useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !glossaryOpen && !outfitsOpen && !autopilotOpen && !audioRange && !prepareOpen && !queueOpen, {
     playPause: togglePlay, split, undo, redo, previous: () => step(-1), next: () => step(1),
     nextNeeding: () => { if (!episode) return; const next = nextNeedingAction(episode.cuts, selectedId, cutFilters.active); if (next) selectCut(next) },
     filters: () => setFiltersOpen(true),
@@ -467,7 +469,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
       onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}
       onPrepareEpisode={() => setPrepareOpen(true)}
       queue={queueSummary} running={jobs.some(job => job.status === 'running')} onOpenQueue={focus => setQueueOpen(focus || 'top')}
-      onOpenSettings={() => setSettingsOpen(true)} onOpenGlossary={() => setGlossaryOpen(true)} onOpenOutfits={() => setOutfitsOpen(true)} onDeleteEpisode={() => void remove()} />
+      onOpenSettings={() => setSettingsOpen(true)} onOpenGlossary={() => setGlossaryOpen(true)} onOpenOutfits={() => setOutfitsOpen(true)} onOpenAutopilot={() => setAutopilotOpen(true)} onDeleteEpisode={() => void remove()} />
     {!episode ? <div className="muted p-12">{loadError || 'Loading episode…'}</div> : <div className="editor-workspace" style={workspaceStyle}>
       <aside className="editor-cuts scrollbar" hidden={cutsCollapsed} aria-label="Cut list">
         <CutGallery cuts={episode.cuts} selectedId={selectedId} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} frameVersion={frameVersion} queueStates={cutQueueStates} onCollapse={collapseCuts} />
@@ -518,6 +520,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
       onOpenSequence={setSequenceOpen} />}
     {episode && glossaryOpen && <NameGlossaryDialog projectId={episode.project_id} onClose={() => setGlossaryOpen(false)} />}
     {episode && outfitsOpen && <OutfitsDialog projectId={episode.project_id} onClose={() => setOutfitsOpen(false)} />}
+    {episode && autopilotOpen && <AutopilotProfileDialog projectId={episode.project_id} onClose={() => setAutopilotOpen(false)} />}
     {episode && audioRange && <AudioRangeDialog episodeId={id} initial={audioRange} duration={duration} playhead={playhead} onClose={() => setAudioRange(null)} onSaved={refresh} />}
     {episode && settingsOpen && <EpisodeSettingsDialog episode={episode} initial={episode.settings} onSave={saveSettings} onDelete={() => void remove()} onClose={closeSettings} />}
     {episode && prepareOpen && <PrepareEpisodeDialog episodeId={id} savedLanguage={episode.subtitle_language} onClose={() => setPrepareOpen(false)}
