@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from . import agent_log, autopilot_profile, db
+from . import agent_log, autopilot_profile, db, diagnose, triage, worker
 
 router = APIRouter()
 
@@ -99,6 +99,61 @@ def undo_agent_run(run_id: str):
         conn.execute('BEGIN IMMEDIATE')
         require_run(conn, run_id)
         return agent_log.undo_run(conn, run_id)
+
+
+# --- diagnosis and triage (M1) ------------------------------------------------------------------------------------------
+
+@router.get('/api/episodes/{episode_id}/health', summary='Per cut, ranked problems in one sentence each, worst cuts first')
+def episode_health(episode_id: str, from_cut: int | None = None, to_cut: int | None = None):
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        return diagnose.health(conn, episode_id, from_cut, to_cut)
+
+
+@router.get('/api/cuts/{cut_id}/why', summary="Why a cut's step is not done: its prerequisites down to the first broken one")
+def cut_why(cut_id: str, step: str | None = None):
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        try:
+            return diagnose.why(conn, cut_id, step)
+        except KeyError:
+            raise HTTPException(404, 'Cut not found') from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+
+@router.get('/api/episodes/{episode_id}/triage', summary='Failed runs nobody has dealt with, their cause and the fix triage would apply')
+def episode_triage(episode_id: str, run_id: str | None = None):
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        require_episode(conn, episode_id)
+        try:
+            mode = triage.mode_for(conn, episode_id, run_id)
+        except KeyError:
+            raise HTTPException(404, 'Agent run not found') from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {**diagnose.triage(conn, episode_id, mode), 'mode': mode}
+
+
+class TriageApply(BaseModel):
+    run_id: str | None = None
+    job_ids: list[str] | None = Field(default=None, max_length=2000)
+
+
+@router.post('/api/episodes/{episode_id}/triage', summary='Apply the fix rules to failed runs; log each fix as an agent decision')
+def apply_triage(episode_id: str, body: TriageApply):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        require_episode(conn, episode_id)
+        try:
+            outcome = triage.apply(conn, episode_id, body.run_id, body.job_ids)
+        except KeyError:
+            raise HTTPException(404, 'Agent run not found') from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    worker.wake_event.set()
+    return outcome
 
 
 # --- escalations -------------------------------------------------------------------------------------------------------

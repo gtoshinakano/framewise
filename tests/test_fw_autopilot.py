@@ -78,6 +78,41 @@ class FwAutopilotTest(unittest.TestCase):
         with self.assertRaises(fw.Failure):
             run(api, 'agent', 'finish')
 
+    def test_diagnose_lists_cuts_worst_first_with_links_and_runnable_commands(self):
+        health = {'checked': 5, 'counts': {'failed': 1, 'missing': 1}, 'episode_problems': [{'kind': 'voice', 'text': 'Voice SPEAKER_04: 3 line(s)', 'first_time': 4.5}],
+                  'cuts': [{'cut': 2, 'cut_id': 'c2', 'busy': [], 'problems': [
+                      {'kind': 'failed', 'text': 'Performance beats failed: a step it needs had not run', 'fix': 'queue the step it needs', 'place': 'analysis'},
+                      {'kind': 'missing', 'text': 'Needs keyframe analysis', 'fix': {'text': 'queue keyframe analysis', 'command': 'fw visual EP 2'}, 'place': 'run'}]},
+                           {'cut': 4, 'cut_id': 'c4', 'busy': ['summary'], 'problems': [{'kind': 'line_crossing', 'text': '1 transcript line(s) run across', 'place': 'analysis'}]}]}
+        api = AutopilotApi()
+        api.get = lambda path, params=None: health if path.endswith('/health') else AutopilotApi.get(api, path, params)
+        code, out = run(api, 'diagnose', EPISODE['id'], '--kind', 'failed')
+        self.assertEqual(code, fw.OK)
+        self.assertIn(f"cut 2: http://framewise/#/episode/{EPISODE['id']}/cut/c2/analysis", out)
+        self.assertIn('→ queue keyframe analysis  [fw visual ep-1111- 2]', out)
+        self.assertNotIn('cut 4', out)  # filtered by --kind
+        self.assertIn('Voice SPEAKER_04', out)
+
+    def test_triage_plans_applies_and_exits_by_outcome(self):
+        item = {'job_id': 'j1', 'label': 'Cut summary', 'cuts': [2], 'cause_text': 'validation failed', 'action': 'requeue', 'attempts': 0, 'limit': 1,
+                'error': 'timeline lines', 'why': ''}
+        api = AutopilotApi()
+        api.get = lambda path, params=None: {'items': [item], 'counts': {'requeue': 1}, 'mode': 'apply', 'gpu_busy': False} \
+            if path.endswith('/triage') else AutopilotApi.get(api, path, params)
+        code, out = run(api, 'triage', EPISODE['id'])
+        self.assertEqual(code, fw.OK)
+        self.assertIn('WHAT TRIAGE WOULD DO', out)
+        self.assertIn('queue again with the current settings (attempt 1 of 1)', out)
+        escalated = {**item, 'action': 'escalate', 'why': 'the autopilot already fixed it 1 time(s)'}
+        api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {
+            'applied': [{**item, 'job_ids': ['new1']}], 'escalated': [escalated], 'waiting': [], 'left': [], 'mode': 'apply', 'closed_escalations': 1})[1]
+        code, out = run(api, 'triage', EPISODE['id'], '--go', '--run', 'run1')
+        self.assertEqual(code, fw.BLOCKED)
+        self.assertEqual(api.calls[-1], (f"/api/episodes/{EPISODE['id']}/triage", None, {'run_id': 'run1'}))
+        self.assertIn('queued: new1', out)
+        self.assertIn('ASKED A PERSON', out)
+        self.assertIn('closed 1 question(s)', out)
+
     def test_close_sends_the_resolution(self):
         api = AutopilotApi()
         run(api, 'close', 'esc1', '--resolution', '{"character": "mai"}')

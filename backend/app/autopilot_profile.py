@@ -22,6 +22,7 @@ VERSION = 1
 MODES = ('apply', 'ask', 'off')
 # The kinds of decision the autopilot makes, in the order of an episode's flow (HARNESS.md section 7).
 DECISIONS = {
+    'failed_runs': 'Fix failed runs whose cause has a rule (retry, queue the missing step first)',
     'missed_cuts': 'Split cuts the hard-cut detection missed',
     'line_splits': 'Split lines that run across a hard cut, at a pause',
     'voices': 'Assign unknown voices to characters',

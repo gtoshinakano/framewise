@@ -14,6 +14,9 @@
     scripts/fw agent start "Episode 6" --agent claude-code --purpose "line splits"   # an autopilot run (prints its id)
     scripts/fw inbox "Episode 6"                 # what agents escalated to a person, and what they applied
     scripts/fw agent undo RUN_ID                 # undo everything a run applied (what a person changed since stays)
+    scripts/fw diagnose "Episode 6" 100-200      # per cut, what is wrong and why, worst cuts first, with links
+    scripts/fw why "Episode 6" 142 --step summary  # the chain of prerequisites down to the first broken one
+    scripts/fw triage "Episode 6" --go --run RUN_ID  # apply the fix rules to failed runs (logged, undoable)
 
 Cut numbers are the editor's (1-based). RANGE is 100-120, 100..120, 7, 5- (to the end), -10 or all (the default).
 Only the HTTP API is used: FRAMEWISE_URL, else http://chopper.local:8080 (the server). It runs the same from any machine
@@ -1031,6 +1034,133 @@ def cmd_close(api, args):
     return OK
 
 
+# --- diagnosis and triage (docs/autopilot/HARNESS.md M1) ---------------------------------------------------------
+
+STEP_NAMES = ('boxes', 'target_frames', 'first_frame', 'keyframes', 'beats', 'consistency', 'answers', 'summary')
+
+
+def fill_command(command, episode):
+    """The server writes fw commands with EP for the episode; put the episode's id prefix there (match_episodes takes it)."""
+    return command.replace(' EP', f" {episode['id'][:8]}", 1) if command else None
+
+
+def fix_text(fix, episode):
+    if not fix:
+        return ''
+    if isinstance(fix, str):
+        return fix
+    command = fill_command(fix.get('command'), episode)
+    return fix['text'] + (f"  [{command}]" if command else '')
+
+
+def cmd_diagnose(api, args):
+    episode = find_episode(api, args.episode, args.latest)
+    span = parse_range(args.range)
+    data = api.get(f"/api/episodes/{episode['id']}/health", {'from_cut': span[0], 'to_cut': span[1]})
+    items = [cut for cut in data['cuts'] if not args.kind or any(problem['kind'] == args.kind for problem in cut['problems'])]
+    if args.json:
+        emit(args, {**data, 'cuts': items}, '')
+        return OK
+    lines = [f"{episode['project']} / {episode['title']} · {range_text(span)} · {len(items)} of {data['checked']} cut(s) have problems"]
+    if data['counts']:
+        lines.append('problems: ' + ', '.join(f"{kind.replace('_', ' ')} {count}" for kind, count in sorted(data['counts'].items(), key=lambda pair: -pair[1])))
+    if data['episode_problems']:
+        lines.append('EPISODE:')
+        for item in data['episode_problems']:
+            extra = f"  [{fill_command(item['command'], episode)}]" if item.get('command') else ''
+            link = f"  {url_at_time(api, episode, item['first_time'])}" if item.get('first_time') is not None else ''
+            lines.append(f"  - {item['text']}{extra}{link}")
+    lines.append('CUTS, WORST FIRST:' if items else 'no cut has a problem')
+    for cut in items[:args.limit]:
+        worst = cut['problems'][0]
+        busy = f" · in the queue: {', '.join(cut['busy'])}" if cut['busy'] else ''
+        lines.append(f"cut {cut['cut']}{busy}: {cut_url(api, episode, cut['cut_id'], worst.get('place') or 'cut')}")
+        for problem in cut['problems']:
+            fix = fix_text(problem.get('fix'), episode)
+            lines.append(f"  - {problem['text']}" + (f"\n      → {fix}" if fix and problem['kind'] in ('failed', 'stale', 'missing') else ''))
+    if len(items) > args.limit:
+        lines.append(f"… {len(items) - args.limit} more cut(s) (--limit N, --kind KIND or --json)")
+    lines.append(f"episode: {ui_link(api, episode)}")
+    print('\n'.join(lines))
+    return OK
+
+
+def cmd_why(api, args):
+    episode = find_episode(api, args.episode, args.latest)
+    if not args.number or not args.number.isdigit():
+        raise Failure('give the cut number as shown in the editor, for example: fw why EP 12 --step summary')
+    number = int(args.number)
+    cut = cut_numbers(api, episode).get(number)
+    if not cut:
+        raise Failure(f'there is no active cut {number}')
+    data = api.get(f"/api/cuts/{cut['id']}/why", {'step': args.step})
+    if args.json:
+        emit(args, data, '')
+        return OK
+    lines = [f"cut {number} · {data['chain'][0]['label'] if data['chain'] else data['step']}"]
+    for index, link in enumerate(data['chain']):
+        lines.append(f"  {'' if index == 0 else '← '}{link['label']} [{link['state']}]: {link['text']}")
+    lines.append(f"fix: {fix_text(data['fix'], episode)}")
+    lines.append(f"open: {cut_url(api, episode, cut['id'], data.get('place') or 'analysis')}")
+    if args.all and data.get('steps'):
+        lines.append('every step:')
+        lines += [f"  {name:<13} {state['state']:<8} {state['text']}" for name, state in data['steps'].items()]
+    print('\n'.join(lines))
+    return OK
+
+
+TRIAGE_HEADINGS = (('applied', 'APPLIED'), ('escalated', 'ASKED A PERSON (fw inbox)'), ('waiting', 'WAITING (GPU busy)'), ('left', 'LEFT ALONE'))
+ACTION_WORDS = {'dismiss': 'dismiss (nothing is missing any more)', 'rerun': 'retry from its snapshot', 'requeue': 'queue again with the current settings',
+                'prerequisite': 'queue the missing step, then this one', 'wait': 'wait until the GPU is idle', 'escalate': 'ask a person',
+                'leave': 'leave it (out of scope)'}
+
+
+def triage_line(api, episode, item):
+    cuts = f" · cuts {numbers_text(item['cuts'])}" if item['cuts'] else ''
+    lines = [f"  - {item['label']}{cuts}: {item['cause_text']} → {ACTION_WORDS.get(item['action'], item['action'])}"
+             + (f" (attempt {item['attempts'] + 1} of {item['limit']})" if item['action'] in ('rerun', 'requeue', 'prerequisite') else ''),
+             f"      error: {item['error'][:200]}"]
+    if item.get('why'):
+        lines.append(f"      why: {item['why']}")
+    if item.get('job_ids'):
+        lines.append(f"      queued: {', '.join(item['job_ids'])}")
+    if item['cuts']:
+        lines += link_lines(api, episode, item['cuts'][:3], 'analysis', indent='      ')
+    return lines
+
+
+def cmd_triage(api, args):
+    episode = find_episode(api, args.episode, args.latest)
+    if args.go:
+        data = api.post(f"/api/episodes/{episode['id']}/triage", body={'run_id': args.run})
+        if data.get('dry_run'):
+            return OK
+        groups = {key: data.get(key) or [] for key, _ in TRIAGE_HEADINGS}
+    else:
+        data = api.get(f"/api/episodes/{episode['id']}/triage", {'run_id': args.run})
+        groups = {'planned': data['items']}
+    if args.json:
+        emit(args, data, '')
+    else:
+        total = sum(len(items) for items in groups.values())
+        lines = [f"{episode['project']} / {episode['title']}: {total} failed run(s) nobody has dealt with"
+                 + (f" · profile mode: {data.get('mode')}" if data.get('mode') else '') + (' · GPU busy' if data.get('gpu_busy') else '')]
+        headings = TRIAGE_HEADINGS if args.go else (('planned', 'WHAT TRIAGE WOULD DO (add --go to apply)'),)
+        for key, heading in headings:
+            if groups.get(key):
+                lines.append(heading + ':')
+                for item in groups[key]:
+                    lines += triage_line(api, episode, item)
+        if args.go and data.get('closed_escalations'):
+            lines.append(f"closed {data['closed_escalations']} question(s) whose runs no longer fail")
+        if not total:
+            lines.append('nothing to triage')
+        print('\n'.join(lines))
+    escalated = groups.get('escalated') or [item for item in groups.get('planned', []) if item['action'] == 'escalate']
+    waiting = groups.get('waiting') or [item for item in groups.get('planned', []) if item['action'] == 'wait']
+    return BLOCKED if escalated else BUSY if waiting else OK
+
+
 # --- command line ------------------------------------------------------------------------------------------------
 
 def parser():
@@ -1111,6 +1241,17 @@ def parser():
     command.add_argument('--proposal', help="JSON: the agent's own answer")
     command.add_argument('--evidence', help='JSON: why it asks')
     command.add_argument('--run', help='the agent run that asks')
+    command = episode_command('diagnose', cmd_diagnose, 'per cut, what is wrong and why, worst cuts first (failed, stale, contradictions, missing, lines across cuts)', rng=True)
+    command.add_argument('--limit', type=int, default=30, help='how many cuts to list (default 30)')
+    command.add_argument('--kind', choices=('failed', 'stale', 'contradiction', 'person', 'missing', 'line_crossing', 'auto_labels', 'no_boxes'),
+                         help='only cuts with this kind of problem')
+    command = episode_command('why', cmd_why, "why one cut's step is not done: its prerequisites down to the first broken one")
+    command.add_argument('number', nargs='?', help='cut number as shown in the editor')
+    command.add_argument('--step', choices=STEP_NAMES, help='the step to explain (default: the earliest one not done)')
+    command.add_argument('--all', action='store_true', help='also list the state of every step')
+    command = episode_command('triage', cmd_triage, 'classify failed runs and the fix rule for each; --go applies them as agent decisions (exit 2 asked a person, 3 waiting)')
+    command.add_argument('--go', action='store_true', help='apply the fixes (otherwise only print the plan)')
+    command.add_argument('--run', help='the agent run the fixes belong to (fw agent start)')
     command = sub.add_parser('close', parents=[common], help='close an escalation: resolved or dismissed')
     command.add_argument('escalation')
     command.add_argument('--status', default='resolved', choices=('resolved', 'dismissed'))
