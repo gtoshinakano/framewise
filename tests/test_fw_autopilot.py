@@ -151,6 +151,40 @@ class FwAutopilotTest(unittest.TestCase):
         run(api, 'line-splits', EPISODE['id'], 'run', '--run', 'run1')
         self.assertEqual(api.calls[-1], (f"/api/episodes/{EPISODE['id']}/line-splits", None, {'run_id': 'run1'}))
 
+    def test_review_decisions_run_report_and_answer(self):
+        report = {'counts': {'apply': 1, 'claude': 1}, 'trust_needed': 0.9,
+                  'trust': {'gaze': {'rate': 0.9, 'scored': 10, 'source': 'recommended'}, 'speaking': {'rate': None, 'scored': 3, 'source': 'too few'}},
+                  'applied': [{'id': 'd1', 'summary': 'Answered 1 review question(s) (gaze; 1 recommended) [local]', 'undone_at': None, 'overridden_at': None,
+                               'cut_id': 'c2', 'after': {'lines': [{'question': 'q1', 'topic': 'gaze', 'character': 'Mai', 'text': 'At Rio'}]}}],
+                  'questions': [{'id': 'esc1', 'reviewer': 'claude', 'question': 'Cut 4: 1 review question(s) to decide (speaking · Mai)',
+                                 'evidence': {'cut_id': 'c4', 'sheet': '/api/cuts/c4/review-sheet?labels=F2',
+                                              'questions': [{'id': 'q2', 'question': 'Is Mai lip-synced?', 'recommended': 'b', 'proposal': 'a',
+                                                             'why_asked': 'the decider and the reviewer disagree',
+                                                             'options': [{'id': 'a', 'text': 'Yes'}, {'id': 'b', 'text': 'No'}]}]}}]}
+        api = AutopilotApi()
+        api.get = lambda path, params=None: report if path.endswith('/review-decisions') else AutopilotApi.get(api, path, params)
+        code, out = run(api, 'review-decisions', 'report', EPISODE['id'])
+        self.assertEqual(code, fw.BLOCKED)
+        self.assertIn('gaze 90% (10, recommended)', out)
+        self.assertIn('speaking — (3, too few)', out)
+        self.assertIn('q1 gaze · Mai: At Rio', out)
+        self.assertIn('[Claude] Cut 4', out)
+        self.assertIn('a) Yes  b*) No', out)
+        self.assertIn('pictures: http://framewise/api/cuts/c4/review-sheet?labels=F2', out)
+        api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {'job_ids': ['j1', 'j2'], 'skipped': {'answered': [3]}})[1]
+        _, out = run(api, 'review-decisions', 'run', EPISODE['id'], '2-9', '--shadow')
+        self.assertEqual(api.calls[-1][2], {'from_cut': 2, 'to_cut': 9, 'run_id': None, 'shadow': True, 'redo': False})
+        self.assertIn('queued 2 shadow decision job(s)', out)
+        api.get = lambda path, params=None: {'kind': 'review_question', 'evidence': {}} if path.startswith('/api/escalations/') else AutopilotApi.get(api, path, params)
+        api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {'status': 'handed_to_person', 'decision_id': 'd9', 'open': []})[1]
+        _, out = run(api, 'review-decisions', 'answer', 'esc1', 'q2=a', 'q3=Kneeling by the bag', '--unsure', 'q4', '--tier', 'claude')
+        self.assertEqual(api.calls[-1][0], '/api/escalations/esc1/review-answers')
+        self.assertEqual(api.calls[-1][2]['answers'], [{'question': 'q2', 'option': 'a'}, {'question': 'q3', 'text': 'Kneeling by the bag'}])
+        self.assertEqual((api.calls[-1][2]['unsure'], api.calls[-1][2]['tier']), (['q4'], 'claude'))
+        self.assertIn('the rest goes to the person (decision d9)', out)
+        with self.assertRaises(fw.Failure):
+            run(api, 'review-decisions', 'answer', 'esc1', 'q2')
+
     def test_close_sends_the_resolution(self):
         api = AutopilotApi()
         run(api, 'close', 'esc1', '--resolution', '{"character": "mai"}')

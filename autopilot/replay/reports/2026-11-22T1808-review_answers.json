@@ -1,0 +1,502 @@
+{
+ "resolver": {
+  "emotion": {
+   "human": 6
+  },
+  "speaking": {
+   "human": 58
+  },
+  "state": {
+   "human": 13
+  },
+  "gaze": {
+   "apply": 10,
+   "applied_right": 9
+  },
+  "pose": {
+   "claude": 18
+  },
+  "identity": {
+   "claude": 5
+  },
+  "other": {
+   "human": 1
+  },
+  "camera": {
+   "apply": 1,
+   "applied_right": 1
+  }
+ },
+ "date": "2026-11-22T1808",
+ "commit": "1388af0",
+ "recommended": {
+  "emotion|picture": [
+   3,
+   5
+  ],
+  "speaking|picture": [
+   27,
+   40
+  ],
+  "speaking|text": [
+   12,
+   18
+  ],
+  "state|text": [
+   1,
+   2
+  ],
+  "gaze|picture": [
+   8,
+   9
+  ],
+  "pose|picture": [
+   11,
+   18
+  ],
+  "state|picture": [
+   6,
+   11
+  ],
+  "identity|text": [
+   2,
+   2
+  ],
+  "identity|picture": [
+   3,
+   3
+  ],
+  "emotion|text": [
+   1,
+   1
+  ],
+  "other|picture": [
+   1,
+   1
+  ],
+  "gaze|text": [
+   1,
+   1
+  ],
+  "camera|picture": [
+   1,
+   1
+  ],
+  "camera|text": [
+   0,
+   0
+  ],
+  "other|text": [
+   0,
+   0
+  ],
+  "pose|text": [
+   0,
+   0
+  ]
+ },
+ "decider": {},
+ "free_text": {
+  "gaze": 2,
+  "speaking": 7,
+  "camera": 1,
+  "state": 1
+ },
+ "trust": {
+  "d66e89d5-79ba-4c2b-9f9c-a4285ffa5615": {
+   "camera": {
+    "rate": null,
+    "scored": 1,
+    "source": "too few"
+   },
+   "other": {
+    "rate": null,
+    "scored": 1,
+    "source": "too few"
+   },
+   "speaking": {
+    "rate": 0.6724137931034483,
+    "scored": 58,
+    "source": "recommended"
+   },
+   "pose": {
+    "rate": 0.6111111111111112,
+    "scored": 18,
+    "source": "recommended"
+   },
+   "identity": {
+    "rate": null,
+    "scored": 5,
+    "source": "too few"
+   },
+   "emotion": {
+    "rate": null,
+    "scored": 6,
+    "source": "too few"
+   },
+   "state": {
+    "rate": 0.5384615384615384,
+    "scored": 13,
+    "source": "recommended"
+   },
+   "gaze": {
+    "rate": 0.9,
+    "scored": 10,
+    "source": "recommended"
+   }
+  }
+ },
+ "disagreements": [
+  {
+   "episode": "Episode 2",
+   "cut": 2,
+   "topic": "speaking",
+   "character": "Rio Futaba",
+   "question": "Is Rio Futaba's mouth moving when she speaks the transcript line?",
+   "recommended": "No, her mouth remains closed while the line is spoken.",
+   "user": "Yes, her mouth moves to lip-sync the line.",
+   "why": "The line strip and keyframes (F2, F3) show Rio's mouth closed, while the transcript indicates she is speaking. The app checks also flag 'mouth_without_line'."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 2,
+   "topic": "speaking",
+   "character": "Rio Futaba",
+   "question": "When does Rio Futaba start speaking?",
+   "recommended": "She starts speaking later, around 2.6s, matching the transcript line.",
+   "user": "She starts speaking immediately at the beginning of the cut (0.0s).",
+   "why": "The transcript line starts at 2.592s, and the visual evidence shows no mouth movement before that time, contradicting the beats which suggest speaking starts at 0.22s."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 3,
+   "topic": "speaking",
+   "character": "Rio Futaba",
+   "question": "When does Rio Futaba's line start?",
+   "recommended": "2.592s",
+   "user": "0.01s",
+   "why": "Transcript says 2.592s, beats say 0.01s. Transcript is the primary source for timing."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 4,
+   "topic": "speaking",
+   "character": "Rio Futaba",
+   "question": "When does Rio Futaba start speaking the line about the cat and radioactive material?",
+   "recommended": "Rio starts speaking around 8.9s, after placing the first items.",
+   "user": "Rio starts speaking immediately at the beginning of the cut (0.0s).",
+   "why": "The transcript line S1 starts at 8.912s, while the performance beats claim speaking from 0.24s. The subtitles also start at 8.625s."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 5,
+   "topic": "speaking",
+   "character": "Rio Futaba",
+   "question": "When does Rio Futaba stop speaking?",
+   "recommended": "Rio Futaba stops speaking around 2.0s into the cut, as her mouth is closed in the line strip at +2.08s.",
+   "user": "Rio Futaba stops speaking around 3.16s into the cut, as stated in the performance beats.",
+   "why": "The line strip shows Rio's mouth closed at +2.08s and +2.81s, contradicting the beats which claim she speaks until 3.16s. The keyframes also show her mouth closed at 3.59s."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 6,
+   "topic": "pose",
+   "character": "Sakuta Azusagawa",
+   "question": "Is Sakuta Azusagawa standing or sitting in this cut?",
+   "recommended": "Standing",
+   "user": "Sitting",
+   "why": "First frame description and previous/next cuts show him standing. Keyframes say sitting, but pictures are chest-up and context favors standing."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 9,
+   "topic": "state",
+   "character": "Sakuta Azusagawa",
+   "question": "Is Sakuta Azusagawa sitting or standing in the opening still?",
+   "recommended": "Standing",
+   "user": "Sitting",
+   "why": "Keyframes describe him as 'Standing still' and the next cut shows him standing with his back to the camera."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 12,
+   "topic": "speaking",
+   "character": "Rio Futaba",
+   "question": "Is Rio Futaba's delivery an inner voice or on-screen lip-synced speech?",
+   "recommended": "Rio Futaba's delivery is an inner voice.",
+   "user": "Rio Futaba's delivery is on-screen lip-synced speech.",
+   "why": "The app check flags 'line_without_visible_speaking', and the mouth shape is static, suggesting an inner voice rather than active lip-syncing."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 13,
+   "topic": "speaking",
+   "character": "Sakuta Azusagawa",
+   "question": "How should Sakuta Azusagawa's mouth behave during the line '人間も同じってことか。'?",
+   "recommended": "His mouth remains static and slightly open (inner_voice).",
+   "user": "His mouth moves to lip-sync the line (on_screen).",
+   "why": "The line strip shows Sakuta's mouth shape is static and slightly open throughout the line, contradicting the beats which claim his mouth is 'speaking'."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 14,
+   "topic": "speaking",
+   "character": "Sakuta Azusagawa",
+   "question": "How is Sakuta Azusagawa's speech delivered given that he is visible in the background but his mouth is closed?",
+   "recommended": "Inner voice (visible, mouth still)",
+   "user": "Off-screen (character not visible)",
+   "why": "The line strip shows Sakuta's mouth is closed, and he is visible in the background, making 'inner voice' the most likely delivery type compared to 'off-screen' (which implies invisibility) or 'on-screen' (which requires mouth movement)."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 129,
+   "topic": "speaking",
+   "character": "Sakuta Azusagawa",
+   "question": "How is Sakuta Azusagawa's dialogue delivered in this cut?",
+   "recommended": "Off-screen or inner voice, as Sakuta is not visible in the frames.",
+   "user": "On-screen lip-synced, as Sakuta is visible peeking over a barrier.",
+   "why": "The pictures show only a shower head. Sakuta is not visible, so he cannot be lip-synced on-screen."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 131,
+   "topic": "speaking",
+   "character": "Sakuta Azusagawa",
+   "question": "Who speaks the line 'Yahho!' in this cut?",
+   "recommended": "Kaede Azusagawa",
+   "user": "Sakuta Azusagawa",
+   "why": "The transcript attributes the line to Sakuta, but the speaker label SPEAKER_03 is linked to Kaede in the surrounding dialogue, and the 'voices' section links SPEAKER_03 to Kaede (2 lines) and Sakuta (1 line)."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 137,
+   "topic": "pose",
+   "character": "Sakuta Azusagawa",
+   "question": "What is Sakuta's mouth state in the first frame?",
+   "recommended": "Mouth is closed.",
+   "user": "Mouth is slightly open.",
+   "why": "The first frame picture shows Sakuta's mouth is closed, contradicting the first frame description which claimed it was slightly open."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 137,
+   "topic": "pose",
+   "character": "Sakuta Azusagawa",
+   "question": "What is Sakuta's mouth state in keyframe F3 (1.58s)?",
+   "recommended": "Mouth is closed.",
+   "user": "Mouth is slightly open.",
+   "why": "The keyframe F3 picture shows Sakuta's mouth is closed, contradicting the keyframe description which claimed it was slightly open."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 137,
+   "topic": "speaking",
+   "character": "Sakuta Azusagawa",
+   "question": "Is Sakuta's mouth moving consistently during the dialogue line?",
+   "recommended": "No, his mouth is closed at the start and end of the line strip.",
+   "user": "Yes, his mouth is open and moving throughout the line.",
+   "why": "The line strip shows Sakuta's mouth is closed in the first and last tiles, contradicting the 'on_screen' delivery which implies continuous speaking."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 139,
+   "topic": "pose",
+   "character": "Sakuta Azusagawa",
+   "question": "Does Sakuta Azusagawa turn his head to face the camera during the cut?",
+   "recommended": "No, he remains facing screen-left throughout",
+   "user": "Yes, he turns to face the camera",
+   "why": "Pictures F2, F3, F4, and F5 all show Sakuta facing screen-left, contradicting the keyframes claim that he turns to face the camera."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 141,
+   "topic": "state",
+   "character": "Crying Lost Child",
+   "question": "Is the Crying Lost Child standing or sitting/crouching in the first frame?",
+   "recommended": "The Crying Lost Child is sitting or crouching on the ground.",
+   "user": "The Crying Lost Child is standing.",
+   "why": "The picture F1 clearly shows the child sitting/crouching, contradicting the first frame description."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 141,
+   "topic": "gaze",
+   "character": "Sakuta Azusagawa",
+   "question": "Where is Sakuta Azusagawa looking in the first frame?",
+   "recommended": "Sakuta Azusagawa is looking at the Crying Lost Child.",
+   "user": "Sakuta Azusagawa is looking up and to the left.",
+   "why": "The picture F1 shows Sakuta looking at the child, contradicting the keyframe F1 description."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 144,
+   "topic": "pose",
+   "character": "Crying Lost Child",
+   "question": "Is the Crying Lost Child standing or sitting in the opening still?",
+   "recommended": "Sitting on the ground behind Sakuta",
+   "user": "Standing behind Sakuta",
+   "why": "The first frame description says standing, but the keyframes and picture F1 show the character sitting."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 144,
+   "topic": "pose",
+   "character": "Tomoe Koga",
+   "question": "What is Tomoe Koga's arm position in the opening still?",
+   "recommended": "Right arm extended forward pointing",
+   "user": "Arms slightly bent and fists clenched",
+   "why": "The first frame description says fists clenched, but the keyframes and picture F1 show her pointing."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 148,
+   "topic": "speaking",
+   "character": "Tomoe Koga",
+   "question": "Is Tomoe Koga's line 'え？' (Eh?) delivered as an inner voice (mouth closed) or on-screen (mouth moving)?",
+   "recommended": "Inner voice: The line is an inner thought, and Tomoe's mouth remains closed throughout.",
+   "user": "On-screen: The line is spoken aloud, and Tomoe's mouth moves to form the sound.",
+   "why": "The keyframes show Tomoe's mouth closed at F2 (0.58s) and F3 (1.96s), which brackets the transcript time of the line (567.567s). The app_check 'line_without_visible_speaking' and the beats' 'inner_voice' label support this."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 154,
+   "topic": "state",
+   "character": "Sakuta Azusagawa",
+   "question": "What is visible in the frame at 2.21s (F4)?",
+   "recommended": "A white skirt (Tomoe's skirt).",
+   "user": "Sakuta Azusagawa with his mouth slightly open.",
+   "why": "The picture F4 shows a white skirt, contradicting the keyframe description which claims Sakuta is visible."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 155,
+   "topic": "state",
+   "character": "Tomoe Koga",
+   "question": "What is the final state of the cut?",
+   "recommended": "Tomoe Koga's face in profile, eyes closed, blushing.",
+   "user": "Tomoe Koga's lower body with skirt fallen back down.",
+   "why": "Picture F5 shows the face, contradicting the keyframe description of the skirt."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 155,
+   "topic": "state",
+   "character": "Tomoe Koga",
+   "question": "Does the cut contain a transition to a face shot?",
+   "recommended": "Yes, it transitions to Tomoe Koga's face.",
+   "user": "No, it remains on the skirt the whole time.",
+   "why": "Picture F5 shows the face, while keyframes F1-F4 show the skirt."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 176,
+   "topic": "state",
+   "character": "Sakuta Azusagawa",
+   "question": "What happens at the end of the cut?",
+   "recommended": "The camera cuts to Mai Sakurajima.",
+   "user": "Sakuta remains in frame with mouth closed.",
+   "why": "Picture F5 shows Mai Sakurajima, contradicting the keyframe text which says Sakuta is still in frame."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 178,
+   "topic": "speaking",
+   "character": "Mai Sakurajima",
+   "question": "How is Mai Sakurajima's line delivered?",
+   "recommended": "inner_voice (visible, mouth still)",
+   "user": "on_screen (lip-synced)",
+   "why": "The line strip shows Mai's mouth is static during her line, contradicting the 'on_screen' delivery in the beats."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 197,
+   "topic": "speaking",
+   "character": "Shoko Makinohara",
+   "question": "How is Shoko Makinohara's speech delivered in this cut?",
+   "recommended": "Inner voice (visible character, mouth remains closed).",
+   "user": "Lip-synced (on_screen) with her mouth moving.",
+   "why": "The line strip images show Shoko's mouth is closed throughout the speech, contradicting the beats' claim of 'on_screen' and 'mouth: speaking'."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 204,
+   "topic": "speaking",
+   "character": "Sakuta Azusagawa",
+   "question": "For the first line (0.27-2.03s), is the delivery inner_voice with a closed mouth, or on_screen with a moving mouth?",
+   "recommended": "inner_voice with a closed mouth",
+   "user": "on_screen with a moving mouth",
+   "why": "The line strip shows a closed mouth, contradicting the app check but supporting the beats."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 207,
+   "topic": "emotion",
+   "character": "Mai Sakurajima",
+   "question": "What is Mai Sakurajima's expression when she begins speaking?",
+   "recommended": "Neutral and serious",
+   "user": "Slightly surprised",
+   "why": "The performance beats describe a 'slightly surprised look', but the keyframes and line strip show her mouth open with a neutral/serious expression, without raised brows or widened eyes typical of surprise."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 217,
+   "topic": "speaking",
+   "character": "Mai Sakurajima",
+   "question": "How should Mai Sakurajima's dialogue be delivered given her back is to the camera?",
+   "recommended": "On-screen, but mouth not visible (no lip sync needed)",
+   "user": "Off-screen voice",
+   "why": "Mai is on screen but facing away, so her mouth is not visible. The transcript attributes the line to her. It is not an inner voice as she is addressing others."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 221,
+   "topic": "pose",
+   "character": "Mai Sakurajima",
+   "question": "Where is Mai Sakurajima's left hand at keyframe F4?",
+   "recommended": "Beside her body",
+   "user": "In front of her torso",
+   "why": "Picture F4 shows her hand down by her side, contradicting the keyframe description of it being in front of her torso."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 114,
+   "topic": "emotion",
+   "character": "Mai Sakurajima",
+   "question": "What is Mai Sakurajima's emotion in the first frame?",
+   "recommended": "Calm and neutral.",
+   "user": "Mild contentment.",
+   "why": "First frame says mild contentment, but the picture shows a neutral face, and the context is a serious conversation."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 122,
+   "topic": "speaking",
+   "character": "Mai Sakurajima",
+   "question": "How does Mai Sakurajima deliver her lines?",
+   "recommended": "Inner voice (mouth closed)",
+   "user": "On-screen lip-synced",
+   "why": "The line strip shows Mai's mouth closed while the transcript attributes speech to her."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 130,
+   "topic": "speaking",
+   "character": "Sakuta Azusagawa",
+   "question": "Does Sakuta Azusagawa's mouth move during his inner monologue?",
+   "recommended": "Yes, it opens slightly at the end of the line.",
+   "user": "No, it remains closed throughout the line.",
+   "why": "The line strip shows the mouth opening slightly at +3.08s, while the beats claim it remains closed."
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 133,
+   "topic": "speaking",
+   "character": "Sakuta Azusagawa",
+   "question": "How is Sakuta Azusagawa's line 'Hey, don't peek!' delivered?",
+   "recommended": "Inner voice (mouth closed)",
+   "user": "On-screen lip-synced",
+   "why": "The line strip for Sakuta's line shows his mouth is closed in all frames, contradicting the transcript's implication of speaking and the beats' potential on-screen delivery."
+  }
+ ],
+ "shadowed_cuts": 0
+}

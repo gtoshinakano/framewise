@@ -397,6 +397,21 @@ def _line_split_invalidates(conn, job):
     line_splits.invalidate(conn, job)
 
 
+def _review_decision_gather(conn, job):
+    from . import review_decisions
+    return review_decisions.gather(conn, job)
+
+
+def _review_decision_inputs(conn, job):
+    from . import review_decisions
+    return review_decisions.inputs(conn, job)
+
+
+def _review_decision_invalidates(conn, job):
+    from . import review_decisions
+    review_decisions.invalidate(conn, job)
+
+
 def _transcription_scope(payload):
     return Scope(frozenset({'prepared_audio', 'voices', 'transcript', 'context', 'audio_ranges'}), frozenset({'transcript'}))
 
@@ -656,6 +671,13 @@ KINDS = {kind.pipeline: kind for kind in (
              {'cut_boundaries', 'results:consistency_summary'}),
          priority_class=lambda payload: 'batch' if payload.get('auto_save') else 'interactive',
          inputs=_review_inputs, gather=_review_gather, invalidates=_review_invalidates),
+    # The autopilot's answers to the review questions (review_decisions.py, M4): a local decider per cut, then the resolver
+    # applies or escalates in the publish transaction. A shadow run writes only its own record.
+    Kind('review_decisions', 'Review decisions (agent)', True, cuts=_one_cut, keys=_cut_keys('review_decisions'), cancel_running=_always, retry=_always,
+         lane='text', handler='review_decisions.process', resources=frozenset({'text'}),
+         scope=lambda payload: _cut_scope(payload, {'cut_boundaries', 'results', 'transcript', 'subtitles', 'context', 'detections', 'decisions'},
+             set() if payload.get('shadow') else {'decisions'}, {'cut_boundaries', 'results:consistency_summary'}),
+         priority_class=lambda payload: 'batch', inputs=_review_decision_inputs, gather=_review_decision_gather, invalidates=_review_decision_invalidates),
     Kind('regen', 'Cut summary', True, label=_summary_label, cuts=_one_cut, keys=_cut_keys('regen'), cancel_running=_always,
          lane='text', handler='inference_worker.process_regen', resources=frozenset({'text'}),
          scope=lambda payload: _cut_scope(payload, {'original', 'cut_boundaries', 'results', 'decisions', 'context', 'chunks', 'detections', 'transcript', 'subtitles'},

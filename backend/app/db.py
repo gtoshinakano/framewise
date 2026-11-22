@@ -299,6 +299,24 @@ def init_db():
             checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS missed_cut_checks_episode_idx ON missed_cut_checks(episode_id,verdict);
+        -- The local decider's answers to one consistency review's questions (review_decisions.py, milestone M4): per
+        -- question its choice and confidence, and what the resolver did with it. A shadow row was decided with the user's
+        -- answers hidden and changed nothing; it measures the decider. cut_id is plain text, never a foreign key.
+        CREATE TABLE IF NOT EXISTS review_decisions (
+            id TEXT PRIMARY KEY,
+            cut_id TEXT NOT NULL,
+            episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            result_id TEXT NOT NULL,
+            job_id TEXT, run_id TEXT,
+            shadow INTEGER NOT NULL DEFAULT 0,
+            decisions_json TEXT NOT NULL DEFAULT '{}',
+            outcomes_json TEXT NOT NULL DEFAULT '{}',
+            model_id TEXT,
+            provenance_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS review_decisions_cut_idx ON review_decisions(cut_id,result_id,shadow);
+        CREATE INDEX IF NOT EXISTS review_decisions_episode_idx ON review_decisions(episode_id);
         -- What the user tells the autopilot once per project (autopilot_profile.py, the Autopilot profile dialog).
         CREATE TABLE IF NOT EXISTS autopilot_profiles (
             project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,

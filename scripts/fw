@@ -20,12 +20,15 @@
     scripts/fw missed-cuts check "Episode 6"     # find hard cuts the detection missed; split the sure ones, ask about the rest
     scripts/fw missed-cuts report "Episode 6"    # what it split (undo ids) and the open questions with their pictures
     scripts/fw line-splits "Episode 6"           # what the line splitter would do with lines across hard cuts; add run to apply it
+    scripts/fw review-decisions run "Episode 6"  # the agent answers the consistency review questions it can, asks about the rest
+    scripts/fw review-decisions report "Episode 6"  # what it answered (undo ids), the questions for Claude or you, trust per topic
 
 Cut numbers are the editor's (1-based). RANGE is 100-120, 100..120, 7, 5- (to the end), -10 or all (the default).
 Only the HTTP API is used: FRAMEWISE_URL, else http://chopper.local:8080 (the server). It runs the same from any machine
 on the LAN, and nothing on the machine it runs from needs rebuilding or restarting.
 It queues, waits, retries, dismisses, cancels and reads. It never edits labels, boxes, transcript text, answers,
-dialogue or sequences, and never restarts containers.
+dialogue or sequences itself, and never restarts containers; the autopilot's resolvers (missed-cuts, line-splits,
+review-decisions) change cuts, lines and answers in the server, each change logged as an undoable agent decision.
 
 Exit codes: 0 ok or done, 1 error, 2 blocked on a person, 3 busy (work is queued or running).
 """
@@ -1277,6 +1280,94 @@ def cmd_line_splits(api, args):
     return OK
 
 
+# --- answers to the consistency review questions (docs/autopilot/HARNESS.md M4) ---------------------------------
+
+def _picks(words):
+    """``q1=a q2=b`` (option ids) or ``q3="text"`` as the answer route's picks."""
+    picks = []
+    for word in words or []:
+        question, sep, value = word.partition('=')
+        if not sep or not question or not value:
+            raise Failure(f'write each answer as QUESTION=OPTION, e.g. q1=a (got {word!r})')
+        value = value.strip()
+        picks.append({'question': question.strip(), **({'option': value} if re.fullmatch(r'[a-d]', value) else {'text': value})})
+    return picks
+
+
+def cmd_review_decisions(api, args):
+    if args.action in ('run', 'report'):
+        episode = find_episode(api, args.target, args.latest)
+        span = parse_range(args.extra[0] if args.extra else 'all')
+        if args.action == 'run':
+            result = api.post(f"/api/episodes/{episode['id']}/review-decisions",
+                              body={'from_cut': span[0], 'to_cut': span[1], 'run_id': args.run, 'shadow': args.shadow, 'redo': args.redo})
+            skipped = '; '.join(f"{reason.replace('_', ' ')}: {len(cuts)}" for reason, cuts in (result.get('skipped') or {}).items())
+            text = result.get('detail') or (f"queued {len(result['job_ids'])} {'shadow ' if args.shadow else ''}decision job(s) for {range_text(span)}"
+                                             + (f" (skipped {skipped})" if skipped else '')
+                                             + (f"\nwait with: fw wait {episode['id'][:8]} --jobs {','.join(result['job_ids'])}" if result['job_ids'] else ''))
+            emit(args, result, text)
+            return OK
+        data = api.get(f"/api/episodes/{episode['id']}/review-decisions", {'from_cut': span[0], 'to_cut': span[1], 'shadow': 'true' if args.shadow else 'false'})
+        if args.json:
+            emit(args, data, '')
+            return OK
+        lines = [f"{episode['project']} / {episode['title']} · {range_text(span)}{' (shadow)' if args.shadow else ''}: "
+                 + (', '.join(f"{action} {count}" for action, count in sorted(data['counts'].items())) or 'nothing decided yet')]
+        trust = data.get('trust') or {}
+        if trust:
+            needed = data.get('trust_needed', 0.9)
+            rates = ['—' if entry['rate'] is None else f"{entry['rate']:.0%}" for entry in (trust[topic] for topic in sorted(trust))]
+            lines.append(f"TRUST per topic (applied alone from {needed:.0%}):  " + '  '.join(
+                f"{topic} {rate} ({trust[topic]['scored']}, {trust[topic]['source']})" for topic, rate in zip(sorted(trust), rates)))
+        applied = [item for item in data['applied'] if not item['undone_at']]
+        if applied and not args.shadow:
+            lines.append(f"ANSWERED BY THE AGENT ({len(applied)}; undo one with fw agent undo ID --decision):")
+            for item in applied:
+                lines.append(f"  - {item['summary']}{' (changed by a person since)' if item['overridden_at'] else ''}  id {item['id']}")
+                for line in (item['after'] or {}).get('lines') or []:
+                    lines.append(f"      {line['question']} {line['topic']}{' · ' + line['character'] if line.get('character') else ''}: {line['text']}")
+                if item['cut_id']:
+                    lines.append(f"    {cut_url(api, episode, item['cut_id'], 'analysis')}")
+        if data['questions'] and not args.shadow:
+            lines.append(f"QUESTIONS ({len(data['questions'])}; answer with fw review-decisions answer ID q1=a q2=b [--unsure q3] [--tier claude]):")
+            for item in data['questions']:
+                evidence = item['evidence'] or {}
+                lines.append(f"  - [{'Claude' if item['reviewer'] == 'claude' else 'person'}] {item['question']}  id {item['id']}")
+                for question in evidence.get('questions') or []:
+                    options = '  '.join(f"{option['id']}{'*' if option['id'] == question.get('recommended') else ''}) {option['text']}" for option in question.get('options') or [])
+                    lines.append(f"      {question['id']} {question.get('question')}  [{options}]  proposal {question.get('proposal') or '—'}: {question.get('why_asked', '')}")
+                if evidence.get('sheet'):
+                    lines.append(f"    pictures: {api.url}{evidence['sheet']}")
+                if evidence.get('cut_id'):
+                    lines.append(f"    cut: {cut_url(api, episode, evidence['cut_id'], 'analysis')}")
+        print('\n'.join(lines))
+        return BLOCKED if data['questions'] and not args.shadow else OK
+    if not args.target:
+        raise Failure(f'fw review-decisions {args.action} needs an escalation id (fw review-decisions report EP lists them)')
+    question = api.get(f'/api/escalations/{quote(args.target)}')
+    if question.get('kind') != 'review_question':
+        raise Failure(f'{args.target} is not a review-question escalation')
+    evidence = question.get('evidence') or {}
+    if args.action == 'sheet':
+        path, _, query = (evidence.get('sheet') or '').partition('?')
+        params = dict(part.split('=', 1) for part in query.split('&') if '=' in part)
+        image = api.raw(path, params)
+        out = args.out or f"review-{args.target[:8]}.jpg"
+        with open(out, 'wb') as handle:
+            handle.write(image)
+        emit(args, {'file': out, 'question': question['question']}, f"{out}\n{question['question']}")
+        return OK
+    if args.action == 'answer':
+        unsure = [item.strip() for item in (args.unsure or '').split(',') if item.strip()]
+        result = api.post(f'/api/escalations/{quote(args.target)}/review-answers',
+                          body={'answers': _picks(args.extra), 'unsure': unsure, 'tier': args.tier, 'run_id': args.run, 'note': args.note})
+        emit(args, result, {'resolved': 'answered', 'handed_to_person': 'answered what it could; the rest goes to the person',
+                            'open': f"saved; still open: {', '.join(result.get('open') or [])}", 'outdated': 'the review was written again; closed'}.get(result.get('status'), str(result))
+             + (f" (decision {result['decision_id']})" if result.get('decision_id') else ''))
+        return OK
+    raise Failure(f'unknown action {args.action!r}')
+
+
 # --- command line ------------------------------------------------------------------------------------------------
 
 def parser():
@@ -1384,6 +1475,20 @@ def parser():
     command.add_argument('action', nargs='?', default='preview', choices=('preview', 'run'))
     command.add_argument('--run', help='run: the agent run the changes belong to')
     command.add_argument('--all', action='store_true', help='preview: also the lines it would leave as they are')
+    command = sub.add_parser('review-decisions', parents=[common],
+                             help='the agent answers consistency review questions: run EP [RANGE], report EP [RANGE], sheet ID, answer ID q1=a ...')
+    command.add_argument('action', choices=('run', 'report', 'sheet', 'answer'))
+    command.add_argument('target', nargs='?', help='episode (run, report) or escalation id (sheet, answer)')
+    command.add_argument('extra', nargs='*', help='run/report: the cut range; answer: QUESTION=OPTION pairs (q1=a), or q2="your text" for a person')
+    command.add_argument('--latest', action='store_true', help='the newest episode')
+    command.add_argument('--shadow', action='store_true', help='run/report: decide with your answers hidden and change nothing (measures the agent)')
+    command.add_argument('--redo', action='store_true', help='run: also cuts already decided for the current review')
+    command.add_argument('--run', help='the agent run (fw agent start)')
+    command.add_argument('--tier', default='human', choices=('claude', 'human'), help='answer: who answers (claude = the second reviewer)')
+    command.add_argument('--unsure', help='answer (Claude): question ids to hand to the person, e.g. q2,q3')
+    command.add_argument('--note', help='answer: why (kept with the decision)')
+    command.add_argument('--out', help='sheet: file to write (default review-ID.jpg)')
+    command.set_defaults(func=cmd_review_decisions)
     command = sub.add_parser('close', parents=[common], help='close an escalation: resolved or dismissed')
     command.add_argument('escalation')
     command.add_argument('--status', default='resolved', choices=('resolved', 'dismissed'))

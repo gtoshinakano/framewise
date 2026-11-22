@@ -104,6 +104,14 @@ def requeue(conn, job, payload, cut_ids, prerequisite=False):
         if not again:
             raise Unfixable('line splits are switched off in the Autopilot profile')
         return [again]
+    if pipeline == 'review_decisions':
+        from . import review_decisions
+        queued = review_decisions.queue(conn, episode_id, cut_ids=cut_ids, run_id=payload.get('run_id'), shadow=bool(payload.get('shadow')), redo=True)
+        if queued is None:
+            raise Unfixable('review answers are switched off in the Autopilot profile')
+        if not queued['job_ids']:
+            raise Unfixable('nothing is left to decide: ' + ', '.join(queued['skipped']) if queued['skipped'] else 'nothing is left to decide')
+        return queued['job_ids']
     if pipeline == 'missed_cuts':
         from . import missed_cuts
         checked = missed_cuts.queue(conn, episode_id, first_index=payload.get('first_index') or 0, last_index=payload.get('last_index'),

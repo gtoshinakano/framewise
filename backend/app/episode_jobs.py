@@ -18,7 +18,7 @@ from .analysis_context import json_object_or_empty
 ACTIVE = ('queued', 'running')
 RECENT = 25
 # Pipelines whose payload names the cuts they work on (``serialize`` builds ``cuts`` for these).
-CUT_PIPELINES = ('analyze', 'character_detect', 'regen', 'consistency_summary', 'review_answers', 'performance_beats')
+CUT_PIPELINES = ('analyze', 'character_detect', 'regen', 'consistency_summary', 'review_answers', 'review_decisions', 'performance_beats')
 COLUMNS = 'id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,priority_class,payload_json'
 
 
@@ -53,7 +53,7 @@ def serialize(conn, episode_id, rows, current_cuts):
             items = payload.get('cuts', [])
         elif job['pipeline'] == 'character_detect':
             items = [{'cut_id': payload.get('cut_id'), 'context': {'cut': payload.get('cut', {})}}]
-        elif job['pipeline'] in ('regen', 'consistency_summary', 'review_answers', 'performance_beats'):
+        elif job['pipeline'] in ('regen', 'consistency_summary', 'review_answers', 'review_decisions', 'performance_beats'):
             items = [{'cut_id': payload.get('cut_id'), 'context': payload.get('context', {})}]
         else:
             items = []

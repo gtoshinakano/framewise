@@ -89,7 +89,7 @@ FIXES = {
     'out_of_scope': ('leave', 0, 'leave it: sequences are out of the autopilot\'s scope'),
 }
 # Pipelines triage can queue again with the current settings (triage.requeue); the others only through their own retry.
-REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'regen', 'missed_cuts', 'line_splits')
+REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'review_decisions', 'regen', 'missed_cuts', 'line_splits')
 OUT_OF_SCOPE = ('sequence', 'brief_export')
 
 
@@ -124,7 +124,7 @@ def job_steps(pipeline, payload):
     if pipeline == 'regen':
         return ['summary'] if job_kinds.kind_of('regen').name(payload) == 'Cut summary' else []
     return {'keyframes': ['keyframes'], 'performance_beats': ['beats'], 'consistency_summary': ['consistency'],
-            'review_answers': ['answers']}.get(pipeline, [])
+            'review_answers': ['answers'], 'review_decisions': ['answers']}.get(pipeline, [])
 
 
 def _loads(text, default):

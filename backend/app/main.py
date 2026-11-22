@@ -91,6 +91,8 @@ from .autopilot_api import router as autopilot_router
 app.include_router(autopilot_router)
 from .missed_cuts_api import router as missed_cuts_router
 app.include_router(missed_cuts_router)
+from .review_decisions_api import router as review_decisions_router
+app.include_router(review_decisions_router)
 from .visual_models_api import router as visual_models_router
 app.include_router(visual_models_router)
 from .point_detect_api import first_frame_spec, router as point_detect_router
@@ -2535,11 +2537,16 @@ def get_brief_instructions(cut_id: str):
 
 @app.put("/api/cuts/{cut_id}/brief-instructions")
 def put_brief_instructions(cut_id: str, body: BriefInstructionsInput):
-    from . import review_answers
+    from . import agent_log, review_answers, review_decisions
     analysis_config_for_cut(cut_id)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
+        if review_answers.saved_answers(conn, cut_id) != body.content:
+            agent_log.note_override(conn, 'cut_brief_instructions', cut_id)
         review_answers.save_hand_answers(conn, cut_id, body.content)
+        cut = conn.execute('SELECT episode_id FROM cuts WHERE id=?', (cut_id,)).fetchone()
+        if cut:
+            review_decisions.close_settled(conn, cut['episode_id'], [cut_id])
         row = db.one("SELECT updated_at FROM cut_brief_instructions WHERE cut_id=?", (cut_id,), conn=conn)
     return {"content": body.content, "updated_at": row["updated_at"] if row else None}
 

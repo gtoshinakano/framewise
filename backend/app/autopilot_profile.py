@@ -111,8 +111,8 @@ def normalize(raw, character_ids):
     return profile
 
 
-def policy(conn, episode_id, kind, run_id=None):
-    """``{mode, claude}`` for one decision kind: from the run's profile snapshot when there is a run, else the project's profile.
+def profile_for(conn, episode_id, run_id=None, kind=None):
+    """The whole profile that applies: the run's snapshot when there is a run (and it knows ``kind``), else the project's.
 
     Raises KeyError for an unknown run and ValueError for a run of another episode."""
     profile = None
@@ -123,9 +123,17 @@ def policy(conn, episode_id, kind, run_id=None):
         if row['episode_id'] != episode_id:
             raise ValueError('The agent run belongs to another episode')
         profile = json.loads(row['policy_json'] or '{}') or None
-    if not profile or kind not in (profile.get('modes') or {}):
+    if not profile or (kind and kind not in (profile.get('modes') or {})):
         project = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()
         profile, _ = load(conn, project['project_id'])
+    return profile
+
+
+def policy(conn, episode_id, kind, run_id=None):
+    """``{mode, claude}`` for one decision kind: from the run's profile snapshot when there is a run, else the project's profile.
+
+    Raises KeyError for an unknown run and ValueError for a run of another episode."""
+    profile = profile_for(conn, episode_id, run_id, kind)
     claude = profile.get('claude') or {}
     return {'mode': profile['modes'][kind], 'claude': bool(claude.get('enabled', True))}
 

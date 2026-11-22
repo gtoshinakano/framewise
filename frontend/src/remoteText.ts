@@ -16,6 +16,7 @@ export const TEXT_JOB_TYPES: { pipeline: string; label: string }[] = [
   { pipeline: 'speaker_attribution', label: 'Speaker attribution' },
   { pipeline: 'consistency_summary', label: 'Consistency summary' },
   { pipeline: 'review_answers', label: 'Production decisions' },
+  { pipeline: 'review_decisions', label: 'Review decisions (agent)' },
   { pipeline: 'regen', label: 'Cut summary' },
   { pipeline: 'sequence', label: 'Sequence steps' },
 ]
