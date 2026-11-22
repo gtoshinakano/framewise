@@ -1,7 +1,7 @@
 import { useEpisodeEvents } from './episodeEvents'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, ImageMinus, Loader2, PencilLine, ScanFace, Trash2, XCircle } from 'lucide-react'
-import { api, type ContextItem, type KeyframeAnalysis, type KeyframeAnalysisState, type KeyframeSegment } from './api'
+import { api, keyframeFrameUrl, type ContextItem, type KeyframeAnalysis, type KeyframeAnalysisState, type KeyframeSegment } from './api'
 import { BetweenFrames } from './BetweenFrames'
 import { BoxEditor, type EditorBox } from './BoxEditor'
 import { boxColor } from './boxColors'
@@ -116,7 +116,7 @@ function PairChanges({ segment, slotOf }: { segment: KeyframeSegment; slotOf: (n
   </div>
 }
 
-const frameUrl = (cutId: string, ordinal: number, revision?: string | null) => `/api/cuts/${encodeURIComponent(cutId)}/keyframe-selection/frames/${ordinal}?revision=${encodeURIComponent(revision || '')}`
+const frameUrl = keyframeFrameUrl
 
 export function TargetFrames({ cutId, selection, error, projectId, detections, onChanged }: {
   cutId: string; selection: Selection | null; error: string; projectId: string

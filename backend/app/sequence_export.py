@@ -13,7 +13,8 @@ full, complete description of each outfit the sequence uses, from the project's 
 ``shot-NN-ref.wav`` (only for shots shorter than 5 s: the original audio from the shot's start for the generated length,
 silence only where the episode audio ends), ``shot-NN-initial.jpg``,
 ``shot-NN-last.jpg``, ``shot-NN-strip.jpg``, ``preview/shot-NN.jpg``, ``shot-NN-prompt.txt``,
-``shot-NN-prompt-template.txt`` and ``shot-NN-still.txt``. On request (``include``): ``sequence.wav``,
+``shot-NN-prompt-template.txt`` and ``shot-NN-still.txt``; ``shot-NN-reference.jpg`` when the user chose a staging
+reference keyframe for the shot (the exact source frame, the prompt's last ``<Picture N>``). On request (``include``): ``sequence.wav``,
 ``shot-NN-clip.mp4`` and ``references/`` (character crops, scene frames, voice samples).
 """
 import hashlib
@@ -197,6 +198,16 @@ def reference_audio(audio, folder, spec, exact):
                  'source': source + ('; silence where the episode audio ends' if silence > 0.001 else '')}
 
 
+def reference_frame(source, path, spec):
+    """The shot's staging reference keyframe at the original resolution, cut by its frame number (never a rounded time)."""
+    from . import frame_cache
+    reference = spec['reference']
+    data = frame_cache.render({'source': source, 'time': reference['time'], 'start': spec['cut_start'], 'end': spec['cut_end'], 'width': 8192, 'last': False,
+                               'seek_tolerance': .000002, 'quality': 2, 'ordinal': reference['ordinal']})
+    path.write_bytes(data)
+    return reference['time']
+
+
 def write_shots(job, owner, episode, worker, out, temp, specs, shots, audio, source, include):
     """Per shot audio, frames, strip, preview, texts and clip; returns the initial JPEG of each shot for the contact sheet."""
     initials = {}
@@ -212,7 +223,8 @@ def write_shots(job, owner, episode, worker, out, temp, specs, shots, audio, sou
                 'initial': pool.submit(media.extract_cut_frame, source, folder / 'initial.jpg', spec['frame_time'], spec['cut_start'], spec['cut_end'], width=None, seek_tolerance=.000002),
                 'last': pool.submit(media.extract_cut_frame, source, folder / 'last.jpg', end, start, end, width=None, last=True, seek_tolerance=.000002),
                 'strip': [(time, pool.submit(media.extract_cut_frame, source, folder / f'strip-{number:02d}.jpg', time, start, end, width=STRIP_TILE[0], seek_tolerance=.000002))
-                          for number, time in enumerate(strip_times(spec['picture']))]}
+                          for number, time in enumerate(strip_times(spec['picture']))],
+                'reference': pool.submit(reference_frame, source, folder / 'reference.jpg', spec) if spec.get('reference') else None}
         for spec in specs:
             index = spec['index']
             worker.stage(job['id'], owner, episode['id'], f'Exporting shot {index}')
@@ -229,9 +241,17 @@ def write_shots(job, owner, episode, worker, out, temp, specs, shots, audio, sou
                 out.error('shot_audio', exc, shot=index, path=name(index, '.wav'))
             jobs = frames.get(index)
             if jobs is None:
-                for asset, suffix in (('initial_frame', '-initial.jpg'), ('last_frame', '-last.jpg'), ('strip', '-strip.jpg')):
+                for asset, suffix in (('initial_frame', '-initial.jpg'), ('last_frame', '-last.jpg'), ('strip', '-strip.jpg'), *((('reference_frame', '-reference.jpg'),) if spec.get('reference') else ())):
                     out.error(asset, 'Original video unavailable', shot=index, path=name(index, suffix))
             else:
+                if jobs['reference'] is not None:
+                    reference = spec['reference']
+                    try:
+                        time = jobs['reference'].result()
+                        out.add_file(folder / 'reference.jpg', name(index, '-reference.jpg'), 'reference_frame', shot=index, time=time, at=reference['at'], frame=reference.get('frame'),
+                                     source=f"original video, frame {reference['ordinal']} at {time:.3f} s: the staging reference the prompt names last among its pictures (placement, poses, expressions; not its look)")
+                    except Exception as exc:
+                        out.error('reference_frame', exc, shot=index, path=name(index, '-reference.jpg'))
                 try:
                     time = jobs['initial'].result()
                     initials[index] = folder / 'initial.jpg'

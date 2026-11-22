@@ -117,6 +117,7 @@ def shot_result(row):
             'generation_seconds': settings.get('summary_generation_seconds'), 'model_variant': usage.get('model_variant'), 'decode_tokens_per_second': usage.get('decode_tokens_per_second'),
             'origin': row['origin'], 'model_id': row['model_id'], 'job_id': row['job_id'], 'parent_id': row['parent_id'], 'created_at': row['created_at'],
             'instruction': settings.get('instruction'), 'instruction_source': settings.get('instruction_source'), 'trigger': settings.get('trigger'),
+            'reference_frame_source': settings.get('reference_frame_source'), 'reference_picture': settings.get('reference_picture'),
             'completed_by_app': settings.get('completed_by_app'),
             'assistant_summary': (settings.get('assistant_edit') or {}).get('summary')}
 
@@ -135,8 +136,8 @@ def shot_history(conn, sequence_id, shot_key):
     ``pending`` is a rewrite that is queued or running; ``proposals`` are the Assistant tab's changes to
     this shot that wait for the user to apply them.
     """
-    rows = [dict(row) for row in conn.execute("""SELECT id,parent_id,origin,model_id,rendered,settings_json,created_at FROM sequence_results
-        WHERE sequence_id=? AND type='shot' AND shot_key=? ORDER BY rowid""", (sequence_id, shot_key))]
+    rows = [dict(row) for row in conn.execute("""SELECT id,parent_id,origin,model_id,rendered,settings_json,created_at,json_extract(content,'$.reference_frame') AS reference
+        FROM sequence_results WHERE sequence_id=? AND type='shot' AND shot_key=? ORDER BY rowid""", (sequence_id, shot_key))]
     settings = [store.loads(row['settings_json'], {}) for row in rows]
     edits = [item.get('assistant_edit') if isinstance(item.get('assistant_edit'), dict) else None for item in settings]
     asked = [edit['proposal_id'] for edit in edits if edit and edit.get('proposal_id')]
@@ -153,12 +154,15 @@ def shot_history(conn, sequence_id, shot_key):
             'id': row['id'], 'number': number, 'origin': row['origin'], 'model_id': row['model_id'], 'created_at': row['created_at'],
             'instruction': extra.get('instruction'), 'instruction_source': extra.get('instruction_source'), 'earlier_instructions': extra.get('earlier_instructions'),
             'trigger': extra.get('trigger'),
+            'reference': store.loads(row['reference'], {}) or None, 'reference_source': extra.get('reference_frame_source'),
+            'reference_picture': extra.get('reference_picture'),
             'assistant': {'request': clip(requests.get(edit.get('proposal_id'))), 'summary': edit.get('summary') or '', 'provider': edit.get('provider'),
                           'model': edit.get('model'), 'session_id': edit.get('session_id')} if edit else None,
             'model_variant': (extra.get('usage') or {}).get('model_variant'), 'generation_seconds': extra.get('summary_generation_seconds'),
             'check_ok': (extra.get('check') or {}).get('ok'), 'prompt': prompt,
             'diff': text_diff.diff_segments(before['rendered'] or '', prompt) if before else None})
-    job = conn.execute("""SELECT status,json_extract(payload_json,'$.instruction') AS instruction,json_extract(payload_json,'$.trigger') AS reason FROM jobs
+    job = conn.execute("""SELECT status,json_extract(payload_json,'$.instruction') AS instruction,json_extract(payload_json,'$.trigger') AS reason,
+        json_extract(payload_json,'$.reference_frame') AS reference FROM jobs
         WHERE pipeline='sequence' AND status IN ('queued','running') AND json_extract(payload_json,'$.sequence_id')=? AND json_extract(payload_json,'$.step')='shot'
         AND json_extract(payload_json,'$.shot_key')=? ORDER BY rowid DESC LIMIT 1""", (sequence_id, shot_key)).fetchone()
     current = rows[-1]['id'] if rows else None
@@ -167,7 +171,8 @@ def shot_history(conn, sequence_id, shot_key):
                  for row in conn.execute(f"""SELECT p.id,p.created_at,p.summary,p.provider,p.model_id,p.base_result_id,p.base_content,p.content,{CHAT_REQUEST} AS request
                      FROM assistant_proposals p WHERE p.sequence_id=? AND p.target='sequence_shot' AND p.status='pending' AND json_extract(p.payload_json,'$.shot_key')=?
                      ORDER BY p.created_at DESC,p.rowid DESC""", (sequence_id, shot_key))]
-    return {'revisions': revisions[::-1], 'remembered': store.shot_instructions(conn, sequence_id, shot_key), 'pending': {'status': job['status'], 'instruction': job['instruction'] or None, 'trigger': job['reason']} if job else None,
+    return {'revisions': revisions[::-1], 'remembered': store.shot_instructions(conn, sequence_id, shot_key), 'pending': {'status': job['status'], 'instruction': job['instruction'] or None, 'trigger': job['reason'],
+                                                                                                             **({'reference': store.loads(job['reference'], {})} if job['reference'] else {})} if job else None,
             'proposals': proposals}
 
 

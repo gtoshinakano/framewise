@@ -653,11 +653,13 @@ def edge_words(shot, side):
     return result
 
 
-def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='', previous=None, level=0, earlier=(), from_review=False):
+def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='', previous=None, level=0, earlier=(), from_review=False, reference=None, shows=None):
     """Everything for one shot. ``shots`` are the expanded plan entries; ``previous`` is the shot written before it, if any.
 
     ``instruction`` is what this rewrite was asked to do and ``earlier`` the user's instructions of earlier rewrites of the shot (oldest first):
     all of them stay in force. An instruction that came from the automatic review (``from_review``) is a suggestion, below the user's own.
+    ``reference`` is the shot's reference keyframe (``sequence_reference.resolve``) and ``shows`` that frame's analysis
+    (``sequence_reference.evidence``); ``picture_attached`` is set by the job once it knows whether the picture goes along.
     """
     shot = shots[index]
     duration = shot['duration']
@@ -738,6 +740,9 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
         'dialogue': dialogue or 'Nobody speaks during this shot.',
         'speakers': shot_speakers(ctx, timeline, bible, shot) or None,
         'subtitles_for_meaning_only': {'language': ctx['subtitle_language'], 'lines': subtitles} if subtitles else None,
+        # The user's chosen staging moment is never shrunk away by the detail level: it is what the user asked for.
+        'reference_frame': {'frame': reference.get('frame'), 'at': reference['at'], 'chosen_by': 'user', 'shows': shows or 'not analysed: no keyframe states or boxes for this frame',
+                            'picture_attached': False} if reference else None,
     }
     payload['shot'] = {key: value for key, value in payload['shot'].items() if value is not None}
     return {key: value for key, value in payload.items() if value is not None}
@@ -837,9 +842,12 @@ def slot_tokens(provider):
     return total // local_text_runtime.text_job_concurrency()
 
 
-def fit(build, system, max_tokens, provider):
-    """The most detailed input that fits one slot next to the system prompt and the answer; returns ``(input, level)``."""
-    room = slot_tokens(provider) - compact.estimate_tokens(system) - max_tokens - 512
+def fit(build, system, max_tokens, provider, reserve=0):
+    """The most detailed input that fits one slot next to the system prompt and the answer; returns ``(input, level)``.
+
+    ``reserve`` is what attached pictures take (``assistant.images.TOKENS_PER_PICTURE`` each).
+    """
+    room = slot_tokens(provider) - compact.estimate_tokens(system) - max_tokens - 512 - reserve
     size = 0
     for level in range(LEVELS):
         payload = build(level)

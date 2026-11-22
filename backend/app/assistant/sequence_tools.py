@@ -174,6 +174,10 @@ def get_shot(ctx, args):
         out['plan'] = {'t_in_sequence': tools.span(view['t0'], view['t1']), 'seconds': view['duration'], 'generate_seconds': view['generate_seconds'], 'trim_to': view['trim_seconds'],
                        'cut': view['cut'], 'part': view['part'], 'frame': view['frame']['strategy'], 'opens': evidence.edge_words(view, 'opens'), 'closes': evidence.edge_words(view, 'closes'),
                        'scene': view['scene'], 'intent': view['intent']}
+        reference = ((result.get('content') or {}).get('reference_frame'))
+        if reference:
+            # Chosen by the user on the Shots tab; a proposed edit keeps it and can only change reference_line.
+            out['plan']['staging_reference'] = {'frame': reference.get('frame'), 'at': reference.get('at'), 'note': 'chosen by the user; the prompt takes only its staging'}
     if 'dialogue' in fields:
         out['dialogue'] = dialogue_rows(view, current['bible']) or 'nobody speaks during this shot'
     if 'direction' in fields:

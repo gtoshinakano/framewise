@@ -19,7 +19,7 @@ Whatever the app guesses is labelled: ``kind_guessed``, ``linked_by: name``, ``c
 import json
 import re
 
-from . import db, media, outfit_library, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_view, subtitle_store
+from . import db, media, outfit_library, sequence_evidence as evidence, sequence_prompt, sequence_reference, sequence_store as store, sequence_view, subtitle_store
 from .visual_contracts import _match_name
 
 CONTRACT = 'sequence-v2'
@@ -232,6 +232,10 @@ def picture_views(references, subjects):
     by_picture = {subject.get('picture'): subject['number'] for subject in subjects if subject.get('picture')}
     out = []
     for number, reference in enumerate((item for item in references if item['role'] != 'original_audio'), 1):
+        if reference['role'] == 'reference_frame':
+            # The user's staging reference: a source frame at ``at`` seconds of the shot (shot-NN-reference.jpg), for placement only.
+            out.append(pack({'role': 'reference_frame', 'at': reference.get('at'), 'frame': reference.get('frame')}))
+            continue
         out.append(pack({'role': reference['role'], 'subject': by_picture.get(number) if reference['role'] != 'initial_frame' else None}))
     return out
 
@@ -507,11 +511,17 @@ def build_shots(current, views, roster, subtitle_lines):
                  'prompt': result.get('prompt'), 'prompt_template': template, 'still_prompt': derived.get('still_prompt'), 'still': content.get('still')}
         shots.append(pack(entry))
         issues.extend(shot_issues(entry, content, frame, written, template, check))
-        picture = [max(shot['start_time'], own['start_time']), min(shot['end_time'], own['end_time'])]
+        reference = sequence_prompt.reference_of(content) if written else None
+        if reference and reference.get('ordinal') not in sequence_reference.analysed_ordinals(results):
+            issues.append(pack({'shot': shot['index'], 'severity': 'info', 'kind': 'reference_unanalysed',
+                                'text': f"The staging reference {reference.get('frame') or ''} (shot-{shot['index']:02d}-reference.jpg) has no keyframe analysis; "
+                                        'the prompt describes it from the picture alone, or not at all when the text engine could not see it.'}))
+        picture = list(sequence_reference.span(shot, own))
         assets.append({'index': shot['index'], 'start_time': shot['start_time'], 'end_time': shot['end_time'], 'duration': shot['duration'],
                        'generate_seconds': shot['generate_seconds'], 'cut': shot['cut'], 'part': shot['part'], 'at': shot['t0'],
                        'frame_time': shot['frame']['time'], 'cut_start': own['start_time'], 'cut_end': own['end_time'], 'picture': picture,
-                       'has_speech': bool(dialogue), 'description_source': frame['description_source']})
+                       'has_speech': bool(dialogue), 'description_source': frame['description_source'],
+                       'reference': {'ordinal': reference['ordinal'], 'time': reference['time'], 'at': reference['at'], 'frame': reference.get('frame')} if reference else None})
     return {'speakers': speakers, 'shots': shots, 'issues': issues, 'assets': assets}
 
 
@@ -686,7 +696,9 @@ def digest(full):
         subjects = {subject['n']: subject for subject in shot.get('subjects') or []}
         refs = []
         for number, picture in enumerate(shot.get('pictures') or [], 1):
-            if picture['role'] != 'initial_frame':
+            if picture['role'] == 'reference_frame':
+                refs.append(f"P{number} staging reference {picture.get('frame') or ''} @{picture.get('at', 0):.2f}s".replace('  ', ' '))
+            elif picture['role'] != 'initial_frame':
                 subject = subjects.get(picture.get('subject')) or {}
                 refs.append(f"P{number} {'sheet' if picture['role'] == 'character_sheet' else 'scenario'}: {subject.get('record_name') or subject.get('name')}")
         lines = []

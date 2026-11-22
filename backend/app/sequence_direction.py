@@ -158,9 +158,10 @@ One JSON object:
 - Each own cut can also contain keyframes (states and visible changes) and performance_beats (staged acting and delivery hints). Their times are already on this shot's clock. States immediately before zero or after the end are reference poses, not new events. Still camera is the Cut summary's camera and finish. The app adds it verbatim to the still, never to H3. Use it to describe the depth of field, textures, palette, lighting and atmosphere of the frozen image.
 - dialogue: the lines heard during this shot, with id, t (start and end on this shot's clock), the speaker and how the speaker is known. With dialogue_reviewed these words, speakers and seconds were fixed by the user and are final. subtitles_for_meaning_only appears only when the dialogue was not reviewed; it may help you understand the words, never show them.
 - speakers: one entry per speaker heard in this shot: the lines and seconds they speak, and per covered cut whether they are on screen there, whether their mouth visibly moves (yes, no, unclear) and whether that cut's picture is this shot's picture. A neighbouring cut whose audio this shot borrows is marked not shown: this shot's own picture goes on over those seconds. fixed_by_user lists time ranges in which the user decided how the speaker is heard.
+- reference_frame, only when the user chose one: a frame of this shot's own picture that the user picked as the staging reference (see REFERENCE FRAME). frame is its keyframe label and at its second on this shot's clock. shows is what the analysis found in that exact frame: per person the state the vision model read, body_measured (the body measured from keypoints), position (the screen side of the person's box) and height_in_frame (the share of the frame height the box fills: larger is nearer the camera), and the changes into and after the frame. picture_attached says whether the frame itself is attached after this input. The generator receives the same frame as a reference picture, with the app's instruction to take only the staging from it.
 
 ## PRECEDENCE
-1. What the user decided, which is final: dialogue (its words, speakers and seconds), fixed_by_user, the edges decided by the user, user_decisions, earlier_instructions_for_this_shot and instruction_for_this_shot.
+1. What the user decided, which is final: dialogue (its words, speakers and seconds), fixed_by_user, the edges decided by the user, user_decisions, earlier_instructions_for_this_shot, instruction_for_this_shot and reference_frame (the staging at its second).
 2. The opening frame decides the initial composition and state. For a shifted start, use the nearest timed keyframe states and changes to infer what is already in progress before second 0. Keyframes decide physical changes and their times. The current performance beats supply acting intent, face, gaze, body and delivery within those changes. If they disagree, use the observed keyframes. The Cut summary supplies acting notes and constraints. Older cuts use motion direction. Use neighbouring shots for continuity and review_suggestion as advice subordinate to the source and user decisions.
 Speech and its timing come only from the dialogue. The cut_summary and the motion (mouth events, speaking) tell you whether a mouth is seen moving and what the picture does, never what is said or when it is said: when one of them places speech at other seconds or in other words than the dialogue, follow the dialogue and say nothing about the difference. The first frame decides how the shot starts, the motion decides what changes over time, and what the take shows decides whether lips can be seen moving. When pose_detail and a free-text field disagree about facing, gaze or state, pose_detail wins; a character's state_correction means the video's activity is what the character does from the first second.
 
@@ -179,6 +180,7 @@ Speech and its timing come only from the dialogue. The cut_summary and the motio
   - narrative: the speaker may or may not be in the picture but is too far from the camera, or too small, for lip sync; the words simply play over the picture. Use it also for a narrator.
   subject is the exact subject name who carries the voice for on_screen and inner_voice (for a named speaker, that speaker), may name the distant subject for narrative, and is null for off_screen. Decide from this shot's own picture: a speaker who is visible only in a neighbouring cut whose audio this shot borrows is off screen here, and a speaker who is seen speaking in this shot's picture and finishes a phrase over borrowed seconds stays on_screen until the last word. Being the only person on screen is not proof of speaking; for an unconfirmed voice choose off_screen and add an open question. Ranges in fixed_by_user were decided by the user: repeat them exactly and write the picture and the acting around them.
 - scenario_anchors and scenario_keep: only when scenario_reference is present: 3 to 5 visible features of the place, and what must stay as in its reference.
+- reference_line: only when reference_frame is present (see REFERENCE FRAME).
 - continuity: from_previous is what must match the end of the previous shot; to_next is the state this shot hands over (positions, poses, props, gaze). One sentence each. When the evidence of this shot contradicts a neighbour (someone sits here and stands in the next opening frame, an outfit differs), follow this shot's own evidence and name the contradiction in open_questions instead of hiding it.
 - open_questions: only decisions the evidence cannot make.
 
@@ -188,6 +190,13 @@ Speech and its timing come only from the dialogue. The cut_summary and the motio
 - Audio treatment: the original audio is the spine. A mouth moves only while its speaker is on_screen and their words are heard, which is during the seconds t of that speaker's dialogue lines; a mouth beat starts and ends there, also where a mouth event or the cut summary puts the speech elsewhere. An off_screen voice needs a picture without that speaker; an inner_voice speaker keeps the lips still (or the mouth hidden) while the words play; a narrative speaker stays far enough away that no lip movement is expected. Beats must agree with the voices: never describe lips moving in speech for someone who is not on_screen at that second.
 - Sound: the app writes the sound section itself. It tells the generator to reproduce the original audio completely, with every voice, background sound, effect and music it holds. You cannot hear that audio, so never describe or assume a background sound, a room tone, the ambience of a place, other voices or music anywhere in your answer. Time the action to the dialogue and the motion evidence.
 - Sound of actions: an action that visibly makes contact is heard in the original audio at the moment it happens (something set down, dropped or knocked over, a door or drawer closing, a hand striking a surface, a step landing). When the evidence shows such a contact, end a beat exactly at the second it happens, so the contact sits on a timecode, and close that beat with a short clause naming the sound of the contact, so that the picture lands on the sound. Only for contacts the evidence shows, only the action's own sound, never a sound the picture does not cause.
+
+## REFERENCE FRAME
+Only when reference_frame is present. The user chose that frame because the staging of this shot is hard to get from words alone.
+- At its second the shot matches it: who is visible, each person's depth layer and screen side, body state, torso and head facing, gestures and hand positions, expression and gaze, the objects present and where they are, and the layout of the setting. Build the beats so that the acting arrives at that staging at that second; when it is a change, end a beat there.
+- It never changes the dialogue, the voices, the edges or anything else the user decided, and the opening frame still decides how the shot starts at second 0.
+- For that moment, the reference frame outranks the cut_summary and every free-text description. When the picture is attached, trust it for who is present, where they are and what objects are there; trust body_measured for the limb positions it measured.
+- reference_line: one or two sentences with only what that frame shows for staging: who is where (depth layer and screen side), their pose, facing, expression and gaze, and the objects and parts of the setting that are present, with names. Never describe how the frame looks (its rendering, outlines, colours, shading, texture or proportions), never name a medium or a style, and never call it a picture: the app adds the reference label and tells the generator how to use it.
 
 ## TIMING AT THE EDGES
 The edges of the shot are exact and lie on the original audio, so the acting must land on them. opens and closes give their seconds on this shot's clock.
@@ -218,7 +227,14 @@ Return exactly one JSON object:
  "scenario_anchors": "", "scenario_keep": "",
  "continuity": {"from_previous": "...", "to_next": "..."},
  "open_questions": ["..."]}
+With reference_frame, the object also has "reference_line": "...".
 Return JSON only."""
+
+# Appended to SHOT_SYSTEM only when the reference keyframe goes along as a picture (``sequence_pipeline.run_shot``).
+REFERENCE_PICTURE_NOTE = """
+
+## THE ATTACHED PICTURE
+One picture is attached after the input, named "reference frame": the frame the user chose in reference_frame. It is the only picture you see. Use it only for staging: who is present, where each person stands (depth layer and screen side), body pose, facing, gestures, expression, gaze, the objects present and the layout of the setting. It is a frame of the source and its look is not the look of the video: never describe its rendering, outlines, colours, shading, texture or proportions, and never name a medium or a style. Subtitles or other text in it are not part of the scene."""
 
 REVIEW_SYSTEM = FRAMING + """
 
@@ -669,7 +685,8 @@ def plan_content(answer, timeline, bible):
 
 # ----------------------------------------------------------------------- shot
 
-def shot_format(shot, roster, dialogue):
+def shot_format(shot, roster, dialogue, reference=False):
+    """json_schema of a shot's direction; ``reference`` adds ``reference_line`` when the shot has a reference keyframe."""
     heard = sequence_prompt.speakers(dialogue)
     voice = _object({'speaker': {'type': 'string', 'enum': heard} if heard else STRING, 'from': {'type': 'number'},
                      'delivery': {'type': 'string', 'enum': list(sequence_prompt.DELIVERIES)}, 'subject': {'type': ['string', 'null']}})
@@ -683,12 +700,13 @@ def shot_format(shot, roster, dialogue):
         'beats': {'type': 'array', 'minItems': 1, 'items': _object({'end': {'type': 'number'}, 'action': STRING})},
         'voices': {'type': 'array', 'items': voice},
         'scenario_anchors': STRING, 'scenario_keep': STRING,
+        **({'reference_line': STRING} if reference else {}),
         'continuity': _object({'from_previous': STRING, 'to_next': STRING}), 'open_questions': {'type': 'array', 'items': STRING}}))
 
 
 def _prose(content):
     """Every field the model writes as prose, with the name an error message gives it."""
-    yield from ((key, content.get(key)) for key in ('picture_line', 'keep_picture', 'summary', 'shot_line', 'framing_lock', 'light', 'scenario_anchors', 'scenario_keep'))
+    yield from ((key, content.get(key)) for key in ('picture_line', 'keep_picture', 'summary', 'shot_line', 'framing_lock', 'light', 'scenario_anchors', 'scenario_keep', 'reference_line'))
     yield 'camera.detail', content['camera'].get('detail')
     yield from ((f'still.{key}', value) for key, value in content['still'].items())
     yield from ((f'beat {number}', beat['action']) for number, beat in enumerate(content['beats'], 1))
@@ -784,13 +802,15 @@ def _voices(output, shot, dialogue, subjects, errors):
     return voices
 
 
-def validate_shot(output, shot, bible, roster, scenario, dialogue, generated=False):
+def validate_shot(output, shot, bible, roster, scenario, dialogue, generated=False, reference=None):
     """Check and normalise one shot's direction, render it and apply the H3 format rules.
 
     ``roster`` are the named characters of the covered cuts and ``dialogue`` the resolved lines of the
     shot. Returns the normalised direction; problems (including those of the rendered prompt) are raised.
     ``generated`` is true for a model's answer, which must give the still's placement; a hand or assistant
-    revision of a shot written before that key existed may leave it empty.
+    revision of a shot written before that key existed may leave it empty. ``reference`` is the shot's
+    reference keyframe (``sequence_reference.resolve``): the app sets it, so a ``reference_frame`` in
+    ``output`` is never read; a model's answer with a reference must describe it in ``reference_line``.
     """
     if not isinstance(output, dict):
         _fail(['The answer must be one JSON object'])
@@ -862,6 +882,12 @@ def validate_shot(output, shot, bible, roster, scenario, dialogue, generated=Fal
         errors.append('"scenario_anchors" is empty: give 3 to 5 visible features of the place, because the shot receives its scenario picture')
     if not scenario:
         content['scenario_anchors'] = content['scenario_keep'] = ''
+    if sequence_prompt.reference_of({'reference_frame': reference}):
+        content['reference_frame'] = dict(reference)
+        content['reference_line'] = _str(output.get('reference_line'))
+        if generated and not content['reference_line']:
+            errors.append('"reference_line" is empty: say in one or two sentences who is where in the reference frame, their pose, facing and expression, and the objects present')
+    # Without a reference neither key is stored, so shots without one keep exactly the content they always had.
     for field, value in _prose(content):
         for pattern, problem in BANNED:
             if value and pattern.search(value):

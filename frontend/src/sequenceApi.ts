@@ -64,8 +64,21 @@ export type ShotDirection = {
   camera: { move: string; amplitude: string; speed: string; detail: string }
   beats: { end: number; action: string }[]; voices?: ShotVoice[]
   scenario_anchors: string; scenario_keep: string; soundscape?: string; continuity: { from_previous: string; to_next: string }; open_questions: string[]
+  /** The keyframe the user chose as the staging reference (set by the app, kept by every later rewrite until cleared). */
+  reference_frame?: ShotReferenceFrame | null
+  /** The director's words for what that frame shows (who is where, poses, objects). */
+  reference_line?: string
 }
-export type ShotReference = { label: string; role: 'initial_frame' | 'character_sheet' | 'scenario' | 'original_audio'; character_context_id?: string | null; context_id?: string | null; name?: string | null }
+/** A frame of the shot's own cut: `ordinal` is the source frame index, `time` episode seconds, `at` seconds on the shot's clock, `frame` its keyframe label. */
+export type ShotReferenceFrame = { cut_id: string; ordinal: number; time: number; at: number; frame?: string | null }
+/** A keyframe the shot can take as its reference; `analysed` when the keyframe analysis has states for it. */
+export type ShotKeyframe = { frame: string; ordinal: number; time: number; at: number; analysed: boolean }
+export type ShotKeyframes = { cut_id: string; revision: string | null; status: 'current' | 'missing'; frames: ShotKeyframe[]; current: ShotReferenceFrame | null }
+export type ShotReference = {
+  label: string; role: 'initial_frame' | 'character_sheet' | 'scenario' | 'reference_frame' | 'original_audio'; character_context_id?: string | null; context_id?: string | null; name?: string | null
+  /** reference_frame only. */
+  at?: number; frame?: string | null
+}
 export type ShotResult = {
   id: string; content: ShotDirection; prompt: string | null; check: ShotCheck | null
   derived: { references?: ShotReference[]; dialogue?: ShotDialogue[]; voices?: ShotVoice[]; still_prompt?: string; audio_file?: string }
@@ -77,6 +90,10 @@ export type ShotResult = {
   trigger?: string | null
   /** The assistant's one-line description when the version was applied from the Assistant tab. */
   assistant_summary?: string | null
+  /** Where this version's reference keyframe came from: chosen for it (`user`), `kept` from the version before, `cleared`, or `dropped: why`. */
+  reference_frame_source?: string | null
+  /** `attached` when the director saw the reference keyframe, else why not. */
+  reference_picture?: string | null
 }
 /** One version of a shot's prompt and what caused it; `diff` compares its prompt with the version it replaced (null for the first). */
 export type ShotRevision = {
@@ -87,11 +104,17 @@ export type ShotRevision = {
   /** Set for a change applied from the Assistant tab: what the user asked in the chat and the assistant's summary. */
   assistant: { request: string | null; summary: string; provider: string | null; model: string | null; session_id: string | null } | null
   model_variant: string | null; generation_seconds: number | null; check_ok: boolean | null; prompt: string; diff: DiffSegment[] | null
+  /** The reference keyframe this version was written with, and where the choice came from (see `ShotResult.reference_frame_source`). */
+  reference?: ShotReferenceFrame | null; reference_source?: string | null; reference_picture?: string | null
 }
 /** A change to a shot proposed in the Assistant tab that waits to be applied or discarded there. */
 export type ShotProposal = { id: string; created_at: string; summary: string; request: string | null; provider: string | null; model: string | null; stale: boolean; prompt: string; diff: DiffSegment[] }
 /** `remembered` are the user's instructions of earlier rewrites of the shot, oldest first: every later rewrite keeps following them, the later one winning where two differ. */
-export type ShotHistory = { revisions: ShotRevision[]; remembered: string[]; pending: { status: 'queued' | 'running'; instruction: string | null; trigger: string | null } | null; proposals: ShotProposal[] }
+export type ShotHistory = {
+  revisions: ShotRevision[]; remembered: string[]; proposals: ShotProposal[]
+  /** `reference` is the keyframe chosen with the queued rewrite (`{clear: true}` when it clears it); absent when it keeps the current one. */
+  pending: { status: 'queued' | 'running'; instruction: string | null; trigger: string | null; reference?: { cut_id?: string; ordinal?: number; time?: number; clear?: boolean } | null } | null
+}
 export type StaleReason = 'plan' | 'bible' | 'evidence'
 export type SequenceShot = {
   index: number; key: string; t0: number; t1: number; start_time: number; end_time: number; duration: number; generate_seconds: number; trim_seconds: number | null
@@ -159,7 +182,11 @@ export const sequenceApi = {
   update: (id: string, body: { title?: string; instruction?: string }) => api<SequenceDetail>(`/sequences/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   remove: (id: string) => api<{ ok: boolean }>(`/sequences/${id}`, { method: 'DELETE' }),
   dismissReviewIssue: (resultId: string, index: number) => api<SequenceDetail>(`/sequence-results/${resultId}/review-issues/${index}/dismiss`, { method: 'POST' }),
-  run: (id: string, body: { step: RunStep; shot_keys?: string[]; only_missing?: boolean; instruction?: string; instruction_source?: 'user' | 'review' }) => api<{ queued: number; job_ids: string[] }>(`/sequences/${id}/run`, jsonBody(body)),
+  /** `reference_frame` (one shot only): a keyframe for the prompt's staging, or null to clear it; left out, the shot keeps its own. */
+  run: (id: string, body: { step: RunStep; shot_keys?: string[]; only_missing?: boolean; instruction?: string; instruction_source?: 'user' | 'review'; reference_frame?: { ordinal: number } | null }) =>
+    api<{ queued: number; job_ids: string[] }>(`/sequences/${id}/run`, jsonBody(body)),
+  /** The keyframes a shot can take as its staging reference, and the one its current prompt uses. */
+  shotKeyframes: (id: string, shotKey: string) => api<ShotKeyframes>(`/sequences/${id}/shots/${encodeURIComponent(shotKey)}/keyframes`),
   cancel: (id: string) => api<{ cancelled: number }>(`/sequences/${id}/cancel`, { method: 'POST' }),
   /** Add the episode's next cut to the end; its dialogue is compiled and appended, then the whole direction follows. */
   extend: (id: string) => api<SequenceDetail>(`/sequences/${id}/extend`, { method: 'POST' }),

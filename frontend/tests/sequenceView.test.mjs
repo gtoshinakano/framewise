@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, deliveryLabel, edgeTags, issueInstruction, issuesFor, progress, promptSections, rangeSeconds, revisionLabel, rulerStep, shotStatus, speakerRanges, spokenTimes, stage, staleText, timecode, timecodeSegments, versionNote } from '../src/sequenceView.ts'
+import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, deliveryLabel, edgeTags, issueInstruction, issuesFor, progress, promptSections, rangeSeconds, referenceChange, referenceLabel, referenceNote, revisionLabel, rulerStep, shotStatus, speakerRanges, spokenTimes, stage, staleText, timecode, timecodeSegments, versionNote } from '../src/sequenceView.ts'
 
 const shot = (index, extra = {}) => ({ index, key: `k${index}`, t0: (index - 1) * 4, t1: index * 4, duration: 4, stale: [], job: null, result: { check: { ok: true } }, ...extra })
 const detail = (extra = {}) => ({ sequence: { cuts_changed: false, cuts_missing: false }, missing: [], plan_problems: [], bible: {}, plan: {}, shots: [shot(1), shot(2)], jobs: [], ...extra })
@@ -172,4 +172,26 @@ test('the ruler gets coarser as the sequence gets longer', () => {
   assert.equal(rulerStep(12), 1)
   assert.equal(rulerStep(60), 5)
   assert.equal(rulerStep(180), 10)
+})
+
+test('a rewrite sends the reference keyframe only when the choice changed', () => {
+  const current = { cut_id: 'c', ordinal: 120, time: 10.5, at: 2.4, frame: 'F3' }
+  assert.equal(referenceChange(current, 120), undefined)
+  assert.equal(referenceChange(null, null), undefined)
+  assert.equal(referenceChange(undefined, null), undefined)
+  assert.deepEqual(referenceChange(current, 150), { ordinal: 150 })
+  assert.deepEqual(referenceChange(null, 150), { ordinal: 150 })
+  assert.equal(referenceChange(current, null), null)
+})
+
+test('a reference keyframe reads as its label and second, and a version says what happened to it', () => {
+  assert.equal(referenceLabel({ at: 2.4, frame: 'F3' }), 'F3 (2.40 s)')
+  assert.equal(referenceLabel({ at: 0, frame: null }), 'keyframe (0.00 s)')
+  assert.equal(referenceLabel(null), '')
+  assert.equal(referenceNote('user', { at: 2.4, frame: 'F3' }, 'attached'), 'Reference keyframe F3 (2.40 s) set; the director saw it.')
+  assert.equal(referenceNote('user', { at: 2.4, frame: 'F3' }, 'the text engine cannot read images'), 'Reference keyframe F3 (2.40 s) set (the text engine cannot read images).')
+  assert.equal(referenceNote('cleared', null), 'Reference keyframe cleared.')
+  assert.equal(referenceNote('dropped: the reference keyframe is no longer inside this shot', null), 'Reference keyframe dropped: the reference keyframe is no longer inside this shot.')
+  assert.equal(referenceNote('kept', { at: 2.4, frame: 'F3' }), null)
+  assert.equal(referenceNote(null, null), null)
 })

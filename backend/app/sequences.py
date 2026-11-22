@@ -24,6 +24,10 @@ class SequenceUpdate(BaseModel):
     instruction: str | None = Field(default=None, max_length=8000)
 
 
+class ShotKeyframeChoice(BaseModel):
+    ordinal: int = Field(ge=0, description="Source frame index of one of the current keyframes of the shot's cut, inside the shot's own picture.")
+
+
 class SequenceRunInput(BaseModel):
     step: Literal['compile', 'direct', 'bible', 'plan', 'shots', 'review']
     shot_keys: list[str] | None = Field(default=None, max_length=200, description='Only these shots (step shots); omitted writes every shot that needs it.')
@@ -31,6 +35,9 @@ class SequenceRunInput(BaseModel):
     instruction: str = Field(default='', max_length=4000, description='A correction for the shots being written.')
     instruction_source: Literal['user', 'review'] = Field(
         default='user', description="user: the user's own instruction, which every later rewrite of that shot keeps following. review: a suggestion of the automatic review, used for this rewrite only.")
+    reference_frame: ShotKeyframeChoice | None = Field(
+        default=None, description='Step shots with exactly one shot key: the keyframe the H3 prompt takes its staging from (positions, poses, expressions, setting, objects). '
+                                  'Left out, the shot keeps the reference it has; null clears it. The choice stays for every later rewrite of the shot.')
 
 
 class SequenceResultUpdate(BaseModel):
@@ -164,7 +171,11 @@ def delete_sequence(sequence_id: str):
 @router.post('/sequences/{sequence_id}/run')
 def run_sequence(sequence_id: str, body: SequenceRunInput):
     """Queue a step of the direction; `direct` writes the bible and the shot plan and then stops for review."""
-    job_ids = edit(lambda conn: sequence_edit.queue(conn, require(conn, sequence_id), body.step, body.shot_keys, body.only_missing, body.instruction, instruction_source=body.instruction_source))
+    reference = sequence_edit.KEEP
+    if 'reference_frame' in body.model_fields_set:
+        reference = body.reference_frame.ordinal if body.reference_frame else None
+    job_ids = edit(lambda conn: sequence_edit.queue(conn, require(conn, sequence_id), body.step, body.shot_keys, body.only_missing, body.instruction,
+                                                    instruction_source=body.instruction_source, reference=reference))
     return {'queued': len(job_ids), 'job_ids': job_ids}
 
 
@@ -350,6 +361,24 @@ def shot_prompt_history(sequence_id: str, shot_key: str):
     with db.connect() as conn:
         require(conn, sequence_id)
         return sequence_view.shot_history(conn, sequence_id, shot_key)
+
+
+@router.get('/sequences/{sequence_id}/shots/{shot_key}/keyframes')
+def shot_keyframes(sequence_id: str, shot_key: str):
+    """The keyframes a shot can take as its staging reference (the current keyframes of its cut inside the shot's own
+    picture) and the reference its current prompt uses. Thumbnails: `GET /api/cuts/{cut_id}/keyframe-selection/frames/{ordinal}?revision=`."""
+    from . import sequence_reference
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        sequence = require(conn, sequence_id)
+        current = sequence_view.state(conn, sequence)
+        shot = next((item for item in current['shots'] or [] if item['key'] == shot_key), None)
+        if shot is None:
+            raise HTTPException(404, 'That shot is not part of the current plan')
+        row = current['shot_rows'].get(shot_key)
+        listing = sequence_reference.candidates(conn, shot, current['ctx']['results'].get(shot['cut_id'], {}))
+    content = store.loads(row['content'], {}) if row else {}
+    return {**listing, 'current': content.get('reference_frame')}
 
 
 @router.get('/sequences/{sequence_id}/shots/{shot_key}/frame', response_class=Response,

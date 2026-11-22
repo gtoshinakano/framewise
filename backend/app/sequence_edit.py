@@ -8,7 +8,7 @@ import json
 import logging
 import math
 
-from . import outfit_library, sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, worker
+from . import outfit_library, sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_reference, sequence_store as store, sequence_timeline, sequence_view, worker
 
 DIRECT_STEPS = ('direct', 'bible', 'plan')
 log = logging.getLogger(__name__)
@@ -150,9 +150,33 @@ def queue_shot_views(conn, sequence, request, views):
             for view in views if needs_writing(view) or not request.get('only_missing', True)]
 
 
-def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='', trigger=None, then_shots=False, instruction_source='user'):
-    """Queue pipeline steps with their existing and newly requested prerequisites."""
+KEEP = object()  # ``queue(reference=KEEP)``: the shot keeps the reference keyframe it has
+
+
+def reference_payload(conn, sequence, step, shot_keys, ordinal):
+    """The job payload of a reference keyframe choice for one shot: ``{cut_id, ordinal, time}``, or ``sequence_reference.CLEAR`` for None."""
+    keys = list(dict.fromkeys(shot_keys or []))
+    if step != 'shots' or len(keys) != 1:
+        raise EditError(422, 'A reference keyframe is chosen for one shot at a time')
+    if ordinal is None:
+        return dict(sequence_reference.CLEAR)
+    shot = next((item for item in sequence_view.state(conn, sequence)['shots'] or [] if item['key'] == keys[0]), None)
+    if shot is None:
+        raise EditError(404, 'That shot is not part of the current plan')
+    try:
+        return sequence_reference.request(conn, shot, ordinal)
+    except ValueError as exc:
+        raise EditError(422, str(exc)) from exc
+
+
+def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='', trigger=None, then_shots=False, instruction_source='user', reference=KEEP):
+    """Queue pipeline steps with their existing and newly requested prerequisites.
+
+    ``reference`` is a reference keyframe chosen for the one shot in ``shot_keys``: a frame ordinal, or None to clear it;
+    left out, the shot keeps the reference it has (``sequence_reference.resolve``).
+    """
     sequence_id = sequence['id']
+    chosen = reference_payload(conn, sequence, step, shot_keys, reference) if reference is not KEEP else None
     pending = store.pending_jobs(conn, sequence_id)
     config = config_snapshot(conn)
     cuts = store.current_cuts(conn, sequence)
@@ -208,7 +232,7 @@ def queue(conn, sequence, step, shot_keys=None, only_missing=True, instruction='
                 known = {sequence_timeline.shot_key(shot['start_time'], shot['end_time']) for shot in spans}
                 if known and set(shot_keys) - known:
                     raise EditError(404, 'That shot is not part of the current plan')
-            job_ids = [insert('shot', waits, shot_key=key) for key in dict.fromkeys(shot_keys)]
+            job_ids = [insert('shot', waits, shot_key=key, **({'reference_frame': chosen} if chosen else {})) for key in dict.fromkeys(shot_keys)]
     elif step == 'review':
         job_ids = [insert('review', existing('compile', 'bible', 'plan', 'shots', 'shot'))]
     else:
@@ -483,10 +507,13 @@ def mark_ready(conn, sequence, shot_key=None):
 def preview_shot(current, shot, content):
     """Validate and render a shot's direction against the current bible and plan.
 
-    Returns ``(direction, prompt, check, derived, hashes)``; raises ``ValueError`` with the problems.
+    Returns ``(direction, prompt, check, derived, hashes)``; raises ``ValueError`` with the problems. The reference keyframe
+    is the current revision's: a hand or assistant edit keeps it whatever its JSON says, because only the Shots tab chooses it.
     """
     roster, scenario, dialogue = evidence.shot_parts(current['ctx'], current['bible'], shot)
-    normal = direction.validate_shot(content, shot, current['bible'], roster, scenario, dialogue)
+    row = (current.get('shot_rows') or {}).get(shot['key'])
+    reference = sequence_prompt.reference_of(store.loads(row['content'], {})) if row else None
+    normal = direction.validate_shot(content, shot, current['bible'], roster, scenario, dialogue, reference=reference)
     camera = evidence.still_camera(current['ctx']['results'].get(shot['cut_id'], {}))
     if camera:
         normal['still']['camera_look'] = camera

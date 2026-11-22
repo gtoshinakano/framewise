@@ -12,7 +12,7 @@ import os
 import time
 
 from . import db, job_inputs, local_text_runtime, outfit_library, worker
-from . import sequence_compile, sequence_direction as direction, sequence_edit, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, subtitle_store
+from . import sequence_compile, sequence_direction as direction, sequence_edit, sequence_evidence as evidence, sequence_prompt, sequence_reference, sequence_store as store, sequence_timeline, sequence_view, subtitle_store
 
 log = logging.getLogger(__name__)
 
@@ -116,23 +116,27 @@ def result_settings(settings, snapshot):
     }}
 
 
-def ask(job, owner, payload, step, build, response_format, validator, label, fallback=None):
+def ask(job, owner, payload, step, build, response_format, validator, label, fallback=None, images=None, system_extra=''):
     """One director call. Returns ``(answer, model, settings, input)``.
 
     ``fallback`` is used when every attempt was rejected by the validator; it returns the answer to
-    save instead, so a step that the app can complete by calculation never fails on form.
+    save instead, so a step that the app can complete by calculation never fails on form. ``images`` are
+    ``(caption, jpeg)`` pairs sent after the input (the caller checked that the endpoint can see) and
+    ``system_extra`` is appended to the step's system prompt for this call.
     """
+    from .assistant import images as pictures
     from .inference_worker import chat_json, check_summary_lease
     config = payload.get('config') or {}
     provider = config.get('text_provider', 'openrouter')
     spec = direction.STEPS[step]
-    user_input, level = evidence.fit(build, spec['system'], spec['max_tokens'], provider)
+    system = spec['system'] + system_extra
+    user_input, level = evidence.fit(build, system, spec['max_tokens'], provider, reserve=pictures.TOKENS_PER_PICTURE * len(images or ()))
     usage, started, repaired = {}, time.monotonic(), None
     try:
-        output, model = chat_json(config.get('openrouter_model', 'openrouter/free'), spec['system'], json.dumps(user_input, ensure_ascii=False), [], max_tokens=spec['max_tokens'],
+        output, model = chat_json(config.get('openrouter_model', 'openrouter/free'), system, json.dumps(user_input, ensure_ascii=False), [], max_tokens=spec['max_tokens'],
                                   progress=lambda attempt, total: worker.stage(job['id'], owner, job['episode_id'], f'{label} · attempt {attempt}/{total}'),
                                   cancel_check=lambda: check_summary_lease(job['id'], owner), provider=provider, thinking=config.get('local_thinking', False), usage_out=usage,
-                                  response_format=response_format, validator=validator, temperature=spec['temperature'])
+                                  response_format=response_format, validator=validator, temperature=spec['temperature'], images=images or None)
     except worker.LeaseLost:
         raise
     except RuntimeError as exc:
@@ -440,28 +444,57 @@ def shot_inputs(conn, sequence, state, payload):
     instruction = (payload.get('instruction') or '').strip()
     from_review = bool(instruction and payload.get('instruction_source') == 'review')
     earlier = [text for text in store.shot_instructions(conn, sequence['id'], shot['key']) if text.casefold() != instruction.casefold() or from_review]
+    # The reference keyframe stays with the shot: chosen for this rewrite, else kept from the revision it replaces.
+    reference, reference_source = sequence_reference.resolve(conn, shot, payload.get('reference_frame'), content_of(store.current(conn, sequence['id'], 'shot', shot['key'])))
+    shows = sequence_reference.evidence(conn, ctx['results'].get(shot['cut_id'], {}), reference) if reference else None
     planned = [evidence.shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction, previous, level,
-                                  earlier=earlier, from_review=from_review) for level in range(evidence.LEVELS)]
-    return {'shot': shot, 'instruction': instruction, 'from_review': from_review, 'earlier': earlier, 'requests': planned}
+                                  earlier=earlier, from_review=from_review, reference=reference, shows=shows) for level in range(evidence.LEVELS)]
+    return {'shot': shot, 'instruction': instruction, 'from_review': from_review, 'earlier': earlier, 'requests': planned,
+            'reference': reference, 'reference_source': reference_source}
+
+
+REFERENCE_CAPTION = 'reference frame: the frame the user chose in reference_frame, for staging only'
+
+
+def reference_picture(reference, provider, cancel_check):
+    """``([(caption, jpeg)], 'attached')`` when the reference keyframe can go to the director, else ``([], why not)``. Never fails the job."""
+    from .assistant import images
+    from .inference_worker import endpoint_vision
+    if not endpoint_vision(provider, cancel_check=cancel_check):
+        return [], 'the text engine cannot read images'
+    try:
+        return [(REFERENCE_CAPTION, images.keyframe_picture(reference['cut_id'], reference['ordinal'], reference['time']))], 'attached'
+    except (images.FrameError, RuntimeError, OSError, ValueError) as exc:
+        return [], f'the frame could not be cut: {str(exc)[:200]}'
 
 
 def run_shot(job, owner, payload, sequence, snapshot):
+    from .inference_worker import check_summary_lease
     state = snapshot.data['state']
     ctx, shot, bible, shots = (state[key] for key in ('ctx', 'shot', 'bible', 'shots'))
     instruction, from_review, earlier, requests = (state[key] for key in ('instruction', 'from_review', 'earlier', 'requests'))
+    reference, reference_source = state.get('reference'), state.get('reference_source')
     roster, scenario, dialogue = evidence.shot_parts(ctx, bible, shot)
     worker.stage(job['id'], owner, job['episode_id'], f"Writing shot {shot['index']} of {len(shots)}")
-    output, model, settings, user_input = ask(job, owner, payload, 'shot', requests.__getitem__, direction.shot_format(shot, roster, dialogue),
-                                              lambda answer: direction.validate_shot(answer, shot, bible, roster, scenario, dialogue, generated=True), f"Shot {shot['index']}")
+    attached, picture, note = [], None, ''
+    if reference:
+        provider = (payload.get('config') or {}).get('text_provider', 'openrouter')
+        attached, picture = reference_picture(reference, provider, lambda: check_summary_lease(job['id'], owner))
+        if attached:
+            requests = [{**request, 'reference_frame': {**request['reference_frame'], 'picture_attached': True}} for request in requests]
+            note = direction.REFERENCE_PICTURE_NOTE
+    output, model, settings, user_input = ask(job, owner, payload, 'shot', requests.__getitem__, direction.shot_format(shot, roster, dialogue, reference=bool(reference)),
+                                              lambda answer: direction.validate_shot(answer, shot, bible, roster, scenario, dialogue, generated=True, reference=reference),
+                                              f"Shot {shot['index']}", images=attached, system_extra=note)
     camera = evidence.still_camera(ctx['results'].get(shot['cut_id'], {}))
     if camera:
         output['still']['camera_look'] = camera
     prompt, verdict, derived = sequence_prompt.build(shot, output, bible, roster, scenario, dialogue)
     settings.update(check=verdict, derived=derived, hashes=evidence.shot_hashes(ctx, bible, shot), instruction=instruction or None,
                     instruction_source=('review' if from_review else 'user') if instruction else None, earlier_instructions=len(earlier) or None,
-                    trigger=payload.get('trigger'))
+                    trigger=payload.get('trigger'), reference_frame_source=reference_source, reference_picture=picture)
     with snapshot.publish() as conn:
-        store.save(conn, sequence['id'], 'shot', output, shot_key=shot['key'], rendered=prompt, model_id=model, job_id=job['id'], prompt=direction.SHOT_SYSTEM,
+        store.save(conn, sequence['id'], 'shot', output, shot_key=shot['key'], rendered=prompt, model_id=model, job_id=job['id'], prompt=direction.SHOT_SYSTEM + note,
                    settings=result_settings(settings, snapshot), context=user_input)
         finish(conn, job)
 

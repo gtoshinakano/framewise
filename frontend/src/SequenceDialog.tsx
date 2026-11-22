@@ -1,7 +1,7 @@
 import { useEpisodeEvents } from './episodeEvents'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Check, ChevronDown, Clapperboard, Copy, Download, History as HistoryIcon, LoaderCircle, MessageSquare, Pencil, Play, RefreshCw, Save, Sparkles, Square, WandSparkles, X } from 'lucide-react'
-import { mediaUrl } from './api'
+import { cutOrdinalFrameUrl, keyframeFrameUrl, mediaUrl } from './api'
 import CutAssistant from './CutAssistant'
 import DialogueTab from './DialogueTab'
 import { PlayerProvider, PlayerSlot, SourcePlayer, usePlayer, usePlayerValue } from './SourcePlayer'
@@ -11,8 +11,8 @@ import { DiffText } from './DiffText'
 import { CopyButton, copyText } from './Markdown'
 import { outfitsOf } from './outfitView'
 import { StaleChip } from './RunUi'
-import { sequenceApi, shotFrameUrl, type Bible, type BoundaryChoice, type Delivery, type RunStep, type SequenceBoundary, type SequenceDetail, type SequenceShot, type ShotDialogue, type ShotHistory } from './sequenceApi'
-import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, DELIVERIES, deliveryLabel, edgeTags, hasOwnVoices, issueInstruction, issuesFor, progress, promptSections, revisionLabel, shotStatus, speakerRanges, stage, staleText, timecode, timecodeSegments, versionNote, type Tone } from './sequenceView'
+import { sequenceApi, shotFrameUrl, type Bible, type BoundaryChoice, type Delivery, type RunStep, type SequenceBoundary, type SequenceDetail, type SequenceShot, type ShotDialogue, type ShotHistory, type ShotKeyframes, type ShotReference } from './sequenceApi'
+import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, DELIVERIES, deliveryLabel, edgeTags, hasOwnVoices, issueInstruction, issuesFor, progress, promptSections, referenceChange, referenceLabel, referenceNote, revisionLabel, shotStatus, speakerRanges, stage, staleText, timecode, timecodeSegments, versionNote, type Tone } from './sequenceView'
 
 type Tab = 'dialogue' | 'direction' | 'shots' | 'assistant'
 const TONES: Record<Tone, string> = { good: 'bg-[#173a2b] text-[#9ff0c8]', busy: 'bg-[#2b2442] text-[#d6c8ff]', warn: 'bg-[#4a3a17] text-[#ffd59a]', bad: 'bg-[#3d2025] text-[#ffaaa7]', idle: 'bg-[#262b35] text-[#aeb5c1]' }
@@ -85,7 +85,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
       return true
     } catch (err) { setError((err as Error).message); return false } finally { setWorking('') }
   }, [load, onChanged])
-  const run = useCallback((step: RunStep, extra: { shot_keys?: string[]; instruction?: string } = {}) => act(step, () => sequenceApi.run(sequenceId, { step, ...extra })), [act, sequenceId])
+  const run = useCallback((step: RunStep, extra: RunExtra = {}) => act(step, () => sequenceApi.run(sequenceId, { step, ...extra })), [act, sequenceId])
 
   async function download() {
     setExporting('Queued'); setError('')
@@ -157,7 +157,9 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
 }
 
 type Act = (label: string, action: () => Promise<SequenceDetail | unknown>) => Promise<boolean>
-type Run = (step: RunStep, extra?: { shot_keys?: string[]; instruction?: string }) => Promise<boolean>
+/** `reference_frame` goes only with one shot: a keyframe for the prompt's staging, or null to clear it; left out, the shot keeps its own. */
+type RunExtra = { shot_keys?: string[]; instruction?: string; reference_frame?: { ordinal: number } | null }
+type Run = (step: RunStep, extra?: RunExtra) => Promise<boolean>
 
 function Panel({ title, subtitle, actions, children, className = '' }: { title: string; subtitle?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
   return <section aria-label={title} className={`flex min-h-0 flex-col rounded-xl border hairline bg-[#1b202a] ${className}`}>
@@ -379,8 +381,16 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
   const busy = working
   const canQueue = !busy && !!detail.bible
   const instructionField = useRef<HTMLTextAreaElement>(null)
-  const queue = () => void run('shots', { shot_keys: [shot.key], instruction: instruction.trim() }).then(queued => { if (queued) { setInstruction(''); if (result) setHistoryOpen(true) } })
+  // The reference keyframe the next rewrite sends: starts on the one the current prompt uses, and follows a new version.
+  const currentReference = result?.content.reference_frame ?? null
+  const [reference, setReference] = useState<number | null>(currentReference?.ordinal ?? null)
+  useEffect(() => { setReference(currentReference?.ordinal ?? null) }, [result?.id, currentReference?.ordinal])
+  const referenceRequest = referenceChange(currentReference, reference)
+  const queue = () => void run('shots', { shot_keys: [shot.key], instruction: instruction.trim(), ...(referenceRequest !== undefined ? { reference_frame: referenceRequest } : {}) })
+    .then(queued => { if (queued) { setInstruction(''); if (result) setHistoryOpen(true) } })
+  const seekTo = useCallback((at: number) => { onShowFrame(false); player.seek(shot.start_time + at) }, [player, shot.start_time, onShowFrame])
   const note = result ? versionNote(result) : null
+  const referenceText = result ? referenceNote(result.reference_frame_source, currentReference, result.reference_picture) : null
   // The rewrite instruction stays pinned under the scrolling shot details.
   return <div className="flex min-h-0 flex-col gap-3 lg:overflow-hidden">
   <div className="scrollbar flex min-h-0 flex-1 flex-col gap-4 lg:overflow-y-auto lg:pr-1">
@@ -440,6 +450,7 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
       <div className="p-4">
         {!result ? <p className="muted text-xs leading-5">{shot.job ? 'The director is writing this shot…' : 'This shot has no prompt yet. “Write shot prompts” writes every missing shot; the button below writes only this one.'}</p> : <>
           {note && <p className="mb-3 border-l-2 border-[#e0a96d] pl-2.5 text-xs leading-5 text-[#e8ebf1]">{note}</p>}
+          {referenceText && <p className="muted mb-3 pl-2.5 text-[11px] leading-5">{referenceText}</p>}
           {result.check && !result.check.ok && <ul className="mb-3 list-disc space-y-1 rounded-lg bg-[#3d2025] p-2.5 pl-6 text-xs leading-5 text-[#ffaaa7]">{result.check.errors.map((item, index) => <li key={index}>{item}</li>)}</ul>}
           {!!result.check?.warnings.length && <ul className="mb-3 list-disc space-y-1 rounded-lg bg-[#262b35] p-2.5 pl-6 text-[11px] leading-5 text-[#c9cfda]">{result.check.warnings.map((item, index) => <li key={index}>{item}</li>)}</ul>}
           {view === 'edit' ? <>
@@ -447,7 +458,7 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
             <JsonEditor value={result.content} saving={working} onCancel={() => setView('read')} onSave={content => void act('shot', () => sequenceApi.revise(result.id, content)).then(saved => { if (saved) setView('read') })} />
           </> : view === 'raw' ? <pre className="scrollbar max-h-[36rem] overflow-auto whitespace-pre-wrap rounded-lg border border-[#2b3240] bg-[#0f131a] p-3 font-mono text-[11px] leading-5 text-[#c9cfda]">{(result.prompt || '').split('\n').map((line, index) => <Fragment key={index}>{index > 0 && '\n'}<PromptLine line={line} shot={shot} disabled={!proxyReady} onPlay={playAt} /></Fragment>)}</pre>
             : <div className="space-y-4">{sections.map(section => <div key={section.name}><p className="label !mb-1">{section.title}</p><div className="space-y-1.5 text-[13px] leading-6 text-[#e8ebf1]">{section.lines.map((line, index) => <p key={index} className={/^\d{2}:\d{2}/.test(line) ? 'border-l-2 border-[#5a4a35] pl-2.5' : ''}><PromptLine line={line} shot={shot} disabled={!proxyReady} onPlay={playAt} /></p>)}</div></div>)}</div>}
-          {result.derived.references && <p className="muted mt-4 text-[11px] leading-5">References to attach, in this order: {result.derived.references.map(reference => `${reference.label} ${reference.role === 'initial_frame' ? 'initial frame' : reference.role === 'character_sheet' ? `sheet of ${reference.name}` : reference.role === 'scenario' ? `scenario “${reference.name}”` : `audio ${result.derived.audio_file || ''}`}`).join(' · ')}</p>}
+          {result.derived.references && <p className="muted mt-4 text-[11px] leading-5">References to attach, in this order: {result.derived.references.map(item => `${item.label} ${referenceRole(item, result.derived.audio_file)}`).join(' · ')}</p>}
           {result.derived.still_prompt && <section className="mt-3 rounded-lg border hairline bg-[#171c25] text-xs"><h4 className="px-3 py-2 font-semibold text-[#aeb5c1]">Still image prompt for the initial frame</h4><div className="border-t hairline p-3"><pre className="whitespace-pre-wrap font-mono text-[11px] leading-5 text-[#c9cfda]">{result.derived.still_prompt}</pre><div className="mt-2"><CopyButton text={result.derived.still_prompt} label="Copy still prompt" /></div></div></section>}
           {result.content.open_questions.length > 0 && <div className="mt-3"><p className="label !mb-1">Open questions</p><ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-[#ffd59a]">{result.content.open_questions.map((question, index) => <li key={index}>{question}</li>)}</ul></div>}
           <PromptHistory sequenceId={detail.sequence.id} shot={shot} open={historyOpen} onToggle={setHistoryOpen} onOpenAssistant={onOpenAssistant} />
@@ -456,6 +467,7 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
     </section>
   </div>
   <footer className="sticky bottom-0 z-30 flex shrink-0 flex-wrap items-end gap-2 rounded-xl border hairline bg-[#1b202a] p-3 shadow-[0_-6px_18px_rgba(0,0,0,0.35)]" aria-label={result ? 'Rewrite this shot' : 'Write this shot'}>
+    <ReferenceStrip sequenceId={detail.sequence.id} shot={shot} selected={reference} onSelect={setReference} onSeek={seekTo} disabled={busy} />
     <label className="min-w-0 flex-1"><span className="label !mb-1 flex items-center justify-between gap-2">Instruction for a rewrite (optional, remembered for every later rewrite of this shot)<span className="font-normal normal-case tracking-normal text-[#8b93a3]">Ctrl+Enter queues it</span></span>
       <textarea ref={instructionField} className="field max-h-48 min-h-[3.25rem] resize-y !py-2 !text-xs leading-5" rows={2} maxLength={4000} value={instruction} onChange={event => setInstruction(event.target.value)} placeholder="For example: she is off screen for the first line; keep the camera static"
         onKeyDown={event => {
@@ -465,6 +477,66 @@ function ShotDetail({ detail, shot, proxyReady, showFrame, onShowFrame, takePend
         }} /></label>
     <button type="button" className="btn btn-quiet !py-2 !text-xs" disabled={!canQueue} onClick={queue} title="The director writes this shot again from the current bible, plan and analysis, following your instruction and the ones you gave before (Ctrl+Enter in the instruction)"><Sparkles size={13} /> {result ? 'Rewrite this shot' : 'Write this shot'}</button>
   </footer>
+  </div>
+}
+
+/** How the References line names one attached file. */
+function referenceRole(item: ShotReference, audioFile?: string) {
+  if (item.role === 'initial_frame') return 'initial frame'
+  if (item.role === 'character_sheet') return `sheet of ${item.name}`
+  if (item.role === 'scenario') return `scenario “${item.name}”`
+  if (item.role === 'reference_frame') return `staging reference ${referenceLabel({ at: item.at ?? 0, frame: item.frame })} (shot-NN-reference.jpg)`
+  return `audio ${audioFile || ''}`
+}
+
+/**
+ * The keyframes of the shot's own cut that the shot shows, as a row of thumbnails: the one picked is the staging reference
+ * of the next rewrite (H3 takes positions, poses, expressions, setting and objects from it, never its look). None clears it.
+ * The choice is sent only when it differs from the one the current prompt uses, and the shot keeps it for later rewrites.
+ */
+function ReferenceStrip({ sequenceId, shot, selected, onSelect, onSeek, disabled }: {
+  sequenceId: string; shot: SequenceShot; selected: number | null; onSelect: (ordinal: number | null) => void; onSeek: (at: number) => void; disabled: boolean
+}) {
+  const [data, setData] = useState<ShotKeyframes | null>(null)
+  const [error, setError] = useState('')
+  const resultId = shot.result?.id
+  useEffect(() => {
+    let live = true
+    sequenceApi.shotKeyframes(sequenceId, shot.key).then(value => { if (live) { setData(value); setError('') } }, (err: Error) => { if (live) setError(err.message) })
+    return () => { live = false }
+  }, [sequenceId, shot.key, resultId])
+  const current = shot.result?.content.reference_frame ?? data?.current ?? null
+  const frames = data?.frames ?? []
+  // A reference chosen before the cut's keyframes were selected again stays on offer, cut from the video by its frame number.
+  const orphan = current && data && !frames.some(frame => frame.ordinal === current.ordinal) ? current : null
+  const change = referenceChange(current, selected)
+  const chosen = frames.find(frame => frame.ordinal === selected) ?? (orphan && orphan.ordinal === selected ? orphan : null)
+  const hint = change === undefined ? (current ? `In the prompt: ${referenceLabel(current)}` : 'None in the prompt')
+    : change === null ? 'The rewrite clears the reference' : `The rewrite uses ${referenceLabel(chosen)}`
+  const pick = (ordinal: number, at: number) => { onSelect(ordinal); onSeek(at) }
+  const thumb = (key: string, ordinal: number, at: number, src: string, label: string, analysed: boolean) => {
+    const on = selected === ordinal
+    return <button key={key} type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => pick(ordinal, at)}
+      title={`${label}${analysed ? '' : ' · no keyframe analysis: the director reads only the picture'}${current?.ordinal === ordinal ? ' · used by the current prompt' : ''}`}
+      className={`relative shrink-0 overflow-hidden rounded-md border-2 bg-black disabled:opacity-60 ${on ? 'border-[#e0a96d]' : 'border-transparent hover:border-[#5a4a35]'}`}>
+      <img src={src} alt={label} loading="lazy" className="h-12 w-[5.35rem] object-cover" />
+      <span className="absolute inset-x-0 bottom-0 bg-black/70 px-1 font-mono text-[9px] leading-4 text-[#e8ebf1]">{label}{analysed ? '' : ' ·'}</span>
+      {current?.ordinal === ordinal && <span className="absolute left-0.5 top-0.5 rounded bg-[#173a2b] px-1 text-[8px] font-semibold uppercase leading-3 text-[#9ff0c8]">in prompt</span>}
+    </button>
+  }
+  return <div className="w-full min-w-0">
+    <p className="label !mb-1 flex items-center justify-between gap-2"><span>Reference keyframe for the staging (optional, kept for every later rewrite)</span>
+      <span className="font-normal normal-case tracking-normal text-[#8b93a3]">{hint}</span></p>
+    {error ? <p role="alert" className="text-[11px] text-[#ffaaa7]">{error}</p>
+      : !data ? <p className="muted flex items-center gap-1.5 text-[11px]"><LoaderCircle size={12} className="animate-spin" /> Loading the keyframes…</p>
+      : <div className="scrollbar flex items-center gap-1.5 overflow-x-auto pb-1" role="radiogroup" aria-label="Reference keyframe">
+        <button type="button" role="radio" aria-checked={selected === null} disabled={disabled} onClick={() => onSelect(null)}
+          className={`flex h-[3.25rem] w-14 shrink-0 items-center justify-center rounded-md border-2 text-[11px] font-semibold disabled:opacity-60 ${selected === null ? 'border-[#e0a96d] text-white' : 'border-[#2f3643] text-[#aeb5c1] hover:border-[#5a4a35]'}`}>None</button>
+        {orphan && thumb('orphan', orphan.ordinal, orphan.at, cutOrdinalFrameUrl(orphan.cut_id, orphan.ordinal, orphan.time), referenceLabel(orphan), true)}
+        {frames.map(frame => thumb(String(frame.ordinal), frame.ordinal, frame.at, keyframeFrameUrl(data.cut_id, frame.ordinal, data.revision), `${frame.frame} · ${frame.at.toFixed(2)} s`, frame.analysed))}
+        {!frames.length && !orphan && <span className="muted text-[11px]">{data.status === 'missing' ? `Cut ${shot.cut} has no current keyframes: select them on its Target frames tab first.` : 'No keyframe of this cut falls inside this shot.'}</span>}
+      </div>}
+    <p className="muted mt-0.5 text-[10px] leading-4">The generator takes only where people stand, their poses, expressions, the setting and the objects from it; the look stays that of the opening still.</p>
   </div>
 }
 
@@ -516,7 +588,8 @@ function PromptHistory({ sequenceId, shot, open, onToggle, onOpenAssistant }: {
       {!history && !error && <p className="muted flex items-center gap-1.5 text-[11px]"><LoaderCircle size={12} className="animate-spin" /> Loading the versions…</p>}
       {history?.pending && <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#5a4a8c] bg-[#1a1730] px-3 py-2 text-[#d6c8ff]">
         <LoaderCircle size={13} className="animate-spin" /><span className="font-semibold">{history.pending.status === 'running' ? 'Rewriting now' : 'Rewrite queued'}</span>
-        <span className="min-w-0 flex-1 text-[#e8ebf1]">{history.pending.instruction ? `with your instruction: “${history.pending.instruction}”` : history.pending.trigger === 'voices' ? 'after you changed the voices' : history.remembered.length ? 'following your earlier instructions' : 'without an instruction'}</span>
+        <span className="min-w-0 flex-1 text-[#e8ebf1]">{history.pending.instruction ? `with your instruction: “${history.pending.instruction}”` : history.pending.trigger === 'voices' ? 'after you changed the voices' : history.remembered.length ? 'following your earlier instructions' : 'without an instruction'}
+          {history.pending.reference ? (history.pending.reference.clear ? ' · clearing the reference keyframe' : ' · with a new reference keyframe') : ''}</span>
       </div>}
       {!!history?.remembered.length && <div className="rounded-lg border border-[#3d5a45] bg-[#142019] px-3 py-2 text-[#cfe8d6]">
         <p className="font-semibold">Remembered for every rewrite of this shot</p>
@@ -531,10 +604,11 @@ function PromptHistory({ sequenceId, shot, open, onToggle, onOpenAssistant }: {
         heading={<><span className="font-mono text-[11px] font-semibold text-[#e8ebf1]">v{revision.number}</span>{index === 0 && <Tag tone="good">Current</Tag>}
           <span className="font-semibold text-[#e8ebf1]">{revisionLabel(revision)}</span><Size diff={revision.diff} />{revision.check_ok === false && <Tag tone="bad">format errors</Tag>}
           <span className="muted ml-auto font-mono text-[10px]">{revision.created_at.slice(0, 16)}{revision.generation_seconds ? ` · ${took(revision.generation_seconds)}` : ''}</span></>}
-        why={revision.assistant ? <Why asked={revision.assistant.request} said={revision.assistant.summary} />
+        why={<>{revision.assistant ? <Why asked={revision.assistant.request} said={revision.assistant.summary} />
           : revision.instruction ? <Why instruction={revision.instruction} review={revision.instruction_source === 'review'} earlier={revision.earlier_instructions} />
           : revision.trigger === 'voices' ? <p className="muted text-[11px]">You changed how a speaker is heard in this shot; the director wrote it again around your voices.</p>
-          : revision.number > 1 && revision.origin === 'model' ? <p className="muted text-[11px]">{revision.earlier_instructions ? `No new instruction: the director wrote it again from the current bible, plan and analysis, following your ${revision.earlier_instructions === 1 ? 'earlier instruction' : `${revision.earlier_instructions} earlier instructions`}.` : 'No instruction: the director wrote it again from the current bible, plan and analysis.'}</p> : null} />)}
+          : revision.number > 1 && revision.origin === 'model' && !referenceNote(revision.reference_source, revision.reference) ? <p className="muted text-[11px]">{revision.earlier_instructions ? `No new instruction: the director wrote it again from the current bible, plan and analysis, following your ${revision.earlier_instructions === 1 ? 'earlier instruction' : `${revision.earlier_instructions} earlier instructions`}.` : 'No instruction: the director wrote it again from the current bible, plan and analysis.'}</p> : null}
+          {referenceNote(revision.reference_source, revision.reference, revision.reference_picture) && <p className="border-l-2 border-[#5a4a35] pl-2.5 text-[11px] leading-5 text-[#e8ebf1]">{referenceNote(revision.reference_source, revision.reference, revision.reference_picture)}</p>}</>} />)}
       {history && count <= 1 && !history.pending && !waiting && <p className="muted text-[11px]">This is the first version. Rewrites, your edits and changes from the Assistant tab will appear here with what changed.</p>}
     </div>
   </details>

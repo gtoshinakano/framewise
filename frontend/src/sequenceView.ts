@@ -1,6 +1,6 @@
 // Pure helpers of the sequence workspace: no React and no fetch, so the node tests can import them.
 import type { DiffSegment } from './assistantApi'
-import type { BoundaryChoice, Decider, Delivery, FixedVoice, ReviewIssue, SequenceBoundary, SequenceDetail, SequenceShot, ShotEdge, ShotResult, ShotRevision, ShotVoice, StaleReason } from './sequenceApi'
+import type { BoundaryChoice, Decider, Delivery, FixedVoice, ReviewIssue, SequenceBoundary, SequenceDetail, SequenceShot, ShotEdge, ShotReferenceFrame, ShotResult, ShotRevision, ShotVoice, StaleReason } from './sequenceApi'
 
 /** Seconds as m:ss.s, the clock every time in the workspace uses. */
 export function clock(seconds: number) {
@@ -245,6 +245,30 @@ export function versionNote(result: Pick<ShotResult, 'origin' | 'parent_id' | 'i
   if (result.origin !== 'model') return null
   if (result.instruction) return `${label}: “${clip(result.instruction)}”`
   return result.trigger === 'voices' ? label : null
+}
+
+/**
+ * What a rewrite sends about the reference keyframe: `undefined` keeps the shot's current one (the request leaves the
+ * field out), `{ordinal}` chooses another, `null` clears it. `selected` is the ordinal picked on the strip, or null for None.
+ */
+export function referenceChange(current: Pick<ShotReferenceFrame, 'ordinal'> | null | undefined, selected: number | null): { ordinal: number } | null | undefined {
+  const now = current?.ordinal ?? null
+  if (selected === now) return undefined
+  return selected === null ? null : { ordinal: selected }
+}
+
+/** A reference keyframe in a few words: `F3 (2.40 s)`. */
+export function referenceLabel(reference: Pick<ShotReferenceFrame, 'at' | 'frame'> | null | undefined) {
+  if (!reference) return ''
+  return `${reference.frame || 'keyframe'} (${reference.at.toFixed(2)} s)`
+}
+
+/** What a version says about its reference keyframe, or null when nothing about it changed. */
+export function referenceNote(source: string | null | undefined, reference: Pick<ShotReferenceFrame, 'at' | 'frame'> | null | undefined, picture?: string | null) {
+  if (source === 'user' && reference) return `Reference keyframe ${referenceLabel(reference)} set${picture === 'attached' ? '; the director saw it' : picture ? ` (${picture})` : ''}.`
+  if (source === 'cleared') return 'Reference keyframe cleared.'
+  if (source?.startsWith('dropped')) return `Reference keyframe ${source}.`
+  return null
 }
 
 /** How many words a change adds and removes. */

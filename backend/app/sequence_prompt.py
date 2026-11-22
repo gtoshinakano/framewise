@@ -7,8 +7,9 @@ the audio lines. The result is checked with the same rules Cut Assistance uses (
 
 Reference convention (declared in the download so the generating app can attach its files in this
 order): ``<Picture 1>`` is the shot's initial frame, then one character sheet per named on-screen
-character, then one scenario picture when the scene has a scenario note; ``<Audio 1>`` is the shot's
-slice of the original audio.
+character, then one scenario picture when the scene has a scenario note, then the reference keyframe
+when the user chose one (``sequence_reference``: a frame of the source taken for staging only);
+``<Audio 1>`` is the shot's slice of the original audio.
 """
 import re
 
@@ -74,7 +75,49 @@ def assign(content, roster, scenario=None):
         pictures.append({'label': f'<Picture {picture}>', 'role': 'scenario', 'context_id': scenario['id'], 'name': scenario['title']})
         subjects.append({'number': number, 'label': f'<Subject {number}>', 'name': scenario['title'], 'kind': 'scenario', 'character_context_id': None, 'context_id': scenario['id'],
                          'picture': picture, 'anchors': content.get('scenario_anchors') or '', 'keep': content.get('scenario_keep') or ''})
+    reference = reference_of(content)
+    if reference:
+        # Last of the pictures, so the numbers of the others never depend on it.
+        pictures.append({'label': f'<Picture {len(pictures) + 1}>', 'role': 'reference_frame', 'cut_id': reference['cut_id'], 'ordinal': reference['ordinal'],
+                         'time': reference['time'], 'at': reference['at'], 'frame': reference.get('frame')})
     return subjects, [*pictures, {'label': '<Audio 1>', 'role': 'original_audio'}]
+
+
+def reference_of(content):
+    """The shot's reference keyframe (``sequence_reference``), or None."""
+    value = content.get('reference_frame')
+    if isinstance(value, dict) and isinstance(value.get('at'), (int, float)) and not isinstance(value.get('at'), bool) and isinstance(value.get('ordinal'), int):
+        return value
+    return None
+
+
+def reference_number(subjects):
+    """``<Picture N>`` of the reference keyframe: after the initial frame, the character sheets and the scenario picture."""
+    return max([1, *(subject['picture'] for subject in subjects if subject.get('picture'))]) + 1
+
+
+# The reference keyframe is a frame of the source, whose look is not the look of the video. These sentences take only
+# the staging from it and give the look to <Picture 1>, without naming any style or medium (h3_prompt.STYLE), because
+# a style word, even ruled out, pulls the generation toward it.
+REFERENCE_USE = ('Use it only for where each person stands, their poses, facing, gestures and expressions, the layout of the setting and the objects present. '
+                 'None of its look carries over (rendering, outlines, colours, shading, light, proportions): every frame keeps the look of <Picture 1> '
+                 'and the faces and clothing of the character references.')
+
+
+def reference_definition(number, reference, line, subjects):
+    described = sentence(label_names(line, subjects))
+    return (f"<Picture {number}> is a frame of this same scene at {h3_prompt.fmt(reference['at'])}, a staging reference only"
+            + (f": {described}" if described else '.') + f" {REFERENCE_USE}")
+
+
+def reference_retention(number, reference):
+    return (f"<Picture {number}> (staging reference at {h3_prompt.fmt(reference['at'])}): partially_preserved - only the placement, poses, facing, "
+            f"expressions and the objects present at that moment; none of its look is carried over.")
+
+
+def reference_beat(number, reference):
+    # Lower-case "at": h3_prompt.SPOKEN_AT reads "At 00:01.000" as the start of a spoken line.
+    return f"The staging at {h3_prompt.fmt(reference['at'])} matches <Picture {number}>: positions, poses, facing and expressions, in the look of <Picture 1>."
 
 
 def _aliases(subjects):
@@ -347,11 +390,17 @@ def render(shot, content, bible, subjects, dialogue, slots=None, sound=None):
             definitions.append(f"{subject['label']} is {subject['name']}, whose face, hair and clothing come from <Picture {subject['picture']}>: {sentence(subject['anchors'])}")
         else:
             definitions.append(f"{subject['label']} is {subject['name']}, seen in <Picture 1>: {sentence(subject['anchors'])}")
+    reference = reference_of(content)
+    number = reference_number(subjects) if reference else None
+    if reference:
+        definitions.append(reference_definition(number, reference, content.get('reference_line'), subjects))
     carries = 'its voices, sound and timing to follow' if lines else 'its sound and timing to follow'
     definitions.append(f"<Audio 1> is the original sound of this shot, “{audio_file(shot)}”: {carries}.")
 
     retention = [f"<Picture 1> ([Shot 1] first frame): fully_preserved - {sentence(content.get('keep_picture') or 'composition, palette and lighting of the opening frame')}"]
     retention.extend(f"{subject['label']} (appears in [Shot 1]): fully_preserved - {sentence(subject['keep'] or 'appearance follows its reference exactly')}" for subject in subjects)
+    if reference:
+        retention.append(reference_retention(number, reference))
 
     # What each person's mouth does: H3 would otherwise move any visible lips to the audio.
     opening = ' '.join(part for part in (
@@ -359,6 +408,9 @@ def render(shot, content, bible, subjects, dialogue, slots=None, sound=None):
         sentence(label_names(content.get('framing_lock'), subjects)), sentence(label_names(content.get('light'), subjects)), *voice_notes(subjects, lines)) if part)
     ranges = beat_ranges(content, shot)
     description = [LOOK_SENTENCE, opening]
+    acted = [index for index, beat in enumerate(ranges) if not beat.get('hold')] or [len(ranges) - 1]
+    # The beat in which the reference moment falls (the last acted beat when it sits on the shot's last instant).
+    staged = next((index for index in acted if ranges[index]['start'] <= reference['at'] < ranges[index]['end']), acted[-1]) if reference and ranges else None
     for index, beat in enumerate(ranges):
         parts = [sentence(beat['action'] if beat.get('hold') else label_names(beat['action'], subjects))]
         if index == 0:
@@ -366,6 +418,8 @@ def render(shot, content, bible, subjects, dialogue, slots=None, sound=None):
             detail = sentence(label_names((content.get('camera') or {}).get('detail'), subjects))
             if detail:
                 parts.append(detail)
+        if index == staged:
+            parts.append(reference_beat(number, reference))
         last = index == len(ranges) - 1
         parts.extend(speech_sentence(line, language, slots[line['line']] if slots else None) for line in lines
                      if beat['start'] <= line['t0'] < beat['end'] or (last and line['t0'] >= beat['end']))

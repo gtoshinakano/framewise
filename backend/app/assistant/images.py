@@ -161,6 +161,23 @@ def picture(cut_id, frame, crop=None, located=None):
     return data
 
 
+def keyframe_picture(cut_id, ordinal, time, edge=LONG_EDGE):
+    """The JPEG of one exact source frame of a cut, by its ordinal (a shot's reference keyframe).
+
+    Cut by frame number, never from a rounded time: a time-based seek returns the first frame at or after the time.
+    """
+    cut = db.one('SELECT c.*,e.project_id,e.original_ext FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE c.id=?', (cut_id,))
+    if not cut:
+        raise FrameError('The cut no longer exists')
+    source = media.episode_dir(cut['project_id'], cut['episode_id']) / f"original{cut['original_ext']}"
+    if not source.is_file():
+        raise FrameError('The original video of this cut is not available, so no frame can be shown')
+    spec = {'source': source, 'time': float(time), 'start': cut['start_time'], 'end': cut['end_time'], 'width': edge, 'last': False,
+            'seek_tolerance': .000002, 'quality': 3, 'ordinal': int(ordinal)}
+    located = {'spec': spec, 'crop': None, 'clip_time': round(float(time) - cut['start_time'], 3), 'label': f'frame {ordinal}', 'frame': f'#{ordinal}'}
+    return picture(cut_id, None, located=located)
+
+
 def data_url(ref):
     """The ``image_url`` payload of a stored reference."""
     return 'data:image/jpeg;base64,' + base64.b64encode(picture(ref['cut_id'], ref['frame'], ref.get('crop'))).decode('ascii')

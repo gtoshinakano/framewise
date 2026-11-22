@@ -69,6 +69,12 @@ export const mediaUrl = (episodeId: string, name: string) => `/api/episodes/${ep
 export const cutFrameUrl = (cut: Pick<Cut, 'id' | 'start_time' | 'end_time' | 'first_frame_time' | 'last_frame_time'>, position: 'first' | 'last', source = '') =>
   `/api/cuts/${cut.id}/frame/${position}?v=${encodeURIComponent([source, cut.start_time, cut.end_time, position === 'first' ? cut.first_frame_time : cut.last_frame_time].join('_'))}`
 export const jsonBody = (value: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(value) })
+/** One keyframe of a cut's current selection; `revision` (the selection key) makes the URL name one picture for good. */
+export const keyframeFrameUrl = (cutId: string, ordinal: number, revision?: string | null) =>
+  `/api/cuts/${encodeURIComponent(cutId)}/keyframe-selection/frames/${ordinal}?revision=${encodeURIComponent(revision || '')}`
+/** Any exact frame of a cut by its ordinal and time (a small picture), also when it is no longer a selected keyframe. */
+export const cutOrdinalFrameUrl = (cutId: string, ordinal: number, time: number) =>
+  `/api/cuts/${encodeURIComponent(cutId)}/keyframe-selection/candidates/${ordinal}?time=${encodeURIComponent(String(time))}`
 
 /** One character in one keyframe (keyframes-v1): the vision model's state and, when DWPose read the body, the measured one. */
 export type KeyframeCharacter = { name: string; character_context_id: string | null; state: string | null; pose: string | null }

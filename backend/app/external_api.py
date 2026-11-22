@@ -802,7 +802,7 @@ class SequenceIssue(SequenceModel):
     line: str | None = Field(default=None, description='The line it concerns (L7).')
     severity: Literal['error', 'warning', 'info'] = Field(description='error: fix it in Framewise before generating. warning: decide or look before generating. info: how to generate.')
     kind: Literal['review', 'check_error', 'check_warning', 'open_question', 'unknown_speaker', 'derived_frame', 'padded_shot', 'no_sheet', 'unlinked_subject',
-                  'missing_reference', 'stale', 'not_written', 'cuts_changed', 'cuts_missing', 'plan_problem', 'template_unavailable']
+                  'missing_reference', 'stale', 'not_written', 'cuts_changed', 'cuts_missing', 'plan_problem', 'template_unavailable', 'reference_unanalysed']
     text: str
 
 
@@ -908,8 +908,11 @@ class SequenceSubject(SequenceModel):
 
 
 class SequencePicture(SequenceModel):
-    role: Literal['initial_frame', 'character_sheet', 'scenario'] = Field(description='Entry N is <Picture N>.')
+    role: Literal['initial_frame', 'character_sheet', 'scenario', 'reference_frame'] = Field(
+        description='Entry N is <Picture N>. reference_frame (always last) is the staging reference keyframe the user chose: shot-NN-reference.jpg, used only for placement, poses, expressions, setting and objects, never for its look.')
     subject: int | None = Field(default=None, description='The subject whose sheet or scenario picture this is.')
+    at: float | None = Field(default=None, description='reference_frame only: its second on the shot clock.')
+    frame: str | None = Field(default=None, description='reference_frame only: its keyframe label (F1…Fn of the cut) when the shot was written.')
 
 
 class SequenceShotSubtitle(SequenceModel):
