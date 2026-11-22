@@ -98,6 +98,12 @@ def requeue(conn, job, payload, cut_ids, prerequisite=False):
     """Queue the failed step again for its cuts with the current settings. Returns the ids the queue answered with."""
     from . import performance_beats, review_answers, summary_jobs
     episode_id, pipeline = job['episode_id'], job['pipeline']
+    if pipeline == 'line_splits':
+        from . import line_splits
+        again = line_splits.queue(conn, episode_id, run_id=payload.get('run_id'))
+        if not again:
+            raise Unfixable('line splits are switched off in the Autopilot profile')
+        return [again]
     if pipeline == 'missed_cuts':
         from . import missed_cuts
         checked = missed_cuts.queue(conn, episode_id, first_index=payload.get('first_index') or 0, last_index=payload.get('last_index'),

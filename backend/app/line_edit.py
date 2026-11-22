@@ -20,9 +20,9 @@ class LineEditError(Exception):
         self.status, self.message = status, message
 
 
-def _insert(conn, source, new_id, *, start, end, text, speaker_label, character_context_id, words, speaker_source, confidence):
+def _insert(conn, source, new_id, *, start, end, text, speaker_label, character_context_id, words, speaker_source, confidence, origin='manual_edit'):
     conn.execute(f'INSERT INTO transcript_segments ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                 (new_id, source['episode_id'], start, end, text, speaker_label, character_context_id, 'manual_edit',
+                 (new_id, source['episode_id'], start, end, text, speaker_label, character_context_id, origin,
                   source['model_id'], source['job_id'], source['id'], json.dumps(words, ensure_ascii=False) if words else None,
                   speaker_source, confidence, source['evidence_json']))
 
@@ -72,8 +72,11 @@ def merge(conn, episode_id, segment_ids, text, speaker_label, character_context_
     return new_id
 
 
-def split(conn, segment_id, at, left_text, right_text):
-    """Two lines meeting at `at`; the original is superseded by the left one. Returns (left id, right id)."""
+def split(conn, segment_id, at, left_text, right_text, origin='manual_edit'):
+    """Two lines meeting at `at`; the original is superseded by the left one. Returns (left id, right id).
+
+    ``origin`` is the revisions' origin: a person's split is ``manual_edit``; the autopilot's line splitter keeps the
+    source line's own origin (``line_splits.py``)."""
     row = _current(conn, segment_id)
     if not row['start_time'] < at < row['end_time']:
         raise LineEditError(400, 'Split inside the line')
@@ -88,7 +91,8 @@ def split(conn, segment_id, at, left_text, right_text):
         if before and after:
             left_words, right_words = before, after
     left_id, right_id = str(uuid.uuid4()), str(uuid.uuid4())
-    common = dict(speaker_label=row['speaker_label'], character_context_id=row['character_context_id'], speaker_source=row['speaker_source'], confidence=row['confidence'])
+    common = dict(speaker_label=row['speaker_label'], character_context_id=row['character_context_id'], speaker_source=row['speaker_source'],
+                  confidence=row['confidence'], origin=origin)
     _insert(conn, row, left_id, start=row['start_time'], end=at, text=left_text, words=left_words, **common)
     _insert(conn, row, right_id, start=at, end=row['end_time'], text=right_text, words=right_words, **common)
     conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (left_id, row['id']))

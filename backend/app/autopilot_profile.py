@@ -111,6 +111,25 @@ def normalize(raw, character_ids):
     return profile
 
 
+def policy(conn, episode_id, kind, run_id=None):
+    """``{mode, claude}`` for one decision kind: from the run's profile snapshot when there is a run, else the project's profile.
+
+    Raises KeyError for an unknown run and ValueError for a run of another episode."""
+    profile = None
+    if run_id:
+        row = conn.execute('SELECT policy_json,episode_id FROM agent_runs WHERE id=?', (run_id,)).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        if row['episode_id'] != episode_id:
+            raise ValueError('The agent run belongs to another episode')
+        profile = json.loads(row['policy_json'] or '{}') or None
+    if not profile or kind not in (profile.get('modes') or {}):
+        project = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()
+        profile, _ = load(conn, project['project_id'])
+    claude = profile.get('claude') or {}
+    return {'mode': profile['modes'][kind], 'claude': bool(claude.get('enabled', True))}
+
+
 def character_ids(conn, project_id):
     return [row[0] for row in conn.execute("SELECT id FROM context_items WHERE project_id=? AND kind='character'", (project_id,))]
 

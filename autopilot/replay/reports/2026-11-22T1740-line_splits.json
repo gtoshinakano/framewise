@@ -1,0 +1,788 @@
+{
+ "resolver": "line_splits",
+ "date": "2026-11-22T1740",
+ "commit": "fa301cc",
+ "settings": {
+  "reach": 1.5,
+  "min_pause": 0.3,
+  "cross": 0.15
+ },
+ "splits": [
+  {
+   "episode": "Episode 2",
+   "line": [
+    609.478,
+    612.678
+   ],
+   "text": "お前がスマホばかり気にしてるからお説教が長引いたんだろう。",
+   "user_left": "お前がスマホばかり気にしてるから",
+   "cut": 610.776,
+   "user_at": 611.318,
+   "plan": {
+    "action": "leave",
+    "why": "no pause of 0.3s between two words within 1.5s of the cut: the phrase bleeds into the next cut (a pause inside a word or before a particle does not count)"
+   },
+   "same_words": false,
+   "delta": null
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    725.19,
+    731.35
+   ],
+   "text": "母さんはかえでに起きたことを受け止めきれなくて、でも一人だけいたんですよ。",
+   "user_left": "母さんはかえでに起きたことを受け止めきれなくて、",
+   "cut": 728.936,
+   "user_at": 729.186,
+   "plan": {
+    "action": "split",
+    "at": 728.936,
+    "left": "母さんはかえでに起きたことを受け止めきれなくて、",
+    "right": "でも一人だけいたんですよ。",
+    "pause": [
+     728.44,
+     729.29
+    ],
+    "why": "on the cut, inside a pause"
+   },
+   "same_words": true,
+   "delta": -0.25
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    765.835,
+    771.035
+   ],
+   "text": "人の目の高さから見える水平線までの距離は約4キロメートルなんです",
+   "user_left": "人の目の高さから見える水平線までの距離は",
+   "cut": 769.018,
+   "user_at": 768.955,
+   "plan": {
+    "action": "split",
+    "at": 769.018,
+    "left": "人の目の高さから見える水平線までの距離は",
+    "right": "約4キロメートルなんです",
+    "pause": [
+     768.985,
+     769.585
+    ],
+    "why": "on the cut, inside a pause"
+   },
+   "same_words": true,
+   "delta": 0.063
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    791.427,
+    795.507
+   ],
+   "text": "もしかしてその人を追いかけてミネガハラ高校を受験したわけ？",
+   "user_left": "もしかして",
+   "cut": 792.041,
+   "user_at": 792.147,
+   "plan": {
+    "action": "split",
+    "at": 792.187,
+    "left": "もしかして",
+    "right": "その人を追いかけてミネガハラ高校を受験したわけ？",
+    "pause": [
+     792.127,
+     792.577
+    ],
+    "why": "at the pause 0.15s from the cut"
+   },
+   "same_words": true,
+   "delta": 0.04
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    433.962,
+    438.202
+   ],
+   "text": "ドラマや映画の仕事は好きだったし、ずっと続けたいと思ってた。",
+   "user_left": "ドラマや映画の仕事は好きだったし、",
+   "cut": 436.31,
+   "user_at": 436.042,
+   "plan": {
+    "action": "split",
+    "at": 436.31,
+    "left": "ドラマや映画の仕事は好きだったし、",
+    "right": "ずっと続けたいと思ってた。",
+    "pause": [
+     435.962,
+     436.662
+    ],
+    "why": "on the cut, inside a pause"
+   },
+   "same_words": true,
+   "delta": 0.268
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    450.025,
+    452.665
+   ],
+   "text": "もちろん、お腹が空いてたってのもあるけど、",
+   "user_left": "もちろん、",
+   "cut": 450.658,
+   "user_at": 450.505,
+   "plan": {
+    "action": "split",
+    "at": 450.658,
+    "left": "もちろん、",
+    "right": "お腹が空いてたってのもあるけど、",
+    "pause": [
+     450.525,
+     451.025
+    ],
+    "why": "on the cut, inside a pause"
+   },
+   "same_words": true,
+   "delta": 0.153
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    458.825,
+    461.865
+   ],
+   "text": "え、家のすぐそばじゃないですか。",
+   "user_left": "え、",
+   "cut": 459.625,
+   "user_at": 459.065,
+   "plan": {
+    "action": "split",
+    "at": 459.625,
+    "left": "え、",
+    "right": "家のすぐそばじゃないですか。",
+    "pause": [
+     459.125,
+     459.785
+    ],
+    "why": "on the cut, inside a pause"
+   },
+   "same_words": true,
+   "delta": 0.56
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    493.013,
+    498.933
+   ],
+   "text": "結局、僕が何をしようが関係なく、麻衣さんは全部自分で決めたってことか。",
+   "user_left": "結局、僕が何をしようが関係なく、",
+   "cut": 495.161,
+   "user_at": 495.719,
+   "plan": {
+    "action": "split",
+    "at": 495.923,
+    "left": "結局、僕が何をしようが関係なく、",
+    "right": "麻衣さんは全部自分で決めたってことか。",
+    "pause": [
+     495.863,
+     496.463
+    ],
+    "why": "at the pause 0.76s from the cut"
+   },
+   "same_words": true,
+   "delta": 0.204
+  }
+ ],
+ "trims": [
+  {
+   "episode": "Episode 2",
+   "line": [
+    507.842,
+    510.693
+   ],
+   "text": "兄ちゃんどうしました？",
+   "cut": 509.467,
+   "user": [
+    507.842,
+    509.426
+   ],
+   "plan": {
+    "action": "leave",
+    "why": "the line has no word timings"
+   },
+   "right": false,
+   "delta": null
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    577.247,
+    579.567
+   ],
+   "text": "で、元からふたつじゃん。",
+   "cut": 578.828,
+   "user": [
+    577.247,
+    578.71
+   ],
+   "plan": {
+    "action": "trim",
+    "start": 577.247,
+    "end": 578.828,
+    "by": "audio",
+    "why": "the audio is silent from the cut to the line's end (0.74s)"
+   },
+   "right": true,
+   "delta": 0.118
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    581.247,
+    582.767
+   ],
+   "text": "わかりました。",
+   "cut": 582.582,
+   "user": [
+    581.247,
+    582.502
+   ],
+   "plan": {
+    "action": "leave",
+    "why": "no pause of 0.3s between two words within 1.5s of the cut: the phrase bleeds into the next cut (a pause inside a word or before a particle does not count)"
+   },
+   "right": false,
+   "delta": null
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    599.127,
+    604.247
+   ],
+   "text": "ああちょっと君何やってんの。",
+   "cut": 600.725,
+   "user": [
+    601.206,
+    604.247
+   ],
+   "plan": {
+    "action": "split",
+    "at": 601.087,
+    "left": "ああ",
+    "right": "ちょっと君何やってんの。",
+    "pause": [
+     601.027,
+     601.577
+    ],
+    "why": "at the pause 0.36s from the cut"
+   },
+   "right": false,
+   "delta": null
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    599.047,
+    601.249
+   ],
+   "text": "いたかー！",
+   "cut": 600.725,
+   "user": [
+    599.047,
+    600.703
+   ],
+   "plan": {
+    "action": "leave",
+    "why": "the line has no word timings"
+   },
+   "right": false,
+   "delta": null
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    436.042,
+    438.202
+   ],
+   "text": "ずっと続けたいと思ってた。",
+   "cut": 436.31,
+   "user": [
+    436.447,
+    438.202
+   ],
+   "plan": {
+    "action": "trim",
+    "start": 436.582,
+    "end": 438.202,
+    "by": "audio",
+    "why": "the audio is silent from the line's start to the cut (0.27s)"
+   },
+   "right": true,
+   "delta": 0.135
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    450.505,
+    452.665
+   ],
+   "text": "お腹が空いてたってのもあるけど、",
+   "cut": 450.658,
+   "user": [
+    450.884,
+    452.665
+   ],
+   "plan": {
+    "action": "trim",
+    "start": 450.995,
+    "end": 452.665,
+    "by": "audio",
+    "why": "the audio is silent from the line's start to the cut (0.15s)"
+   },
+   "right": true,
+   "delta": 0.111
+  },
+  {
+   "episode": "Episode 2",
+   "line": [
+    459.065,
+    461.865
+   ],
+   "text": "家のすぐそばじゃないですか。",
+   "cut": 459.625,
+   "user": [
+    459.821,
+    461.865
+   ],
+   "plan": {
+    "action": "leave",
+    "why": "its first word runs across the cut (from 459.06s)"
+   },
+   "right": false,
+   "delta": null
+  }
+ ],
+ "today": {
+  "Episode 1": {
+   "counts": {
+    "leave": 12,
+    "split": 24,
+    "trim": 1
+   },
+   "left_because": {
+    "the line has no word timings": 1,
+    "no pause of 0.3s between two words within 1.5s of the cut": 8,
+    "its last word runs across the cut (to 193.03s)": 1,
+    "its last word runs across the cut (to 903.68s)": 1,
+    "its first word runs across the cut (from 1478.63s)": 1
+   },
+   "samples": [
+    {
+     "line": [
+      200.07,
+      202.63
+     ],
+     "cut": 200.78,
+     "text": "あの桜島先輩ですよね。",
+     "action": "split",
+     "at": 200.784,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      230.67,
+      233.47
+     ],
+     "cut": 231.73,
+     "text": "それとコンリン在私にかかわらないように。",
+     "action": "split",
+     "at": 231.412,
+     "start": null,
+     "end": null,
+     "why": "at the pause 0.32s from the cut"
+    },
+    {
+     "line": [
+      288.02,
+      305.94
+     ],
+     "cut": 295.84,
+     "text": "の国見はバニーガール好きかいやそうでもないなら大好きかあ大好きだ例えば図書館で魅力的なバニーガールに",
+     "action": "split",
+     "at": 295.837,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      318.29,
+      322.05
+     ],
+     "cut": 319.57,
+     "text": "なあ、国見、桜島先輩のことを見えてるよな。",
+     "action": "split",
+     "at": 319.569,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      324.45,
+      326.94
+     ],
+     "cut": 326.49,
+     "text": "あの人、どういう人なんだろう。",
+     "action": "split",
+     "at": 325.34,
+     "start": null,
+     "end": null,
+     "why": "at the pause 1.15s from the cut"
+    },
+    {
+     "line": [
+      372.88,
+      379.92
+     ],
+     "cut": 375.08,
+     "text": "部活の先輩に聞いたんだけど、桜島先輩、一年の最初の頃は全然学校来てなかったらしい。",
+     "action": "split",
+     "at": 375.083,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      383.12,
+      391.12
+     ],
+     "cut": 383.88,
+     "text": "中学卒業と同時に活動休止宣言したはいいけど、その前から出演が決まってた作品もあったんで忙しかったらし",
+     "action": "split",
+     "at": 384.63,
+     "start": null,
+     "end": null,
+     "why": "at the pause 0.75s from the cut"
+    },
+    {
+     "line": [
+      422.35,
+      437.39
+     ],
+     "cut": 424.67,
+     "text": "それが学校という空間、誰も桜島先輩に話しかけられない、目立ちたくない、浮きたくない、だから桜島先輩も",
+     "action": "split",
+     "at": 424.674,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    }
+   ],
+   "subtitles_agree": [
+    13,
+    24
+   ]
+  },
+  "Episode 2": {
+   "counts": {
+    "split": 19,
+    "leave": 15,
+    "trim": 2
+   },
+   "left_because": {
+    "no pause of 0.3s between two words within 1.5s of the cut": 14,
+    "its first word runs across the cut (from 1424.33s)": 1
+   },
+   "samples": [
+    {
+     "line": [
+      2.59,
+      7.87
+     ],
+     "cut": 6.34,
+     "text": "これは思春期症候群ではなく、あくまで量子力学の世界における解釈だよ。",
+     "action": "split",
+     "at": 5.032,
+     "start": null,
+     "end": null,
+     "why": "at the pause 1.31s from the cut"
+    },
+    {
+     "line": [
+      46.13,
+      51.9
+     ],
+     "cut": 48.38,
+     "text": "つまり蓋を開けて確認するまで、猫は半分生きていて半分死んでいることになる。",
+     "action": "split",
+     "at": 48.381,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      169.64,
+      174.68
+     ],
+     "cut": 173.42,
+     "text": "今麻衣さんが握っている人参は、麻衣さんが見えてない人にはどう見えてるんですか？",
+     "action": "split",
+     "at": 172.33,
+     "start": null,
+     "end": null,
+     "why": "at the pause 1.09s from the cut"
+    },
+    {
+     "line": [
+      178.63,
+      182.48
+     ],
+     "cut": 179.35,
+     "text": "ほらね、多分私が触れたものは見えなくなるのよ。",
+     "action": "split",
+     "at": 179.345,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      196.07,
+      199.51
+     ],
+     "cut": 196.36,
+     "text": "あ、本当は麻衣さんと手をつなぎたいだけです。",
+     "action": "split",
+     "at": 196.362,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      208.78,
+      212.86
+     ],
+     "cut": 210.67,
+     "text": "若干気持ち悪いけど、まっ、合格にしてあげる。",
+     "action": "split",
+     "at": 210.668,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      228.68,
+      233.0
+     ],
+     "cut": 231.52,
+     "text": "年下の男の子にエッチな妄想をされるくらいなんでもない。",
+     "action": "split",
+     "at": 231.687,
+     "start": null,
+     "end": null,
+     "why": "at the pause 0.16s from the cut"
+    },
+    {
+     "line": [
+      296.5,
+      304.42
+     ],
+     "cut": 299.97,
+     "text": "もう契約したからって言われてやるしかなくて無理やり笑顔を作るしかなかった。",
+     "action": "split",
+     "at": 299.966,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    }
+   ],
+   "subtitles_agree": [
+    13,
+    19
+   ]
+  },
+  "Episode 3": {
+   "counts": {
+    "split": 24,
+    "leave": 11
+   },
+   "left_because": {
+    "no pause of 0.3s between two words within 1.5s of the cut": 8,
+    "its last word runs across the cut (to 170.72s)": 1,
+    "its first word runs across the cut (from 989.34s)": 1,
+    "its last word runs across the cut (to 1161.60s)": 1
+   },
+   "samples": [
+    {
+     "line": [
+      57.23,
+      62.84
+     ],
+     "cut": 58.18,
+     "text": "一夜明けてもやっぱり麻衣さんは僕以外の誰の目にも見えていないようだ。",
+     "action": "split",
+     "at": 58.183,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      213.19,
+      214.47
+     ],
+     "cut": 213.92,
+     "text": "おい、おい。",
+     "action": "split",
+     "at": 213.922,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      239.09,
+      244.21
+     ],
+     "cut": 240.32,
+     "text": "正直馬鹿げてるとは思ってたけど、こうしてマナ当たりにすると寒気が走るよ。",
+     "action": "split",
+     "at": 241.445,
+     "start": null,
+     "end": null,
+     "why": "at the pause 1.12s from the cut"
+    },
+    {
+     "line": [
+      255.82,
+      263.75
+     ],
+     "cut": 261.39,
+     "text": "私自身も空気を読んでみんなが桜島先輩を無自覚に無視してる異常な状況を疑問も抱かず受け入れていた。",
+     "action": "split",
+     "at": 261.585,
+     "start": null,
+     "end": null,
+     "why": "at the pause 0.20s from the cut"
+    },
+    {
+     "line": [
+      267.87,
+      271.95
+     ],
+     "cut": 268.6,
+     "text": "でもだからこそ糸口はこの学校の空気にあるように思える。",
+     "action": "split",
+     "at": 268.98,
+     "start": null,
+     "end": null,
+     "why": "at the pause 0.38s from the cut"
+    },
+    {
+     "line": [
+      313.08,
+      315.56
+     ],
+     "cut": 313.73,
+     "text": "でも、そういうのはきちんとしなさい。",
+     "action": "split",
+     "at": 313.73,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    },
+    {
+     "line": [
+      339.65,
+      346.45
+     ],
+     "cut": 341.13,
+     "text": "でも学校が発端だって言うなら、なんで学校と接点のない人まで麻衣さんのことが見えなくなったりするんだよ",
+     "action": "split",
+     "at": 340.343,
+     "start": null,
+     "end": null,
+     "why": "at the pause 0.79s from the cut"
+    },
+    {
+     "line": [
+      411.93,
+      422.81
+     ],
+     "cut": 413.95,
+     "text": "この先に記されていることは、正直信じられないようなことだと思うけど、全部本当のことなので、必ず最後ま",
+     "action": "split",
+     "at": 413.955,
+     "start": null,
+     "end": null,
+     "why": "on the cut, inside a pause"
+    }
+   ],
+   "subtitles_agree": [
+    7,
+    24
+   ]
+  },
+  "Episode 4": {
+   "counts": {
+    "leave": 15
+   },
+   "left_because": {
+    "the line has no word timings": 15
+   },
+   "samples": [],
+   "subtitles_agree": [
+    0,
+    0
+   ]
+  },
+  "Episode 5": {
+   "counts": {
+    "leave": 20
+   },
+   "left_because": {
+    "the line has no word timings": 20
+   },
+   "samples": [],
+   "subtitles_agree": [
+    0,
+    0
+   ]
+  },
+  "Episode 6": {
+   "counts": {
+    "leave": 16
+   },
+   "left_because": {
+    "the line has no word timings": 16
+   },
+   "samples": [],
+   "subtitles_agree": [
+    0,
+    0
+   ]
+  },
+  "Episode 7": {
+   "counts": {
+    "leave": 15
+   },
+   "left_because": {
+    "the line has no word timings": 15
+   },
+   "samples": [],
+   "subtitles_agree": [
+    0,
+    0
+   ]
+  }
+ }
+}

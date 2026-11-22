@@ -1,4 +1,4 @@
-"""Routes of the missed-cut checker (docs/autopilot/HARNESS.md M2, ``missed_cuts.py``).
+"""Routes of the missed-cut checker (M2, ``missed_cuts.py``) and the line splitter (M3, ``line_splits.py``), docs/autopilot/HARNESS.md.
 
 Queue a check, read what it found, fetch the strip a reviewer looks at, and answer a question (Claude as the second
 reviewer, or the person). The split itself happens in the job's transaction or in the answer's, never over HTTP elsewhere.
@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from . import agent_log, db, episode_requests, missed_cuts, worker
+from . import agent_log, db, episode_requests, line_splits, missed_cuts, worker
 
 router = APIRouter()
 
@@ -114,3 +114,45 @@ def answer_missed_cut(escalation_id: str, body: MissedCutAnswer):
     worker.after_cancel(cancelled)
     worker.wake_event.set()
     return outcome
+
+
+# --- line splits at hard cuts (M3, line_splits.py) ----------------------------------------------------------------
+
+class LineSplitRun(BaseModel):
+    run_id: str | None = None
+
+
+@router.post('/api/episodes/{episode_id}/line-splits', summary='Queue the line splitter: lines across a hard cut are split at a pause or trimmed')
+def queue_line_splits(episode_id: str, body: LineSplitRun):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
+            raise HTTPException(404, 'Episode not found')
+        try:
+            job_id = line_splits.queue(conn, episode_id, run_id=body.run_id)
+        except KeyError:
+            raise HTTPException(404, 'Agent run not found') from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    worker.wake_event.set()
+    if job_id is None:
+        return {'job_id': None, 'job_ids': [], 'detail': 'Line splits are switched off in the Autopilot profile'}
+    return {'job_id': job_id, 'job_ids': [job_id]}
+
+
+@router.get('/api/episodes/{episode_id}/line-splits', summary='What the line splitter would do now with each line that crosses a hard cut (read-only)')
+def preview_line_splits(episode_id: str):
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
+            raise HTTPException(404, 'Episode not found')
+        items, counts = [], {}
+        for row, cut, plan in line_splits.plan_episode(conn, episode_id):
+            counts[plan['action']] = counts.get(plan['action'], 0) + 1
+            owner = conn.execute('SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1 AND start_time<=? AND end_time>? LIMIT 1',
+                                 (episode_id, cut, cut)).fetchone()
+            items.append({'line_id': row['id'], 'start_time': row['start_time'], 'end_time': row['end_time'], 'text': row['text'], 'hard_cut': cut,
+                          'cut': owner['cut_index'] + 1 if owner else None, 'cut_id': owner['id'] if owner else None,
+                          **{key: plan.get(key) for key in ('action', 'why', 'at', 'left', 'right', 'start', 'end')}})
+        applied = agent_log.decisions(conn, episode_id=episode_id, kind=line_splits.KIND, limit=1000)
+        return {'counts': counts, 'lines': items, 'applied': applied}

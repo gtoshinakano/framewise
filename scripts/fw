@@ -19,6 +19,7 @@
     scripts/fw triage "Episode 6" --go --run RUN_ID  # apply the fix rules to failed runs (logged, undoable)
     scripts/fw missed-cuts check "Episode 6"     # find hard cuts the detection missed; split the sure ones, ask about the rest
     scripts/fw missed-cuts report "Episode 6"    # what it split (undo ids) and the open questions with their pictures
+    scripts/fw line-splits "Episode 6"           # what the line splitter would do with lines across hard cuts; add run to apply it
 
 Cut numbers are the editor's (1-based). RANGE is 100-120, 100..120, 7, 5- (to the end), -10 or all (the default).
 Only the HTTP API is used: FRAMEWISE_URL, else http://chopper.local:8080 (the server). It runs the same from any machine
@@ -1240,6 +1241,42 @@ def cmd_missed_cuts(api, args):
     raise Failure(f'unknown action {args.action!r}')
 
 
+# --- lines across hard cuts (docs/autopilot/HARNESS.md M3) -------------------------------------------------------
+
+def cmd_line_splits(api, args):
+    episode = find_episode(api, args.episode, args.latest)
+    if args.action == 'run':
+        result = api.post(f"/api/episodes/{episode['id']}/line-splits", body={'run_id': args.run})
+        emit(args, result, result.get('detail') or f"queued the line splitter: {result['job_id']}\nwait with: fw wait {episode['id'][:8]} --jobs {result['job_id']}")
+        return OK
+    data = api.get(f"/api/episodes/{episode['id']}/line-splits")
+    if args.json:
+        emit(args, data, '')
+        return OK
+    counts = data['counts']
+    lines = [f"{episode['project']} / {episode['title']}: {sum(counts.values())} line(s) cross a hard cut · "
+             + ', '.join(f"{action} {count}" for action, count in sorted(counts.items()))]
+    for item in data['lines']:
+        if args.action == 'preview' and item['action'] == 'leave' and not args.all:
+            continue
+        where = f"cut {item['cut']}" if item['cut'] else ''
+        if item['action'] == 'split':
+            detail = f"split at {item['at']:.2f}s: “{item['left']}” | “{item['right']}”"
+        elif item['action'] == 'trim':
+            detail = f"trim to {item['start']:.2f}-{item['end']:.2f}s"
+        else:
+            detail = 'leave'
+        lines.append(f"  - {where} {item['start_time']:.2f}-{item['end_time']:.2f}s, hard cut {item['hard_cut']:.2f}s: {detail} ({item['why']})")
+        if item['cut_id'] and item['action'] != 'leave':
+            lines.append(f"    {cut_url(api, episode, item['cut_id'], 'analysis')}")
+    applied = [item for item in data['applied'] if not item['undone_at']]
+    if applied:
+        lines.append(f"applied by agents: {len(applied)} (undo one with fw agent undo ID --decision)")
+    lines.append(f"run it with: fw line-splits {episode['id'][:8]} run [--run RUN]" if args.action == 'preview' else '')
+    print('\n'.join(line for line in lines if line))
+    return OK
+
+
 # --- command line ------------------------------------------------------------------------------------------------
 
 def parser():
@@ -1343,6 +1380,10 @@ def parser():
     command.add_argument('--note', help='answer: why (kept with the question)')
     command.add_argument('--out', help='strip: file to write (default missed-cut-ID.jpg)')
     command.set_defaults(func=cmd_missed_cuts)
+    command = episode_command('line-splits', cmd_line_splits, 'transcript lines across hard cuts: preview what the splitter would do, or run it')
+    command.add_argument('action', nargs='?', default='preview', choices=('preview', 'run'))
+    command.add_argument('--run', help='run: the agent run the changes belong to')
+    command.add_argument('--all', action='store_true', help='preview: also the lines it would leave as they are')
     command = sub.add_parser('close', parents=[common], help='close an escalation: resolved or dismissed')
     command.add_argument('escalation')
     command.add_argument('--status', default='resolved', choices=('resolved', 'dismissed'))

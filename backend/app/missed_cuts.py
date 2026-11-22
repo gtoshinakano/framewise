@@ -344,19 +344,7 @@ def asked_times(conn, episode_id) -> list[float]:
 def policy_for(conn, episode_id, run_id=None) -> dict:
     """``{mode, claude}`` from the run's profile snapshot, else the project's profile."""
     from . import autopilot_profile
-    profile = None
-    if run_id:
-        row = conn.execute('SELECT policy_json,episode_id FROM agent_runs WHERE id=?', (run_id,)).fetchone()
-        if row is None:
-            raise KeyError(run_id)
-        if row['episode_id'] != episode_id:
-            raise ValueError('The agent run belongs to another episode')
-        profile = json.loads(row['policy_json'] or '{}') or None
-    if not profile or KIND not in (profile.get('modes') or {}):
-        project = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()
-        profile, _ = autopilot_profile.load(conn, project['project_id'])
-    claude = profile.get('claude') or {}
-    return {'mode': profile['modes'][KIND], 'claude': bool(claude.get('enabled', True))}
+    return autopilot_profile.policy(conn, episode_id, KIND, run_id)
 
 
 def queue(conn, episode_id, *, first_index=0, last_index=None, cut_ids=None, redo=False, run_id=None):

@@ -134,6 +134,23 @@ class FwAutopilotTest(unittest.TestCase):
         with self.assertRaises(fw.Failure):
             run(api, 'missed-cuts', 'answer', 'q1', 'maybe')
 
+    def test_line_splits_preview_and_run(self):
+        preview = {'counts': {'split': 1, 'leave': 1}, 'applied': [],
+                   'lines': [{'line_id': 'l1', 'start_time': 1.0, 'end_time': 3.2, 'text': 'あの人、どういう人なんだろう。', 'hard_cut': 1.9, 'cut': 2,
+                              'cut_id': 'c2', 'action': 'split', 'why': 'on the cut, inside a pause', 'at': 1.9, 'left': 'あの人、', 'right': 'どういう人なんだろう。'},
+                             {'line_id': 'l2', 'start_time': 5.0, 'end_time': 6.0, 'text': 'ねえ', 'hard_cut': 5.5, 'cut': 3, 'cut_id': 'c3',
+                              'action': 'leave', 'why': 'no pause'}]}
+        api = AutopilotApi()
+        api.get = lambda path, params=None: preview if path.endswith('/line-splits') else AutopilotApi.get(api, path, params)
+        code, out = run(api, 'line-splits', EPISODE['id'])
+        self.assertEqual(code, fw.OK)
+        self.assertIn('split at 1.90s: “あの人、” | “どういう人なんだろう。”', out)
+        self.assertNotIn('ねえ', out)  # left lines only with --all
+        self.assertIn('leave', run(api, 'line-splits', EPISODE['id'], '--all')[1])
+        api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {'job_id': 'j1', 'job_ids': ['j1']})[1]
+        run(api, 'line-splits', EPISODE['id'], 'run', '--run', 'run1')
+        self.assertEqual(api.calls[-1], (f"/api/episodes/{EPISODE['id']}/line-splits", None, {'run_id': 'run1'}))
+
     def test_close_sends_the_resolution(self):
         api = AutopilotApi()
         run(api, 'close', 'esc1', '--resolution', '{"character": "mai"}')

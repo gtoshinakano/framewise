@@ -1402,6 +1402,7 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
         conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id,words_json,speaker_source,confidence,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, "manual_edit", segment["model_id"], segment["job_id"], segment_id, *metadata))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
+        agent_log.note_override(conn, 'transcript_segments', segment_id)
         structured_results.invalidate_transcript(conn, episode['id'], segment['start_time'], segment['end_time'])
         if (segment['start_time'], segment['end_time']) != (body.start_time, body.end_time):
             structured_results.invalidate_transcript(conn, episode['id'], body.start_time, body.end_time)
@@ -1423,6 +1424,7 @@ def delete_transcript_segment(segment_id: str):
         conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,deleted,origin,model_id,job_id,parent_id,words_json,speaker_source,confidence,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (new_id, old["episode_id"], old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], 1, "manual_edit", old["model_id"], old["job_id"], segment_id, *manual_metadata(old, old)))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
+        agent_log.note_override(conn, 'transcript_segments', segment_id)
         structured_results.invalidate_transcript(conn, old['episode_id'], old['start_time'], old['end_time'])
         subtitle_store.invalidate_probes(conn, old['episode_id'])
     return {"ok": True}
@@ -1439,6 +1441,8 @@ def merge_transcript_segments(episode_id: str, body: TranscriptMergeInput):
             new_id = line_edit.merge(conn, episode_id, body.segment_ids, body.text, body.speaker_label, body.character_context_id)
         except line_edit.LineEditError as exc:
             raise HTTPException(exc.status, exc.message)
+        for segment_id in body.segment_ids:
+            agent_log.note_override(conn, 'transcript_segments', segment_id)
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
 
 
@@ -1463,6 +1467,7 @@ def split_transcript_segment(segment_id: str, body: TranscriptSplitInput):
             left_id, right_id = line_edit.split(conn, segment_id, body.at, body.left.text, body.right.text)
         except line_edit.LineEditError as exc:
             raise HTTPException(exc.status, exc.message)
+        agent_log.note_override(conn, 'transcript_segments', segment_id)
     return [serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (item,))) for item in (left_id, right_id)]
 
 

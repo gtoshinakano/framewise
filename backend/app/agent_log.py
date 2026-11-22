@@ -105,9 +105,12 @@ def decisions(conn, *, episode_id=None, run_id=None, kind=None, cut_id=None, lim
 
 
 def note_override(conn, target_table, target_id):
-    """A person changed a target the agent had decided. Call it from user edit paths; it feeds the thresholds."""
+    """A person changed a target the agent had decided. Call it from user edit paths; it feeds the thresholds.
+
+    A decision that made new rows (the pieces of a split) names them in its ``after``; editing any of them counts too."""
     conn.execute("""UPDATE agent_decisions SET overridden_at=CURRENT_TIMESTAMP
-        WHERE target_table=? AND target_id=? AND undone_at IS NULL AND overridden_at IS NULL""", (target_table, str(target_id)))
+        WHERE target_table=? AND undone_at IS NULL AND overridden_at IS NULL AND (target_id=? OR instr(after_json, ?) > 0)""",
+                 (target_table, str(target_id), json.dumps(str(target_id))))
 
 
 # --- undo --------------------------------------------------------------------------------------------------------------

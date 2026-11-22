@@ -382,6 +382,21 @@ def _missed_cut_invalidates(conn, job):
     missed_cuts.invalidate(conn, job)
 
 
+def _line_split_gather(conn, job):
+    from . import line_splits
+    return line_splits.gather(conn, job)
+
+
+def _line_split_inputs(conn, job):
+    from . import line_splits
+    return line_splits.inputs(conn, job)
+
+
+def _line_split_invalidates(conn, job):
+    from . import line_splits
+    line_splits.invalidate(conn, job)
+
+
 def _transcription_scope(payload):
     return Scope(frozenset({'prepared_audio', 'voices', 'transcript', 'context', 'audio_ranges'}), frozenset({'transcript'}))
 
@@ -684,6 +699,11 @@ KINDS = {kind.pipeline: kind for kind in (
          resources=frozenset({'cpu_media'}), handler='missed_cuts.process',
          scope=lambda payload: Scope(frozenset({'proxy', 'cut_boundaries'}), frozenset({'cut_boundaries', 'previews'})),
          priority_class=lambda payload: 'batch', inputs=_missed_cut_inputs, gather=_missed_cut_gather, invalidates=_missed_cut_invalidates),
+    # Transcript lines that run across a hard cut, split at a pause or trimmed (line_splits.py, autopilot M3).
+    Kind('line_splits', 'Line splits at hard cuts', False, keys=lambda payload, cut_ids: ['line_splits'],
+         resources=frozenset({'cpu_media'}), handler='line_splits.process',
+         scope=lambda payload: Scope(frozenset({'transcript', 'cut_boundaries', 'prepared_audio'}), frozenset({'transcript'})),
+         priority_class=lambda payload: 'batch', inputs=_line_split_inputs, gather=_line_split_gather, invalidates=_line_split_invalidates),
     Kind('prepare', 'Prepare media', False, cancel_queued=False, keys=lambda payload, cut_ids: ['prepare'],
          resources=frozenset({'cpu_media'}),
          scope=lambda payload: Scope(frozenset({'original'}), frozenset({'proxy', 'prepared_audio', 'chunks', 'previews'})),
