@@ -8,16 +8,17 @@ import { IconButton, Section, Switch } from './EditorUi'
 import { PANEL_ACCENT } from './InspectorRail'
 import { TimeRangeInput } from './TimecodeInput'
 import { formatDuration, formatTimecode } from './timecode'
+import type { PlayheadStore } from './playhead'
 
 const MIN_LENGTH = 0.1
 type Notes = Pick<Cut, 'title' | 'description' | 'notes'>
 
 /** The Cut panel: what the selected cut is, its notes and frames, and precise timing. Split, merge and delete live in the timeline toolbar. */
-export function CutInspector({ cut, cuts, queueState, time, duration, frameVersion, sceneThreshold, detectionJob, onSelect, onPlay, onSeek, onOpenAnalysis, onToggleAnalysis, onSaveNotes, onApplyTiming, onDetectWithin, onCopy }: {
+export function CutInspector({ cut, cuts, queueState, playhead, duration, frameVersion, sceneThreshold, detectionJob, onSelect, onPlay, onSeek, onOpenAnalysis, onToggleAnalysis, onSaveNotes, onApplyTiming, onDetectWithin, onCopy }: {
   cut: Cut
   cuts: Cut[]
   queueState?: AnalysisQueueState
-  time: number
+  playhead: PlayheadStore
   duration: number
   frameVersion: string
   sceneThreshold: number
@@ -93,7 +94,7 @@ export function CutInspector({ cut, cuts, queueState, time, duration, frameVersi
         <CutFramePair key={`${cut.id}-${frameVersion}`} cut={cut} onSeek={onSeek} frameVersion={frameVersion} />
       </Section>
       {cut.active && <Section id="cut.timing" title="Timing & detection" icon={Timer} accent={PANEL_ACCENT.cut} defaultOpen={false} badge={timingChanged ? <span className="ml-1 h-1.5 w-1.5 rounded-full bg-[#f2c879]" title="Not applied yet" /> : null}>
-        <TimeRangeInput start={range.start} end={range.end} onChange={setRange} min={0} max={duration} playhead={time} onPlay={onPlay}
+        <TimeRangeInput start={range.start} end={range.end} onChange={setRange} min={0} max={duration} playhead={playhead} onPlay={onPlay}
           lockStart={index === 0} lockEnd={index === cuts.length - 1} />
         <ul className="muted mt-2 space-y-0.5 text-[11px]">
           {index === 0 ? <li>The first cut always starts at 0:00.000.</li> : timingChanged && previous && Math.abs(start - cut.start_time) > 1e-6 && <li>Cut {index} will end at <span className="font-mono text-[#e4e5ea]">{formatTimecode(start)}</span>.</li>}

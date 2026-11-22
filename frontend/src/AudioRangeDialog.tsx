@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { Trash2, X } from 'lucide-react'
 import { api, type EpisodeAudioRange } from './api'
 import { TimeRangeInput } from './TimecodeInput'
+import type { PlayheadStore } from './playhead'
 
 export function AudioRangeDialog({ episodeId, initial, duration, playhead, onClose, onSaved }: {
   episodeId: string
   initial: Pick<EpisodeAudioRange, 'start_time' | 'end_time' | 'kind'> & { id?: string }
   duration: number
-  playhead: number
+  playhead: PlayheadStore
   onClose: () => void
   onSaved: () => Promise<void>
 }) {

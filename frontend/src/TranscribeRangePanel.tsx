@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { RefreshCw, X } from 'lucide-react'
 import { api, type AudioSelection, type Job, type TranscriptSegment } from './api'
 import { TimeRangeInput } from './TimecodeInput'
+import type { PlayheadStore } from './playhead'
 
 const MIN_SECONDS = 0.5
 
@@ -11,10 +12,10 @@ function inside(segment: TranscriptSegment, selection: AudioSelection) {
   return middle >= selection.start && middle < selection.end
 }
 
-export default function TranscribeRangePanel({ episodeId, duration, currentTime, segments, selection, onSelectionChange, playRange, hasAudio, jobs, onQueued }: {
+export default function TranscribeRangePanel({ episodeId, duration, playhead, segments, selection, onSelectionChange, playRange, hasAudio, jobs, onQueued }: {
   episodeId: string
   duration: number
-  currentTime: number
+  playhead: PlayheadStore
   segments: TranscriptSegment[]
   selection: AudioSelection | null
   onSelectionChange: (selection: AudioSelection | null) => void
@@ -26,7 +27,6 @@ export default function TranscribeRangePanel({ episodeId, duration, currentTime,
   const [replaceManual, setReplaceManual] = useState(false)
   const [working, setWorking] = useState(false)
   const [error, setError] = useState('')
-  const playhead = Math.round(currentTime * 100) / 100
   const valid = !!selection && Number.isFinite(selection.start) && Number.isFinite(selection.end) && selection.start >= 0 && selection.end <= duration + 0.001 && selection.end - selection.start >= MIN_SECONDS
   const lines = selection && valid ? segments.filter(segment => inside(segment, selection)) : []
   const byHand = lines.filter(segment => segment.origin !== 'model')
@@ -37,7 +37,7 @@ export default function TranscribeRangePanel({ episodeId, duration, currentTime,
   useEffect(() => { setError('') }, [selection?.start, selection?.end])
   useEffect(() => { if (!byHand.length) setReplaceManual(false) }, [byHand.length])
   function edit(range: { start: number | null; end: number | null }) {
-    const start = range.start ?? playhead
+    const start = range.start ?? Math.round(playhead.time * 100) / 100
     onSelectionChange({ start, end: range.end ?? Math.min(duration, start + 10) })
   }
   async function run() {
@@ -52,7 +52,7 @@ export default function TranscribeRangePanel({ episodeId, duration, currentTime,
   const reason = !duration ? 'Prepare the video first.' : !hasAudio ? 'This video has no audio track.' : ''
   return <div className="space-y-3">
     <p className="muted text-[11px] leading-4">Shift-drag on the waveform to choose the audio, or type the times. Only this part is transcribed and its speakers identified again; replaced lines stay in the history.</p>
-    <TimeRangeInput compact start={selection ? selection.start : null} end={selection ? selection.end : null} min={0} max={duration} playhead={currentTime} onChange={edit} onPlay={hasAudio ? playRange : undefined} />
+    <TimeRangeInput compact start={selection ? selection.start : null} end={selection ? selection.end : null} min={0} max={duration} playhead={playhead} onChange={edit} onPlay={hasAudio ? playRange : undefined} />
     {!selection && <button type="button" className="btn btn-quiet w-full !py-1.5 !text-xs" disabled={!duration} onClick={() => edit({ start: null, end: null })}>Select 10 seconds from the playhead</button>}
     {selection && !valid && <p role="alert" className="text-[11px] text-[#ff9fa7]">Choose at least {MIN_SECONDS} seconds inside the video, with the end after the start.</p>}
     {selection && valid && <p className="text-[11px]" aria-live="polite">{lines.length} current {lines.length === 1 ? 'line' : 'lines'}{speakers ? ` · ${speakers} ${speakers === 1 ? 'speaker' : 'speakers'}` : ''}{byHand.length ? ` · ${byHand.length} edited by hand` : ''}</p>}

@@ -1,6 +1,7 @@
 import { useEffect, useId, useState, type KeyboardEvent } from 'react'
 import { LocateFixed, Play } from 'lucide-react'
 import { clampTime, formatDuration, formatTimecode, nudgeStep, parseTimecode } from './timecode'
+import { usePlayheadValue, type PlayheadStore } from './playhead'
 
 const HELP = 'Type 1:23.4, 83.4 or +0.25. ↑/↓ nudge 0.1 s, with Shift 1 s, with Alt 0.01 s.'
 
@@ -8,13 +9,23 @@ const HELP = 'Type 1:23.4, 83.4 or +0.25. ↑/↓ nudge 0.1 s, with Shift 1 s, w
  * A time field that shows and accepts timecodes. It commits on Enter or when it loses focus, Escape
  * restores the last value, and the arrow keys nudge it. `playhead` adds a button that copies the playhead.
  */
+/** The "set to playhead" button of a live playhead: only this button follows the playhead, not the panel around it. */
+function LivePlayheadButton({ store, ...props }: { store: PlayheadStore; label: string; disabled?: boolean; onUse: (time: number) => void }) {
+  const time = usePlayheadValue(store, value => Math.round(value * 1000) / 1000)
+  return <PlayheadButton time={time} {...props} />
+}
+
+function PlayheadButton({ time, label, disabled, onUse }: { time: number; label: string; disabled?: boolean; onUse: (time: number) => void }) {
+  return <button type="button" disabled={disabled} onClick={() => onUse(time)} title={`Set to playhead (${formatTimecode(time)})`} aria-label={`Set ${label.toLowerCase()} to playhead`}><LocateFixed size={14} aria-hidden /></button>
+}
+
 export function TimecodeInput({ value, onChange, label, min = 0, max, playhead, disabled, compact }: {
   value: number | null
   onChange: (seconds: number) => void
   label: string
   min?: number
   max?: number
-  playhead?: number
+  playhead?: number | PlayheadStore
   disabled?: boolean
   compact?: boolean
 }) {
@@ -43,6 +54,7 @@ export function TimecodeInput({ value, onChange, label, min = 0, max, playhead, 
       if (next !== value) onChange(next)
     }
   }
+  const applyPlayhead = (time: number) => { const next = clampTime(time, min, max); setText(formatTimecode(next)); setError(''); onChange(next) }
   return <div className="min-w-0">
     <label htmlFor={id} className={compact ? 'label !mb-1 !text-[10px]' : 'label'}>{label}</label>
     <div className={`time-field ${error ? 'time-field-invalid' : ''} ${disabled ? 'opacity-50' : ''}`}>
@@ -50,8 +62,9 @@ export function TimecodeInput({ value, onChange, label, min = 0, max, playhead, 
         onFocus={event => { setEditing(true); event.currentTarget.select() }}
         onBlur={() => { setEditing(false); commit() }}
         onChange={event => { setText(event.target.value); setError('') }} onKeyDown={onKey} />
-      {playhead !== undefined && <button type="button" disabled={disabled} onClick={() => { const next = clampTime(playhead, min, max); setText(formatTimecode(next)); setError(''); onChange(next) }}
-        title={`Set to playhead (${formatTimecode(playhead)})`} aria-label={`Set ${label.toLowerCase()} to playhead`}><LocateFixed size={14} aria-hidden /></button>}
+      {playhead !== undefined && (typeof playhead === 'number'
+        ? <PlayheadButton time={playhead} label={label} disabled={disabled} onUse={applyPlayhead} />
+        : <LivePlayheadButton store={playhead} label={label} disabled={disabled} onUse={applyPlayhead} />)}
     </div>
     {error && <p role="alert" className="mt-1 text-[11px] text-[#ff9fa7]">{error}</p>}
   </div>
@@ -64,7 +77,7 @@ export function TimeRangeInput({ start, end, onChange, min = 0, max, playhead, o
   onChange: (range: { start: number | null; end: number | null }) => void
   min?: number
   max?: number
-  playhead?: number
+  playhead?: number | PlayheadStore
   onPlay?: (start: number, end: number) => void
   lockStart?: boolean
   lockEnd?: boolean

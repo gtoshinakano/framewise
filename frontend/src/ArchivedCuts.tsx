@@ -1,5 +1,5 @@
 import { FrameImage } from './FrameImage'
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { cutFrameUrl, type Cut } from './api'
 
 function stamp(seconds: number) {
@@ -9,7 +9,7 @@ function stamp(seconds: number) {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
 }
 
-export function ArchivedCuts({ cuts, selectedId, onSelect, onOpenAnalysis }: { cuts: Cut[]; selectedId: string | null; onSelect: (cut: Cut) => void; onOpenAnalysis: (cut: Cut) => void }) {
+export const ArchivedCuts = memo(function ArchivedCuts({ cuts, selectedId, onSelect, onOpenAnalysis }: { cuts: Cut[]; selectedId: string | null; onSelect: (cut: Cut) => void; onOpenAnalysis: (cut: Cut) => void }) {
   const [expanded, setExpanded] = useState(false)
   const [limit, setLimit] = useState(24)
   if (!cuts.length) return null
@@ -25,4 +25,4 @@ export function ArchivedCuts({ cuts, selectedId, onSelect, onOpenAnalysis }: { c
       </button>)}
     </div>{cuts.length > limit && <button type="button" onClick={() => setLimit(value => value + 24)} className="btn btn-quiet mt-4">Show more</button>}</>}
   </section>
-}
+})

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { ChevronsLeft } from 'lucide-react'
 import { FrameImage } from './FrameImage'
 import { cutFrameUrl, type Cut } from './api'
@@ -9,7 +9,7 @@ import { formatDuration, formatTimecode } from './timecode'
 
 const PAGE = 30
 
-export function CutGallery({ cuts, selectedId, onSelect, onOpenAnalysis, frameVersion, queueStates, onCollapse }: { cuts: Cut[]; selectedId: string | null; onSelect: (cut: Cut) => void; onOpenAnalysis: (cut: Cut) => void; frameVersion: string; queueStates: Map<string, AnalysisQueueState>; onCollapse: () => void }) {
+export const CutGallery = memo(function CutGallery({ cuts, selectedId, onSelect, onOpenAnalysis, frameVersion, queueStates, onCollapse }: { cuts: Cut[]; selectedId: string | null; onSelect: (cut: Cut) => void; onOpenAnalysis: (cut: Cut) => void; frameVersion: string; queueStates: Map<string, AnalysisQueueState>; onCollapse: () => void }) {
   const [page, setPage] = useState(0)
   const pages = Math.max(1, Math.ceil(cuts.length / PAGE))
   const visiblePage = Math.min(page, pages - 1)
@@ -28,4 +28,4 @@ export function CutGallery({ cuts, selectedId, onSelect, onOpenAnalysis, frameVe
       </span>
     </button>)}</div>{pages > 1 && <div className="mt-2 flex items-center justify-between gap-2 text-xs"><button className="btn btn-quiet !px-2.5 !py-1" disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>Previous</button><span className="muted">{visiblePage + 1} / {pages}</span><button className="btn btn-quiet !px-2.5 !py-1" disabled={visiblePage >= pages - 1} onClick={() => setPage(visiblePage + 1)}>Next</button></div>}</> : <p className="muted px-1 text-xs leading-5">Run hard-cut detection to list cuts here.</p>}
   </section>
-}
+})

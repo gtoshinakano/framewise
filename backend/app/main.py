@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results, episode_events
+from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results, episode_events, episode_jobs
 from . import audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range, transcript_corrections
 from .transcript_parts import manual_metadata
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
@@ -371,50 +371,11 @@ def episode_response(episode_id: str):
         run = subtitle_store.current_run(episode_id, conn)
         episode["subtitles"] = {"language": episode.get("subtitle_language"),
                                 "run": {**run, "line_count": conn.execute("SELECT COUNT(*) FROM subtitle_lines WHERE run_id=?", (run["id"],)).fetchone()[0]} if run else None}
-    # The queued payload can contain every cut's context and may be very large.
-    # Keep it in SQLite for the worker and return only job metadata to the UI.
-    episode["jobs"] = db.all_rows("SELECT id,episode_id,pipeline,status,stage,error,attempt_count,created_at,updated_at,started_at,finished_at,retry_of,priority_class,payload_json FROM jobs WHERE episode_id=? ORDER BY created_at DESC, rowid DESC", (episode_id,))
+    # The queued payload can contain every cut's context and may be very large, and an old episode holds thousands of
+    # jobs: return the bounded list of episode_jobs.listed (metadata only). The dialog reads a cut's own jobs from /api/cuts/{id}/jobs.
     current_cuts = {cut['id']: cut for cut in episode['cuts'] + episode['archived_cuts']}
-    completed = {(row["job_id"], row["cut_id"]) for row in db.all_rows(
-        "SELECT a.job_id,a.cut_id FROM analysis_job_cuts a JOIN jobs j ON j.id=a.job_id WHERE j.episode_id=? AND a.completed=1", (episode_id,))}
-    for job in episode["jobs"]:
-        payload = json_object_or_empty(job.pop("payload_json"))
-        job['workflow'] = payload.get('workflow') if isinstance(payload.get('workflow'), str) else None
-        job['stages'] = payload.get('stages') if isinstance(payload.get('stages'), list) else None
-        # Sequence jobs belong to a sequence, not to a cut: the editor shows them in the sequence workspace.
-        job['sequence'] = {'id': payload.get('sequence_id'), 'step': payload.get('step'), 'shot_key': payload.get('shot_key')} if job['pipeline'] == 'sequence' else None
-        kind = job_kinds.kind_of(job['pipeline'])
-        job['actions'] = {'cancel': job['status'] in ('queued', 'running') and kind.can_cancel(job['status'], payload),
-                          'retry': job['status'] in ('failed', 'cancelled') and kind.retry(payload)}
-        if job["pipeline"] == "analyze":
-            items = payload.get("cuts", [])
-        elif job["pipeline"] == "character_detect":
-            items = [{"cut_id": payload.get("cut_id"), "context": {"cut": payload.get("cut", {})}}]
-        elif job["pipeline"] in ("regen", "consistency_summary", "review_answers", "performance_beats"):
-            items = [{"cut_id": payload.get("cut_id"), "context": payload.get("context", {})}]
-        else:
-            items = []
-        job["cuts"] = []
-        if not isinstance(items, list):
-            items = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            context = item.get("context")
-            cut = context.get("cut") if isinstance(context, dict) else {}
-            if not isinstance(cut, dict):
-                cut = {}
-            cut_id = item.get("cut_id")
-            if isinstance(cut_id, str) and cut_id:
-                cut = cut or current_cuts.get(cut_id, {})
-                index = cut.get("cut_index")
-                title = cut.get("title")
-                def time_value(value):
-                    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
-                job["cuts"].append({"id": cut_id, "cut_index": index if isinstance(index, int) and not isinstance(index, bool) else None,
-                                    "title": title if isinstance(title, str) else "", "start_time": time_value(cut.get("start_time")),
-                                    "end_time": time_value(cut.get("end_time")),
-                                    "completed": (job["id"], cut_id) in completed if job["pipeline"] == "analyze" else job["status"] == "done"})
+    with db.connect() as conn:
+        episode["jobs"] = episode_jobs.listed(conn, episode_id, current_cuts)
     return episode
 
 
@@ -1982,6 +1943,16 @@ def resize_character_detection(detection_id: str, body: CharacterDetectionBoxUpd
 def get_cut_analysis_config(cut_id: str):
     _, config = analysis_config_for_cut(cut_id)
     return config
+
+
+@app.get('/api/cuts/{cut_id}/jobs')
+def get_cut_jobs(cut_id: str):
+    """Every job that works on this cut, newest first, with the same fields as the episode's job list (which is bounded)."""
+    cut = db.one('SELECT id,episode_id FROM cuts WHERE id=?', (cut_id,))
+    if not cut:
+        raise HTTPException(404, 'Cut not found')
+    with db.connect() as conn:
+        return episode_jobs.for_cut(conn, cut['episode_id'], cut_id)
 
 
 @app.get('/api/cuts/{cut_id}/analysis-stages')

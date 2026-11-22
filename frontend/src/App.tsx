@@ -5,7 +5,7 @@ import Storage from './Storage'
 import AnalysisDialog from './AnalysisDialog'
 import { adjacentCut, nextNeedingAction, useCutFilters } from './cutFilters'
 import { analysisQueueStates } from './analysisQueueStates'
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { limitPlayback } from './playbackLimit'
 import { ArrowLeft, ArrowRight, ChevronRight, Clapperboard, Film, FolderOpen, Layers3, Merge, PanelLeftOpen, Pause, Play, Plus, Redo2, Save, Scissors, Trash2, Undo2, UploadCloud, Video, X } from 'lucide-react'
 import { api, jsonBody, mediaUrl, upload, type AudioSelection, type Chunk, type ContextItem, type Cut, type Episode, type EpisodeAudioRange, type EpisodeStatus, type EpisodeSummary, type Job, type Project, type TranscriptSegment, type Waveform } from './api'
@@ -32,6 +32,9 @@ import { PrepareEpisodeDialog } from './PrepareEpisodeDialog'
 import { IconButton } from './EditorUi'
 import { useCutEdits } from './useCutEdits'
 import { useEditorShortcuts } from './useEditorShortcuts'
+import { PlayheadStore, usePlayheadValue } from './playhead'
+import { useEvent } from './useEvent'
+import { shareEpisode } from './episodeShare'
 import { formatTimecode } from './timecode'
 import { defaultTab, editorPath, parseEditorRoute, routeFromLocation, type DialogTab, type EditorRoute, type RunSection } from './cutRoute'
 
@@ -193,6 +196,13 @@ function ContextLibrary({ projectId, episodes }: { projectId: string; episodes: 
       <div className="panel p-5">{draft ? <div className="space-y-4"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">{draft.id ? 'Edit context' : 'New context'}</h3><button onClick={() => setDraft(null)} className="muted" aria-label="Close context editor"><X size={17} /></button></div><div className="grid gap-3 sm:grid-cols-2"><label><span className="label">Type</span><select className="field" value={draft.kind} onChange={event => setDraft({ ...draft, kind: event.target.value as ContextItem['kind'] })}>{contextKinds.map(kind => <option key={kind.value} value={kind.value}>{kind.label}</option>)}</select></label><label><span className="label">Scope</span><select className="field" value={draft.episode_id || ''} onChange={event => setDraft({ ...draft, episode_id: event.target.value || null })}><option value="">Entire project</option>{episodes.map(episode => <option key={episode.id} value={episode.id}>{episode.title}</option>)}</select></label></div><label className="block"><span className="label">Title</span><input className="field" maxLength={200} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} placeholder="e.g. Main character, Chapter 2" /></label>{draft.kind === 'character' && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!draft.is_main} onChange={event => setDraft({ ...draft, is_main: event.target.checked ? 1 : 0 })} /> Main character</label>}<label className="block"><span className="label">Details</span><textarea className="field min-h-36 resize-y" value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} placeholder="Write details that future analysis should use…" /></label><div className="flex items-center justify-between gap-3"><button onClick={remove} disabled={!draft.id} className="text-xs text-[#e9919a] disabled:opacity-30"><Trash2 size={14} className="mr-1 inline" /> Delete</button><button onClick={save} disabled={saving || !draft.title.trim()} className="btn btn-primary"><Save size={15} /> Save context</button></div></div> : <div className="muted flex min-h-52 items-center justify-center text-center text-sm">Select an item to edit, or add new context.</div>}</div></div></section>
 }
 
+/** The playhead time over the video. It follows the playhead itself, so the editor does not render with every video frame. */
+function PlayheadClock({ playhead, duration }: { playhead: PlayheadStore; duration: number }) {
+  const time = usePlayheadValue(playhead, value => value)
+  return <span className="font-mono tabular-nums text-[#e8dfff]">{formatTimecode(time)} <span className="text-[#5d6675]">/</span> <span className="text-[#9ca5b3]">{formatTimecode(duration)}</span></span>
+}
+
+const NO_JOBS: Job[] = []
 const DEFAULT_CUTS_WIDTH = 260
 const MIN_TIMELINE = 160
 // What an editor reload fetches: the episode (with its sequences and waveform) and the transcript, which can run to megabytes.
@@ -208,8 +218,8 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null)
   const [selectedTranscriptId, setSelectedTranscriptId] = useState<string | null>(null)
   const [audioSelection, setAudioSelection] = useState<AudioSelection | null>(null)
-  const [time, setTime] = useState(0)
-  const [seekRevision, setSeekRevision] = useState(0)
+  // The playhead is not state: a playing video would re-render the whole editor with every update (see playhead.ts).
+  const playhead = useMemo(() => new PlayheadStore(), [id])
   const [playing, setPlaying] = useState(false)
   const [cutDetection, setCutDetection] = useState<{ cutId: string; jobId: string } | null>(null)
   const [loadError, setLoadError] = useState('')
@@ -243,9 +253,11 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const playbackEnd = useRef<number | null>(null)
   const latestEpisode = useRef<Episode | null>(null)
   const waveformVersion = useRef<string | null>(null)
+  // A reload keeps the identity of everything that did not change, so memoized children skip their render.
   const showEpisode = useCallback((value: Episode) => {
-    latestEpisode.current = value
-    setEpisode(value)
+    const shared = shareEpisode(latestEpisode.current, value)
+    latestEpisode.current = shared
+    setEpisode(shared)
   }, [])
   const loadParts = useCallback(async (parts: EditorParts) => {
     try {
@@ -303,7 +315,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
       const status = await api<EpisodeStatus>(`/episodes/${id}/status`)
       if (baseline.current?.id !== id && status.revision) baseline.current = { id, revision: status.revision }
       setQueueSummary(status.queue)
-      setEpisode(current => current?.id === id ? { ...current, status: status.status, stage: status.stage } : current)
+      setEpisode(current => current?.id === id && (current.status !== status.status || current.stage !== status.stage) ? { ...current, status: status.status, stage: status.stage } : current)
     }
     catch (err) { setLoadError((err as Error).message) }
   }, [id])
@@ -319,16 +331,19 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   // Cut Assistance edits the transcript outside this editor; reload it as soon as a proposal is applied.
   useEffect(() => { const reload = () => { void load({ episode: false, transcript: true }) }; window.addEventListener('framewise:transcript-changed', reload); return () => window.removeEventListener('framewise:transcript-changed', reload) }, [load])
   useEffect(() => { if (episode) api<Project>(`/projects/${episode.project_id}`).then(setProject).catch(() => {}) }, [episode?.project_id])
-  useEffect(() => { setSelectedId(null); setSelectedChunkId(null); setSelectedTranscriptId(null); setAudioSelection(null); setWaveform(null); setTranscript([]); setSequences([]); setSequenceOpen(null); setTime(0); playbackEnd.current = null }, [id])
+  useEffect(() => { setSelectedId(null); setSelectedChunkId(null); setSelectedTranscriptId(null); setAudioSelection(null); setWaveform(null); setTranscript([]); setSequences([]); setSequenceOpen(null); playhead.set(0); playbackEnd.current = null }, [id, playhead])
   const selected = [...(episode?.cuts || []), ...(episode?.archived_cuts || [])].find(cut => cut.id === selectedId)
   const selectedChunk = episode?.chunks.find(chunk => chunk.id === selectedChunkId)
   const cutDetectionJob = cutDetection?.cutId === selectedId ? episode?.jobs.find(job => job.id === cutDetection.jobId) : undefined
   const duration = episode?.duration || 0
   const cutFilters = useCutFilters()
-  function seek(value: number) { const target = Math.max(0, Math.min(duration, value)); playbackEnd.current = null; if (video.current) video.current.currentTime = target; setTime(target); setSeekRevision(revision => revision + 1) }
-  function openAnalysis(cut: Cut) { if (!analysisOpen) setDialogPlace({ tab: defaultTab(cut), section: 'characters' }); setAnalysisOpen(true) }
-  function openCutAnalysis(cut: Cut) { selectCut(cut, true); setActiveTab('cut'); openAnalysis(cut) }
-  function selectCut(cut: Cut, keepAnalysisOpen = false) { if (!keepAnalysisOpen) setAnalysisOpen(false); video.current?.pause(); setSelectedId(cut.id); setActiveTab(current => current === 'sequences' ? current : 'cut'); seek(cut.first_frame_time) }
+  // Handlers that memoized children receive keep one identity (useEvent) and still see the current state.
+  const seek = useEvent((value: number) => { const target = Math.max(0, Math.min(duration, value)); playbackEnd.current = null; if (video.current) video.current.currentTime = target; playhead.seek(target) })
+  const openAnalysis = useEvent((cut: Cut) => { if (!analysisOpen) setDialogPlace({ tab: defaultTab(cut), section: 'characters' }); setAnalysisOpen(true) })
+  const openCutAnalysis = useEvent((cut: Cut) => { selectCut(cut, true); setActiveTab('cut'); openAnalysis(cut) })
+  const selectCut = useEvent((cut: Cut, keepAnalysisOpen = false) => { if (!keepAnalysisOpen) setAnalysisOpen(false); video.current?.pause(); setSelectedId(cut.id); setActiveTab(current => current === 'sequences' ? current : 'cut'); seek(cut.first_frame_time) })
+  const navigateCut = useEvent((cut: Cut) => selectCut(cut, true))
+  const collapseCuts = useEvent(() => setCutsCollapsed(true))
   // The address and the editor follow each other. A link (route) wins when it changes: it selects its cut and opens the dialog
   // where it says. Afterwards every cut and dialog change rewrites the address, so the address bar always holds a shareable link.
   useEffect(() => {
@@ -352,10 +367,14 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
     const path = editorPath({ episodeId: id, cutId: selectedId, analysis: analysisOpen && !!selectedId, tab: dialogPlace.tab, section: dialogPlace.section })
     if (path !== editorPath(route)) replaceRoute(path)
   }, [!!episode, routeApplied, selectedId, analysisOpen, dialogPlace])
-  function selectChunk(chunk: Chunk) { setSelectedChunkId(chunk.id); setActiveTab('chunk'); seek(chunk.start_time) }
-  function selectTranscript(segment: TranscriptSegment) { setSelectedTranscriptId(segment.id); setActiveTab('audio'); setAudioView('lines'); seek(segment.start_time) }
-  function selectAudio(range: AudioSelection | null) { setAudioSelection(range); if (range) { setActiveTab('audio'); setAudioView('tools') } }
-  function playRange(start: number, end: number) { const player = video.current; if (!player) return; player.currentTime = start; playbackEnd.current = end; void player.play().catch(err => toast({ message: (err as Error).message, tone: 'error' })) }
+  const selectChunk = useEvent((chunk: Chunk) => { setSelectedChunkId(chunk.id); setActiveTab('chunk'); seek(chunk.start_time) })
+  const selectTranscript = useEvent((segment: TranscriptSegment) => { setSelectedTranscriptId(segment.id); setActiveTab('audio'); setAudioView('lines'); seek(segment.start_time) })
+  const selectAudio = useEvent((range: AudioSelection | null) => { setAudioSelection(range); if (range) { setActiveTab('audio'); setAudioView('tools') } })
+  const playRange = useEvent((start: number, end: number) => { const player = video.current; if (!player) return; player.currentTime = start; playbackEnd.current = end; void player.play().catch(err => toast({ message: (err as Error).message, tone: 'error' })) })
+  const editAudioRange = useEvent((range?: EpisodeAudioRange) => {
+    const from = audioSelection?.start ?? Math.max(0, Math.min(playhead.time, duration - 0.1))
+    setAudioRange(range || { start_time: from, end_time: audioSelection?.end ?? Math.min(duration, from + 10), kind: 'manual' })
+  })
   function togglePlay() { const player = video.current; if (!player) return; if (player.paused) void player.play().catch(() => {}); else player.pause() }
   // Playing a range (a cut, a line) pauses on the last frame before its end, frame by frame.
   useEffect(() => {
@@ -364,7 +383,6 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
     const limiter = limitPlayback(player, () => playbackEnd.current, { onStop: () => { playbackEnd.current = null } })
     return () => limiter.dispose()
   }, [episode?.proxy_ready])
-  function onVideoTimeUpdate(player: HTMLVideoElement) { setTime(player.currentTime) }
   const fail = (err: unknown) => toast({ message: (err as Error).message, tone: 'error' })
   const [mediaRequest, setMediaRequest] = useState(false)
   async function run(pipeline: 'prepare' | 'hardcuts') {
@@ -400,10 +418,11 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   async function remove() { if (!episode || !window.confirm(`Delete “${episode.title}” and all its media? This cannot be undone.`)) return; try { await api(`/episodes/${id}`, { method: 'DELETE' }); go(`/project/${episode.project_id}`) } catch (err) { fail(err) } }
   // After a cut edit the playhead stays where it is, so several splits in a row need no scrubbing back.
   const cutEdits = useCutEdits({ episodeId: id, toast, onEpisode: showEpisode, onSelect: cutId => { setSelectedId(cutId); setActiveTab(current => current === 'sequences' ? current : 'cut') } })
-  const jobs = episode?.jobs || []
+  const jobs = episode?.jobs ?? NO_JOBS
   const active = (job: Job) => job.status === 'running' || job.status === 'queued'
   const busy = jobs.some(active)
-  const cutQueueStates = analysisQueueStates(jobs)
+  const cutQueueStates = useMemo(() => analysisQueueStates(jobs), [jobs])
+  const jobsKey = useMemo(() => jobs.map(job => `${job.id}-${job.status}-${job.stage}`).join('|'), [jobs])
   const analysisBusy = jobs.some(job => (['prepare', 'hardcuts', 'character_detect'].includes(job.pipeline) || job.workflow === 'boundary_frame') && active(job))
   const hardcutsQueued = jobs.some(job => job.pipeline === 'hardcuts' && active(job))
   const characterBlock = bulkDetectionWorking ? 'Queuing…' : !episode?.cuts.length && !hardcutsQueued ? 'Detect hard cuts first.' : ''
@@ -415,11 +434,12 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const historyReason = cutEdits.working ? 'Saving cut edit…' : ''
   const editReason = !activeSelected ? 'Select a cut first' : historyReason
   // Split works on the cut under the playhead, like a video editor, so several splits in a row need no reselecting.
-  const splitTarget = episode?.cuts.find(cut => time >= cut.start_time + 0.1 && time <= cut.end_time - 0.1)
+  const splitTargetId = usePlayheadValue(playhead, time => episode?.cuts.find(cut => time >= cut.start_time + 0.1 && time <= cut.end_time - 0.1)?.id ?? null)
+  const splitTarget = splitTargetId ? episode?.cuts.find(cut => cut.id === splitTargetId) : undefined
   const splitReason = historyReason || (!episode?.cuts.length ? 'Detect hard cuts first' : !splitTarget ? 'Move the playhead inside a cut, at least 0.1 s from its edges' : '')
   const mergeReason = editReason || (activeSelected && activeSelected.cut_index === (episode?.cuts.length || 0) - 1 ? 'This is the last cut' : '')
   const deleteReason = editReason || ((episode?.cuts.length || 0) < 2 ? 'The only cut cannot be deleted' : '')
-  const split = () => { if (splitTarget && !splitReason) void cutEdits.edit('split', splitTarget.id, { time }) }
+  const split = () => { if (splitTarget && !splitReason) void cutEdits.edit('split', splitTarget.id, { time: playhead.time }) }
   const undo = () => { if (history?.undo && !historyReason) void cutEdits.undo() }
   const redo = () => { if (history?.redo && !historyReason) void cutEdits.redo() }
   const step = (direction: 1 | -1) => { if (!activeSelected || !episode) return; const target = episode.cuts[activeSelected.cut_index + direction]; if (target) selectCut(target) }
@@ -450,7 +470,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
       onOpenSettings={() => setSettingsOpen(true)} onOpenGlossary={() => setGlossaryOpen(true)} onOpenOutfits={() => setOutfitsOpen(true)} onDeleteEpisode={() => void remove()} />
     {!episode ? <div className="muted p-12">{loadError || 'Loading episode…'}</div> : <div className="editor-workspace" style={workspaceStyle}>
       <aside className="editor-cuts scrollbar" hidden={cutsCollapsed} aria-label="Cut list">
-        <CutGallery cuts={episode.cuts} selectedId={selectedId} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} frameVersion={frameVersion} queueStates={cutQueueStates} onCollapse={() => setCutsCollapsed(true)} />
+        <CutGallery cuts={episode.cuts} selectedId={selectedId} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} frameVersion={frameVersion} queueStates={cutQueueStates} onCollapse={collapseCuts} />
         <ArchivedCuts cuts={episode.archived_cuts} selectedId={selectedId} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} />
       </aside>
       <main className="editor-stage min-w-0">
@@ -458,21 +478,21 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
         {loadError && <p role="alert" className="mx-4 mt-3 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]">Could not refresh the episode: {loadError}</p>}
         {episode.error && <p className="mx-4 mt-3 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]">{episode.error}</p>}
         <div className={`flex min-h-0 flex-1 flex-col pb-2 pr-4 pt-3 ${cutsCollapsed ? 'pl-16' : 'pl-4'}`}>
-          <div className="preview-stage relative overflow-hidden rounded-xl border border-[#303540] bg-black shadow-2xl">{episode.proxy_ready ? <video ref={video} src={mediaUrl(id, 'proxy')} className="h-full w-full" controls onSeeking={() => setSeekRevision(revision => revision + 1)} onTimeUpdate={event => onVideoTimeUpdate(event.currentTarget)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} /> : <div className="flex h-full flex-col items-center justify-center text-center"><Film size={36} className="mb-4 text-[#a58ae8]" /><strong className="text-sm">{busy ? episode.stage : 'Preview unavailable'}</strong><p className="muted mt-2 text-xs">{busy ? 'Video preparation runs in the background.' : 'Use Cuts › Rebuild preview & waveform to create the preview.'}</p></div>}</div>
+          <div className="preview-stage relative overflow-hidden rounded-xl border border-[#303540] bg-black shadow-2xl">{episode.proxy_ready ? <video ref={video} src={mediaUrl(id, 'proxy')} className="h-full w-full" controls onSeeking={() => playhead.markSeek()} onTimeUpdate={event => playhead.set(event.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} /> : <div className="flex h-full flex-col items-center justify-center text-center"><Film size={36} className="mb-4 text-[#a58ae8]" /><strong className="text-sm">{busy ? episode.stage : 'Preview unavailable'}</strong><p className="muted mt-2 text-xs">{busy ? 'Video preparation runs in the background.' : 'Use Cuts › Rebuild preview & waveform to create the preview.'}</p></div>}</div>
           <div className="mt-2 flex items-center justify-between gap-3 text-xs text-[#9ca5b3]">
-            <div className="flex items-center gap-3"><IconButton icon={playing ? Pause : Play} label={playing ? 'Pause' : 'Play'} shortcut="Space" size="sm" onClick={togglePlay} /><span className="font-mono tabular-nums text-[#e8dfff]">{formatTimecode(time)} <span className="text-[#5d6675]">/</span> <span className="text-[#9ca5b3]">{formatTimecode(duration)}</span></span></div>
+            <div className="flex items-center gap-3"><IconButton icon={playing ? Pause : Play} label={playing ? 'Pause' : 'Play'} shortcut="Space" size="sm" onClick={togglePlay} /><PlayheadClock playhead={playhead} duration={duration} /></div>
             <span className="min-w-0 truncate" title={episode.original_filename}>{episode.width && episode.height ? `${episode.width} × ${episode.height}` : '—'} · {episode.original_filename}</span>
           </div>
         </div>
       </main>
       <aside id="inspector-panel" className="editor-inspector bg-[#131720]" role="tabpanel" aria-labelledby={`inspector-tab-${activeTab}`}>
-        {activeTab === 'cut' ? selected ? <CutInspector cut={selected} cuts={episode.cuts} queueState={cutQueueStates.get(selected.id)} time={time} duration={duration} frameVersion={frameVersion}
+        {activeTab === 'cut' ? selected ? <CutInspector cut={selected} cuts={episode.cuts} queueState={cutQueueStates.get(selected.id)} playhead={playhead} duration={duration} frameVersion={frameVersion}
           sceneThreshold={episode.settings.scene_threshold ?? 0.32} detectionJob={cutDetectionJob} onSelect={selectCut} onPlay={playRange} onSeek={seek} onOpenAnalysis={() => { if (selected) openAnalysis(selected) }}
           onToggleAnalysis={() => void toggleAnalysis()} onSaveNotes={saveNotes} onApplyTiming={(start, end) => void cutEdits.edit('timing', selected.id, { start, end })} onDetectWithin={threshold => void detectWithin(threshold)}
           onCopy={text => { void navigator.clipboard?.writeText(text).then(() => toast({ message: `Copied ${text}`, duration: 2000 })).catch(() => {}) }} />
           : <div className="p-8 text-center"><div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[#282438] text-[#bca7ff]"><Scissors size={21} /></div><h2 className="text-sm font-semibold">Select a cut</h2><p className="muted mt-2 text-xs leading-5">Choose a segment in the timeline or the cut list to see its notes, frames and timing.</p></div>
         : activeTab === 'chunk' ? <ChunkInspector chunk={selectedChunk} onPlay={playRange} onSave={saveChunk} />
-        : activeTab === 'audio' ? <TranscriptEditor transcriptStale={episode.transcript_stale_reason} attributionStale={episode.speaker_attribution_stale_reason} hasAudio={episode.has_audio} subtitleLanguage={episode.subtitle_language} subtitleRun={episode.subtitles.run} jobs={jobs} episodeId={id} projectId={episode.project_id} duration={duration} currentTime={time} segments={transcript} selectedId={selectedTranscriptId} onSelect={setSelectedTranscriptId} onSaved={refresh} playRange={playRange} audioSelection={audioSelection} onAudioSelection={selectAudio} view={audioView} onViewChange={setAudioView} />
+        : activeTab === 'audio' ? <TranscriptEditor transcriptStale={episode.transcript_stale_reason} attributionStale={episode.speaker_attribution_stale_reason} hasAudio={episode.has_audio} subtitleLanguage={episode.subtitle_language} subtitleRun={episode.subtitles.run} jobs={jobs} episodeId={id} projectId={episode.project_id} duration={duration} playhead={playhead} segments={transcript} selectedId={selectedTranscriptId} onSelect={setSelectedTranscriptId} onSaved={refresh} playRange={playRange} audioSelection={audioSelection} onAudioSelection={selectAudio} view={audioView} onViewChange={setAudioView} />
         : <SequencePanel episodeId={id} cuts={episode.cuts} selectedCut={selected} sequences={sequences} onChanged={refresh} onOpen={setSequenceOpen} />}
       </aside>
       <nav className="editor-rail" aria-label="Inspector">
@@ -486,22 +506,19 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
           onKeyDown={event => { if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return; event.preventDefault(); const current = timelineHeight || timelineBox.current?.getBoundingClientRect().height || 300; setTimelineHeight(clampHeight(current + (event.key === 'ArrowUp' ? 24 : -24))) }} />
         <div className="scrollbar min-h-0 flex-1 overflow-auto">
           <Timeline key={id} activeFilters={cutFilters.active} filterDisplay={cutFilters.display} onToggleFilter={cutFilters.toggle} onClearFilters={cutFilters.clear} onFilterDisplay={cutFilters.setDisplay} filtersOpen={filtersOpen} onFiltersOpenChange={setFiltersOpen} editTools={editTools}
-            audioRanges={episode.audio_ranges} onEditAudioRange={range => {
-              const from = audioSelection?.start ?? Math.max(0, Math.min(time, duration - 0.1))
-              setAudioRange(range || { start_time: from, end_time: audioSelection?.end ?? Math.min(duration, from + 10), kind: 'manual' })
-            }}
-            duration={duration} waveform={waveform} hasAudio={episode.has_audio} preparing={jobs.some(job => job.pipeline === 'prepare' && active(job))} seekRevision={seekRevision} chunks={episode.chunks} cuts={episode.cuts} cutQueueStates={cutQueueStates} transcript={transcript} currentTime={time} selectedCutId={selectedId} selectedChunkId={selectedChunkId} selectedTranscriptId={selectedTranscriptId} onSeek={seek} onSelectCut={selectCut} onOpenCutAnalysis={openCutAnalysis} onSelectChunk={selectChunk} onSelectTranscript={selectTranscript} audioSelection={audioSelection} onSelectAudio={selectAudio} sequences={sequences} onOpenSequence={setSequenceOpen} />
+            audioRanges={episode.audio_ranges} onEditAudioRange={editAudioRange}
+            duration={duration} waveform={waveform} hasAudio={episode.has_audio} preparing={jobs.some(job => job.pipeline === 'prepare' && active(job))} chunks={episode.chunks} cuts={episode.cuts} cutQueueStates={cutQueueStates} transcript={transcript} playhead={playhead} selectedCutId={selectedId} selectedChunkId={selectedChunkId} selectedTranscriptId={selectedTranscriptId} onSeek={seek} onSelectCut={selectCut} onOpenCutAnalysis={openCutAnalysis} onSelectChunk={selectChunk} onSelectTranscript={selectTranscript} audioSelection={audioSelection} onSelectAudio={selectAudio} sequences={sequences} onOpenSequence={setSequenceOpen} />
         </div>
       </div>
     </div>}
-    {episode && analysisOpen && selected && <AnalysisDialog key={dialogKey} initialTab={dialogPlace.tab} initialSection={dialogPlace.section} onPlace={reportPlace} cut={selected} cuts={episode.cuts} previousCut={selected.active ? adjacentCut(episode.cuts, selected, -1, cutFilters.active) : undefined} nextCut={selected.active ? adjacentCut(episode.cuts, selected, 1, cutFilters.active) : undefined} onNavigate={cut => selectCut(cut, true)} episodeId={id} projectId={episode.project_id} proxyReady={episode.proxy_ready} waveform={waveform} transcript={transcript} hasAudio={episode.has_audio} preparingAudio={jobs.some(job => job.pipeline === 'prepare' && active(job))} busy={analysisBusy} jobs={jobs} jobsKey={jobs.map(job => `${job.id}-${job.status}-${job.stage}`).join('|')} frameVersion={frameVersion} onStarted={refresh} onClose={closeAnalysis} />}
+    {episode && analysisOpen && selected && <AnalysisDialog key={dialogKey} initialTab={dialogPlace.tab} initialSection={dialogPlace.section} onPlace={reportPlace} cut={selected} cuts={episode.cuts} previousCut={selected.active ? adjacentCut(episode.cuts, selected, -1, cutFilters.active) : undefined} nextCut={selected.active ? adjacentCut(episode.cuts, selected, 1, cutFilters.active) : undefined} onNavigate={navigateCut} episodeId={id} projectId={episode.project_id} proxyReady={episode.proxy_ready} waveform={waveform} transcript={transcript} hasAudio={episode.has_audio} preparingAudio={jobs.some(job => job.pipeline === 'prepare' && active(job))} busy={analysisBusy} jobs={jobs} jobsKey={jobsKey} frameVersion={frameVersion} onStarted={refresh} onClose={closeAnalysis} />}
     {episode && sequenceOpen && <SequenceDialog key={sequenceOpen} sequenceId={sequenceOpen} episodeId={id} proxyReady={episode.proxy_ready} onClose={closeSequence} onChanged={refreshSequences} />}
     {episode && queueOpen && <QueueDrawer episodeId={id} focus={queueOpen === 'attention' ? 'attention' : null} onClose={closeQueue} onChanged={refresh} onSummary={setQueueSummary}
       onOpenCut={cutId => { const cut = [...episode.cuts, ...episode.archived_cuts].find(item => item.id === cutId); if (cut) openCutAnalysis(cut); else toast({ tone: 'error', message: 'That cut no longer exists.' }) }}
       onOpenSequence={setSequenceOpen} />}
     {episode && glossaryOpen && <NameGlossaryDialog projectId={episode.project_id} onClose={() => setGlossaryOpen(false)} />}
     {episode && outfitsOpen && <OutfitsDialog projectId={episode.project_id} onClose={() => setOutfitsOpen(false)} />}
-    {episode && audioRange && <AudioRangeDialog episodeId={id} initial={audioRange} duration={duration} playhead={time} onClose={() => setAudioRange(null)} onSaved={refresh} />}
+    {episode && audioRange && <AudioRangeDialog episodeId={id} initial={audioRange} duration={duration} playhead={playhead} onClose={() => setAudioRange(null)} onSaved={refresh} />}
     {episode && settingsOpen && <EpisodeSettingsDialog episode={episode} initial={episode.settings} onSave={saveSettings} onDelete={() => void remove()} onClose={closeSettings} />}
     {episode && prepareOpen && <PrepareEpisodeDialog episodeId={id} savedLanguage={episode.subtitle_language} onClose={() => setPrepareOpen(false)}
       onQueued={queued => { setPrepareOpen(false); if (queued) setQueueOpen('top'); toast({ message: queued ? 'Episode preparation queued.' : 'Episode preparation is already complete.' }); void refresh() }} />}

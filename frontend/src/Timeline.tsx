@@ -1,5 +1,5 @@
 import { CUT_FILTERS, cutsNeedingAction, matchesAnyFilter, nextNeedingAction, type CutFilterKey, type FilterDisplay } from './cutFilters'
-import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type PointerEvent, type ReactNode, type RefObject } from 'react'
 import { AudioLines, ChevronLeft, ChevronRight, Clapperboard, CircleHelp, Crosshair, Layers3, MessageSquareText, Music2, Minus, Plus, Scissors, SkipForward } from 'lucide-react'
 import type { AudioSelection, Chunk, Cut, EpisodeAudioRange, TranscriptSegment, Waveform } from './api'
 import type { AnalysisQueueState } from './analysisQueueStates'
@@ -9,6 +9,7 @@ import { CUT_STATUS_LEGEND, CutStatusIcons } from './CutStatus'
 import { IconButton } from './EditorUi'
 import { Popover } from './Popover'
 import { formatTimecode } from './timecode'
+import { usePlayheadValue, type PlayheadStore } from './playhead'
 
 type Props = {
   activeFilters: ReadonlySet<CutFilterKey>
@@ -30,8 +31,8 @@ type Props = {
   transcript: TranscriptSegment[]
   audioRanges: EpisodeAudioRange[]
   onEditAudioRange: (range?: EpisodeAudioRange) => void
-  currentTime: number
-  seekRevision: number
+  /** The playhead lives outside React state; only the small parts that draw it follow it. */
+  playhead: PlayheadStore
   selectedCutId: string | null
   selectedChunkId: string | null
   selectedTranscriptId: string | null
@@ -64,7 +65,19 @@ function SelectionBand({ selection, start, span }: { selection: AudioSelection |
   return <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 border-x border-[#7bc5cb] bg-[#7bc5cb33]" style={{ left, width }} />
 }
 
-function WaveformCanvas({ waveform, duration, start, span, currentTime, onSeek, hasAudio, preparing, selection, onSelect }: Pick<Props, 'waveform' | 'duration' | 'currentTime' | 'onSeek' | 'hasAudio' | 'preparing'> & { start: number; span: number; selection: AudioSelection | null; onSelect: (selection: AudioSelection) => void }) {
+/** The playhead's line over a lane. It is the only part of the lane that follows the playhead. */
+function PlayheadLine({ playhead, start, span }: { playhead: PlayheadStore; start: number; span: number }) {
+  const position = usePlayheadValue(playhead, time => (time - start) / span * 100)
+  if (position < 0 || position > 100) return null
+  return <div className="pointer-events-none absolute inset-y-0 w-px bg-[#eee7ff]" style={{ left: `${position}%` }} />
+}
+
+function PlayheadTime({ playhead }: { playhead: PlayheadStore }) {
+  const time = usePlayheadValue(playhead, value => value)
+  return <output aria-label="Playhead time" className="whitespace-nowrap font-mono tabular-nums text-[#e8dfff]" title="Playhead">{preciseStamp(time)}</output>
+}
+
+const WaveformCanvas = memo(function WaveformCanvas({ waveform, duration, start, span, playhead, onSeek, hasAudio, preparing, selection, onSelect }: Pick<Props, 'waveform' | 'duration' | 'playhead' | 'onSeek' | 'hasAudio' | 'preparing'> & { start: number; span: number; selection: AudioSelection | null; onSelect: (selection: AudioSelection) => void }) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const selecting = useRef<{ pointerId: number; anchor: number } | null>(null)
   useEffect(() => {
@@ -95,7 +108,6 @@ function WaveformCanvas({ waveform, duration, start, span, currentTime, onSeek, 
     observer.observe(element)
     return () => observer.disconnect()
   }, [waveform, duration, start, span])
-  const playhead = (currentTime - start) / span * 100
   const timeAt = (event: PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
     return start + Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * span
@@ -117,9 +129,9 @@ function WaveformCanvas({ waveform, duration, start, span, currentTime, onSeek, 
     <canvas ref={canvas} className="h-full w-full" />
     {!waveform?.peaks.length && <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[#1b202b] px-2 text-center text-[11px] text-[#a9b1c0]">{preparing ? 'Preparing waveform…' : !waveform ? 'Loading waveform…' : hasAudio ? 'Waveform unavailable. Run Prepare to rebuild it.' : 'No audio track in this video.'}</div>}
     <SelectionBand selection={selection} start={start} span={span} />
-    {playhead >= 0 && playhead <= 100 && <div className="pointer-events-none absolute inset-y-0 w-px bg-[#eee7ff]" style={{ left: `${playhead}%` }} />}
+    <PlayheadLine playhead={playhead} start={start} span={span} />
   </div>
-}
+})
 
 function blockStyle(item: { start_time: number; end_time: number }, start: number, span: number) {
   const left = Math.max(0, (Math.max(item.start_time, start) - start) / span * 100)
@@ -127,8 +139,39 @@ function blockStyle(item: { start_time: number; end_time: number }, start: numbe
   return { left: `${left}%`, width: `${Math.min(100 - left, Math.max(0.8, right - left))}%` }
 }
 
+/** The whole-video bar: the visible window and the playhead. It follows the playhead itself, so the rest of the timeline does not. */
+function OverviewSlider({ innerRef, playhead, duration, start, span, maxStart, onStep, onPointerDown, onPointerMove, onPointerUp, onRelease }: {
+  innerRef: RefObject<HTMLDivElement | null>; playhead: PlayheadStore; duration: number; start: number; span: number; maxStart: number
+  onStep: (time: number) => void; onPointerDown: (event: PointerEvent<HTMLDivElement>) => void; onPointerMove: (event: PointerEvent<HTMLDivElement>) => void
+  onPointerUp: (event: PointerEvent<HTMLDivElement>) => void; onRelease: () => void
+}) {
+  const currentTime = usePlayheadValue(playhead, time => time)
+  return <div ref={innerRef} role="slider" aria-label="Video overview" aria-valuemin={0} aria-valuemax={Math.max(duration, 1)} aria-valuenow={Math.min(currentTime, duration)} aria-valuetext={preciseStamp(currentTime)} tabIndex={0} onKeyDown={event => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); onStep(Math.max(0, Math.min(duration, currentTime + (event.key === 'ArrowRight' ? 1 : -1) * Math.max(1, span / 10)))) } }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onRelease} onLostPointerCapture={onRelease} className="relative h-5 cursor-crosshair touch-none overflow-hidden rounded bg-[#262c39]"><div className={`absolute inset-y-0 rounded border border-[#ab8df2] bg-[#8d70c266] ${maxStart > 0 ? 'cursor-grab active:cursor-grabbing' : ''}`} style={{ left: `${duration ? start / duration * 100 : 0}%`, width: `${duration ? Math.min(100, span / duration * 100) : 100}%` }} /><div className="pointer-events-none absolute inset-y-0 w-px bg-white" style={{ left: `${duration ? currentTime / duration * 100 : 0}%` }} /></div>
+}
+
+/** The cuts lane. It is memoized: the playhead moves without it rendering, and a selection or reload changes only what it is given. */
+const CutsLane = memo(function CutsLane({ cuts, activeFilters, filterDisplay, cutQueueStates, selectedCutId, start, span, playhead, onSelectCut, onOpenCutAnalysis }: Pick<Props, 'cuts' | 'activeFilters' | 'filterDisplay' | 'cutQueueStates' | 'selectedCutId' | 'playhead' | 'onSelectCut' | 'onOpenCutAnalysis'> & { start: number; span: number }) {
+  const end = start + span
+  const visible = (item: { start_time: number; end_time: number }) => item.start_time < end && item.end_time > start
+  return <div className="relative h-15 overflow-hidden rounded-md bg-[#1b202b]">{cuts.filter(cut => visible(cut) && (!activeFilters.size || filterDisplay === 'dim' || matchesAnyFilter(cut, activeFilters))).map(cut => {
+      const queueState = cutQueueStates.get(cut.id)
+      const queueLabel = queueState === 'running' ? 'Analysis running' : queueState === 'queued' ? 'Analysis queued' : ''
+      const matched = activeFilters.size ? CUT_FILTERS.filter(filter => activeFilters.has(filter.key) && filter.matches(cut)) : []
+      const dimmed = activeFilters.size > 0 && !matched.length
+      return <button key={cut.id} title={`Cut ${cut.cut_index + 1} · ${stamp(cut.start_time)}–${stamp(cut.end_time)}${cut.analysis_enabled ? '' : ' · Analysis disabled'} · ${cut.has_analysis_results ? 'Has analysis results' : 'No analysis results'} · ${cut.has_boxes ? 'Boxes detected' : 'No boxes'} · ${cut.no_characters ? 'No characters' : cut.has_characters ? 'Character detected' : 'No character labels'} · ${cut.has_summary ? 'Has cut summary' : 'No cut summary'}${cut.has_unlabeled_target_boxes && !cut.no_characters ? ' · Unknown people in target frames' : ''}${queueLabel ? ` · ${queueLabel}` : ''}${matched.length ? ` · Needs: ${matched.map(filter => filter.label).join(', ')}` : ''}`} aria-label={`Cut ${cut.cut_index + 1}, ${cut.has_analysis_results ? 'has analysis results' : 'no analysis results'}${cut.analysis_enabled ? '' : ', analysis disabled'}${queueLabel ? `, ${queueLabel}` : ''}${dimmed ? ', matches no filter' : ''}`} onClick={() => onSelectCut(cut)} onDoubleClick={() => onOpenCutAnalysis(cut)} className={`cut-block ${cut.analysis_enabled ? '' : 'cut-block-disabled'} absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 pt-[3px] text-left text-[10px] transition-opacity ${dimmed && selectedCutId !== cut.id ? 'opacity-25 hover:opacity-60' : ''} ${!cut.analysis_enabled ? selectedCutId === cut.id ? 'bg-[#a05b36] text-white' : 'bg-[#75462f] text-[#ffe1c4]' : selectedCutId === cut.id ? 'bg-[#9476d555] text-white ring-1 ring-inset ring-[#c3aeff]' : 'bg-[#5c497d66] text-[#d4c4ed]'}`} style={blockStyle(cut, start, span)}>
+        {matched.length > 0 && <span aria-hidden className="absolute inset-x-0 top-0 flex h-[3px]">{matched.map(filter => <span key={filter.key} className="flex-1" style={{ background: filter.color }} />)}</span>}
+        <span className="flex items-center gap-1"><CutStatusIcons cut={cut} queueState={queueState} /><span className="truncate">{cut.title}{!cut.analysis_enabled && ' · Disabled'}</span></span><span className="block truncate text-[9px] opacity-70"><b className="text-[10px] font-extrabold opacity-100">{cut.cut_index + 1}</b> · {stamp(cut.start_time)}</span>{queueState && <span aria-hidden className={`absolute inset-x-0 bottom-0 h-1 ${queueState === 'running' ? 'bg-[#f5c678]' : 'bg-[#86d1e1]'}`} />}</button>
+    })}{!cuts.length && <div className="muted flex h-full items-center justify-center text-xs">Run hard-cut detection to create timeline segments</div>}<PlayheadLine playhead={playhead} start={start} span={span} /></div>
+})
+
+const SpeechLane = memo(function SpeechLane({ transcript, start, span, selectedTranscriptId, audioSelection, onSelectTranscript }: Pick<Props, 'transcript' | 'selectedTranscriptId' | 'audioSelection' | 'onSelectTranscript'> & { start: number; span: number }) {
+  const end = start + span
+  const visible = (item: { start_time: number; end_time: number }) => item.start_time < end && item.end_time > start
+  return <div className="relative h-10 overflow-hidden rounded-md bg-[#1b202b]">{transcript.some(visible) ? transcript.filter(visible).map(segment => <button key={segment.id} title={`${segment.speaker_label || 'Speaker'}: ${segment.text}`} onClick={() => onSelectTranscript(segment)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedTranscriptId === segment.id ? 'bg-[#c2828e88] text-white' : 'bg-[#8d506566] text-[#f0c8d0]'}`} style={blockStyle(segment, start, span)}><span className="block truncate">{segment.speaker_label || 'Speaker'}</span><span className="block truncate text-[9px] opacity-70">{segment.text}</span></button>) : <div className="muted flex h-full items-center justify-center text-xs">No speech annotations in this window</div>}<SelectionBand selection={audioSelection} start={start} span={span} /></div>
+})
+
 export function Timeline(props: Props) {
-  const { activeFilters, filterDisplay, onToggleFilter, onClearFilters, onFilterDisplay, filtersOpen, onFiltersOpenChange, editTools, duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, currentTime, seekRevision, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript, audioSelection, onSelectAudio, sequences, onOpenSequence } = props
+  const { activeFilters, filterDisplay, onToggleFilter, onClearFilters, onFilterDisplay, filtersOpen, onFiltersOpenChange, editTools, duration, waveform, hasAudio, preparing, chunks, cuts, cutQueueStates, transcript, playhead, selectedCutId, selectedChunkId, selectedTranscriptId, onSeek, onSelectCut, onOpenCutAnalysis, onSelectChunk, onSelectTranscript, audioSelection, onSelectAudio, sequences, onOpenSequence } = props
   const [windowSeconds, setWindowSeconds] = useState<number | null>(() => duration > 1800 ? 600 : null)
   const [requestedStart, setRequestedStart] = useState(0)
   const followPlayhead = useRef(true)
@@ -150,12 +193,21 @@ export function Timeline(props: Props) {
       if (selected.start_time < start || selected.start_time >= end) center(selected.start_time)
     }
   }, [selectedCutId])
+  // A seek turns following on; while following, the window moves to the playhead when it leaves it. This runs on the playhead's own
+  // notifications, so a playing video does not re-render the timeline.
+  const followWindow = useRef({ start, end, center })
+  followWindow.current = { start, end, center }
   useEffect(() => {
+    let seeks = playhead.seekCount
+    const follow = () => {
+      if (playhead.seekCount !== seeks) { seeks = playhead.seekCount; followPlayhead.current = true }
+      const view = followWindow.current
+      if (followPlayhead.current && (playhead.time < view.start || playhead.time > view.end)) view.center(playhead.time)
+    }
     followPlayhead.current = true
-  }, [seekRevision])
-  useEffect(() => {
-    if (followPlayhead.current && (currentTime < start || currentTime > end)) center(currentTime)
-  }, [currentTime, seekRevision])
+    follow()
+    return playhead.subscribe(follow)
+  }, [playhead])
   const minSpan = Math.min(duration || 1, 1)
   const zoomWindow = useRef({ duration, start, span })
   zoomWindow.current = { duration, start, span }
@@ -187,7 +239,7 @@ export function Timeline(props: Props) {
   function setZoom(value: number) {
     const nextSpan = duration / Math.pow(duration / minSpan, value / 100)
     setWindowSeconds(value === 0 ? null : nextSpan)
-    setRequestedStart(Math.max(0, Math.min(duration - nextSpan, currentTime - nextSpan / 2)))
+    setRequestedStart(Math.max(0, Math.min(duration - nextSpan, playhead.time - nextSpan / 2)))
   }
   function overviewTime(event: PointerEvent<HTMLDivElement>) {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -251,7 +303,6 @@ export function Timeline(props: Props) {
     setPanning(false)
     event.stopPropagation()
   }
-  const playhead = (currentTime - start) / span * 100
   const actionCuts = cutsNeedingAction(cuts, activeFilters)
   function selectNextNeedingAction() {
     const next = nextNeedingAction(cuts, selectedCutId, activeFilters)
@@ -268,10 +319,10 @@ export function Timeline(props: Props) {
       <IconButton icon={Plus} label="Zoom in" size="sm" className="ghost" disabled={duration <= 1 || zoomValue >= 100} onClick={() => setZoom(Math.min(100, zoomValue + 10))} />
       <IconButton icon={ChevronLeft} label="Earlier" size="sm" className="ghost" disabled={start <= 0} onClick={() => step(-1)} />
       <IconButton icon={ChevronRight} label="Later" size="sm" className="ghost" disabled={start >= maxStart} onClick={() => step(1)} />
-      <IconButton icon={Crosshair} label="Center the playhead" size="sm" className="ghost" onClick={() => { followPlayhead.current = true; center(currentTime) }} />
+      <IconButton icon={Crosshair} label="Center the playhead" size="sm" className="ghost" onClick={() => { followPlayhead.current = true; center(playhead.time) }} />
       <span className="muted hidden whitespace-nowrap xl:inline">{visibleSpan}</span>
       <span className="mx-1 h-5 w-px bg-[#2c323d]" aria-hidden />
-      <output aria-label="Playhead time" className="whitespace-nowrap font-mono tabular-nums text-[#e8dfff]" title="Playhead">{preciseStamp(currentTime)}</output>
+      <PlayheadTime playhead={playhead} />
       <span className="muted whitespace-nowrap">{cuts.length} {cuts.length === 1 ? 'cut' : 'cuts'}</span>
       <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
         <ActiveFilterChips active={activeFilters} onToggle={onToggleFilter} />
@@ -281,21 +332,13 @@ export function Timeline(props: Props) {
       </span>
     </div>
     <div ref={zoomSurface} className={panning ? 'timeline-panning' : undefined} onPointerDownCapture={startMiddlePan} onPointerMoveCapture={moveMiddlePan} onPointerUpCapture={endMiddlePan} onPointerCancelCapture={endMiddlePan} onLostPointerCapture={endMiddlePan} onMouseDownCapture={event => { if (event.button === 1) event.preventDefault() }} onAuxClickCapture={event => { if (event.button === 1) event.preventDefault() }}>
-    <div className="mb-2 grid grid-cols-[28px_minmax(0,1fr)] items-center gap-2"><span className="muted text-center text-[10px]" title="Whole video: drag the window to move, click to seek">All</span><div ref={overview} role="slider" aria-label="Video overview" aria-valuemin={0} aria-valuemax={Math.max(duration, 1)} aria-valuenow={Math.min(currentTime, duration)} aria-valuetext={preciseStamp(currentTime)} tabIndex={0} onKeyDown={event => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); seekOverview(Math.max(0, Math.min(duration, currentTime + (event.key === 'ArrowRight' ? 1 : -1) * Math.max(1, span / 10)))) } }} onPointerDown={startOverviewDrag} onPointerMove={moveOverviewDrag} onPointerUp={finishOverviewDrag} onPointerCancel={() => { overviewDrag.current = null }} onLostPointerCapture={() => { overviewDrag.current = null }} className="relative h-5 cursor-crosshair touch-none overflow-hidden rounded bg-[#262c39]"><div className={`absolute inset-y-0 rounded border border-[#ab8df2] bg-[#8d70c266] ${maxStart > 0 ? 'cursor-grab active:cursor-grabbing' : ''}`} style={{ left: `${duration ? start / duration * 100 : 0}%`, width: `${duration ? Math.min(100, span / duration * 100) : 100}%` }} /><div className="pointer-events-none absolute inset-y-0 w-px bg-white" style={{ left: `${duration ? currentTime / duration * 100 : 0}%` }} /></div></div>
+    <div className="mb-2 grid grid-cols-[28px_minmax(0,1fr)] items-center gap-2"><span className="muted text-center text-[10px]" title="Whole video: drag the window to move, click to seek">All</span><OverviewSlider innerRef={overview} playhead={playhead} duration={duration} start={start} span={span} maxStart={maxStart} onStep={seekOverview} onPointerDown={startOverviewDrag} onPointerMove={moveOverviewDrag} onPointerUp={finishOverviewDrag} onRelease={() => { overviewDrag.current = null }} /></div>
     <div className="timeline-grid relative mb-1.5 ml-[36px] flex justify-between border-b hairline pb-1 font-mono text-[10px] text-[#7e8797]">{Array.from({ length: 6 }, (_, index) => <span key={index}>{stamp(start + span * index / 5)}</span>)}</div>
     <div className="grid grid-cols-[28px_minmax(0,1fr)] gap-x-2 gap-y-1.5">
       <LaneLabel icon={<Scissors size={15} />} label="Cuts" />
-      <div className="relative h-15 overflow-hidden rounded-md bg-[#1b202b]">{cuts.filter(cut => visible(cut) && (!activeFilters.size || filterDisplay === 'dim' || matchesAnyFilter(cut, activeFilters))).map(cut => {
-        const queueState = cutQueueStates.get(cut.id)
-        const queueLabel = queueState === 'running' ? 'Analysis running' : queueState === 'queued' ? 'Analysis queued' : ''
-        const matched = activeFilters.size ? CUT_FILTERS.filter(filter => activeFilters.has(filter.key) && filter.matches(cut)) : []
-        const dimmed = activeFilters.size > 0 && !matched.length
-        return <button key={cut.id} title={`Cut ${cut.cut_index + 1} · ${stamp(cut.start_time)}–${stamp(cut.end_time)}${cut.analysis_enabled ? '' : ' · Analysis disabled'} · ${cut.has_analysis_results ? 'Has analysis results' : 'No analysis results'} · ${cut.has_boxes ? 'Boxes detected' : 'No boxes'} · ${cut.no_characters ? 'No characters' : cut.has_characters ? 'Character detected' : 'No character labels'} · ${cut.has_summary ? 'Has cut summary' : 'No cut summary'}${cut.has_unlabeled_target_boxes && !cut.no_characters ? ' · Unknown people in target frames' : ''}${queueLabel ? ` · ${queueLabel}` : ''}${matched.length ? ` · Needs: ${matched.map(filter => filter.label).join(', ')}` : ''}`} aria-label={`Cut ${cut.cut_index + 1}, ${cut.has_analysis_results ? 'has analysis results' : 'no analysis results'}${cut.analysis_enabled ? '' : ', analysis disabled'}${queueLabel ? `, ${queueLabel}` : ''}${dimmed ? ', matches no filter' : ''}`} onClick={() => onSelectCut(cut)} onDoubleClick={() => onOpenCutAnalysis(cut)} className={`cut-block ${cut.analysis_enabled ? '' : 'cut-block-disabled'} absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 pt-[3px] text-left text-[10px] transition-opacity ${dimmed && selectedCutId !== cut.id ? 'opacity-25 hover:opacity-60' : ''} ${!cut.analysis_enabled ? selectedCutId === cut.id ? 'bg-[#a05b36] text-white' : 'bg-[#75462f] text-[#ffe1c4]' : selectedCutId === cut.id ? 'bg-[#9476d555] text-white ring-1 ring-inset ring-[#c3aeff]' : 'bg-[#5c497d66] text-[#d4c4ed]'}`} style={blockStyle(cut, start, span)}>
-          {matched.length > 0 && <span aria-hidden className="absolute inset-x-0 top-0 flex h-[3px]">{matched.map(filter => <span key={filter.key} className="flex-1" style={{ background: filter.color }} />)}</span>}
-          <span className="flex items-center gap-1"><CutStatusIcons cut={cut} queueState={queueState} /><span className="truncate">{cut.title}{!cut.analysis_enabled && ' · Disabled'}</span></span><span className="block truncate text-[9px] opacity-70"><b className="text-[10px] font-extrabold opacity-100">{cut.cut_index + 1}</b> · {stamp(cut.start_time)}</span>{queueState && <span aria-hidden className={`absolute inset-x-0 bottom-0 h-1 ${queueState === 'running' ? 'bg-[#f5c678]' : 'bg-[#86d1e1]'}`} />}</button>
-      })}{!cuts.length && <div className="muted flex h-full items-center justify-center text-xs">Run hard-cut detection to create timeline segments</div>}{playhead >= 0 && playhead <= 100 && <div className="pointer-events-none absolute inset-y-0 w-px bg-[#eee7ff]" style={{ left: `${playhead}%` }} />}</div>
+      <CutsLane cuts={cuts} activeFilters={activeFilters} filterDisplay={filterDisplay} cutQueueStates={cutQueueStates} selectedCutId={selectedCutId} start={start} span={span} playhead={playhead} onSelectCut={onSelectCut} onOpenCutAnalysis={onOpenCutAnalysis} />
       <LaneLabel icon={<AudioLines size={15} />} label="Audio waveform: drag to seek, Shift-drag to select audio to transcribe again" />
-      <WaveformCanvas waveform={waveform} duration={duration} start={start} span={span} currentTime={currentTime} onSeek={onSeek} hasAudio={hasAudio} preparing={preparing} selection={audioSelection} onSelect={onSelectAudio} />
+      <WaveformCanvas waveform={waveform} duration={duration} start={start} span={span} playhead={playhead} onSeek={onSeek} hasAudio={hasAudio} preparing={preparing} selection={audioSelection} onSelect={onSelectAudio} />
       <IconButton icon={Plus} label="Add excluded audio range" size="sm" disabled={!hasAudio || !duration}
         onClick={() => props.onEditAudioRange()} />
       <div role="group" aria-label="OP/ED and excluded audio" className="relative h-7 overflow-hidden rounded-md bg-[#1b202b]">
@@ -308,7 +351,7 @@ export function Timeline(props: Props) {
         })}
       </div>
       <LaneLabel icon={<MessageSquareText size={15} />} label="Speech: click a line to edit it" />
-      <div className="relative h-10 overflow-hidden rounded-md bg-[#1b202b]">{transcript.some(visible) ? transcript.filter(visible).map(segment => <button key={segment.id} title={`${segment.speaker_label || 'Speaker'}: ${segment.text}`} onClick={() => onSelectTranscript(segment)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedTranscriptId === segment.id ? 'bg-[#c2828e88] text-white' : 'bg-[#8d506566] text-[#f0c8d0]'}`} style={blockStyle(segment, start, span)}><span className="block truncate">{segment.speaker_label || 'Speaker'}</span><span className="block truncate text-[9px] opacity-70">{segment.text}</span></button>) : <div className="muted flex h-full items-center justify-center text-xs">No speech annotations in this window</div>}<SelectionBand selection={audioSelection} start={start} span={span} /></div>
+      <SpeechLane transcript={transcript} start={start} span={span} selectedTranscriptId={selectedTranscriptId} audioSelection={audioSelection} onSelectTranscript={onSelectTranscript} />
       <LaneLabel icon={<Layers3 size={15} />} label="Chunks" />
       <div className="relative h-8 overflow-hidden rounded-md bg-[#1b202b]">{chunks.filter(visible).map(chunk => <button key={chunk.id} title={`Chunk ${chunk.chunk_index + 1} · ${stamp(chunk.start_time)}–${stamp(chunk.end_time)}`} onClick={() => onSelectChunk(chunk)} className={`cut-block absolute inset-y-0 overflow-hidden border-r border-[#10131a] px-1 text-left text-[10px] ${selectedChunkId === chunk.id ? 'bg-[#5d9ca777] text-white' : 'bg-[#3e717e66] text-[#bce7e8]'}`} style={blockStyle(chunk, start, span)}><span className="block truncate">{chunk.title || `Chunk ${chunk.chunk_index + 1}`}</span><span className="block truncate text-[9px] opacity-70">{stamp(chunk.start_time)}</span></button>)}</div>
       <LaneLabel icon={<Clapperboard size={15} />} label="Sequences" />

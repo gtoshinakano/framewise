@@ -8,6 +8,7 @@ import SubtitlePanel from './SubtitlePanel'
 import { TimeRangeInput } from './TimecodeInput'
 import TranscribeRangePanel from './TranscribeRangePanel'
 import { formatDuration, formatTimecode } from './timecode'
+import type { PlayheadStore } from './playhead'
 
 export type AudioView = 'lines' | 'tools' | 'voices'
 
@@ -56,8 +57,8 @@ function UploadedPreview({ file }: { file: File }) {
 }
 
 /** One transcript line opened for editing, right where it sits in the list. */
-function SegmentEditor({ draft, setDraft, characters, duration, currentTime, busy, onSave, onDelete, onCancel, playRange }: {
-  draft: Draft; setDraft: (draft: Draft) => void; characters: ContextItem[]; duration: number; currentTime: number; busy: boolean
+function SegmentEditor({ draft, setDraft, characters, duration, playhead, busy, onSave, onDelete, onCancel, playRange }: {
+  draft: Draft; setDraft: (draft: Draft) => void; characters: ContextItem[]; duration: number; playhead: PlayheadStore; busy: boolean
   onSave: () => void; onDelete: () => void; onCancel: () => void; playRange: (start: number, end: number) => void
 }) {
   const historical = !!draft.superseded_by || !!draft.deleted
@@ -65,7 +66,7 @@ function SegmentEditor({ draft, setDraft, characters, duration, currentTime, bus
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (valid && !historical) onSave() } }
   return <div onKeyDown={onKey} className="space-y-3 rounded-b-lg border border-t-0 border-[#7a4a57] bg-[#1d171c] p-3">
     {historical && <p className="text-[11px] text-[#f2c879]">An earlier revision; it cannot be edited.</p>}
-    <TimeRangeInput compact start={draft.start_time} end={draft.end_time} min={0} max={duration} playhead={currentTime} lockStart={historical} lockEnd={historical}
+    <TimeRangeInput compact start={draft.start_time} end={draft.end_time} min={0} max={duration} playhead={playhead} lockStart={historical} lockEnd={historical}
       onChange={range => setDraft({ ...draft, start_time: range.start ?? draft.start_time, end_time: range.end ?? draft.end_time })} />
     <label className="block"><span className="label !mb-1 !text-[10px]">Speech or audio note</span><textarea className="field min-h-20 resize-y !py-2 text-sm" maxLength={20000} disabled={historical} value={draft.text} onChange={event => setDraft({ ...draft, text: event.target.value })} placeholder="What is heard?" autoFocus={!draft.id} /></label>
     <div className="grid grid-cols-2 gap-2">
@@ -84,11 +85,11 @@ function SegmentEditor({ draft, setDraft, characters, duration, currentTime, bus
   </div>
 }
 
-export default function TranscriptEditor({ episodeId, projectId, duration, currentTime, segments, selectedId, onSelect, onSaved, playRange, hasAudio, transcriptStale, attributionStale, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection, view, onViewChange }: {
+export default function TranscriptEditor({ episodeId, projectId, duration, playhead, segments, selectedId, onSelect, onSaved, playRange, hasAudio, transcriptStale, attributionStale, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection, view, onViewChange }: {
   episodeId: string
   projectId: string
   duration: number
-  currentTime: number
+  playhead: PlayheadStore
   segments: TranscriptSegment[]
   selectedId: string | null
   onSelect: (id: string | null) => void
@@ -142,7 +143,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
     setHistory(true); await loadHistory()
   }
   function addAtPlayhead() {
-    const start = Math.max(0, Math.min(duration - 0.1, Math.round(currentTime * 10) / 10))
+    const start = Math.max(0, Math.min(duration - 0.1, Math.round(playhead.time * 10) / 10))
     setDraft({ start_time: start, end_time: Math.min(duration, start + 5), text: '', speaker_label: '', character_context_id: null })
     onSelect(null); setHistory(false); onViewChange('lines')
   }
@@ -244,7 +245,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
           Lines to check <span className="muted tabular-nums">{checkCount}</span>
         </label>}
         {draft && !draft.id && <div className="mb-2"><div className="rounded-t-lg border border-[#7a4a57] bg-[#2a1d23] px-3 py-2 text-xs font-semibold">New line</div>
-          <SegmentEditor draft={draft} setDraft={setDraft} characters={characters} duration={duration} currentTime={currentTime} busy={busy} onSave={() => void save()} onDelete={() => void remove()} onCancel={close} playRange={playRange} /></div>}
+          <SegmentEditor draft={draft} setDraft={setDraft} characters={characters} duration={duration} playhead={playhead} busy={busy} onSave={() => void save()} onDelete={() => void remove()} onCancel={close} playRange={playRange} /></div>}
         <div className="space-y-1.5">
           {visibleSegments.length ? visibleSegments.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE).map(segment => {
             const open = draft?.id === segment.id && selectedId === segment.id
@@ -255,7 +256,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
                 <span className="mt-0.5 line-clamp-2 text-xs"><strong className="font-semibold" style={{ color: accent }}>{characterName(segment.character_context_id) || segment.speaker_label || 'Speaker'}</strong>
                   {needsCheck(segment) && <span className="mx-1 rounded border border-[#735a35] bg-[#342818] px-1 py-0.5 text-[9px] text-[#f5c678]" title={`Speaker confidence: ${segment.confidence}`}>check</span>} {segment.text}</span>
               </button>
-              {open && draft && <SegmentEditor draft={draft} setDraft={setDraft} characters={characters} duration={duration} currentTime={currentTime} busy={busy} onSave={() => void save()} onDelete={() => void remove()} onCancel={close} playRange={playRange} />}
+              {open && draft && <SegmentEditor draft={draft} setDraft={setDraft} characters={characters} duration={duration} playhead={playhead} busy={busy} onSave={() => void save()} onDelete={() => void remove()} onCancel={close} playRange={playRange} />}
             </div>
           }) : <div className="muted rounded-lg border border-dashed hairline p-5 text-center text-xs">{checkOnly && !history && segments.length ? 'No lines with medium or low speaker confidence.' : 'No transcript lines yet. Transcribe the episode under Tools.'}</div>}
         </div>
@@ -268,7 +269,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
           {!hasAudio && !preparing && <p className="muted mt-2 text-[11px]">{duration > 0 ? 'This video has no audio track.' : 'Prepare the video first.'}</p>}
         </Section>
         <Section id="audio.redo" title="Redo part of the transcript" icon={RefreshCw} accent={accent} defaultOpen={false} openSignal={audioSelection ? `${audioSelection.start}-${audioSelection.end}` : null}>
-          <TranscribeRangePanel episodeId={episodeId} duration={duration} currentTime={currentTime} segments={segments} selection={audioSelection} onSelectionChange={onAudioSelection} playRange={playRange} hasAudio={hasAudio} jobs={jobs} onQueued={onSaved} />
+          <TranscribeRangePanel episodeId={episodeId} duration={duration} playhead={playhead} segments={segments} selection={audioSelection} onSelectionChange={onAudioSelection} playRange={playRange} hasAudio={hasAudio} jobs={jobs} onQueued={onSaved} />
         </Section>
         <Section id="audio.subtitles" title="Burned-in subtitles" icon={Captions} accent={accent} defaultOpen={false} badge={subtitling ? <span className="ml-1 text-[10px] normal-case tracking-normal text-[#f5c678]">running</span> : null}>
           <SubtitlePanel episodeId={episodeId} ready={duration > 0 || preparing} savedLanguage={subtitleLanguage} run={subtitleRun} jobs={jobs} onChanged={onSaved} />
@@ -279,7 +280,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, curre
         <label className="block"><span className="label">Character</span><select className="field !py-2" value={voiceCharacter} onChange={event => setVoiceCharacter(event.target.value)}><option value="">Choose character</option>{characters.map(character => <option key={character.id} value={character.id}>{character.title}</option>)}</select></label>
         <div className="rounded-lg border hairline p-3">
           <p className="mb-2 text-xs font-semibold">From this episode</p>
-          <TimeRangeInput compact start={voiceStart} end={voiceEnd} min={0} max={duration} playhead={currentTime} onChange={setVoiceRange} onPlay={hasAudio ? playRange : undefined} />
+          <TimeRangeInput compact start={voiceStart} end={voiceEnd} min={0} max={duration} playhead={playhead} onChange={setVoiceRange} onPlay={hasAudio ? playRange : undefined} />
           <button className="btn btn-quiet mt-2 w-full !py-1.5 !text-xs" disabled={!hasAudio || !voiceRangeValid || voiceRanges.length >= 50 || totalVoiceDuration + (voiceEnd ?? 0) - (voiceStart ?? 0) > 60} onClick={() => { if (voiceStart !== null && voiceEnd !== null) { setVoiceRanges([...voiceRanges, { start_time: voiceStart, end_time: voiceEnd }]); setVoiceRange({ start: null, end: null }) } }}><Plus size={13} /> Add excerpt</button>
           {voiceRanges.length > 0 && <div className="mt-3 flex flex-wrap gap-1.5">{voiceRanges.map((range, index) => <span key={index} className="chip font-mono tabular-nums">
             <button onClick={() => playRange(range.start_time, range.end_time)} aria-label={`Play excerpt ${index + 1}`} className="!text-[#e89aab]"><Play size={11} /></button>{formatTimecode(range.start_time, { precision: 1 })}–{formatTimecode(range.end_time, { precision: 1 })}

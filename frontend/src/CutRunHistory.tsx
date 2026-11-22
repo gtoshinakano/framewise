@@ -18,7 +18,7 @@ const stageTone = (status: string): Tone => status === 'done' || status === 'com
 
 function minutes(seconds: number) { return formatElapsed(seconds) }
 
-export const CutRunHistory = memo(function CutRunHistory({ cutId, jobs, stages, onChanged }: { cutId: string; jobs: Job[]; stages: StageRow[]; onChanged: () => Promise<void> }) {
+export const CutRunHistory = memo(function CutRunHistory({ cutId, jobs, stages, onChanged, loaded = true }: { cutId: string; jobs: Job[]; stages: StageRow[]; onChanged: () => Promise<void>; /** False while the cut's full job history is still being read: the list may be incomplete. */ loaded?: boolean }) {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [working, setWorking] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -33,7 +33,7 @@ export const CutRunHistory = memo(function CutRunHistory({ cutId, jobs, stages, 
   return <section aria-label="Cut run history" className="rounded-xl border hairline bg-[#171c25] p-3 text-xs">
     <h3 className="flex items-center gap-2 font-semibold"><History size={14} className="text-[#bca7ff]" /> Run history <span className="rounded-full bg-[#232a36] px-1.5 text-[11px] font-normal text-[#aeb5c1]">{runs.length}</span><span className="muted ml-auto text-[11px] font-normal" title="Cancelling stops after the current model operation. Completed work can be retried.">Times in UTC</span></h3>
     {error && <p role="alert" className="mt-2 text-[#ff9fa7]">{error}</p>}
-    {runs.length === 0 ? <p className="muted mt-3 rounded-md border border-dashed hairline px-3 py-4 text-center">No analysis runs recorded for this cut yet.</p> :
+    {runs.length === 0 ? <p className="muted mt-3 rounded-md border border-dashed hairline px-3 py-4 text-center">{loaded ? 'No analysis runs recorded for this cut yet.' : 'Loading the runs of this cut…'}</p> :
       <div className="mt-2"><table className="w-full border-separate border-spacing-y-1.5 text-left">
         <thead className="muted text-[10px] uppercase tracking-wider"><tr><th className="w-28 px-2 font-semibold">Run</th><th className="px-2 font-semibold">Step and stages</th></tr></thead>
         <tbody>{visible.map(job => {

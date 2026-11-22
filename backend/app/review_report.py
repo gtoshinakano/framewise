@@ -31,7 +31,9 @@ CUT_FLAGS = """EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a
               OR (NOT EXISTS(SELECT 1 FROM analysis_results k WHERE k.cut_id=c.id AND k.superseded_by IS NULL AND json_extract(k.settings_json,'$.structured_type')='keyframe_analysis')
                   AND EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='video_analysis')))) AS has_visual_results,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='consistency_summary') AS has_consistency_summary,
-        COALESCE((SELECT j.status='failed' FROM analysis_job_cuts jc JOIN jobs j ON j.id=jc.job_id WHERE jc.cut_id=c.id ORDER BY j.created_at DESC, j.rowid DESC LIMIT 1),0) AS last_job_failed"""
+        -- Newest job by rowid, which is creation order (created_at never goes backwards in rowid order). Ordering by
+        -- created_at made SQLite read every candidate job's row past its payload_json, megabytes per cut.
+        COALESCE((SELECT j.status='failed' FROM analysis_job_cuts jc JOIN jobs j ON j.id=jc.job_id WHERE jc.cut_id=c.id ORDER BY j.rowid DESC LIMIT 1),0) AS last_job_failed"""
 
 LISTED_LINES = 20
 

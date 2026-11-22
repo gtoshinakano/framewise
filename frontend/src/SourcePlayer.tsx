@@ -2,6 +2,7 @@ import { limitPlayback } from './playbackLimit'
 import { createContext, useCallback, useContext, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 
 export type PlayRange = { start: number; end: number }
+export type SourcePlayerOptions = { /** The video's accessible name. */ label?: string; /** How much the browser fetches before play; the sequence workspace wants all of it, a cut preview only the start. */ preload?: 'none' | 'metadata' | 'auto' }
 
 /**
  * One `<video>` of the episode's proxy that the whole sequence workspace shares.
@@ -20,12 +21,12 @@ export class SourcePlayer {
   private readonly listeners = new Set<() => void>()
   private frame = 0
 
-  constructor() {
+  constructor({ label = 'Source video of this sequence', preload = 'auto' }: SourcePlayerOptions = {}) {
     const video = this.video
     video.controls = true
-    video.preload = 'auto'
+    video.preload = preload
     video.playsInline = true
-    video.setAttribute('aria-label', 'Source video of this sequence')
+    video.setAttribute('aria-label', label)
     video.className = 'h-full w-full bg-black'
     this.host.className = 'h-full w-full'
     this.host.append(video)
@@ -55,6 +56,9 @@ export class SourcePlayer {
   }
 
   get loaded() { return !!this.src }
+
+  /** The `<video>` itself, for code that listens to its events or reads it through a ref. */
+  get element() { return this.video }
 
   /** Limit seeking and playing to an interval (a shot, or the whole sequence) and put the playhead at its start when outside it. */
   setRange(range: PlayRange | null, moveToStart = false) {
