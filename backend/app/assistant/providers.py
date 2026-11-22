@@ -37,6 +37,11 @@ class Cancelled(Exception):
     """The user stopped the turn."""
 
 
+class NoVision(ProviderError):
+    """The request carries images and no server that could answer it can read them (a client error: HTTP 400)."""
+    status = 400
+
+
 @dataclass
 class Endpoint:
     url: str
@@ -247,7 +252,14 @@ class AutoServer(Provider):
     """
     id, label = 'auto', 'Auto · first free server'
 
-    def available(self):
+    def available(self, vision=False):
+        """With ``vision``: whether some server can read images (``remote_text.sees``), and why not."""
+        if vision:
+            from .. import remote_text
+            checks = {server: remote_text.sees(server) for server in ('local', 'remote')}
+            if any(ok for ok, _ in checks.values()):
+                return True, ''
+            return False, 'This request has images, but no server can read them (' + '; '.join(f'{server}: {why}' for server, (_, why) in checks.items()) + ')'
         if LocalQwen().available()[0]:
             return True, ''
         return RemoteLlama().available()
@@ -266,13 +278,14 @@ class AutoServer(Provider):
         return info
 
     @contextmanager
-    def session(self, model, thinking, cancel_check, on_stage, wait_for_gpu=True):
+    def session(self, model, thinking, cancel_check, on_stage, wait_for_gpu=True, vision=False):
+        """With ``vision`` only a server that can read images answers; ``NoVision`` when none can (instead of waiting forever)."""
         from .. import local_text_runtime, remote_text
         with ExitStack() as stack:
             with remote_text.pool.chat_wait():
                 on_stage('Waiting for a free server')
                 while True:
-                    choice = remote_text.pick_server()
+                    choice = remote_text.pick_server(vision=vision)
                     if choice and choice[0] == 'remote':
                         endpoint = stack.enter_context(RemoteLlama().session(choice[1], thinking, cancel_check, on_stage))
                         break
@@ -282,8 +295,16 @@ class AutoServer(Provider):
                             break
                         except local_text_runtime.GpuBusy:
                             pass  # visual work took the GPU after the pick; try the other server or wait
+                    if vision:
+                        ok, detail = self.available(vision=True)
+                        if not ok:
+                            raise NoVision(detail)
                     cancel_check()
                     time.sleep(1)
+            if vision and not endpoint.vision:
+                # The local server was started for this request and came up without its projector (``vision_failed``),
+                # or the remote's model list changed after the pick.
+                raise NoVision(f"This request has images, but the {endpoint.extra.get('_server', '')} server that took it cannot read them (no vision projector loaded)")
             yield endpoint
 
 

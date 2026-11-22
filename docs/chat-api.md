@@ -22,7 +22,15 @@ Base URL: `http://<APP_BIND_IP>:<APP_PORT>/v1` (for this host `http://192.168.0.
 - `POST /v1/chat/completions` takes `messages`, `stream`, `stream_options.include_usage`, `max_tokens` /
   `max_completion_tokens`, `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stop`, penalties,
   `response_format`, `tools` and `tool_choice`. The `model` field is echoed back and does not choose a
-  server. Only text content is accepted (the chat model has no vision here).
+  server.
+- **Images:** a user message may mix `text` and `image_url` parts, as in OpenAI's API. The URL is either a
+  base64 data URL (`data:image/png;base64,...`) or an `http(s)` URL that the API downloads (15 s, 20 MB).
+  JPEG, PNG, GIF and BMP go to the model as they are; anything else ffmpeg can read (WebP, AVIF, TIFF, ...)
+  is converted to PNG first. At most 16 images per request, only in `user` messages; `detail` is ignored.
+  Such a request goes only to a server that can see: this host while its Qwen 3.6 (or Inkling) server has
+  the vision projector loaded, or the remote PC when its chat model reports vision. When neither can, the
+  answer is a 400 that says why for each server. Pictures count against the context (a 1024×576
+  picture measured about 590 tokens on Qwen 3.6). The stored request drops the image data once it is answered.
 - Thinking is on by default and arrives as `reasoning_content` (message and stream deltas). Turn it off
   with `"reasoning_effort": "none"` or `"chat_template_kwargs": {"enable_thinking": false}`.
 - Errors use the OpenAI shape `{"error": {"message", "type", "code"}}`: 401 wrong key, 503 disabled or
@@ -34,6 +42,17 @@ Base URL: `http://<APP_BIND_IP>:<APP_PORT>/v1` (for this host `http://192.168.0.
 curl http://192.168.0.6:8080/v1/chat/completions \
   -H "Authorization: Bearer $CHAT_API_KEY" -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+With a picture:
+
+```bash
+IMG=$(base64 -w0 photo.jpg)
+curl http://192.168.0.6:8080/v1/chat/completions \
+  -H "Authorization: Bearer $CHAT_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"reasoning_effort":"none","messages":[{"role":"user","content":[
+        {"type":"text","text":"Describe this picture."},
+        {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,'"$IMG"'"}}]}]}'
 ```
 
 Any OpenAI client works with `base_url=http://192.168.0.6:8080/v1` and the key as API key.

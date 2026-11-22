@@ -265,6 +265,45 @@ class RemoteTextTest(unittest.TestCase):
         self.assertEqual(stages[0], 'Waiting for a free server')
         self.assertEqual(remote_text.pool.busy_with_chat()['remote'], 0)
 
+    def test_a_request_with_images_only_goes_to_a_server_that_can_see(self):
+        remote_text.pool.__init__()
+        remote_text.publish({'state': 'online', 'detail': '', 'models': [{'id': 'qwen3.6-mtp', 'n_ctx': 32768, 'vision': True}, {'id': 'bonsai2', 'n_ctx': 32768}]})
+        base = self.start_server()
+        self.configure(base)
+        runtime = Mock(gpu_busy=False)
+        runtime.switch_pending.return_value = False
+        local_sight = [(False, 'The vision projector is not installed')]
+        with patch.object(local_text_runtime, 'runtime', runtime), patch.object(local_text_runtime, 'text_job_concurrency', return_value=2), \
+                patch.object(local_text_runtime, 'vision_status', side_effect=lambda *args: local_sight[0]):
+            self.assertEqual(remote_text.pick_server(), ('local', ''))  # text: the preferred local server
+            self.assertEqual(remote_text.pick_server(vision=True), ('remote', 'qwen3.6-mtp'))  # its model reports vision
+            local_sight[0] = (True, '')
+            self.assertEqual(remote_text.pick_server(vision=True), ('local', ''))
+            local_sight[0] = (False, 'The running server did not load the vision projector')
+            cfg = self.configure(base, fallback='bonsai2')  # chat uses a model without vision
+            self.assertEqual(remote_text.sees('remote', cfg), (False, 'its model bonsai2 does not report vision'))
+            self.assertIsNone(remote_text.pick_server(vision=True))
+            ok, detail = providers.AutoServer().available(vision=True)
+            self.assertFalse(ok)
+            self.assertIn('local: The running server did not load the vision projector; remote: its model bonsai2 does not report vision', detail)
+            self.assertTrue(providers.AutoServer().available()[0])
+            with patch.object(providers.time, 'sleep') as sleep:  # nothing could ever answer: fail at once, never wait
+                with self.assertRaises(providers.NoVision):
+                    with providers.AutoServer().session('auto', False, lambda: None, lambda stage: None, vision=True):
+                        pass
+                sleep.assert_not_called()
+        self.assertEqual(remote_text.pool.waiting, 0)
+
+    def test_a_picked_server_that_came_up_without_vision_refuses_images(self):
+        remote_text.pool.__init__()
+        self.publish_models()  # no model reports vision
+        self.configure(self.start_server())
+        with patch.object(remote_text, 'pick_server', return_value=('remote', 'bonsai2')):
+            with self.assertRaisesRegex(providers.NoVision, 'the remote server that took it cannot read them'):
+                with providers.AutoServer().session('auto', False, lambda: None, lambda stage: None, vision=True):
+                    pass
+        self.assertEqual(remote_text.pool.busy_with_chat()['remote'], 0)
+
     # ------------------------------------------------------------ requests
 
     def test_chat_json_uses_the_bound_remote_model(self):

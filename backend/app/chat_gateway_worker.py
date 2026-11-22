@@ -104,6 +104,18 @@ class Run:
         self.checkpoint()
 
 
+def without_images(request):
+    """The request as kept after it ran: each picture's data URL replaced by its size, so a finished row stays small for the day it is kept."""
+    def slim(part):
+        if not (isinstance(part, dict) and part.get('type') == 'image_url'):
+            return part
+        header, _, data = str((part.get('image_url') or {}).get('url') or '').partition(',')
+        return {'type': 'image_url', 'image_url': {'url': f"omitted ({header.removeprefix('data:').removesuffix(';base64')}, {len(data) * 3 // 4} bytes)"}}
+    messages = [{**message, 'content': [slim(part) for part in message['content']]} if isinstance(message.get('content'), list) else message
+                for message in request['messages']]
+    return {**request, 'messages': messages}
+
+
 def sampling_extra(request, thinking):
     extra = dict(request.get('sampling') or {})
     if request.get('tools') and request.get('tool_choice'):
@@ -119,17 +131,18 @@ def run_request(request_id, owner):
         return
     request = json.loads(row['request_json'])
     thinking = bool(row['thinking'])
+    images = request.get('images') or 0  # counted by ``chat_gateway.clean_request``; such a request needs a server that can see
     run = Run(request_id, owner)
     usage, status, error, error_status = {}, 'done', None, None
     finish, calls = None, []
     started = time.monotonic()
     try:
         provider = providers.AutoServer()
-        ok, detail = provider.available()
+        ok, detail = provider.available(vision=bool(images))
         if not ok:
-            raise providers.ProviderError(detail or 'No llama.cpp server is available')
+            raise (providers.NoVision if images else providers.ProviderError)(detail or 'No llama.cpp server is available')
         run.stage('Waiting for a server')
-        with provider.session('auto', thinking, lambda: run.checkpoint(force=True), run.stage) as base:
+        with provider.session('auto', thinking, lambda: run.checkpoint(force=True), run.stage, vision=bool(images)) as base:
             server = base.extra.get('_server')
             run.local = server == 'local'
             run.stage('Waiting for first token')
@@ -145,20 +158,22 @@ def run_request(request_id, owner):
     except Aborted:
         return
     except providers.ProviderError as exc:
-        status, error, error_status = 'failed', str(exc)[:2000], failure_status(str(exc))
+        status, error, error_status = 'failed', str(exc)[:2000], getattr(exc, 'status', None) or failure_status(str(exc))
     except Exception as exc:
         log.exception('Chat gateway request %s failed', request_id)
         status, error, error_status = 'failed', f'{type(exc).__name__}: {exc}'[:2000], 500
     usage['wall_seconds'] = round(time.monotonic() - started, 2)
+    if images:
+        usage['images'] = images
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         current = conn.execute('SELECT lease_owner FROM chat_gateway_requests WHERE id=?', (request_id,)).fetchone()
         if not current or current['lease_owner'] != owner:
             return
         conn.execute('''UPDATE chat_gateway_requests SET status=?,stage=?,content=?,reasoning=?,tool_calls_json=?,finish_reason=?,error=?,error_status=?,usage_json=?,
-                        lease_owner=NULL,lease_until=NULL,finished_at=?,version=version+1 WHERE id=?''',
+                        request_json=COALESCE(?,request_json),lease_owner=NULL,lease_until=NULL,finished_at=?,version=version+1 WHERE id=?''',
                      (status, {'done': 'Complete', 'cancelled': 'Stopped', 'failed': 'Failed'}[status], run.content, run.reasoning, json.dumps(calls) if calls else None,
-                      finish, error, error_status, json.dumps(usage), time.time(), request_id))
+                      finish, error, error_status, json.dumps(usage), json.dumps(without_images(request), ensure_ascii=False) if images else None, time.time(), request_id))
 
 
 def loop(stop_event):

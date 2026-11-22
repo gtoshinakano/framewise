@@ -9,13 +9,24 @@ row. Every write advances ``version`` so this module can forward the new text, a
 
 Access needs ``CHAT_API_KEY`` (a Bearer token). Without it the endpoints answer 503, because the rest of
 the API has no authentication and must not become an open model gateway on the LAN.
+
+User messages may carry ``image_url`` parts (a ``data:`` URL, or an http(s) URL this process downloads).
+``clean_request`` turns each into a base64 data URL in a format llama-server decodes, converting others
+(WebP, AVIF, TIFF, ...) to PNG with ffmpeg, and counts them in ``request['images']`` so the worker sends
+the request only to a server whose model can see (``remote_text.sees``).
 """
 import asyncio
+import base64
+import binascii
 import hmac
 import json
 import os
+import subprocess
+import tempfile
 import time
+import urllib.request
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -32,6 +43,14 @@ WORKER_STALE_SECONDS = 30
 KEEP_FINISHED_SECONDS = 24 * 3600
 # Request fields forwarded to llama-server as they are. Anything else is ignored.
 SAMPLING_FIELDS = ('top_p', 'top_k', 'min_p', 'seed', 'stop', 'presence_penalty', 'frequency_penalty', 'repeat_penalty', 'response_format')
+MAX_IMAGES = 16
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+FETCH_SECONDS = 15
+# Formats llama-server's image loader (stb_image) reads as they are; anything else goes through ffmpeg to PNG.
+READABLE = ((b'\xff\xd8\xff', 'image/jpeg'), (b'\x89PNG\r\n\x1a\n', 'image/png'), (b'GIF87a', 'image/gif'), (b'GIF89a', 'image/gif'), (b'BM', 'image/bmp'))
+# Every column but ``request_json``: the stream polls the row many times a second and must not reread the pictures.
+ROW_FIELDS = ('id,status,stage,model,thinking,content,reasoning,tool_calls_json,finish_reason,error,error_status,usage_json,'
+              'cancel_requested,attempt_count,version,created_at,started_at,finished_at')
 
 
 def configured_key():
@@ -77,8 +96,89 @@ def thinking_choice(body):
     return True
 
 
+def fetch_image(url):
+    request = urllib.request.Request(url, headers={'User-Agent': 'framewise-chat-gateway', 'Accept': 'image/*'})
+    try:
+        with urllib.request.urlopen(request, timeout=FETCH_SECONDS) as response:
+            data = response.read(MAX_IMAGE_BYTES + 1)
+    except (OSError, ValueError) as exc:  # URLError and HTTPError are OSErrors
+        raise ValueError(f'could not download the image at {url[:200]}: {exc}') from exc
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ValueError(f'an image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB')
+    return data
+
+
+def image_bytes(value):
+    """The bytes of an ``image_url`` value: ``{"url": ...}`` or the URL itself, ``data:`` (base64) or http(s)."""
+    url = value.get('url') if isinstance(value, dict) else value
+    url = url.strip() if isinstance(url, str) else ''
+    if url.startswith('data:'):
+        header, comma, payload = url.partition(',')
+        if not comma or not header.endswith(';base64'):
+            raise ValueError('an image data URL must be base64 encoded (data:image/png;base64,...)')
+        if len(payload) > MAX_IMAGE_BYTES * 4 // 3 + 16:
+            raise ValueError(f'an image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB')
+        try:
+            data = base64.b64decode(''.join(payload.split()), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError('an image data URL is not valid base64') from exc
+    elif url.startswith(('http://', 'https://')):
+        data = fetch_image(url)
+    else:
+        raise ValueError('image_url.url must be a data: URL (data:image/png;base64,...) or an http(s) URL')
+    if not data:
+        raise ValueError('an image is empty')
+    return data
+
+
+def to_png(data):
+    """One frame of any picture ffmpeg can decode (WebP, AVIF, TIFF, ...) as PNG, or ``ValueError``."""
+    with tempfile.TemporaryDirectory(prefix='chat-image-') as folder:
+        source, target = Path(folder) / 'image', Path(folder) / 'image.png'
+        source.write_bytes(data)
+        try:
+            result = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-i', str(source), '-frames:v', '1', str(target)], capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError(f'an image could not be converted: {exc}') from exc
+        if result.returncode or not target.is_file() or not target.stat().st_size:
+            raise ValueError('an image could not be read (send JPEG, PNG, GIF, BMP or WebP)')
+        return target.read_bytes()
+
+
+def image_part(value):
+    """An ``image_url`` part the model server can decode: always a base64 data URL of JPEG, PNG, GIF or BMP."""
+    data = image_bytes(value)
+    mime = next((kind for magic, kind in READABLE if data.startswith(magic)), None)
+    if mime is None:
+        data, mime = to_png(data), 'image/png'
+    return {'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,' + base64.b64encode(data).decode('ascii')}}
+
+
+def clean_content(message):
+    """A message's content with every image part normalised (``image_part``); text passes as it is."""
+    content = message.get('content')
+    if not isinstance(content, list):
+        return content, 0
+    parts, images = [], 0
+    for part in content:
+        kind = part.get('type') if isinstance(part, dict) else None
+        if kind == 'image_url':
+            if message['role'] != 'user':
+                raise ValueError('images are accepted only in user messages')
+            parts.append(image_part(part.get('image_url')))
+            images += 1
+        elif isinstance(part, dict) and kind not in ('text', None):
+            raise ValueError(f"content parts of type {kind!r} are not supported (send text or image_url)")
+        else:
+            parts.append(part)
+    return parts, images
+
+
 def clean_request(body):
-    """The part of an OpenAI request the worker needs, or ``ValueError`` with a message for the client."""
+    """The part of an OpenAI request the worker needs, or ``ValueError`` with a message for the client.
+
+    Blocking: it may download pictures or run ffmpeg, so the endpoint calls it on a thread.
+    """
     messages = body.get('messages')
     if not isinstance(messages, list) or not messages:
         raise ValueError('messages must be a non-empty array')
@@ -87,13 +187,19 @@ def clean_request(body):
     for message in messages:
         if not isinstance(message, dict) or message.get('role') not in ('system', 'developer', 'user', 'assistant', 'tool'):
             raise ValueError('every message needs a role of system, user, assistant or tool')
-        content = message.get('content')
-        if isinstance(content, list):
-            if any(isinstance(part, dict) and part.get('type') not in ('text', None) for part in content):
-                raise ValueError('only text content is supported by this model endpoint')
-    messages = [{**message, 'role': 'system' if message['role'] == 'developer' else message['role']} for message in messages]
-    request = {'messages': messages, 'stream': bool(body.get('stream')),
+    counted = sum(1 for message in messages if isinstance(message.get('content'), list)
+                  for part in message['content'] if isinstance(part, dict) and part.get('type') == 'image_url')
+    if counted > MAX_IMAGES:
+        raise ValueError(f'a request may carry at most {MAX_IMAGES} images')
+    cleaned, images = [], 0
+    for message in messages:
+        content, found = clean_content(message)
+        images += found
+        cleaned.append({**message, 'role': 'system' if message['role'] == 'developer' else message['role'], **({'content': content} if found else {})})
+    request = {'messages': cleaned, 'stream': bool(body.get('stream')),
                'include_usage': bool((body.get('stream_options') or {}).get('include_usage')) if isinstance(body.get('stream_options'), dict) else False}
+    if images:
+        request['images'] = images
     limit = body.get('max_completion_tokens', body.get('max_tokens'))
     if limit is not None:
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
@@ -128,7 +234,7 @@ def request_cancel(request_id):
 
 
 def snapshot(request_id):
-    return db.one('SELECT * FROM chat_gateway_requests WHERE id=?', (request_id,))
+    return db.one(f'SELECT {ROW_FIELDS} FROM chat_gateway_requests WHERE id=?', (request_id,))
 
 
 def usage_of(row):
@@ -239,9 +345,12 @@ async def list_models(request: Request):
     return {'object': 'list', 'data': [{'id': PUBLIC_MODEL, 'object': 'model', 'created': 0, 'owned_by': 'framewise'}]}
 
 
-@router.post('/v1/chat/completions', summary='Chat with Qwen 3.6 (OpenAI-compatible, streaming supported)')
+@router.post('/v1/chat/completions', summary='Chat with Qwen 3.6 (OpenAI-compatible, streaming and images supported)')
 async def chat_completions(request: Request):
-    """Needs ``Authorization: Bearer <CHAT_API_KEY>``. The reply comes from this host's Qwen 3.6 or the remote llama.cpp server, whichever is free."""
+    """Needs ``Authorization: Bearer <CHAT_API_KEY>``. The reply comes from this host's Qwen 3.6 or the remote llama.cpp server, whichever is free.
+
+    User messages may carry ``image_url`` parts; such a request goes only to a server whose model can read images.
+    """
     try:
         check_key(request)
     except HTTPException as exc:
@@ -250,7 +359,7 @@ async def chat_completions(request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError('The request body must be a JSON object')
-        clean = clean_request(body)
+        clean = await asyncio.to_thread(clean_request, body)
     except ValueError as exc:
         return openai_error(400, str(exc) or 'The request body is not valid JSON')
     if not await asyncio.to_thread(worker_online):

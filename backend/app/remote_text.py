@@ -338,15 +338,42 @@ class Pool:
 pool = Pool()
 
 
-def pick_server(cfg=None):
-    """``('local', '')`` or ``('remote', model)`` for a chat turn that may use whichever server is free, or ``None``."""
+def sees(server, cfg=None):
+    """``(True, '')`` when ``server`` (``local``/``remote``) can answer a request that carries images, else ``(False, why)``.
+
+    Local: the running server loaded its vision projector, or the one about to start will (``local_text_runtime.vision_status``).
+    Remote: the server reports vision for its chat model (``chat_model``), the model a chat turn would use.
+    """
+    cfg = cfg or config()
+    if server == 'local':
+        from . import local_text_runtime
+        runtime = local_text_runtime.runtime
+        if runtime is None:
+            return False, 'the local model runtime is not running'
+        return local_text_runtime.vision_status(runtime, runtime.target_variant())
+    if not usable(cfg):
+        return False, 'not enabled'
+    if not online():
+        return False, 'offline'
+    model = chat_model(cfg)
+    if not model_vision(model):
+        return False, f"its model {model or '(none)'} does not report vision"
+    return True, ''
+
+
+def pick_server(cfg=None, vision=False):
+    """``('local', '')`` or ``('remote', model)`` for a chat turn that may use whichever server is free, or ``None``.
+
+    With ``vision`` only a server that can read images (``sees``) is a candidate.
+    """
     cfg = cfg or config()
     from . import local_text_runtime
     runtime = local_text_runtime.runtime
     candidates = {}
-    if runtime is not None and not runtime.gpu_busy and not gpu_device.audio_requested() and not runtime.switch_pending() and pool.free('local', cfg) > 0:
+    if runtime is not None and not runtime.gpu_busy and not gpu_device.audio_requested() and not runtime.switch_pending() and pool.free('local', cfg) > 0 \
+            and (not vision or sees('local', cfg)[0]):
         candidates['local'] = ''
-    if usable(cfg) and online() and pool.free('remote', cfg) > 0 and chat_model(cfg):
+    if usable(cfg) and online() and pool.free('remote', cfg) > 0 and chat_model(cfg) and (not vision or sees('remote', cfg)[0]):
         candidates['remote'] = chat_model(cfg)
     for server in sorted(candidates, key=lambda name: name != cfg['prefer']):
         return server, candidates[server]
