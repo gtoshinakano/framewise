@@ -23,7 +23,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results, episode_events, episode_jobs
-from . import audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range, transcript_corrections
+from . import agent_log, audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range, transcript_corrections
 from .transcript_parts import manual_metadata
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
@@ -89,6 +89,8 @@ from .outfits_api import router as outfits_router
 app.include_router(outfits_router)
 from .autopilot_api import router as autopilot_router
 app.include_router(autopilot_router)
+from .missed_cuts_api import router as missed_cuts_router
+app.include_router(missed_cuts_router)
 from .visual_models_api import router as visual_models_router
 app.include_router(visual_models_router)
 from .point_detect_api import first_frame_spec, router as point_detect_router
@@ -738,6 +740,8 @@ def edit_cut_timeline(cut_id: str, action: str, timing: CutTimingInput | None = 
                      "merge": f"Merged cut {number} with cut {number + 1}",
                      "delete": f"Deleted cut {number}"}[action]
             cut_history.record(conn, cut["episode_id"], action, label, cut_id, before, created_ids)
+            for changed_id in affected_ids | archived:  # a person changed a cut an agent split: the threshold's training signal
+                agent_log.note_override(conn, 'cuts', changed_id)
         cancelled = cut_previews.after_timeline_edit(conn, episode, affected_ids, archived)
     worker.after_cancel(cancelled)
     worker.wake_event.set()
@@ -755,6 +759,8 @@ def reverse_cut_edit(episode_id: str, direction: Literal['undo', 'redo']):
         except cut_history.Conflict as exc:
             raise HTTPException(409, str(exc)) from exc
         current = conn.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone()
+        for changed_id in set(outcome['changed']) | set(outcome['removed']):
+            agent_log.note_override(conn, 'cuts', changed_id)
         cancelled = cut_previews.after_timeline_edit(conn, current, outcome['changed'], outcome['removed'])
         active = {row["id"] for row in conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1", (episode_id,))}
         first = conn.execute("SELECT id FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index LIMIT 1", (episode_id,)).fetchone()

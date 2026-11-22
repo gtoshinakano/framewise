@@ -17,6 +17,8 @@
     scripts/fw diagnose "Episode 6" 100-200      # per cut, what is wrong and why, worst cuts first, with links
     scripts/fw why "Episode 6" 142 --step summary  # the chain of prerequisites down to the first broken one
     scripts/fw triage "Episode 6" --go --run RUN_ID  # apply the fix rules to failed runs (logged, undoable)
+    scripts/fw missed-cuts check "Episode 6"     # find hard cuts the detection missed; split the sure ones, ask about the rest
+    scripts/fw missed-cuts report "Episode 6"    # what it split (undo ids) and the open questions with their pictures
 
 Cut numbers are the editor's (1-based). RANGE is 100-120, 100..120, 7, 5- (to the end), -10 or all (the default).
 Only the HTTP API is used: FRAMEWISE_URL, else http://chopper.local:8080 (the server). It runs the same from any machine
@@ -82,6 +84,17 @@ class Api:
 
     def get(self, path, params=None):
         return self.call('GET', path, params)
+
+    def raw(self, path, params=None):
+        """The body of a GET as bytes (an image)."""
+        query = urlencode({key: value for key, value in (params or {}).items() if value is not None})
+        try:
+            with urlopen(Request(f'{self.url}{path}' + (f'?{query}' if query else '')), timeout=120) as response:
+                return response.read()
+        except HTTPError as exc:
+            raise Failure(f'GET {path}: HTTP {exc.code}: {exc.read().decode(errors="replace")[:300]}') from None
+        except (URLError, TimeoutError) as exc:
+            raise Failure(f'cannot reach {self.url}: {getattr(exc, "reason", exc)}') from None
 
     def post(self, path, params=None, body=None):
         return self.call('POST', path, params, body)
@@ -992,19 +1005,24 @@ def cmd_agent(api, args):
 
 def cmd_inbox(api, args):
     episode = find_episode(api, args.episode, args.latest)
-    data = api.get(f"/api/episodes/{episode['id']}/escalations", {'status': args.status})
+    data = api.get(f"/api/episodes/{episode['id']}/escalations", {'status': args.status, 'reviewer': args.reviewer})
     if args.json:
         emit(args, data, '')
         return OK
     numbers = {cut['id']: number for number, cut in cut_numbers(api, episode).items()}
     counts = data['counts']
-    lines = [f"{episode['project']} / {episode['title']}: {counts['open_total']} open question(s) for you, "
-             f"{counts['applied_total']} decision(s) applied by agents"]
+    lines = [f"{episode['project']} / {episode['title']}: {counts.get('for_person', counts['open_total'])} open question(s) for you, "
+             f"{counts.get('for_claude', 0)} for Claude (the second reviewer), {counts['applied_total']} decision(s) applied by agents"]
     if counts['applied']:
         lines.append('applied: ' + ', '.join(f'{kind} {count}' for kind, count in sorted(counts['applied'].items())))
     for item in data['items']:
         cut_list = sorted(numbers[cut_id] for cut_id in item['cut_ids'] if cut_id in numbers)
-        lines.append(f"\n[{item['kind']}] {item['question']}  ({item['status']}, id {item['id']})")
+        who = ' · for Claude' if item.get('reviewer') == 'claude' else ''
+        lines.append(f"\n[{item['kind']}] {item['question']}  ({item['status']}{who}, id {item['id']})")
+        if (item.get('evidence') or {}).get('strip'):
+            lines.append(f"  picture: {api.url}{item['evidence']['strip']}")
+        if (item.get('evidence') or {}).get('claude_note'):
+            lines.append(f"  Claude: {item['evidence']['claude_note']}")
         if item['options']:
             lines.append('  options: ' + ' | '.join(str(option) for option in item['options']))
         if item['proposal']:
@@ -1161,6 +1179,67 @@ def cmd_triage(api, args):
     return BLOCKED if escalated else BUSY if waiting else OK
 
 
+# --- missed hard cuts (docs/autopilot/HARNESS.md M2) -------------------------------------------------------------
+
+ANSWER_WORDS = {'split': 'split', 'no-cut': 'no_cut', 'no_cut': 'no_cut', 'unsure': 'unsure'}
+
+
+def cmd_missed_cuts(api, args):
+    if args.action in ('check', 'report'):
+        episode = find_episode(api, args.target, args.latest)
+        span = parse_range(args.extra)
+        if args.action == 'check':
+            result = api.post(f"/api/episodes/{episode['id']}/missed-cuts", body={'from_cut': span[0], 'to_cut': span[1], 'redo': args.redo, 'run_id': args.run})
+            emit(args, result, result.get('detail') or (f"queued the missed-cut check of {range_text(span)}: {result['job_id']}\n"
+                                                        f"wait with: fw wait {episode['id'][:8]} --jobs {result['job_id']}" if result.get('job_id') else ''))
+            return OK
+        data = api.get(f"/api/episodes/{episode['id']}/missed-cuts", {'from_cut': span[0], 'to_cut': span[1]})
+        if args.json:
+            emit(args, data, '')
+            return OK
+        counts = data['counts']
+        lines = [f"{episode['project']} / {episode['title']} · {range_text(span)}: " + ', '.join(f"{name.replace('_', ' ')} {count}" for name, count in counts.items())]
+        splits = [item for item in data['splits'] if not item['undone_at']]
+        if splits:
+            lines.append(f"SPLIT BY THE AGENT ({len(splits)}; undo one with fw agent undo ID --decision):")
+            for item in splits:
+                left = (item['after'] or {}).get('left') or {}
+                link = cut_url(api, episode, left['id']) if left.get('id') else ''
+                lines.append(f"  - {item['summary']} [{item['tier']}]{' (changed by a person since)' if item['overridden_at'] else ''}  id {item['id']}\n    {link}")
+        if data['questions']:
+            lines.append(f"QUESTIONS ({len(data['questions'])}; answer with fw missed-cuts answer ID split|no-cut|unsure):")
+            for item in data['questions']:
+                evidence = item['evidence'] or {}
+                lines.append(f"  - [{'Claude' if item['reviewer'] == 'claude' else 'person'}] {item['question']}  id {item['id']}")
+                lines.append(f"    picture: {api.url}{evidence.get('strip', '')}")
+                if evidence.get('cut_id'):
+                    lines.append(f"    cut: {cut_url(api, episode, evidence['cut_id'])}")
+        print('\n'.join(lines))
+        return BLOCKED if data['questions'] else OK
+    if not args.target:
+        raise Failure(f'fw missed-cuts {args.action} needs an escalation id (fw missed-cuts report EP lists them)')
+    if args.action == 'strip':
+        question = api.get(f'/api/escalations/{quote(args.target)}')
+        evidence = question.get('evidence') or {}
+        if question.get('kind') != 'missed_cut' or not evidence.get('strip'):
+            raise Failure(f'{args.target} is not a missed-cut question')
+        image = api.raw(evidence['strip'].split('?')[0], {'time': evidence['time']})
+        out = args.out or f"missed-cut-{args.target[:8]}.jpg"
+        with open(out, 'wb') as handle:
+            handle.write(image)
+        emit(args, {'file': out, 'question': question['question']}, f"{out}\n{question['question']}")
+        return OK
+    if args.action == 'answer':
+        reply = ANSWER_WORDS.get((args.extra or '').lower())
+        if not reply:
+            raise Failure('answer split, no-cut or unsure')
+        result = api.post(f'/api/escalations/{quote(args.target)}/missed-cut', body={'answer': reply, 'tier': args.tier, 'run_id': args.run, 'note': args.note})
+        emit(args, result, {'resolved': 'answered' + (f"; split (decision {result['decision_id']})" if result.get('decision_id') else ''),
+                            'handed_to_person': 'handed to the person', 'open': 'left open'}.get(result.get('status'), str(result)))
+        return OK
+    raise Failure(f'unknown action {args.action!r}')
+
+
 # --- command line ------------------------------------------------------------------------------------------------
 
 def parser():
@@ -1231,6 +1310,7 @@ def parser():
     command.set_defaults(func=cmd_agent)
     command = episode_command('inbox', cmd_inbox, 'what the agents escalated to a person, with cut links, and what they applied')
     command.add_argument('--status', default='open', choices=('open', 'resolved', 'dismissed', 'all'))
+    command.add_argument('--reviewer', choices=('claude', 'human'), help="only the second reviewer's queue (claude) or the person's (human)")
     command.add_argument('--place', default='analysis', choices=list(PLACES), help='where the cut links open')
     command = episode_command('escalate', cmd_escalate, 'open (or update) one question for a person; one per kind and group')
     command.add_argument('--kind', required=True, help='e.g. new_character, voice, review_answer, missed_cut')
@@ -1252,6 +1332,17 @@ def parser():
     command = episode_command('triage', cmd_triage, 'classify failed runs and the fix rule for each; --go applies them as agent decisions (exit 2 asked a person, 3 waiting)')
     command.add_argument('--go', action='store_true', help='apply the fixes (otherwise only print the plan)')
     command.add_argument('--run', help='the agent run the fixes belong to (fw agent start)')
+    command = sub.add_parser('missed-cuts', parents=[common], help='hard cuts the detection missed: check EP [RANGE], report EP [RANGE], strip ID, answer ID split|no-cut|unsure')
+    command.add_argument('action', choices=('check', 'report', 'strip', 'answer'))
+    command.add_argument('target', nargs='?', help='episode (check, report) or question id (strip, answer)')
+    command.add_argument('extra', nargs='?', help='check/report: the cut range; answer: split, no-cut or unsure')
+    command.add_argument('--latest', action='store_true', help='the newest episode')
+    command.add_argument('--redo', action='store_true', help='check: also cuts already checked with these boundaries')
+    command.add_argument('--run', help='the agent run (fw agent start)')
+    command.add_argument('--tier', default='human', choices=('claude', 'human'), help='answer: who answers (claude = the second reviewer)')
+    command.add_argument('--note', help='answer: why (kept with the question)')
+    command.add_argument('--out', help='strip: file to write (default missed-cut-ID.jpg)')
+    command.set_defaults(func=cmd_missed_cuts)
     command = sub.add_parser('close', parents=[common], help='close an escalation: resolved or dismissed')
     command.add_argument('escalation')
     command.add_argument('--status', default='resolved', choices=('resolved', 'dismissed'))

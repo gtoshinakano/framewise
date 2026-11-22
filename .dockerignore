@@ -11,6 +11,7 @@ audio_experiment
 analysis_experiments
 multiframe_experiment
 qwen_experiment
+autopilot
 graphify-out
 tests
 docs

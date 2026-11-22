@@ -89,7 +89,7 @@ FIXES = {
     'out_of_scope': ('leave', 0, 'leave it: sequences are out of the autopilot\'s scope'),
 }
 # Pipelines triage can queue again with the current settings (triage.requeue); the others only through their own retry.
-REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'regen')
+REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'regen', 'missed_cuts')
 OUT_OF_SCOPE = ('sequence', 'brief_export')
 
 

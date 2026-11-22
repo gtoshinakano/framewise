@@ -182,6 +182,18 @@ Order rationale: M0 makes every later write safe and measurable. M1 is cheap (no
 
 ### M2. Missed hard-cut checker
 
+**Built 2026-11-22** (details, replay and what went wrong on the way: `docs/autopilot/M2.md`; the plan below stays as the reference):
+- `backend/app/missed_cuts.py`: per-frame scene scores in one ffmpeg pass (cached), lone peaks inside a cut (isolation = peak / strongest neighbour within 12 frames), ORB + RANSAC across the peak (a fit = same shot), flash check; verdict apply / review / reject. **Splits exactly at the peak frame** (a `cut_history` split + `agent_decisions` kind `missed_cuts`, tier `rules`) in the job's publish transaction, not through a lower detection threshold (D15). A split that would leave a piece under 0.5 s is asked about instead; next to a boundary with no picture change (hand-placed a few frames off) the person gets it. Cuts with analysis off and peaks already asked are skipped; cuts in a sequence are never split by the agent.
+- Job kind `missed_cuts` (CPU, media lane, API process), queued with `POST /api/episodes/{id}/missed-cuts {from_cut,to_cut,redo,run_id}` (waits for pending prepare/hardcuts; the profile's mode and Claude switch are snapshotted in the payload; `off` queues nothing). `missed_cut_checks` keeps the last check per cut (redone when its bounds, the proxy or `VERSION` change).
+- **Tier 2 is wired**: `agent_escalations.reviewer` (`claude` | `human`), `agent_log.hand_to_person`, `GET /api/episodes/{id}/escalations?reviewer=`, `GET /api/escalations/{id}`. Doubtful peaks open one `missed_cut` escalation each (group `peak:<time>`) for Claude, with a strip at `GET /api/cuts/{id}/missed-cut-strip?time=` (4 frames around the peak + 8 over ±1 s). `POST /api/escalations/{id}/missed-cut {answer: split|no_cut|unsure, tier, note, run_id}` applies it (Claude cannot answer the person's questions or split a sequenced cut; `unsure` hands it to the person).
+- Undo: `agent_log.UNDO_KINDS` (kind-specific handlers win over the table's) has `missed_cuts → missed_cuts.undo_split`, which merges the two pieces back while both are exactly as the split left them (deletes the created piece when nothing refers to it) and records a `cut_edits` merge. User cut edits (`edit_cut_timeline`, editor undo/redo) call `note_override('cuts', id)`.
+- Triage (M1) can re-queue a failed `missed_cuts` job.
+- Replay skeleton: `autopilot/replay/{common.py,run.sh,missed_cuts.py}` (DB copy through SQLite backup, throwaway API-image container, media read-only, reports in `autopilot/replay/reports/`); `missed_cuts_audit.json` holds the real cuts the user's timeline lacks, checked by eye. `autopilot` is in `.dockerignore`.
+- `scripts/fw missed-cuts check|report|strip|answer`, `fw inbox --reviewer claude|human`. Skill `.agents/skills/framewise-missed-cuts/`.
+- Tests: `tests/test_missed_cuts.py` (11), `tests/test_fw_autopilot.py` (+1).
+- **Replay:** 146/146 applied splits are real cuts (107 the user added, 39 the user never added, verified on the strips); 107/138 user-added cuts found, 12 more to review, 19 not found (14 without any scene peak). About 7 review items per episode.
+- **Not in M2:** running it after `hardcuts` in `fw drive` (M8); a "move the boundary" answer; dissolves split by eye.
+
 - **Score each cut on the CPU:** strongest in-cut scene score (ffmpeg `scene` without a threshold, as `media.detect_cuts_in_range` does with one) and its time; first vs last frame difference.
 - **Rule out camera motion:** fit `keyframe_camera` (ORB + RANSAC) between the frames on each side of the peak; a good fit means a pan or zoom, not a cut. Also rule out fades and flashes (luma ramps, near-white or near-black frames).
 - **Apply:** queue `POST /api/cuts/{id}/detect-hardcuts {scene_threshold}` just under the peak. It is undoable through `cut_history`.
@@ -259,7 +271,7 @@ Order rationale: M0 makes every later write safe and measurable. M1 is cheap (no
 |---|---|---|---|
 | M0 Foundation | done (2026-11-22) | Claude Code | per-table provenance, undo handlers and override hooks land with each resolver |
 | M1 Diagnose and triage | done (2026-11-22) | Claude Code | live-checked on a copy of the database; not yet run with `--go` on the live service |
-| M2 Missed-cut checker | not started | | |
+| M2 Missed-cut checker | replay (2026-11-22) | Claude Code | 146/146 replay splits real; not yet run on the live service (not restarted at the user's request) |
 | M3 Line splitter | not started | | |
 | M4 Consistency answers | not started | | |
 | M5 Voice resolver | not started | | |
@@ -293,12 +305,15 @@ Statuses: `not started`, `design`, `in progress`, `replay` (built, being scored)
 - **D11 (2026-11-22, user):** agents may split and retime any transcript line, including lines the user split or edited; the user's edits are sometimes workarounds and agents may correct them.
 - **D12 (2026-11-22, user):** precision targets approved: 95% for boxes, labels and cut boundaries; 90% for answers and voices.
 - **D14 (2026-11-22, user):** the profile is a table edited in the app (Autopilot profile dialog), not a file in the repo; it replaces the planned `docs/autopilot/policy.yaml` and `preferences.yaml`.
+- **D15 (2026-11-22):** a missed cut is split exactly at the peak frame (a cut_history split), not by re-detecting with a lower threshold: the threshold splits at every frame above it and blocked 49 of 87 good splits in the replay. A split that would leave a piece under 0.5 s is asked, never applied. Cuts with analysis off (openings, endings) are not checked.
+- **D16 (2026-11-22):** tier 2 is an escalation with `reviewer='claude'`; Claude answers through the resolver's answer endpoint with `tier=claude`, and `unsure` hands the item to the person with Claude's note. Claude never answers an item that is the person's.
 - **D13 (2026-11-22, user):** importance beats identifiability for boxing: important characters are boxed even when only a fragment is visible. A bulk "exclude from recognition" for such manual boxes is a future item, out of scope now.
 
 ## 12. Progress log
 
 Newest first. One entry per session: date, milestone, what changed (files), tests and numbers, what is next, anything left half-done.
 
+- **2026-11-22: M2 built and replayed** (see M2 "Built" and `docs/autopilot/M2.md`). Files: `backend/app/{missed_cuts.py,missed_cuts_api.py,job_kinds.py,agent_log.py,autopilot_api.py,db.py,main.py,triage.py,diagnose.py}`, `autopilot/replay/*`, `scripts/fw`, `.agents/skills/framewise-missed-cuts/` (+ link), `.dockerignore`, tests. Replay over Episodes 1-7: 146 splits, all real (107 user-added, 39 audited by eye); recall 107/138. Live check on a database copy of Episode 7: 4 splits (all real), 6 questions for Claude, 1 for a person. **The service was not rebuilt** (the user asked to wait until the next step): `video-analyzer` needs `docker compose build video-analyzer && docker compose up -d video-analyzer` (API process only: the media worker runs the job there; no inference or audio worker change). The schema change (`missed_cut_checks`, `agent_escalations.reviewer`) applies on that start. Next: M3 (line splitter).
 - **2026-11-22: M1 built** (see M1 "Built"). Files: `backend/app/{diagnose.py,triage.py,autopilot_api.py,autopilot_profile.py,main.py}` (`retry_job` split out of the retry route), `scripts/fw`, `.agents/skills/framewise-diagnose/` (+ `.claude/skills` link), tests listed in M1. Measured on a copy of the live database: `health` takes 0.09-0.18 s per episode (Ep 2: 301 of 350 cuts with a problem: 352 picture contradictions, 97 stale, 194 person, 221 missing, 72 lines across cuts; Ep 6: 47 lines across cuts, 246 unconfirmed labels); only one failure is open on all episodes (Ep 7 cut 84, Cut summary validator loop → requeue, attempt 1 of 1); its apply → decision → `fw agent undo` round trip was run on the copy. Next: M2 (missed-cut checker) with the replay skeleton `autopilot/replay/`.
 - **2026-11-22: M0 built** (see M0 "Built"). Files: `backend/app/{db.py,agent_log.py,autopilot_profile.py,autopilot_api.py,main.py}`, `scripts/fw`, `frontend/src/{AutopilotProfileDialog.tsx,autopilotView.ts,EditorHeader.tsx,App.tsx}`, tests listed in M0. Next: M1 (diagnose and triage), then M2 with the replay skeleton.
 - **2026-11-22: decisions D9–D13 recorded** (sequence shots stay stale, gallery only from the user, agents may retime the user's lines, precision bars approved, fragments of important characters are boxed). Only question 5 is open, to decide in M4. Next: M0 design.

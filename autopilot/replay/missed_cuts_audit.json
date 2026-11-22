@@ -1,0 +1,69 @@
+{
+ "what": "Splits the checker made that the user's timeline does not have, checked by eye on the two-frame strip (missed_cuts.strip_jpeg).",
+ "verified_by": "Claude Code (the second reviewer), 2026-11-22. All 49 are real hard cuts. Seven of them (Episode 2 1330-1337 s, Episode 6 503.9 s, Episode 7 987.6/989.6 s: alternating close-ups in two long dark cuts and a wide-to-close cut) were first misread as crossfades on downscaled 4-frame thumbnails and confirmed on a \u00b10.6 s strip at full tile size; the review strip now carries that context row. Several of the 49 are in the opening or ending, whose cuts have analysis switched off (the job skips them).",
+ "real_cuts": {
+  "Episode 1": [
+   62.479,
+   651.108,
+   681.597,
+   883.549,
+   1012.428,
+   1181.346,
+   1410.909,
+   1427.926,
+   1470.886,
+   1476.892
+  ],
+  "Episode 2": [
+   71.404,
+   1330.829,
+   1332.205,
+   1334.207,
+   1336.71,
+   1456.204
+  ],
+  "Episode 3": [
+   79.412,
+   307.098,
+   332.957,
+   815.815,
+   853.727,
+   975.474,
+   1027.985,
+   1124.456,
+   1135.551,
+   1143.308,
+   1438.186
+  ],
+  "Episode 4": [
+   13.096,
+   47.464,
+   373.748,
+   1127.584,
+   1217.674
+  ],
+  "Episode 5": [
+   10.344,
+   153.57
+  ],
+  "Episode 6": [
+   62.396,
+   198.824,
+   410.744,
+   493.702,
+   503.878,
+   902.276,
+   1366.824,
+   1458.457,
+   1464.046
+  ],
+  "Episode 7": [
+   192.317,
+   578.661,
+   716.507,
+   987.57,
+   989.572,
+   1491.615
+  ]
+ }
+}

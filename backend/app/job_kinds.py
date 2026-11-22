@@ -367,6 +367,21 @@ def _selection_invalidates(conn, job):
     keyframes.invalidate(conn, job)
 
 
+def _missed_cut_gather(conn, job):
+    from . import missed_cuts
+    return missed_cuts.gather(conn, job)
+
+
+def _missed_cut_inputs(conn, job):
+    from . import missed_cuts
+    return missed_cuts.inputs(conn, job)
+
+
+def _missed_cut_invalidates(conn, job):
+    from . import missed_cuts
+    missed_cuts.invalidate(conn, job)
+
+
 def _transcription_scope(payload):
     return Scope(frozenset({'prepared_audio', 'voices', 'transcript', 'context', 'audio_ranges'}), frozenset({'transcript'}))
 
@@ -663,6 +678,12 @@ KINDS = {kind.pipeline: kind for kind in (
          resources=frozenset({'cpu_media'}), scope=_selection_scope,
          priority_class=lambda payload: 'interactive' if len(_keyframe_cuts(payload)) == 1 else 'batch',
          inputs=_selection_inputs, gather=_selection_gather, invalidates=_selection_invalidates),
+    # Hard cuts the episode-wide detection missed (missed_cuts.py, autopilot M2): CPU scene scores and picture checks;
+    # it splits cuts in its publish transaction, so it writes cut boundaries like a targeted detection.
+    Kind('missed_cuts', 'Missed-cut check', False, cuts=_keyframe_cuts, keys=lambda payload, cut_ids: ['missed_cuts'],
+         resources=frozenset({'cpu_media'}), handler='missed_cuts.process',
+         scope=lambda payload: Scope(frozenset({'proxy', 'cut_boundaries'}), frozenset({'cut_boundaries', 'previews'})),
+         priority_class=lambda payload: 'batch', inputs=_missed_cut_inputs, gather=_missed_cut_gather, invalidates=_missed_cut_invalidates),
     Kind('prepare', 'Prepare media', False, cancel_queued=False, keys=lambda payload, cut_ids: ['prepare'],
          resources=frozenset({'cpu_media'}),
          scope=lambda payload: Scope(frozenset({'original'}), frozenset({'proxy', 'prepared_audio', 'chunks', 'previews'})),

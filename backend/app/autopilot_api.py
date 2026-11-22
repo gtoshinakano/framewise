@@ -175,10 +175,11 @@ class EscalationClose(BaseModel):
 
 
 @router.get('/api/episodes/{episode_id}/escalations')
-def list_escalations(episode_id: str, status: str = 'open', kind: str | None = None):
+def list_escalations(episode_id: str, status: str = 'open', kind: str | None = None, reviewer: Literal['claude', 'human'] | None = None):
+    """``reviewer=claude`` is the second reviewer's queue; ``human`` the person's inbox."""
     with db.connect() as conn:
         require_episode(conn, episode_id)
-        return {'items': agent_log.escalations(conn, episode_id, status, kind), 'counts': agent_log.counts(conn, episode_id)}
+        return {'items': agent_log.escalations(conn, episode_id, status, kind, reviewer=reviewer), 'counts': agent_log.counts(conn, episode_id)}
 
 
 @router.post('/api/episodes/{episode_id}/escalations')
@@ -198,6 +199,15 @@ def open_escalation(episode_id: str, body: EscalationInput):
         escalation_id = agent_log.escalate(conn, episode_id=episode_id, kind=body.kind, group_key=body.group_key, question=body.question,
                                            cut_ids=body.cut_ids, options=body.options, proposal=body.proposal, evidence=body.evidence, run_id=body.run_id)
         row = conn.execute('SELECT * FROM agent_escalations WHERE id=?', (escalation_id,)).fetchone()
+        return agent_log.escalation_view(row)
+
+
+@router.get('/api/escalations/{escalation_id}')
+def get_escalation(escalation_id: str):
+    with db.connect() as conn:
+        row = conn.execute('SELECT * FROM agent_escalations WHERE id=?', (escalation_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Escalation not found')
         return agent_log.escalation_view(row)
 
 

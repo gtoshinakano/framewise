@@ -286,6 +286,19 @@ def init_db():
             resolved_at TEXT
         );
         CREATE UNIQUE INDEX IF NOT EXISTS agent_escalations_open_idx ON agent_escalations(episode_id,kind,group_key) WHERE status='open';
+        -- The missed-cut checker's last look at each cut (missed_cuts.py, milestone M2). cut_id is plain text, never a foreign
+        -- key, so a check never stops cut_history from removing a cut; a check is current while the cut keeps these bounds.
+        CREATE TABLE IF NOT EXISTS missed_cut_checks (
+            cut_id TEXT PRIMARY KEY,
+            episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            cut_start REAL NOT NULL, cut_end REAL NOT NULL,
+            version INTEGER NOT NULL, proxy_key TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            result_json TEXT NOT NULL DEFAULT '{}',
+            job_id TEXT,
+            checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS missed_cut_checks_episode_idx ON missed_cut_checks(episode_id,verdict);
         -- What the user tells the autopilot once per project (autopilot_profile.py, the Autopilot profile dialog).
         CREATE TABLE IF NOT EXISTS autopilot_profiles (
             project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -507,6 +520,9 @@ def init_db():
         chat_gateway_schema.init_schema(db)
         from . import point_detect
         point_detect.init_schema(db)
+        if "reviewer" not in {row["name"] for row in db.execute("PRAGMA table_info(agent_escalations)")}:
+            # Who answers an escalation next: 'claude' (the second reviewer, HARNESS.md tier 2) or 'human' (the inbox).
+            db.execute("ALTER TABLE agent_escalations ADD COLUMN reviewer TEXT NOT NULL DEFAULT 'human'")
         sequence_columns = {row["name"] for row in db.execute("PRAGMA table_info(sequences)")}
         if "reviewed_compilation_id" not in sequence_columns:
             # Workflow gate: the compilation revision the user confirmed. Not an approval status on results.

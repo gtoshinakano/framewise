@@ -98,6 +98,13 @@ def requeue(conn, job, payload, cut_ids, prerequisite=False):
     """Queue the failed step again for its cuts with the current settings. Returns the ids the queue answered with."""
     from . import performance_beats, review_answers, summary_jobs
     episode_id, pipeline = job['episode_id'], job['pipeline']
+    if pipeline == 'missed_cuts':
+        from . import missed_cuts
+        checked = missed_cuts.queue(conn, episode_id, first_index=payload.get('first_index') or 0, last_index=payload.get('last_index'),
+                                    cut_ids=payload.get('cut_ids'), redo=bool(payload.get('redo')), run_id=payload.get('run_id'))
+        if not checked:
+            raise Unfixable('missed-cut checks are switched off in the Autopilot profile')
+        return [checked]
     cuts = _cuts(conn, cut_ids)
     if not cuts:
         raise Unfixable('its cuts are archived')

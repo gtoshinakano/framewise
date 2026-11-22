@@ -138,6 +138,9 @@ def restore_columns(conn, decision):
 
 
 UNDO = {table: restore_columns for table in RESTORABLE}
+# Undo handlers per decision kind; they win over the table's handler (a split and a label are both decisions on `cuts`).
+UNDO_KINDS = {}
+REVIEWERS = ('claude', 'human')
 
 
 def undo_decision(conn, decision_id):
@@ -147,7 +150,7 @@ def undo_decision(conn, decision_id):
         raise KeyError(decision_id)
     if decision['undone_at']:
         return False
-    handler = UNDO.get(decision['target_table'])
+    handler = UNDO_KINDS.get(decision['kind']) or UNDO.get(decision['target_table'])
     if handler is None:
         raise UndoConflict(f'Decisions on {decision["target_table"]} cannot be undone automatically')
     handler(conn, decision)
@@ -175,32 +178,40 @@ def undo_run(conn, run_id):
 
 # --- escalations -------------------------------------------------------------------------------------------------------
 
-def escalate(conn, *, episode_id, kind, group_key, question, cut_ids=(), options=(), proposal=None, evidence=None, run_id=None):
-    """Open (or update) the one open escalation of this kind and group; cut ids accumulate. Returns its id."""
+def escalate(conn, *, episode_id, kind, group_key, question, cut_ids=(), options=(), proposal=None, evidence=None, run_id=None, reviewer='human'):
+    """Open (or update) the one open escalation of this kind and group; cut ids accumulate. Returns its id.
+
+    ``reviewer`` is who answers it next: ``claude`` (the second reviewer) or ``human``. Updating an open item never hands
+    it back from the person to Claude."""
+    if reviewer not in REVIEWERS:
+        raise ValueError('reviewer must be claude or human')
     existing = conn.execute("SELECT id,cut_ids_json FROM agent_escalations WHERE episode_id=? AND kind=? AND group_key=? AND status='open'",
                             (episode_id, kind, group_key)).fetchone()
     if existing:
         merged = list(dict.fromkeys([*_load(existing['cut_ids_json'], []), *cut_ids]))
         conn.execute("""UPDATE agent_escalations SET cut_ids_json=?,question=?,options_json=?,proposal_json=?,evidence_json=?,
-            run_id=COALESCE(?,run_id),updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                     (_dump(merged), question, _dump(list(options)), _dump(proposal), _dump(evidence or {}), run_id, existing['id']))
+            run_id=COALESCE(?,run_id),reviewer=CASE WHEN ?='human' THEN 'human' ELSE reviewer END,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                     (_dump(merged), question, _dump(list(options)), _dump(proposal), _dump(evidence or {}), run_id, reviewer, existing['id']))
         return existing['id']
     escalation_id = str(uuid.uuid4())
-    conn.execute("""INSERT INTO agent_escalations(id,episode_id,run_id,kind,group_key,cut_ids_json,question,options_json,proposal_json,evidence_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?)""", (escalation_id, episode_id, run_id, kind, group_key, _dump(list(dict.fromkeys(cut_ids))),
-                                          question, _dump(list(options)), _dump(proposal), _dump(evidence or {})))
+    conn.execute("""INSERT INTO agent_escalations(id,episode_id,run_id,kind,group_key,cut_ids_json,question,options_json,proposal_json,evidence_json,reviewer)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (escalation_id, episode_id, run_id, kind, group_key, _dump(list(dict.fromkeys(cut_ids))),
+                                            question, _dump(list(options)), _dump(proposal), _dump(evidence or {}), reviewer))
     return escalation_id
 
 
 def escalation_view(row):
-    item = {key: row[key] for key in ('id', 'episode_id', 'run_id', 'kind', 'group_key', 'question', 'status', 'created_at', 'updated_at', 'resolved_at')}
+    item = {key: row[key] for key in ('id', 'episode_id', 'run_id', 'kind', 'group_key', 'question', 'status', 'reviewer', 'created_at', 'updated_at', 'resolved_at')}
     item.update(cut_ids=_load(row['cut_ids_json'], []), options=_load(row['options_json'], []), proposal=_load(row['proposal_json']),
                 evidence=_load(row['evidence_json'], {}), resolution=_load(row['resolution_json']))
     return item
 
 
-def escalations(conn, episode_id, status='open', kind=None, limit=500):
+def escalations(conn, episode_id, status='open', kind=None, limit=500, reviewer=None):
     clauses, args = ['episode_id=?'], [episode_id]
+    if reviewer:
+        clauses.append('reviewer=?')
+        args.append(reviewer)
     if status and status != 'all':
         clauses.append('status=?')
         args.append(status)
@@ -209,6 +220,18 @@ def escalations(conn, episode_id, status='open', kind=None, limit=500):
         args.append(kind)
     rows = conn.execute(f"SELECT * FROM agent_escalations WHERE {' AND '.join(clauses)} ORDER BY created_at,rowid LIMIT ?", [*args, limit]).fetchall()
     return [escalation_view(row) for row in rows]
+
+
+def hand_to_person(conn, escalation_id, note=None):
+    """Claude could not settle it: the person answers it next. ``note`` is added to its evidence."""
+    row = conn.execute("SELECT evidence_json FROM agent_escalations WHERE id=? AND status='open'", (escalation_id,)).fetchone()
+    if row is None:
+        return False
+    evidence = _load(row['evidence_json'], {})
+    if note:
+        evidence['claude_note'] = str(note)[:1000]
+    conn.execute("UPDATE agent_escalations SET reviewer='human',evidence_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (_dump(evidence), escalation_id))
+    return True
 
 
 def close_escalation(conn, escalation_id, status, resolution=None):
@@ -223,7 +246,9 @@ def counts(conn, episode_id):
     """Open escalations per kind and agent decisions per kind (not undone), for the inbox header and `fw inbox`."""
     open_items = dict(conn.execute("SELECT kind,COUNT(*) FROM agent_escalations WHERE episode_id=? AND status='open' GROUP BY kind", (episode_id,)).fetchall())
     applied = dict(conn.execute('SELECT kind,COUNT(*) FROM agent_decisions WHERE episode_id=? AND undone_at IS NULL GROUP BY kind', (episode_id,)).fetchall())
-    return {'open': open_items, 'open_total': sum(open_items.values()), 'applied': applied, 'applied_total': sum(applied.values())}
+    reviewers = dict(conn.execute("SELECT reviewer,COUNT(*) FROM agent_escalations WHERE episode_id=? AND status='open' GROUP BY reviewer", (episode_id,)).fetchall())
+    return {'open': open_items, 'open_total': sum(open_items.values()), 'applied': applied, 'applied_total': sum(applied.values()),
+            'for_claude': reviewers.get('claude', 0), 'for_person': reviewers.get('human', 0)}
 
 
 def episode_exists(conn, episode_id):

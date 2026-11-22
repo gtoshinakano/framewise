@@ -52,12 +52,12 @@ class FwAutopilotTest(unittest.TestCase):
             run(api, 'escalate', EPISODE['id'], '--kind', 'x', '--group', 'g', '--question', 'q', '--proposal', '{bad')
 
     def test_inbox_lists_questions_with_cut_links(self):
-        inbox = {'counts': {'open_total': 1, 'applied_total': 7, 'open': {'voice': 1}, 'applied': {'line_splits': 7}},
+        inbox = {'counts': {'open_total': 2, 'applied_total': 7, 'open': {'voice': 1}, 'applied': {'line_splits': 7}, 'for_claude': 1, 'for_person': 1},
                  'items': [{'id': 'esc1', 'kind': 'voice', 'question': 'Whose voice is SPEAKER_04?', 'status': 'open', 'options': ['Mai', 'Kaede'],
                             'proposal': {'character': 'Mai'}, 'cut_ids': ['c4', 'c2']}]}
         code, out = run(AutopilotApi(inbox), 'inbox', EPISODE['id'])
         self.assertEqual(code, fw.OK)
-        self.assertIn('1 open question(s) for you, 7 decision(s) applied by agents', out)
+        self.assertIn('1 open question(s) for you, 1 for Claude (the second reviewer), 7 decision(s) applied by agents', out)
         self.assertIn('applied: line_splits 7', out)
         self.assertIn('[voice] Whose voice is SPEAKER_04?', out)
         self.assertIn('cuts 2, 4', out)
@@ -112,6 +112,27 @@ class FwAutopilotTest(unittest.TestCase):
         self.assertIn('queued: new1', out)
         self.assertIn('ASKED A PERSON', out)
         self.assertIn('closed 1 question(s)', out)
+
+    def test_missed_cuts_check_report_and_answer(self):
+        report = {'counts': {'clean': 3, 'apply': 1, 'grey': 1, 'unchecked': 0, 'changed_since': 0, 'analysis_off': 1},
+                  'splits': [{'id': 'd1', 'summary': 'Split cut 2 at 0:03.000: a hard cut the detection missed', 'tier': 'rules', 'undone_at': None,
+                              'overridden_at': None, 'after': {'left': {'id': 'c2'}}}],
+                  'questions': [{'id': 'q1', 'reviewer': 'claude', 'question': 'Is there a hard cut in cut 4 at 0:09.000?',
+                                 'evidence': {'strip': '/api/cuts/c4/missed-cut-strip?time=9.000000', 'cut_id': 'c4', 'time': 9.0}}]}
+        api = AutopilotApi()
+        api.get = lambda path, params=None: report if path.endswith('/missed-cuts') else AutopilotApi.get(api, path, params)
+        code, out = run(api, 'missed-cuts', 'report', EPISODE['id'])
+        self.assertEqual(code, fw.BLOCKED)
+        self.assertIn('fw agent undo ID --decision', out)
+        self.assertIn('[Claude] Is there a hard cut in cut 4', out)
+        self.assertIn('picture: http://framewise/api/cuts/c4/missed-cut-strip?time=9.000000', out)
+        api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {'job_id': 'j1', 'job_ids': ['j1'], 'status': 'resolved', 'decision_id': 'd2'})[1]
+        run(api, 'missed-cuts', 'check', EPISODE['id'], '3-9', '--redo')
+        self.assertEqual(api.calls[-1], (f"/api/episodes/{EPISODE['id']}/missed-cuts", None, {'from_cut': 3, 'to_cut': 9, 'redo': True, 'run_id': None}))
+        code, out = run(api, 'missed-cuts', 'answer', 'q1', 'no-cut', '--tier', 'claude', '--note', 'same shot')
+        self.assertEqual(api.calls[-1][2], {'answer': 'no_cut', 'tier': 'claude', 'run_id': None, 'note': 'same shot'})
+        with self.assertRaises(fw.Failure):
+            run(api, 'missed-cuts', 'answer', 'q1', 'maybe')
 
     def test_close_sends_the_resolution(self):
         api = AutopilotApi()
