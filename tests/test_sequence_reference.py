@@ -18,6 +18,17 @@ FRAMES = {'c1': [('F1', 0, 0.0), ('F2', 24, 1.0)], 'c2': [('F1', 48, 2.0)], 'c3'
 SAID = 'Hero stands at screen-centre in the midground with the right hand raised at shoulder height, looking at the camera.'
 
 
+def directed_answer(data):
+    """The fake director with a reference: it describes the frame and, like a model, ends a beat at reference_frame.beat_ends_at rounded to 0.1 s."""
+    content = pipeline_tests.shot_answer([item['speaker'] for item in data.get('speakers') or []], data['shot']['seconds'])
+    reference = data.get('reference_frame')
+    if reference:
+        content['reference_line'] = SAID
+        if 'beat_ends_at' in reference:
+            content['beats'][0]['end'] = round(reference['beat_ends_at'], 1)
+    return content
+
+
 def fake_selection(conn, cut_id):
     cut = db.one('SELECT id,start_time,end_time FROM cuts WHERE id=? AND active=1', (cut_id,), conn=conn)
     if cut is None:
@@ -100,14 +111,100 @@ class ReferenceRenderTest(unittest.TestCase):
             self.assertIn(words, direction.SHOT_SYSTEM)
 
 
+HERO = [{'name': 'Hero', 'character_context_id': 'hero'}]
+# Replays 2026-11-22: shot 3 of "Sakuta's Excitement Before His Date", 2.044 s, keyframes at 0, 0.084, 0.209 (the chosen F3)
+# and 0.334, speech from 0.42 s. Every rewrite failed on beats of 0.1-0.2 s, so the reference never reached the prompt.
+LIVE = {'cut_id': 'c1', 'ordinal': 12169, 'time': 507.632, 'at': 0.209, 'frame': 'F3'}
+SPEECH = [prompt_tests.line('L1', 0.42, 2.0, 'お兄ちゃん', 'Hero')]
+
+
+def short(seconds=2.044):
+    return prompt_tests.shot(duration=seconds)
+
+
+class ReferenceTimingTest(unittest.TestCase):
+    """The reference keyframe's second is a beat edge when the shot's beats allow one there, exactly on the second; never a reason to fail."""
+
+    def answer(self, *ends):
+        content = {**pipeline_tests.shot_answer(['Hero'], 2.044), 'reference_line': SAID}
+        actions = [beat['action'] for beat in content['beats']]
+        content['beats'] = [{'end': end, 'action': actions[index % 2]} for index, end in enumerate(ends)]
+        return content
+
+    def validate(self, ends, reference=LIVE, generated=True, seconds=2.044):
+        return direction.validate_shot(self.answer(*ends), short(seconds), prompt_tests.BIBLE, HERO, None, SPEECH, generated=generated, reference=reference)
+
+    def errors(self, ends, **kwargs):
+        with self.assertRaises(ValueError) as raised:
+            self.validate(ends, **kwargs)
+        return str(raised.exception)
+
+    def rows(self, normal, seconds=2.044):
+        prompt, verdict, _ = sequence_prompt.build(short(seconds), normal, prompt_tests.BIBLE, HERO, None, SPEECH)
+        self.assertTrue(verdict['ok'], verdict['errors'])
+        return {row.split(': ', 1)[0]: row for row in h3_prompt.parse(prompt)['sections']['detailed_description'].splitlines() if row.startswith('00:')}
+
+    def test_the_live_failure_now_lands_the_staging_exactly_on_its_second(self):
+        self.assertEqual(sequence_prompt.reference_landing(0.209, 2.044), 'edge')
+        # Attempt 1 and 3 of the failed job, with the sentences the model now gets back.
+        first = self.errors([0.1, 0.2, 0.42, 2.04])
+        self.assertIn('beat 1 ends at 0.1 s, but the shot starts at 0 s and a beat lasts more than 0.2 s: end beat 1 after 0.2 s, or fold this moment into a neighbouring beat', first)
+        self.assertNotIn('beat 2', first)  # 0.2 is the reference's second, rounded: the app puts it on 0.209
+        third = self.errors([0.2, 0.4, 0.5, 2.04])
+        self.assertIn('beat 2 ends at 0.4 s, but the previous beat ends at 0.209 s on the reference frame and a beat lasts more than 0.2 s: end beat 2 after 0.409 s', third)
+        self.assertNotIn('beat 1', third)
+        self.assertNotIn('beat 3', third)
+        # What the model writes once it follows them: three beats, one more than a 2-s shot has, for the reference's edge.
+        normal = self.validate([0.2, 0.42, 2.04])
+        self.assertEqual([beat['end'] for beat in normal['beats']], [0.209, 0.42, 2.044])
+        rows = self.rows(normal)
+        self.assertEqual(list(rows), ['00:00.000-00:00.209', '00:00.209-00:00.420', '00:00.420-00:02.044', '00:02.044-00:05.000'])
+        self.assertIn('The staging at 00:00.209 matches <Picture 3>', rows['00:00.000-00:00.209'])  # the beat that arrives there
+        self.assertNotIn('<Picture 3>', rows['00:00.209-00:00.420'] + rows['00:00.420-00:02.044'] + rows['00:02.044-00:05.000'])
+        self.assertIn('At 00:00.420, <Subject 1> (S1) says', rows['00:00.420-00:02.044'])  # speech keeps its own second
+        self.assertIn('3 beats are too many for 2.044 s; write at most 2', self.errors([0.21, 0.42, 2.04], reference=None))
+
+    def test_only_a_rounded_end_is_moved_and_a_missing_edge_sends_the_director_back(self):
+        self.assertEqual([beat['end'] for beat in self.validate([0.25, 2.04])['beats']], [0.209, 2.044])  # 41 ms: about one frame
+        self.assertIn('end one beat exactly at 0.209 s (reference_frame.beat_ends_at)', self.errors([0.3, 2.04]))
+        self.assertIn('end one beat exactly at 0.209 s', self.errors([2.04]))  # the last beat ends at the shot's length, never on the reference
+        # The user's own timing is never moved: a hand edit keeps 0.3, and the sentence goes to the beat the second falls in.
+        edited = self.validate([0.3, 2.04], generated=False)
+        self.assertEqual([beat['end'] for beat in edited['beats']], [0.3, 2.044])
+        self.assertIn('The staging at 00:00.209 matches <Picture 3>', self.rows(edited)['00:00.000-00:00.300'])
+
+    def test_a_second_too_close_to_the_start_or_the_end_is_reached_by_the_first_or_last_beat(self):
+        opening = {**LIVE, 'at': 0.15}
+        self.assertEqual(sequence_prompt.reference_landing(0.15, 2.044), 'opening')
+        rows = self.rows(self.validate([0.42, 2.04], reference=opening))  # no edge demanded, no extra beat
+        self.assertIn('The staging at 00:00.150 matches <Picture 3>', rows['00:00.000-00:00.420'])
+        self.assertIn('3 beats are too many for 2.044 s; write at most 2', self.errors([0.42, 1.0, 2.04], reference=opening))
+        end = {**LIVE, 'at': 1.95}
+        self.assertEqual(sequence_prompt.reference_landing(1.95, 2.044), 'end')
+        rows = self.rows(self.validate([0.42, 2.04], reference=end))
+        self.assertIn('The staging at 00:01.950 matches <Picture 3>', rows['00:00.420-00:02.044'])
+        self.assertNotIn('<Picture 3>', rows['00:02.044-00:05.000'])  # never the generated hold
+
+    def test_an_edge_landing_is_exactly_a_beat_end_the_validator_accepts(self):
+        for seconds in (0.3, 1.0, 2.044, 8.0):
+            gap = sequence_prompt.beat_gap(seconds)
+            for at in (gap - 0.001, gap, gap + 0.001, seconds - gap - 0.001, seconds - gap, seconds - gap + 0.001):
+                with self.subTest(seconds=seconds, at=at):
+                    try:
+                        self.validate([at, seconds], reference={**LIVE, 'at': at}, generated=False, seconds=seconds)
+                        refused = False
+                    except ValueError as exc:
+                        refused = 'a beat lasts more than' in str(exc)
+                    self.assertEqual(sequence_prompt.reference_landing(at, seconds) == 'edge', not refused)
+
+
 class ReferenceFlowTest(pipeline_tests.SequenceBase):
     def setUp(self):
         super().setUp()
         patcher = patch('app.sequence_reference.selection', side_effect=fake_selection)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.answers['shot'] = lambda data: {**pipeline_tests.shot_answer([item['speaker'] for item in data.get('speakers') or []], data['shot']['seconds']),
-                                             **({'reference_line': SAID} if 'reference_frame' in data else {})}
+        self.answers['shot'] = directed_answer
 
     def rewrite(self, sequence_id, key, expected=200, **body):
         self.calls.clear()
@@ -135,7 +232,9 @@ class ReferenceFlowTest(pipeline_tests.SequenceBase):
         # Chosen: the director gets its moment and analysis, the prompt gets one more picture.
         self.rewrite(sequence_id, key, reference_frame={'ordinal': 144})
         sent = self.calls[0][1]
-        self.assertEqual(sent['reference_frame'], {'frame': 'F2', 'at': 2.0, 'chosen_by': 'user', 'shows': 'not analysed: no keyframe states or boxes for this frame', 'picture_attached': False})
+        self.assertEqual(sent['reference_frame'], {'frame': 'F2', 'at': 2.0, 'beat_ends_at': 2.0, 'chosen_by': 'user', 'shows': 'not analysed: no keyframe states or boxes for this frame',
+                                                   'picture_attached': False})
+        self.assertEqual(sent['shot']['beats'], {'at_most': 6, 'each_longer_than': 0.2})  # 5 for 6 s, and one more for the reference's edge
         result = self.third(sequence_id)['result']
         self.assertEqual(result['content']['reference_frame'], {'cut_id': 'c3', 'ordinal': 144, 'time': 6.0, 'at': 2.0, 'frame': 'F2'})
         self.assertEqual(result['content']['reference_line'], SAID)
@@ -172,6 +271,45 @@ class ReferenceFlowTest(pipeline_tests.SequenceBase):
         history = self.client.get(f'/api/sequences/{sequence_id}/shots/{key}/history').json()
         self.assertEqual([(row['reference_source'], (row['reference'] or {}).get('frame')) for row in history['revisions']][:5],
                          [(None, None), ('cleared', None), ('kept', 'F2'), ('kept', 'F2'), ('user', 'F2')])
+
+    def test_the_reference_second_follows_the_shot_clock_when_the_shot_starts_before_or_after_its_cut(self):
+        keyframes = {'contract': 'keyframes-v1', 'cut': {'start_time': 2, 'end_time': 4}, 'summary': '',
+                     'frames': [{'label': 'F1', 'ordinal': 48, 't': 0.0, 'characters': [{'name': 'Hero', 'state': 'standing, arms down'}]},
+                                {'label': 'F2', 'ordinal': 77, 't': 1.23, 'characters': [{'name': 'Hero', 'state': 'standing, right hand raised'}]}],
+                     'segments': [{'from': 'F1', 'to': 'F2', 'start': 0.0, 'end': 1.23, 'camera': {'move': 'static'}, 'other_changes': [],
+                                   'characters': [{'name': 'Hero', 'changes': [{'part': 'right arm', 'description': 'rises', 'source': 'dwpose'}]}]}]}
+        beats = {'contract': 'beats-v1', 'based_on': {'keyframe_analysis': 'kf'},  # a cut with keyframes is ready once its beats are current
+                 'beats': [{'start': 0, 'end': 1.23, 'intent': 'Greets.', 'characters': [{'character': 'Hero', 'body': 'The right arm rises.', 'face': 'Calm.', 'gaze': 'Ahead.', 'mouth': 'Closed.'}]}]}
+        with db.connect() as conn:
+            for identifier, kind, content in (('kf', 'keyframe_analysis', keyframes), ('pb', 'performance_beats', beats)):
+                conn.execute("""INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,settings_json)
+                    VALUES (?,'c2','cut_description',?,?,'model',?)""", (identifier, kind, json.dumps(content), json.dumps({'structured_type': kind})))
+        sequence_id = self.directed()
+        # Cut 2 runs 2-4 s and F2 is 3.23 s of the episode. A boundary placed at 2.5 s starts its shot 0.5 s into the cut;
+        # one at 1.6 s starts it 0.4 s before the cut, on cut 1's audio. Either way the staging lands where its sound plays.
+        with patch.dict(FRAMES, {'c2': [('F1', 48, 2.0), ('F2', 77, 3.23)]}):
+            for point, offered, at, plays_at in ((2.5, [('F2', 0.73)], 0.73, [0.0, 1.5]), (1.6, [('F1', 0.4), ('F2', 1.63)], 1.63, [0.4, 2.4])):
+                with self.subTest(point=point):
+                    response = self.client.put(f'/api/sequences/{sequence_id}/shot-points', json={'points': [{'after_cut_id': 'c1', 'time': point}]})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    shot = response.json()['shots'][1]
+                    self.assertEqual((shot['cut'], shot['start_time'], shot['end_time']), (2, point, 4.0))
+                    listing = self.client.get(f"/api/sequences/{sequence_id}/shots/{shot['key']}/keyframes").json()
+                    self.assertEqual([(item['frame'], item['at']) for item in listing['frames']], offered)  # only the shot's own picture
+                    self.assertEqual({item['lands'] for item in listing['frames']}, {'edge'})
+                    self.rewrite(sequence_id, shot['key'], reference_frame={'ordinal': 77})
+                    sent = self.calls[0][1]
+                    own = next(cut for cut in sent['cuts'] if cut['cut'] == 2)
+                    state = next(item for item in own['keyframes']['states'] if item['frame'] == 'F2')
+                    # One clock for the reference, the keyframe state of the same frame, the cut's picture and the beats.
+                    self.assertEqual((sent['reference_frame']['at'], sent['reference_frame']['beat_ends_at'], state['t'], own['plays_at']), (at, at, at, plays_at))
+                    self.assertEqual(sent['shot']['beats'], {'at_most': 3, 'each_longer_than': 0.2})
+                    result = self.detail(sequence_id)['shots'][1]['result']
+                    self.assertEqual((result['content']['reference_frame']['time'], result['content']['reference_frame']['at']), (3.23, at))
+                    self.assertEqual(result['content']['beats'][0]['end'], at)  # the director wrote it rounded; the app put it on the frame's second
+                    row = next(line for line in result['prompt'].splitlines() if line.startswith(f'00:00.000-{h3_prompt.fmt(at)}:'))
+                    self.assertIn(f'The staging at {h3_prompt.fmt(at)} matches <Picture', row)
+                    self.assertTrue(result['check']['ok'], result['check'])
 
     def test_the_director_sees_the_keyframe_when_the_engine_can_read_images(self):
         sequence_id = self.written()
@@ -270,7 +408,7 @@ class ReferenceExportTest(pipeline_tests.SequenceBase):
         with patch('app.sequence_reference.selection', side_effect=fake_selection):
             sequence_id = self.written()
             key = self.detail(sequence_id)['shots'][2]['key']
-            self.answers['shot'] = lambda data: {**pipeline_tests.shot_answer([item['speaker'] for item in data.get('speakers') or []], data['shot']['seconds']), 'reference_line': SAID}
+            self.answers['shot'] = directed_answer
             self.run_step(sequence_id, 'shots', shot_keys=[key], reference_frame={'ordinal': 144})
             self.assertEqual(self.work(), 1)
         rendered = []
@@ -299,7 +437,7 @@ class ReferenceExportTest(pipeline_tests.SequenceBase):
         with patch('app.sequence_reference.selection', side_effect=fake_selection):
             sequence_id = self.written()
             key = self.detail(sequence_id)['shots'][2]['key']
-            self.answers['shot'] = lambda data: {**pipeline_tests.shot_answer([item['speaker'] for item in data.get('speakers') or []], data['shot']['seconds']), 'reference_line': SAID}
+            self.answers['shot'] = directed_answer
             self.run_step(sequence_id, 'shots', shot_keys=[key], reference_frame={'ordinal': 144})
             self.work()
         with patch('app.frame_cache.render', side_effect=RuntimeError('That frame is not inside this cut')):

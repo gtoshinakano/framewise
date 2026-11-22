@@ -151,14 +151,14 @@ The bible and the shot plan are written. Now you direct ONE shot. Your answer is
 One JSON object:
 - sequence: synopsis, the spoken language, the arc and the continuity rules of the bible. director_instruction is the user's intent for the sequence. instruction_for_this_shot is the user's newest correction for this shot and earlier_instructions_for_this_shot (oldest first) are the corrections the user gave in earlier rewrites of it: every one of them stays in force, and where two differ the later one wins. review_suggestion, when present, is a proposal of the automatic review: follow it unless it contradicts the user's instructions or the dialogue.
 - scene and scenario_reference (a picture of the place that the generator receives, when there is one).
-- shot: its number, its length in seconds, its cut (and part, when the app divides a cut longer than one take), its intent from the plan, initial_frame (whether the opening still is the cut's first frame or a later moment of it), and opens and closes: how the shot meets its neighbours (see TIMING AT THE EDGES).
+- shot: its number, its length in seconds, its cut (and part, when the app divides a cut longer than one take), its intent from the plan, initial_frame (whether the opening still is the cut's first frame or a later moment of it), opens and closes: how the shot meets its neighbours (see TIMING AT THE EDGES), and beats: at_most is the most beats this shot may have and each_longer_than the seconds every beat must last beyond the end of the one before it (beat 1 beyond second 0).
 - previous_shot and next_shot: what surrounds this shot. ends_with is how the analysis says the previous shot's characters end, opens_with is how the opening frame of the next shot shows them, and hands_over is the state the previous shot was written to end in.
 - characters: the named characters that appear in the covered cuts, with the bible's anchors and outfit (and outfit_names, the named outfits the bible gives that character) and the user's notes.
 - cuts: the evidence for the shot's own cut. plays_at is when that cut's picture and audio run on THIS shot's clock. first_frame describes the cut's opening still; each character in it may carry pose_detail: state (standing, sitting ...), torso and head facing as a view of the camera with the screen side it turns toward, eyes, looking_at (who or what the character looks at) and check (a disagreement the app found inside those facts). motion is the motion direction: summary, camera, per character activity, travel, motion, gaze (where the eyes and head go, and when), objects (what the character touches, holds or moves), speaking (yes, no, unclear), emotion and end, state_correction when the clip shows a different state than the still read, plus events whose seconds are already on this shot's clock, each with a kind (body, gaze, mouth, expression, object, travel, camera). cut_summary is a written brief of the cut (its seconds count from the start of the cut, not of this shot, and it holds no spoken words) and user_decisions are the user's answers to open review points. A neighbouring cut appears only when this shot borrows some of its audio to keep a phrase whole; its picture is not shown.
 - Each own cut can also contain keyframes (states and visible changes) and performance_beats (staged acting and delivery hints). Their times are already on this shot's clock. States immediately before zero or after the end are reference poses, not new events. Still camera is the Cut summary's camera and finish. The app adds it verbatim to the still, never to H3. Use it to describe the depth of field, textures, palette, lighting and atmosphere of the frozen image.
 - dialogue: the lines heard during this shot, with id, t (start and end on this shot's clock), the speaker and how the speaker is known. With dialogue_reviewed these words, speakers and seconds were fixed by the user and are final. subtitles_for_meaning_only appears only when the dialogue was not reviewed; it may help you understand the words, never show them.
 - speakers: one entry per speaker heard in this shot: the lines and seconds they speak, and per covered cut whether they are on screen there, whether their mouth visibly moves (yes, no, unclear) and whether that cut's picture is this shot's picture. A neighbouring cut whose audio this shot borrows is marked not shown: this shot's own picture goes on over those seconds. fixed_by_user lists time ranges in which the user decided how the speaker is heard.
-- reference_frame, only when the user chose one: a frame of this shot's own picture that the user picked as the staging reference (see REFERENCE FRAME). frame is its keyframe label and at its second on this shot's clock. shows is what the analysis found in that exact frame: per person the state the vision model read, body_measured (the body measured from keypoints), position (the screen side of the person's box) and height_in_frame (the share of the frame height the box fills: larger is nearer the camera), and the changes into and after the frame. picture_attached says whether the frame itself is attached after this input. The generator receives the same frame as a reference picture, with the app's instruction to take only the staging from it.
+- reference_frame, only when the user chose one: a frame of this shot's own picture that the user picked as the staging reference (see REFERENCE FRAME). frame is its keyframe label and at its second on this shot's clock, the same clock as the dialogue and the keyframe states, also when the shot starts before or after its cut. beat_ends_at, within_first_beat or at_end_of_shot says where that second sits among your beats. shows is what the analysis found in that exact frame: per person the state the vision model read, body_measured (the body measured from keypoints), position (the screen side of the person's box) and height_in_frame (the share of the frame height the box fills: larger is nearer the camera), and the changes into and after the frame. picture_attached says whether the frame itself is attached after this input. The generator receives the same frame as a reference picture, with the app's instruction to take only the staging from it.
 
 ## PRECEDENCE
 1. What the user decided, which is final: dialogue (its words, speakers and seconds), fixed_by_user, the edges decided by the user, user_decisions, earlier_instructions_for_this_shot, instruction_for_this_shot and reference_frame (the staging at its second).
@@ -172,7 +172,7 @@ Speech and its timing come only from the dialogue. The cut_summary and the motio
 - summary: one sentence with what happens in the shot and how the camera behaves.
 - shot_line: shot size, angle and who is where at the start, in one or two sentences. framing_lock: one short sentence that locks the crop you gave in still.shot, naming the same upper and lower edge of the frame and ending with "never wider" (or "never closer" for a wide shot); it must agree with still.shot. light: one sentence on the light.
 - camera: move is ONE of static, push_in, pull_out, pan_left, pan_right, truck_left, truck_right, tilt_up, tilt_down, pedestal_up, pedestal_down, arc, tracking, shake. If the motion evidence says static, use static. amplitude is small, medium or large; speed is slow, medium or fast. detail is one optional sentence on where the move ends or what it reveals; leave it empty for a static shot.
-- beats: use the supplied performance_beats and keyframes on the shot clock. Follow the distinct acting turns and their seconds within the visible shot. Give each important beat a playable start, change and arrival. For the people who matter to it, direct weight shifts, posture, hands and prop contact, expression changes (eyes, brows, cheeks or jaw), where the eyes settle, mouth shape, and how an action lands. Use intent and mood to choose intensity, giving quiet reactions room. In clearly comic or kinetic moments you may heighten timing, anticipation, recoil or follow-through while preserving the evidenced action and the shot's fixed timing. Keep beats contiguous; end the last beat at the shot duration. Combine nearby beats only when they are one acting change. The app inserts each spoken line once. In the acting beats write only the visible mouth action, for example "her lips part in sync", without quoting the line or paraphrasing its content. Keep camera directions outside acting beats; the only sound a beat names is the sound of its own action (see Sound of actions). Use mouth motion only during the confirmed dialogue of a visible lip-synced speaker.
+- beats: use the supplied performance_beats and keyframes on the shot clock. Follow the distinct acting turns and their seconds within the visible shot. Give each important beat a playable start, change and arrival. For the people who matter to it, direct weight shifts, posture, hands and prop contact, expression changes (eyes, brows, cheeks or jaw), where the eyes settle, mouth shape, and how an action lands. Use intent and mood to choose intensity, giving quiet reactions room. In clearly comic or kinetic moments you may heighten timing, anticipation, recoil or follow-through while preserving the evidenced action and the shot's fixed timing. Keep beats contiguous; end the last beat at the shot duration. Write at most shot.beats.at_most beats, each ending more than shot.beats.each_longer_than seconds after the previous one (the first after second 0): when keyframes or events lie closer together than that, the changes between them happen inside one beat, in order. Combine nearby beats only when they are one acting change. The app inserts each spoken line once. In the acting beats write only the visible mouth action, for example "her lips part in sync", without quoting the line or paraphrasing its content. Keep camera directions outside acting beats; the only sound a beat names is the sound of its own action (see Sound of actions). Use mouth motion only during the confirmed dialogue of a visible lip-synced speaker.
 - voices: how each speaker of "speakers" is heard in THIS shot. Give every speaker an entry from second 0; add a later entry for the same speaker only when that changes during the take (a camera move or an action brings them into view, turns them away or takes them out of frame), with from = the second it changes. delivery is one of:
   - on_screen: the speaker is one of your subjects, in the picture with the mouth visible, and visibly speaks; the mouth moves in sync with their words.
   - off_screen: the speaker is not in the picture at that time. Also use it for a voice nobody confirmed.
@@ -193,7 +193,11 @@ Speech and its timing come only from the dialogue. The cut_summary and the motio
 
 ## REFERENCE FRAME
 Only when reference_frame is present. The user chose that frame because the staging of this shot is hard to get from words alone.
-- At its second the shot matches it: who is visible, each person's depth layer and screen side, body state, torso and head facing, gestures and hand positions, expression and gaze, the objects present and where they are, and the layout of the setting. Build the beats so that the acting arrives at that staging at that second; when it is a change, end a beat there.
+- At its second the shot matches it: who is visible, each person's depth layer and screen side, body state, torso and head facing, gestures and hand positions, expression and gaze, the objects present and where they are, and the layout of the setting. Where that second sits among the beats:
+  - beat_ends_at: end exactly one beat at that second and write the number as given. The acting of that beat arrives at the staging and the next beat starts from it. This edge is one of shot.beats.at_most, which already counts it.
+  - within_first_beat: the frame comes too soon after second 0 for a beat to end there. The first beat moves from the opening frame into that staging at once and goes on from it; end the first beat at the next change after it, never at the frame's second.
+  - at_end_of_shot: the frame is the shot's last moment. The last beat arrives at that staging and the shot ends on it.
+  The staging holds only at that second: keep every other beat edge on the seconds of the keyframes, the motion events and the dialogue, as anywhere else.
 - It never changes the dialogue, the voices, the edges or anything else the user decided, and the opening frame still decides how the shot starts at second 0.
 - For that moment, the reference frame outranks the cut_summary and every free-text description. When the picture is attached, trust it for who is present, where they are and what objects are there; trust body_measured for the limb positions it measured.
 - reference_line: one or two sentences with only what that frame shows for staging: who is where (depth layer and screen side), their pose, facing, expression and gaze, and the objects and parts of the setting that are present, with names. Never describe how the frame looks (its rendering, outlines, colours, shading, texture or proportions), never name a medium or a style, and never call it a picture: the app adds the reference label and tells the generator how to use it.
@@ -738,6 +742,33 @@ def _layer_problems(placement, subjects, roster):
     return problems
 
 
+REFERENCE_SNAP = 0.05  # how far a beat end may sit from the reference second and still be the beat that arrives there (a rounded number)
+SHOT_END_SLACK = 0.05  # a last beat written this close to the shot's length ends at that length
+
+
+def _seconds(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _snap_to_reference(beats, at, errors):
+    """Put the beat edge on the reference keyframe's exact second: ``(beats, (beat number, its written end) or None)``.
+
+    The model is told to end a beat there and usually writes the number rounded (0.2 for 0.209). The nearest written end,
+    if it lies within ``REFERENCE_SNAP``, becomes exactly ``at``; the move is at most about one frame, and the speech times
+    never move with it (the app writes each line at its own second). The last beat is never moved: it ends at the shot's
+    length. With no end close enough the model is sent back to write one, because the user's staging must land on its second.
+    """
+    ends = [(abs(beat['end'] - at), position) for position, beat in enumerate(beats[:-1]) if isinstance(beat, dict) and _seconds(beat.get('end'))]
+    distance, position = min(ends, default=(None, None))
+    if distance is None or distance > REFERENCE_SNAP + 1e-9:
+        errors.append(f'end one beat exactly at {at:g} s (reference_frame.beat_ends_at): the reference frame the user chose shows the staging at that second, '
+                      f'so the acting of that beat arrives there and the next beat starts from it')
+        return beats, None
+    written = beats[position]['end']
+    moved = (position + 1, written) if abs(written - at) >= 0.0005 else None
+    return [*beats[:position], {**beats[position], 'end': at}, *beats[position + 1:]], moved
+
+
 def _covers(ranges, duration):
     """True when time ranges together cover ``[0, duration]``."""
     reach = 0.0
@@ -845,14 +876,27 @@ def validate_shot(output, shot, bible, roster, scenario, dialogue, generated=Fal
                          'speed': camera.get('speed') if camera.get('speed') in sequence_prompt.SPEEDS else 'slow',
                          'detail': '' if camera.get('move') == 'static' else _str(camera.get('detail'))}
     duration, beats, previous = shot['duration'], [], 0.0
+    gap = sequence_prompt.beat_gap(duration)
     spoken = [sequence_compile.normalize(line['text']).casefold() for line in dialogue if line.get('text')]
-    for number, beat in enumerate(output.get('beats') if isinstance(output.get('beats'), list) else [], 1):
+    raw = output.get('beats') if isinstance(output.get('beats'), list) else []
+    has_reference = sequence_prompt.reference_of({'reference_frame': reference}) is not None
+    landing = sequence_prompt.reference_landing(reference['at'], duration) if has_reference else None
+    snapped = None
+    if generated and landing == 'edge':
+        raw, snapped = _snap_to_reference(raw, reference['at'], errors)
+    for number, beat in enumerate(raw, 1):
         end = beat.get('end') if isinstance(beat, dict) else None
-        if isinstance(end, bool) or not isinstance(end, (int, float)) or not math.isfinite(end) or not _str(beat.get('action')):
+        if not _seconds(end) or not _str(beat.get('action')):
             errors.append(f'beat {number} needs a numeric "end" in seconds and an "action"')
             continue
-        if end <= previous + min(0.2, duration / 2):
-            errors.append(f'beat {number} ends at {end:g} s, which is not after the previous beat ({previous:g} s)')
+        # The last beat always ends at the shot's length; an end written a few hundredths short of it is that length.
+        checked = duration if number == len(raw) and abs(end - duration) <= SHOT_END_SLACK else end
+        if checked <= previous + gap:
+            moved = f" (the reference frame's second; you wrote {snapped[1]:g})" if snapped and number == snapped[0] else ''
+            before = (f'the previous beat ends at {previous:g} s' + (' on the reference frame' if landing == 'edge' and previous == reference['at'] else '')
+                      if beats else 'the shot starts at 0 s')
+            errors.append(f'beat {number} ends at {end:g} s{moved}, but {before} and a beat lasts more than {gap:g} s: end beat {number} after {previous + gap:g} s, '
+                          f'or fold this moment into a neighbouring beat (a change faster than {gap:g} s happens inside one beat)')
             continue
         if end > duration + 0.5:
             errors.append(f'beat {number} ends at {end:g} s but the shot lasts {duration:g} s; times are seconds from the start of this shot')
@@ -870,9 +914,9 @@ def validate_shot(output, shot, bible, roster, scenario, dialogue, generated=Fal
         errors.append(f'"beats" needs at least one beat; the last one ends at {duration:g} s')
     else:
         beats[-1]['end'] = duration
-        limit = max(2, math.ceil(duration / 1.25))
+        limit = sequence_prompt.beat_limit(duration, reference_edge=landing == 'edge')
         if len(beats) > limit:
-            errors.append(f'{len(beats)} beats are too many for {duration:g} s; write at most {limit}, each with a visible start, change and arrival')
+            errors.append(f'{len(beats)} beats are too many for {duration:g} s; write at most {limit} (shot.beats.at_most), each with a visible start, change and arrival')
     content['beats'] = beats
     content['voices'] = _voices(output, shot, dialogue, content['subjects'], errors)
     continuity = output.get('continuity') if isinstance(output.get('continuity'), dict) else {}
@@ -882,7 +926,7 @@ def validate_shot(output, shot, bible, roster, scenario, dialogue, generated=Fal
         errors.append('"scenario_anchors" is empty: give 3 to 5 visible features of the place, because the shot receives its scenario picture')
     if not scenario:
         content['scenario_anchors'] = content['scenario_keep'] = ''
-    if sequence_prompt.reference_of({'reference_frame': reference}):
+    if has_reference:
         content['reference_frame'] = dict(reference)
         content['reference_line'] = _str(output.get('reference_line'))
         if generated and not content['reference_line']:

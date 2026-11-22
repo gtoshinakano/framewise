@@ -11,8 +11,8 @@ import { DiffText } from './DiffText'
 import { CopyButton, copyText } from './Markdown'
 import { outfitsOf } from './outfitView'
 import { StaleChip } from './RunUi'
-import { sequenceApi, shotFrameUrl, type Bible, type BoundaryChoice, type Delivery, type RunStep, type SequenceBoundary, type SequenceDetail, type SequenceShot, type ShotDialogue, type ShotHistory, type ShotKeyframes, type ShotReference } from './sequenceApi'
-import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, DELIVERIES, deliveryLabel, edgeTags, hasOwnVoices, issueInstruction, issuesFor, progress, promptSections, referenceChange, referenceLabel, referenceNote, revisionLabel, shotStatus, speakerRanges, stage, staleText, timecode, timecodeSegments, versionNote, type Tone } from './sequenceView'
+import { sequenceApi, shotFrameUrl, type Bible, type BoundaryChoice, type Delivery, type RunStep, type SequenceBoundary, type SequenceDetail, type SequenceShot, type ShotDialogue, type ShotHistory, type ReferenceLanding, type ShotKeyframes, type ShotReference } from './sequenceApi'
+import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, DELIVERIES, deliveryLabel, edgeTags, hasOwnVoices, issueInstruction, issuesFor, progress, promptSections, referenceChange, referenceLabel, referenceLanding, referenceNote, revisionLabel, shotStatus, speakerRanges, stage, staleText, timecode, timecodeSegments, versionNote, type Tone } from './sequenceView'
 
 type Tab = 'dialogue' | 'direction' | 'shots' | 'assistant'
 const TONES: Record<Tone, string> = { good: 'bg-[#173a2b] text-[#9ff0c8]', busy: 'bg-[#2b2442] text-[#d6c8ff]', warn: 'bg-[#4a3a17] text-[#ffd59a]', bad: 'bg-[#3d2025] text-[#ffaaa7]', idle: 'bg-[#262b35] text-[#aeb5c1]' }
@@ -511,13 +511,16 @@ function ReferenceStrip({ sequenceId, shot, selected, onSelect, onSeek, disabled
   const orphan = current && data && !frames.some(frame => frame.ordinal === current.ordinal) ? current : null
   const change = referenceChange(current, selected)
   const chosen = frames.find(frame => frame.ordinal === selected) ?? (orphan && orphan.ordinal === selected ? orphan : null)
+  // Where the chosen second sits among the beats; the same rule the director and the validator follow.
+  const lands = referenceLanding(frames.find(frame => frame.ordinal === selected)?.lands)
   const hint = change === undefined ? (current ? `In the prompt: ${referenceLabel(current)}` : 'None in the prompt')
-    : change === null ? 'The rewrite clears the reference' : `The rewrite uses ${referenceLabel(chosen)}`
+    : change === null ? 'The rewrite clears the reference' : `The rewrite uses ${referenceLabel(chosen)}${lands ? `: ${lands}` : ''}`
   const pick = (ordinal: number, at: number) => { onSelect(ordinal); onSeek(at) }
-  const thumb = (key: string, ordinal: number, at: number, src: string, label: string, analysed: boolean) => {
+  const thumb = (key: string, ordinal: number, at: number, src: string, label: string, analysed: boolean, landing?: ReferenceLanding) => {
     const on = selected === ordinal
+    const timing = referenceLanding(landing)
     return <button key={key} type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => pick(ordinal, at)}
-      title={`${label}${analysed ? '' : ' · no keyframe analysis: the director reads only the picture'}${current?.ordinal === ordinal ? ' · used by the current prompt' : ''}`}
+      title={`${label}${timing ? ` · ${timing}` : ''}${analysed ? '' : ' · no keyframe analysis: the director reads only the picture'}${current?.ordinal === ordinal ? ' · used by the current prompt' : ''}`}
       className={`relative shrink-0 overflow-hidden rounded-md border-2 bg-black disabled:opacity-60 ${on ? 'border-[#e0a96d]' : 'border-transparent hover:border-[#5a4a35]'}`}>
       <img src={src} alt={label} loading="lazy" className="h-12 w-[5.35rem] object-cover" />
       <span className="absolute inset-x-0 bottom-0 bg-black/70 px-1 font-mono text-[9px] leading-4 text-[#e8ebf1]">{label}{analysed ? '' : ' ·'}</span>
@@ -533,7 +536,7 @@ function ReferenceStrip({ sequenceId, shot, selected, onSelect, onSeek, disabled
         <button type="button" role="radio" aria-checked={selected === null} disabled={disabled} onClick={() => onSelect(null)}
           className={`flex h-[3.25rem] w-14 shrink-0 items-center justify-center rounded-md border-2 text-[11px] font-semibold disabled:opacity-60 ${selected === null ? 'border-[#e0a96d] text-white' : 'border-[#2f3643] text-[#aeb5c1] hover:border-[#5a4a35]'}`}>None</button>
         {orphan && thumb('orphan', orphan.ordinal, orphan.at, cutOrdinalFrameUrl(orphan.cut_id, orphan.ordinal, orphan.time), referenceLabel(orphan), true)}
-        {frames.map(frame => thumb(String(frame.ordinal), frame.ordinal, frame.at, keyframeFrameUrl(data.cut_id, frame.ordinal, data.revision), `${frame.frame} · ${frame.at.toFixed(2)} s`, frame.analysed))}
+        {frames.map(frame => thumb(String(frame.ordinal), frame.ordinal, frame.at, keyframeFrameUrl(data.cut_id, frame.ordinal, data.revision), `${frame.frame} · ${frame.at.toFixed(2)} s`, frame.analysed, frame.lands))}
         {!frames.length && !orphan && <span className="muted text-[11px]">{data.status === 'missing' ? `Cut ${shot.cut} has no current keyframes: select them on its Target frames tab first.` : 'No keyframe of this cut falls inside this shot.'}</span>}
       </div>}
     <p className="muted mt-0.5 text-[10px] leading-4">The generator takes only where people stand, their poses, expressions, the setting and the objects from it; the look stays that of the opening still.</p>

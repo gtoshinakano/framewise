@@ -1,6 +1,6 @@
 // Pure helpers of the sequence workspace: no React and no fetch, so the node tests can import them.
 import type { DiffSegment } from './assistantApi'
-import type { BoundaryChoice, Decider, Delivery, FixedVoice, ReviewIssue, SequenceBoundary, SequenceDetail, SequenceShot, ShotEdge, ShotReferenceFrame, ShotResult, ShotRevision, ShotVoice, StaleReason } from './sequenceApi'
+import type { BoundaryChoice, Decider, Delivery, FixedVoice, ReferenceLanding, ReviewIssue, SequenceBoundary, SequenceDetail, SequenceShot, ShotEdge, ShotReferenceFrame, ShotResult, ShotRevision, ShotVoice, StaleReason } from './sequenceApi'
 
 /** Seconds as m:ss.s, the clock every time in the workspace uses. */
 export function clock(seconds: number) {
@@ -261,6 +261,14 @@ export function referenceChange(current: Pick<ShotReferenceFrame, 'ordinal'> | n
 export function referenceLabel(reference: Pick<ShotReferenceFrame, 'at' | 'frame'> | null | undefined) {
   if (!reference) return ''
   return `${reference.frame || 'keyframe'} (${reference.at.toFixed(2)} s)`
+}
+
+/** How the director times a reference keyframe, in a few words (`sequence_prompt.reference_landing`); empty when unknown. */
+export function referenceLanding(lands: ReferenceLanding | null | undefined) {
+  if (lands === 'edge') return 'a beat ends exactly on it'
+  if (lands === 'opening') return 'too close to the start for a beat to end on it: the first beat moves into its staging'
+  if (lands === 'end') return 'the shot ends on its staging'
+  return ''
 }
 
 /** What a version says about its reference keyframe, or null when nothing about it changed. */

@@ -11,10 +11,15 @@ character, then one scenario picture when the scene has a scenario note, then th
 when the user chose one (``sequence_reference``: a frame of the source taken for staging only);
 ``<Audio 1>`` is the shot's slice of the original audio.
 """
+import math
 import re
 
 from .assistant import h3_prompt
 
+# Beats on the shot's clock (``sequence_direction.validate_shot``): each one ends more than ``beat_gap`` after the one
+# before it, and a shot holds ``beat_limit`` of them. The reference keyframe reads the same numbers (``reference_landing``).
+MIN_BEAT_SECONDS = 0.2
+SECONDS_PER_BEAT = 1.25
 MAX_SHEETS = 4  # character sheets sent with one shot; further characters are described from the initial frame
 CAMERA_MOVES = {
     'static': None, 'push_in': 'pushes in', 'pull_out': 'pulls out', 'pan_left': 'pans left', 'pan_right': 'pans right',
@@ -89,6 +94,32 @@ def reference_of(content):
     if isinstance(value, dict) and isinstance(value.get('at'), (int, float)) and not isinstance(value.get('at'), bool) and isinstance(value.get('ordinal'), int):
         return value
     return None
+
+
+def beat_gap(duration):
+    """How long a beat lasts at least: it must end more than this after the previous beat (or second 0). Half of a very short shot."""
+    return min(MIN_BEAT_SECONDS, duration / 2)
+
+
+def beat_limit(duration, reference_edge=False):
+    """How many beats a shot of ``duration`` seconds may have; the beat edge a reference keyframe needs (``edge``) adds one."""
+    return max(2, math.ceil(duration / SECONDS_PER_BEAT)) + (1 if reference_edge else 0)
+
+
+def reference_landing(at, duration):
+    """Where the reference keyframe's second ``at`` (on the shot's clock) sits among the beats.
+
+    ``edge``: one beat ends exactly there, so its acting arrives at the staging and the next starts from it.
+    ``opening``: too soon after second 0 for a beat to end there (a first beat that short is not allowed): the first beat
+    moves into the staging at once. ``end``: too close to the end for a beat to follow it: the last beat arrives at it.
+    The comparisons are the validator's own (``end <= previous + gap`` is too short), so an ``edge`` is always a legal end.
+    """
+    gap = beat_gap(duration)
+    if at <= gap:
+        return 'opening'
+    if duration <= at + gap:
+        return 'end'
+    return 'edge'
 
 
 def reference_number(subjects):
@@ -409,8 +440,9 @@ def render(shot, content, bible, subjects, dialogue, slots=None, sound=None):
     ranges = beat_ranges(content, shot)
     description = [LOOK_SENTENCE, opening]
     acted = [index for index, beat in enumerate(ranges) if not beat.get('hold')] or [len(ranges) - 1]
-    # The beat in which the reference moment falls (the last acted beat when it sits on the shot's last instant).
-    staged = next((index for index in acted if ranges[index]['start'] <= reference['at'] < ranges[index]['end']), acted[-1]) if reference and ranges else None
+    # The beat that arrives at the reference moment: the one ending on it when a beat edge sits there (the validator puts one
+    # there whenever the second allows it), else the one it falls in; the last acted beat when it is the shot's last instant.
+    staged = next((index for index in acted if reference['at'] <= ranges[index]['end'] + 0.0005), acted[-1]) if reference and ranges else None
     for index, beat in enumerate(ranges):
         parts = [sentence(beat['action'] if beat.get('hold') else label_names(beat['action'], subjects))]
         if index == 0:

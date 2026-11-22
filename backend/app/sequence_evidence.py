@@ -715,6 +715,11 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
 
     own = next(cut for cut in timeline['cuts'] if cut['id'] == shot['cut_id'])
     later = shot['frame']['time'] - own['start_time']
+    # The reference's second is on this shot's clock (``sequence_reference.resolve``: episode time minus the shot's start),
+    # like the dialogue and the keyframe states above, whether the shot starts on its hard cut or before or after it.
+    landing = sequence_prompt.reference_landing(reference['at'], duration) if reference else None
+    lands = ({'beat_ends_at': reference['at']} if landing == 'edge' else {'within_first_beat': True} if landing == 'opening'
+             else {'at_end_of_shot': True} if landing == 'end' else {})
     payload = {
         'sequence': {key: bible.get(key) for key in ('synopsis', 'spoken_language', 'arc', 'continuity')},
         'director_instruction': sequence['instruction'].strip() or None,
@@ -730,7 +735,8 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
                                    else f"the frame {later:.1f} s into that cut, where the previous shot stopped: derive its state from first_frame plus the motion up to then"
                                    if shot['frame']['continues_previous_shot']
                                    else f"the frame {later:.1f} s into that cut (the previous shot ran past the hard cut to finish a phrase): derive its state from first_frame plus the motion up to then"},
-                 'opens': edge_words(shot, 'opens'), 'closes': edge_words(shot, 'closes')},
+                 'opens': edge_words(shot, 'opens'), 'closes': edge_words(shot, 'closes'),
+                 'beats': {'at_most': sequence_prompt.beat_limit(duration, reference_edge=landing == 'edge'), 'each_longer_than': round(sequence_prompt.beat_gap(duration), 3)}},
         'previous_shot': {**neighbour(shots[index - 1]), 'ends_with': ends_with(shots[index - 1]) if level < 3 else None,
                           'hands_over': ((previous or {}).get('continuity') or {}).get('to_next')} if index else None,
         'next_shot': {**neighbour(shots[index + 1]), 'opens_with': opens_with(shots[index + 1]) if level < 3 else None} if index + 1 < len(shots) else None,
@@ -741,7 +747,7 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
         'speakers': shot_speakers(ctx, timeline, bible, shot) or None,
         'subtitles_for_meaning_only': {'language': ctx['subtitle_language'], 'lines': subtitles} if subtitles else None,
         # The user's chosen staging moment is never shrunk away by the detail level: it is what the user asked for.
-        'reference_frame': {'frame': reference.get('frame'), 'at': reference['at'], 'chosen_by': 'user', 'shows': shows or 'not analysed: no keyframe states or boxes for this frame',
+        'reference_frame': {'frame': reference.get('frame'), 'at': reference['at'], **lands, 'chosen_by': 'user', 'shows': shows or 'not analysed: no keyframe states or boxes for this frame',
                             'picture_attached': False} if reference else None,
     }
     payload['shot'] = {key: value for key, value in payload['shot'].items() if value is not None}

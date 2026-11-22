@@ -241,7 +241,9 @@ class RenderTest(unittest.TestCase):
         self.assertIn('voices SPEAKER_01: inner_voice needs "subject"', self.errors(lambda c: c['voices'][1].update(delivery='inner_voice')))
         self.assertIn('camera.move must be one of: static, push_in', self.errors(lambda c: c['camera'].update(move='zoom')))
         self.assertIn('beat 2 ends at 20 s but the shot lasts 8 s', self.errors(lambda c: c['beats'][1].update(end=20)))
-        self.assertIn('beat 2 ends at 3 s, which is not after the previous beat (4 s)', self.errors(lambda c: c['beats'][1].update(end=3)))
+        self.assertIn('beat 2 ends at 3 s, but the previous beat ends at 4 s and a beat lasts more than 0.2 s: end beat 2 after 4.2 s, or fold this moment into a neighbouring beat',
+                      self.errors(lambda c: c['beats'][1].update(end=3)))
+        self.assertIn('beat 1 ends at 0.1 s, but the shot starts at 0 s and a beat lasts more than 0.2 s: end beat 1 after 0.2 s', self.errors(lambda c: c['beats'][0].update(end=0.1)))
         self.assertIn('"scenario_anchors" is empty', self.errors(lambda c: c.update(scenario_anchors='')))
         self.assertIn('"picture_line" is empty', self.errors(lambda c: c.update(picture_line=' ')))
         self.assertIn('subject "the station attendant" needs anchors', self.errors(lambda c: c['subjects'][2].update(anchors='')))

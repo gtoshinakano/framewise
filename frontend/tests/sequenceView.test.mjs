@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, deliveryLabel, edgeTags, issueInstruction, issuesFor, progress, promptSections, rangeSeconds, referenceChange, referenceLabel, referenceNote, revisionLabel, rulerStep, shotStatus, speakerRanges, spokenTimes, stage, staleText, timecode, timecodeSegments, versionNote } from '../src/sequenceView.ts'
+import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, deliveryLabel, edgeTags, issueInstruction, issuesFor, progress, promptSections, rangeSeconds, referenceChange, referenceLabel, referenceLanding, referenceNote, revisionLabel, rulerStep, shotStatus, speakerRanges, spokenTimes, stage, staleText, timecode, timecodeSegments, versionNote } from '../src/sequenceView.ts'
 
 const shot = (index, extra = {}) => ({ index, key: `k${index}`, t0: (index - 1) * 4, t1: index * 4, duration: 4, stale: [], job: null, result: { check: { ok: true } }, ...extra })
 const detail = (extra = {}) => ({ sequence: { cuts_changed: false, cuts_missing: false }, missing: [], plan_problems: [], bible: {}, plan: {}, shots: [shot(1), shot(2)], jobs: [], ...extra })
@@ -194,4 +194,12 @@ test('a reference keyframe reads as its label and second, and a version says wha
   assert.equal(referenceNote('dropped: the reference keyframe is no longer inside this shot', null), 'Reference keyframe dropped: the reference keyframe is no longer inside this shot.')
   assert.equal(referenceNote('kept', { at: 2.4, frame: 'F3' }), null)
   assert.equal(referenceNote(null, null), null)
+})
+
+test('a reference keyframe says how the director times it among the beats', () => {
+  assert.equal(referenceLanding('edge'), 'a beat ends exactly on it')
+  assert.match(referenceLanding('opening'), /^too close to the start for a beat to end on it: the first beat moves into its staging$/)
+  assert.equal(referenceLanding('end'), 'the shot ends on its staging')
+  assert.equal(referenceLanding(undefined), '')
+  assert.equal(referenceLanding(null), '')
 })

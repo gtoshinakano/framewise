@@ -13,8 +13,16 @@ The choice is stored on the shot revision as ``content.reference_frame`` (``{cut
 the app and never by the model, and every later rewrite of the shot keeps it until the user picks another frame or clears
 it (``resolve``). ``ordinal`` is the source frame index, so the exact frame is cut even after the keyframe selection changes.
 No FastAPI here: the inference worker imports this module.
+
+Timing: ``at`` is always the frame's episode time minus the shot's start, the clock of the shot's audio slice, its
+dialogue lines and its keyframe states, so a shot that starts before its cut (a borrowed phrase) or after it (a moved
+or placed boundary) puts the staging on the second its sound plays. ``resolve`` recomputes it for every rewrite. Where it
+sits among the beats (``sequence_prompt.reference_landing``) decides whether the director ends a beat exactly there
+(the validator snaps a rounded end onto it) or, too close to the shot's start or end, lets the first or last beat reach it.
 """
 import json
+
+from . import sequence_prompt
 
 CLEAR = {'clear': True}  # what a job payload carries when the user cleared the reference
 EDGE = 0.001  # a frame on the shot's last instant still belongs to it
@@ -44,14 +52,17 @@ def candidates(conn, shot, results=None):
     """What the Shots tab offers for one shot: the current keyframes of its cut that lie inside the shot's own picture.
 
     Returns ``{cut_id, revision, status, frames}``; each frame has ``frame`` (F label), ``ordinal``, ``time`` (episode
-    seconds), ``at`` (seconds on the shot's clock) and ``analysed`` (the keyframe analysis has states for it).
+    seconds), ``at`` (seconds on the shot's clock), ``analysed`` (the keyframe analysis has states for it) and ``lands``
+    (``sequence_prompt.reference_landing``: ``edge`` when a beat can end on it, ``opening`` or ``end`` when it is too
+    close to the shot's start or end for that).
     """
     cut, key, frames = selection(conn, shot['cut_id'])
     if cut is None:
         return {'cut_id': shot['cut_id'], 'revision': None, 'status': 'missing', 'frames': []}
     start, end = span(shot, cut)
     analysed = analysed_ordinals(results or {})
-    inside = [{**item, 'at': round(item['time'] - shot['start_time'], 3), 'analysed': item['ordinal'] in analysed}
+    inside = [{**item, 'at': (at := round(item['time'] - shot['start_time'], 3)), 'analysed': item['ordinal'] in analysed,
+               'lands': sequence_prompt.reference_landing(at, shot['duration'])}
               for item in frames if start - EDGE <= item['time'] < end + EDGE]
     return {'cut_id': shot['cut_id'], 'revision': key, 'status': 'current' if key else 'missing', 'frames': inside}
 

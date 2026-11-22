@@ -71,8 +71,11 @@ export type ShotDirection = {
 }
 /** A frame of the shot's own cut: `ordinal` is the source frame index, `time` episode seconds, `at` seconds on the shot's clock, `frame` its keyframe label. */
 export type ShotReferenceFrame = { cut_id: string; ordinal: number; time: number; at: number; frame?: string | null }
+/** Where a reference keyframe's second sits among the shot's beats: `edge` a beat ends exactly on it, `opening` too close to the start
+ * for that (the first beat moves into its staging), `end` the shot's last moment (the last beat arrives at it). */
+export type ReferenceLanding = 'edge' | 'opening' | 'end'
 /** A keyframe the shot can take as its reference; `analysed` when the keyframe analysis has states for it. */
-export type ShotKeyframe = { frame: string; ordinal: number; time: number; at: number; analysed: boolean }
+export type ShotKeyframe = { frame: string; ordinal: number; time: number; at: number; analysed: boolean; lands?: ReferenceLanding }
 export type ShotKeyframes = { cut_id: string; revision: string | null; status: 'current' | 'missing'; frames: ShotKeyframe[]; current: ShotReferenceFrame | null }
 export type ShotReference = {
   label: string; role: 'initial_frame' | 'character_sheet' | 'scenario' | 'reference_frame' | 'original_audio'; character_context_id?: string | null; context_id?: string | null; name?: string | null
