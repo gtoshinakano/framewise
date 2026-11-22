@@ -10,13 +10,14 @@ edited the result by hand.
 import math
 import re
 
-from . import sequence_compile, sequence_evidence, sequence_prompt, sequence_timeline, still_vocabulary
+from . import outfit_library, sequence_compile, sequence_evidence, sequence_prompt, sequence_timeline, still_vocabulary
+from .assistant import h3_prompt
 
 FRAMING = """You are the director of a short video of at most three minutes that re-creates a sequence of an episode with AI, shot by shot. Each shot is generated on its own: first a still image of its opening frame, then a MiniMax H3 video of at most 15 seconds that animates that still in sync with the ORIGINAL audio of the episode. The original audio is kept unchanged under the whole video, so it is the spine every decision follows.
 
 You do not see pictures and you do not hear audio. Your evidence is text written by other systems (vision models, a transcription, the user's notes); it can be incomplete or wrong. The user's own notes, character links and decisions are authoritative.
 
-The prompts you write are suggestions for whoever generates the pictures and the video. The visual style belongs to them: never name a medium, an art style or a rendering technique, and describe a look only as "the look of the supplied picture"."""
+The prompts you write are suggestions for whoever generates the pictures and the video. The visual style belongs to them: never name a medium, an art style or a rendering technique (anime, animation, cartoon, illustration, manga, cel shading, 2D, 3D, CGI and the like), not even to rule it out, and describe a look only as "the look of the supplied picture". The still is described as a real camera photographs it, and a style word contradicts that camera."""
 
 RULES = """## RULES
 - Base everything on the supplied evidence. Never invent characters, places, actions, props or dialogue.
@@ -80,6 +81,7 @@ Before any shot is planned you write the SEQUENCE BIBLE: the shared understandin
 One JSON object:
 - project, episode and director_instruction (the user's intent for this sequence; follow it when present).
 - sequence: its length in seconds and its first and last cut number.
+- outfit_library: the outfits already created for each character (exact name, summary, a part of the description). They are shared by every episode of the project.
 - characters: the project's character records (exact names, notes). For a character who appears in these cuts, seen_in_cuts lists where, and appearance_in_first_frames quotes how the vision model described that character in the opening frames. scenario_notes and context_notes: the user's notes on places and story.
 - cuts: one digest per source cut, in order. t is its start and end in seconds from the start of the sequence; shot is the size and angle of its opening frame; camera its movement; on_screen the named characters the user marked; unnamed_people true when other people are visible; speaking the named characters whose mouth visibly moves; action what happens; setting, lighting, mood and props describe the opening frame. "analysis": "missing" means the cut was not analysed.
 - transcript: every spoken line as `L<n> start-end VOICE LABEL / Character: words`; with dialogue_reviewed these are the user's final words and seconds. A character after the slash was linked by the user and is certain. A line with only a voice label (such as SPEAKER_03) has no known speaker yet. A line shown as "Unknown speaker" has no voice label at all: such lines may come from different people, so they get no entry in voices.
@@ -90,11 +92,12 @@ One JSON object:
 1. Story (logline, synopsis, arc): what this sequence is about and how tension and emotion develop from the first cut to the last.
 2. Scenes: group consecutive cuts that share one place and time. Every cut belongs to exactly one scene and scenes follow each other without gaps. Name the place concretely, with its time of day and light. If a scenario note describes that place, put its exact title in "scenario"; otherwise null.
 3. Characters: every named character who is on screen in these cuts (seen_in_cuts), with the exact name of the character record. anchors are 3 to 6 visible features that stay constant in this sequence and identify the character at any angle and distance (build, hair, face, main garment and its colours); small accessories such as hairpins, clips, jewellery or badges are not anchors, because they show in some frames and not in others. outfit is what the character wears here. Take both from appearance_in_first_frames, which is what the frames show; the record notes describe the series and may show another outfit. When the frames disagree about a garment or a colour, keep what most of them say and name the disagreement in open_questions. arc is what the character wants or feels across the sequence, in one sentence.
-4. Voices: when the input says voices_are_final, copy them exactly and decide nothing. Otherwise decide who owns each voice label. A label the user linked to one character belongs to that character. For an unlinked label weigh who visibly speaks while it is heard, who is alone on screen, what the words mean and who would say them to whom, and whether another label already belongs to that character. kind is character, narrator (narration, a title voice) or unknown. confidence is high only when two independent hints agree, otherwise medium or low. When nothing supports a choice, use kind unknown and character null: a wrong owner is worse than none.
-5. spoken_language: the language of the spoken lines, as one English word (for example Japanese).
-6. Pacing: how the shots should breathe with the audio: where the sequence is quick, where it rests, where a held look matters.
-7. Continuity: concrete rules every shot must respect, limited to what changes the animation (outfits, props carried or used from one cut to the next, who stands where, time of day, weather). Make no rule about a small detail that appears or disappears with the angle, the distance or the crop.
-8. open_questions: only what a person must decide because the evidence cannot.
+4. Outfits: for every character you listed, say which outfit they wear, as one entry per outfit and character (a character who changes clothes in the sequence gets one entry per outfit, with scenes naming the scene ids where it is worn). The library of outfits already exists, so REUSE it: when the frames show a garment set that matches a library outfit, answer status "existing" with that outfit's exact name and leave summary and description empty (the app copies them). Answer status "new" only when no library outfit of that character clearly matches what the frames show. A difference of state (sleeves rolled up, jacket open, bag carried, hair clip present or not) is not a new outfit, and neither is a different angle or a slightly different shade; a different set of garments is. A new outfit needs a short name that tells it apart from the character's other outfits (for example the occasion or the main garment), a summary of one sentence, and a complete description: write one paragraph about the clothes only, covering headwear and hair accessories, top, outerwear, bottom, legwear, footwear, accessories and jewellery, bags, and for each the colour, material or pattern, cut and the visible construction details (collar, sleeves, buttons, trims, hem length). Describe what the frames show and say "not visible" for a part that never shows; never copy series notes as if the frames showed them. Do not describe the body, the face, the hair style or the art style, and never name a film or art style. The description must be complete enough for someone to draw the character sheet of that outfit without seeing the frames.
+5. Voices: when the input says voices_are_final, copy them exactly and decide nothing. Otherwise decide who owns each voice label. A label the user linked to one character belongs to that character. For an unlinked label weigh who visibly speaks while it is heard, who is alone on screen, what the words mean and who would say them to whom, and whether another label already belongs to that character. kind is character, narrator (narration, a title voice) or unknown. confidence is high only when two independent hints agree, otherwise medium or low. When nothing supports a choice, use kind unknown and character null: a wrong owner is worse than none.
+6. spoken_language: the language of the spoken lines, as one English word (for example Japanese).
+7. Pacing: how the shots should breathe with the audio: where the sequence is quick, where it rests, where a held look matters.
+8. Continuity: concrete rules every shot must respect, limited to what changes the video (outfits, props carried or used from one cut to the next, who stands where, time of day, weather). Make no rule about a small detail that appears or disappears with the angle, the distance or the crop.
+9. open_questions: only what a person must decide because the evidence cannot.
 
 """ + RULES + """
 
@@ -105,6 +108,7 @@ Return exactly one JSON object:
  "spoken_language": "Japanese",
  "scenes": [{"id": "S1", "from_cut": 12, "to_cut": 15, "location": "...", "time_of_day": "...", "lighting": "...", "mood": "...", "scenario": "exact scenario note title or null"}],
  "characters": [{"name": "exact record name", "role": "who this is in the sequence", "anchors": "3 to 6 visible features", "outfit": "...", "arc": "..."}],
+ "outfits": [{"character": "exact record name", "name": "exact library name, or a new short name", "status": "existing | new", "scenes": ["S1"], "summary": "one sentence (empty for existing)", "description": "the complete description (empty for existing)"}],
  "voices": [{"speaker_label": "SPEAKER_01", "character": "exact record name or null", "kind": "character | narrator | unknown", "confidence": "high | medium | low", "reason": "the hints that decided it"}],
  "arc": "...", "pacing": "...",
  "continuity": ["one rule per item"],
@@ -149,7 +153,7 @@ One JSON object:
 - scene and scenario_reference (a picture of the place that the generator receives, when there is one).
 - shot: its number, its length in seconds, its cut (and part, when the app divides a cut longer than one take), its intent from the plan, initial_frame (whether the opening still is the cut's first frame or a later moment of it), and opens and closes: how the shot meets its neighbours (see TIMING AT THE EDGES).
 - previous_shot and next_shot: what surrounds this shot. ends_with is how the analysis says the previous shot's characters end, opens_with is how the opening frame of the next shot shows them, and hands_over is the state the previous shot was written to end in.
-- characters: the named characters that appear in the covered cuts, with the bible's anchors and outfit and the user's notes.
+- characters: the named characters that appear in the covered cuts, with the bible's anchors and outfit (and outfit_names, the named outfits the bible gives that character) and the user's notes.
 - cuts: the evidence for the shot's own cut. plays_at is when that cut's picture and audio run on THIS shot's clock. first_frame describes the cut's opening still; each character in it may carry pose_detail: state (standing, sitting ...), torso and head facing as a view of the camera with the screen side it turns toward, eyes, looking_at (who or what the character looks at) and check (a disagreement the app found inside those facts). motion is the motion direction: summary, camera, per character activity, travel, motion, gaze (where the eyes and head go, and when), objects (what the character touches, holds or moves), speaking (yes, no, unclear), emotion and end, state_correction when the clip shows a different state than the still read, plus events whose seconds are already on this shot's clock, each with a kind (body, gaze, mouth, expression, object, travel, camera). cut_summary is a written brief of the cut (its seconds count from the start of the cut, not of this shot, and it holds no spoken words) and user_decisions are the user's answers to open review points. A neighbouring cut appears only when this shot borrows some of its audio to keep a phrase whole; its picture is not shown.
 - Each own cut can also contain keyframes (states and visible changes) and performance_beats (staged acting and delivery hints). Their times are already on this shot's clock. States immediately before zero or after the end are reference poses, not new events. Still camera is the Cut summary's camera and finish. The app adds it verbatim to the still, never to H3. Use it to describe the depth of field, textures, palette, lighting and atmosphere of the frozen image.
 - dialogue: the lines heard during this shot, with id, t (start and end on this shot's clock), the speaker and how the speaker is known. With dialogue_reviewed these words, speakers and seconds were fixed by the user and are final. subtitles_for_meaning_only appears only when the dialogue was not reviewed; it may help you understand the words, never show them.
@@ -161,13 +165,13 @@ One JSON object:
 Speech and its timing come only from the dialogue. The cut_summary and the motion (mouth events, speaking) tell you whether a mouth is seen moving and what the picture does, never what is said or when it is said: when one of them places speech at other seconds or in other words than the dialogue, follow the dialogue and say nothing about the difference. The first frame decides how the shot starts, the motion decides what changes over time, and what the take shows decides whether lips can be seen moving. When pose_detail and a free-text field disagree about facing, gaze or state, pose_detail wins; a character's state_correction means the video's activity is what the character does from the first second.
 
 ## WHAT YOU WRITE
-- subjects: every character or person who is visible at any point of the shot, the most important first, at most 5. name is the exact name from "characters"; for someone without a record use a short visual label such as "the shop clerk", never a guessed name. anchors: 3 to 6 large visible features that identify the character at any angle and distance (build, hair, main garment and colour) and agree with the bible and the first frame; small accessories (hairpins, clips, jewellery, badges, buttons) go in still.subjects, not here. keep: what must stay identical to that character's reference, as one clause.
+- subjects: every character or person who is visible at any point of the shot, the most important first, at most 5. name is the exact name from "characters"; for someone without a record use a short visual label such as "the shop clerk", never a guessed name. anchors: 3 to 6 large visible features that identify the character at any angle and distance (build, hair, main garment and colour) and agree with the bible and the first frame; small accessories (hairpins, clips, jewellery, badges, buttons) are not anchors, the character sheet carries them. keep: what must stay identical to that character's reference, as one clause.
 - picture_line: who is where in the opening still, in one sentence, with only what is visible in it. keep_picture: what the video must preserve from the opening still (composition, palette, lighting), as one clause.
-- still: the opening frame as ONE frozen moment for an image generator. shot: size, angle, camera height and where the frame crops the subject. placement: for each visible character, in words, where they are in the frame (left, centre or right, foreground, midground or background, relative to the others and to objects), their body state, which way the torso faces and which way the head points as a view of the camera with the image side it turns toward, where the eyes look and at whom or what. Take these from pose_detail and the user's answers, never from your own reading of the free text, and say them in words from the KEYWORDS below, never as degrees (an image generator does not understand degrees); pose_detail already gives torso, head and eyes in those words. When state_correction says the clip shows motion from the first second, place the character in that state caught mid-motion. subjects: for each visible character the expression, hands and visible outfit, with the small accessories and details the first frame shows (hairpins, jewellery, badges); not placement. layout: foreground, midground and background and how they relate. setting. lighting: source, direction, softness, time of day, palette, highlights and shadows. Write 170 to 350 words across the still's fields when there is evidence to support them, as concrete connected visual prose for Qwen-Image-2.1. Start from the subject and frozen pose, establish the setting and spatial layers, then describe framing, lighting, atmosphere and photographic detail (fabric, skin, reflections or surfaces where visible). Make screen direction and depth unambiguous. No lettering.
+- still: the opening frame as ONE frozen moment for an image generator. shot: size, angle, camera height and where the frame crops the subject. placement: for each visible person, in words, their depth layer (foreground, midground or background), their screen position (screen-left, centre or screen-right, relative to the others and to objects), their body state, which way the torso faces and which way the head points as a view of the camera with the screen side it turns toward, where the eyes look and at whom or what. When two or more people are visible, name the layers explicitly: who is in the foreground, who is in the midground (only when three or more people stand at different depths) and who is in the background, or that they share one layer; never leave the depth of a person to be guessed. Take these from pose_detail, the first frame's positions and the user's answers, never from your own reading of the free text, and say them in words from the KEYWORDS below, never as degrees (an image generator does not understand degrees); pose_detail already gives torso, head and eyes in those words. When state_correction says the clip shows motion from the first second, place the character in that state caught mid-motion. subjects: for each visible person the expression and the hands, and the outfit only as a very short reference of a few words: the outfit's name from outfit_names, or else its main garment and colour. The character sheet sent with the still shows the full outfit, so never describe garments in detail (construction, materials, trims, small accessories); add only a state of the clothes that a sheet cannot show (a jacket open, sleeves rolled up, a bag carried). A person without a character record gets one short phrase for the clothes. Not placement. layout: the setting's foreground, midground and background and which person stands in front of or behind what. setting. lighting: source, direction, softness, time of day, palette, highlights and shadows. Write 140 to 300 words across the still's fields when there is evidence to support them, as concrete connected visual prose for Qwen-Image-2.1. Start from the subject and frozen pose, establish the setting and spatial layers, then describe framing, lighting, atmosphere and photographic detail (skin, surfaces and reflections where visible). Make screen direction and depth unambiguous. No lettering, and no style or medium words (the still is a photograph through the camera of its Cut summary).
 - summary: one sentence with what happens in the shot and how the camera behaves.
 - shot_line: shot size, angle and who is where at the start, in one or two sentences. framing_lock: one short sentence that locks the crop you gave in still.shot, naming the same upper and lower edge of the frame and ending with "never wider" (or "never closer" for a wide shot); it must agree with still.shot. light: one sentence on the light.
 - camera: move is ONE of static, push_in, pull_out, pan_left, pan_right, truck_left, truck_right, tilt_up, tilt_down, pedestal_up, pedestal_down, arc, tracking, shake. If the motion evidence says static, use static. amplitude is small, medium or large; speed is slow, medium or fast. detail is one optional sentence on where the move ends or what it reveals; leave it empty for a static shot.
-- beats: use the supplied performance_beats and keyframes on the shot clock. Follow the distinct acting turns and their seconds within the visible shot. Give each important beat a playable start, change and arrival. For the people who matter to it, direct weight shifts, posture, hands and prop contact, expression changes (eyes, brows, cheeks or jaw), where the eyes settle, mouth shape, and how an action lands. Use intent and mood to choose intensity, giving quiet reactions room. In clearly comic or kinetic moments you may heighten timing, anticipation, recoil or follow-through while preserving the evidenced action and the shot's fixed timing. Keep beats contiguous; end the last beat at the shot duration. Combine nearby beats only when they are one acting change. The app inserts each spoken line once. In the acting beats write only the visible mouth action, for example "her lips part in sync", without quoting the line or paraphrasing its content. Keep sound and camera directions outside acting beats. Use mouth motion only during the confirmed dialogue of a visible lip-synced speaker.
+- beats: use the supplied performance_beats and keyframes on the shot clock. Follow the distinct acting turns and their seconds within the visible shot. Give each important beat a playable start, change and arrival. For the people who matter to it, direct weight shifts, posture, hands and prop contact, expression changes (eyes, brows, cheeks or jaw), where the eyes settle, mouth shape, and how an action lands. Use intent and mood to choose intensity, giving quiet reactions room. In clearly comic or kinetic moments you may heighten timing, anticipation, recoil or follow-through while preserving the evidenced action and the shot's fixed timing. Keep beats contiguous; end the last beat at the shot duration. Combine nearby beats only when they are one acting change. The app inserts each spoken line once. In the acting beats write only the visible mouth action, for example "her lips part in sync", without quoting the line or paraphrasing its content. Keep camera directions outside acting beats; the only sound a beat names is the sound of its own action (see Sound of actions). Use mouth motion only during the confirmed dialogue of a visible lip-synced speaker.
 - voices: how each speaker of "speakers" is heard in THIS shot. Give every speaker an entry from second 0; add a later entry for the same speaker only when that changes during the take (a camera move or an action brings them into view, turns them away or takes them out of frame), with from = the second it changes. delivery is one of:
   - on_screen: the speaker is one of your subjects, in the picture with the mouth visible, and visibly speaks; the mouth moves in sync with their words.
   - off_screen: the speaker is not in the picture at that time. Also use it for a voice nobody confirmed.
@@ -178,11 +182,12 @@ Speech and its timing come only from the dialogue. The cut_summary and the motio
 - continuity: from_previous is what must match the end of the previous shot; to_next is the state this shot hands over (positions, poses, props, gaze). One sentence each. When the evidence of this shot contradicts a neighbour (someone sits here and stands in the next opening frame, an outfit differs), follow this shot's own evidence and name the contradiction in open_questions instead of hiding it.
 - open_questions: only decisions the evidence cannot make.
 
-## CONTINUITY, ANIMATION AND AUDIO
+## CONTINUITY, MOTION AND AUDIO
 - Continuity: open on the state previous_shot.hands_over (or ends_with) and close on the state the next shot opens with. Carry positions, held props, eyelines, clothing state and time of day across the boundary; when a line of dialogue continues from the previous shot, the speaker's body and gaze continue too.
-- Animation direction: build the shot on the clock first. Anchor every beat to the seconds of the motion events and their kind, in order, so that the picture stays in sync with the original audio; a gaze shift, a mouth movement and a handled object each land at their own second. Position precisely: say where each character starts and ends in the frame (zone, depth, relative to the others and to objects) and which way the torso and head face when a beat begins and ends. Act precisely: name which body part leads, in what order, in which direction, how far and how fast; give a gaze shift its target (who or what, from where to where) and its second, say when the mouth moves (only for an on_screen speaker) and when it stops, and give small acting (a breath, a hand tightening, a nod) its own beat only when the evidence places it. Name every object that is touched, held, moved, pointed at or looked at, and what happens to it, from the video's objects and the first frame's props. Give the camera a start framing and an end framing when it moves. Hold still where the source holds still; do not add motion the evidence does not show.
+- Acting and motion: build the shot on the clock first. Anchor every beat to the seconds of the motion events and their kind, in order, so that the picture stays in sync with the original audio; a gaze shift, a mouth movement and a handled object each land at their own second. Position precisely: say where each character starts and ends in the frame (zone, depth, relative to the others and to objects) and which way the torso and head face when a beat begins and ends. Act precisely: name which body part leads, in what order, in which direction, how far and how fast; give a gaze shift its target (who or what, from where to where) and its second, say when the mouth moves (only for an on_screen speaker) and when it stops, and give small acting (a breath, a hand tightening, a nod) its own beat only when the evidence places it. Name every object that is touched, held, moved, pointed at or looked at, and what happens to it, from the video's objects and the first frame's props. Give the camera a start framing and an end framing when it moves. Hold still where the source holds still; do not add motion the evidence does not show.
 - Audio treatment: the original audio is the spine. A mouth moves only while its speaker is on_screen and their words are heard, which is during the seconds t of that speaker's dialogue lines; a mouth beat starts and ends there, also where a mouth event or the cut summary puts the speech elsewhere. An off_screen voice needs a picture without that speaker; an inner_voice speaker keeps the lips still (or the mouth hidden) while the words play; a narrative speaker stays far enough away that no lip movement is expected. Beats must agree with the voices: never describe lips moving in speech for someone who is not on_screen at that second.
-- Sound: the app writes the sound section itself. It tells the generator to follow the original audio exactly, with whatever background sound, music or effects it holds. You cannot hear that audio, so never describe or assume a background sound, a room tone, the ambience of a place or music anywhere in your answer. Time the action to the dialogue and the motion evidence.
+- Sound: the app writes the sound section itself. It tells the generator to reproduce the original audio completely, with every voice, background sound, effect and music it holds. You cannot hear that audio, so never describe or assume a background sound, a room tone, the ambience of a place, other voices or music anywhere in your answer. Time the action to the dialogue and the motion evidence.
+- Sound of actions: an action that visibly makes contact is heard in the original audio at the moment it happens (something set down, dropped or knocked over, a door or drawer closing, a hand striking a surface, a step landing). When the evidence shows such a contact, end a beat exactly at the second it happens, so the contact sits on a timecode, and close that beat with a short clause naming the sound of the contact, so that the picture lands on the sound. Only for contacts the evidence shows, only the action's own sound, never a sound the picture does not cause.
 
 ## TIMING AT THE EDGES
 The edges of the shot are exact and lie on the original audio, so the acting must land on them. opens and closes give their seconds on this shot's clock.
@@ -195,7 +200,7 @@ The edges of the shot are exact and lie on the original audio, so the acting mus
 ## RULES FOR H3
 - Never write the word "cut", not even "no cut": H3 reads it as an edit. Say "shot" or "take".
 - No lettering anywhere: write "blank" or "unmarked". Subtitles and on-screen text never appear.
-- Never name a medium, art style or rendering technique; "keep_picture" and "framing_lock" refer to the supplied pictures, not to a style.
+- Never name a medium, art style or rendering technique in any field, the still included, not even negated: no anime, animation, animated, cartoon, illustration, manga, cel shading, line art, 2D, 3D or CGI. "keep_picture" and "framing_lock" refer to the supplied pictures, not to a style; call the result "the video" or "the shot".
 - When the initial frame is a later moment of its cut, derive the opening state from first_frame plus the motion up to that moment, and add an open question if that state is uncertain.
 - Write 180 to 480 words across shot_line, framing_lock, light and the beats together. Every sentence must be concrete and supported; no filler.
 
@@ -237,7 +242,7 @@ lines lists every line spoken in the shot's original audio as "line id, start-en
 - Anything a shot's user_instructions ask for, and the words and seconds of the lines listed: the user decided them, and your suggestions never go against them.
 - Where an edge "placed by user" sits, even when it divides a phrase: the user placed it. Report only what the shots on either side get wrong around it.
 - A difference of shade, tone or wording of a colour or material (brown-red against grey-red, dark against navy, blonde against light brown), a difference between how two shots describe the same garment, hair or eyes, and any appearance detail that does not change who the character is: such a difference is never an issue unless it is a different garment or a different person. The same holds for light described in different words.
-- A small detail that appears or disappears with the angle, the distance or the crop: hairpins, hair clips, ribbons, earrings, jewellery, buttons, badges, pockets, stitching, small patterns. Such details belong to the opening still and the character references, not to the animation. Report one only when the action of the shot depends on it (a character pulls out the hairpin, shows the badge).
+- A small detail that appears or disappears with the angle, the distance or the crop: hairpins, hair clips, ribbons, earrings, jewellery, buttons, badges, pockets, stitching, small patterns. Such details belong to the character references, not to the video's motion. Report one only when the action of the shot depends on it (a character pulls out the hairpin, shows the badge).
 - A shot that leaves out a feature another shot or the bible mentions, and any difference of wording or of detail between shots.
 - Anything you are not sure would change the generated picture, its motion or its lip sync. When in doubt, leave it out. An empty issues list is the right answer for a sequence that holds together.
 
@@ -260,7 +265,7 @@ Return JSON only."""
 STEPS = {
     'compile': {'system': COMPILE_SYSTEM, 'max_tokens': 6144, 'temperature': 0.2},
     'timing': {'system': TIMING_SYSTEM, 'max_tokens': 6144, 'temperature': 0.15},
-    'bible': {'system': BIBLE_SYSTEM, 'max_tokens': 6144, 'temperature': 0.3},
+    'bible': {'system': BIBLE_SYSTEM, 'max_tokens': 8192, 'temperature': 0.3},
     'plan': {'system': PLAN_SYSTEM, 'max_tokens': 8192, 'temperature': 0.3},
     'shot': {'system': SHOT_SYSTEM, 'max_tokens': 6144, 'temperature': 0.6},
     'review': {'system': REVIEW_SYSTEM, 'max_tokens': 6144, 'temperature': 0.2},
@@ -274,6 +279,8 @@ BANNED = (
     (re.compile(r'</?d>'), 'quotes dialogue; describe the acting only, the app adds the spoken words'),
     (re.compile(r'\b\d{2}:\d{2}(?:\.\d+)?\b'), 'contains a timecode; the app writes the times'),
 )
+DEPTH = re.compile(r'\b(?:fore|mid|back)ground\b|\bmid-ground\b|\bmiddle ground\b', re.IGNORECASE)
+SCREEN_SIDE = re.compile(r'\b(?:left|right|cent(?:re|er))\b', re.IGNORECASE)
 
 
 def _object(properties, required=None):
@@ -378,12 +385,64 @@ def bible_format():
         'scenes': {'type': 'array', 'items': _object({'id': STRING, 'from_cut': {'type': 'integer'}, 'to_cut': {'type': 'integer'}, 'location': STRING, 'time_of_day': STRING,
                                                       'lighting': STRING, 'mood': STRING, 'scenario': {'type': ['string', 'null']}})},
         'characters': {'type': 'array', 'items': _object({'name': STRING, 'role': STRING, 'anchors': STRING, 'outfit': STRING, 'arc': STRING})},
+        'outfits': {'type': 'array', 'items': _object({'character': STRING, 'name': STRING, 'status': {'type': 'string', 'enum': ['existing', 'new']},
+                                                       'scenes': {'type': 'array', 'items': STRING}, 'summary': STRING, 'description': STRING})},
         'voices': {'type': 'array', 'items': _object({'speaker_label': STRING, 'character': {'type': ['string', 'null']}, 'kind': {'type': 'string', 'enum': ['character', 'narrator', 'unknown']},
                                                       'confidence': {'type': 'string', 'enum': ['high', 'medium', 'low']}, 'reason': STRING})},
         'arc': STRING, 'pacing': STRING, 'continuity': {'type': 'array', 'items': STRING}, 'open_questions': {'type': 'array', 'items': STRING}}))
 
 
-def validate_bible(output, ctx, timeline):
+def _bible_outfits(given, characters, scenes, ctx, errors, required):
+    """The bible's outfit entries, settled against the library.
+
+    A name that exists in the library for that character is always "existing" (its summary comes from the library, the model's own
+    text is dropped), so a rerun never proposes what an earlier run created. A name that does not exist is "new" and must bring a
+    complete description, which the library keeps (the bible keeps only the name and the summary).
+    """
+    library = {}
+    for outfit in ctx.get('outfits') or []:
+        library.setdefault(outfit['character_context_id'], {})[outfit['name'].casefold()] = outfit
+    scene_ids = [scene['id'] for scene in scenes]
+    present = {person['name']: person for person in characters}
+    result = []
+    for item in given if isinstance(given, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = _canonical(item.get('character'), list(present))
+        if name is None:
+            errors.append(f"outfit \"{_str(item.get('name'))}\": \"{_str(item.get('character'))}\" is not one of the bible's characters; use one of: {', '.join(present) or 'none'}")
+            continue
+        outfit_name = _str(item.get('name'))
+        if not outfit_name:
+            errors.append(f'an outfit of {name} has no name')
+            continue
+        cid = present[name]['character_context_id']
+        known = library.get(cid, {}).get(outfit_name.casefold())
+        if any(entry['character'] == name and entry['name'].casefold() == outfit_name.casefold() for entry in result):
+            continue
+        mentioned = [scene for scene in (item.get('scenes') if isinstance(item.get('scenes'), list) else []) if isinstance(scene, str) and scene.strip().upper() in scene_ids]
+        entry = {'character': name, 'character_context_id': cid, 'name': known['name'] if known else outfit_name, 'status': 'existing' if known else 'new',
+                 'summary': known['summary'] if known else _str(item.get('summary')), **({'scenes': [scene.strip().upper() for scene in mentioned]} if mentioned else {})}
+        if known:
+            entry['outfit_id'] = known['id']
+        else:
+            description = _str(item.get('description'))
+            if len(description) < outfit_library.MIN_DESCRIPTION:
+                have = [outfit['name'] for outfit in library.get(cid, {}).values()]
+                errors.append(f'outfit "{outfit_name}" of {name} is not in the library ({"; ".join(have) or "no outfits yet"}). Use an exact library name with status existing, '
+                              f'or give a new outfit a complete description (at least {outfit_library.MIN_DESCRIPTION} characters: every garment, colours, materials, details)')
+                continue
+            entry['description'] = description
+            entry['summary'] = entry['summary'] or outfit_library.summarize(description)
+        result.append(entry)
+    if required:
+        for person in characters:
+            if not any(entry['character'] == person['name'] for entry in result):
+                errors.append(f"character \"{person['name']}\" needs at least one outfit entry (reuse a library outfit or describe a new one)")
+    return result
+
+
+def validate_bible(output, ctx, timeline, require_outfits=False):
     """Check and normalise a bible against the character records, scenario notes, cuts and voice labels of the sequence."""
     if not isinstance(output, dict):
         _fail(['The answer must be one JSON object'])
@@ -430,6 +489,7 @@ def validate_bible(output, ctx, timeline):
         if not _str(person.get('anchors')):
             errors.append(f'character "{name}" needs anchors: 3 to 6 visible features')
         characters.append({'name': name, 'character_context_id': ids[name], **{key: _str(person.get(key)) for key in ('role', 'anchors', 'outfit', 'arc')}})
+    outfits = _bible_outfits(output.get('outfits'), characters, scenes, ctx, errors, require_outfits)
     evidence = {voice['speaker_label']: voice for voice in sequence_evidence.voice_evidence(ctx, timeline)}
     given = {_str(voice.get('speaker_label')): voice for voice in output.get('voices') if isinstance(voice, dict)} if isinstance(output.get('voices'), list) else {}
     voices = []
@@ -451,7 +511,7 @@ def validate_bible(output, ctx, timeline):
                        'confidence': voice.get('confidence') if voice.get('confidence') in ('high', 'medium', 'low') else 'low', 'source': 'director', 'reason': _str(voice.get('reason'))})
     if errors:
         _fail(errors)
-    return {**bible, 'scenes': scenes, 'characters': characters, 'voices': voices, 'continuity': _strings(output.get('continuity'), 16), 'open_questions': _strings(output.get('open_questions'), 12)}
+    return {**bible, 'scenes': scenes, 'characters': characters, 'outfits': outfits, 'voices': voices, 'continuity': _strings(output.get('continuity'), 16), 'open_questions': _strings(output.get('open_questions'), 12)}
 
 
 # ----------------------------------------------------------------------- plan
@@ -637,6 +697,29 @@ def _prose(content):
     yield from ((f'continuity.{key}', value) for key, value in content['continuity'].items())
 
 
+def _placed(placement, subjects, roster):
+    """The subjects that the still's placement names, by full name or by a name word only one character has."""
+    numbered = [{'number': number, 'name': subject['name'], 'kind': 'character' if any(person['name'] == subject['name'] for person in roster) else 'person'}
+                for number, subject in enumerate(subjects, 1)]
+    found = {}
+    for alias, subject in sequence_prompt._aliases(numbered):
+        if re.search(r'(?<!\w)' + re.escape(alias) + r'(?!\w)', placement, re.IGNORECASE):
+            found.setdefault(subject['number'], subject['name'])
+    return [found[number] for number in sorted(found)]
+
+
+def _layer_problems(placement, subjects, roster):
+    """A generated still must say where each person stands: depth layers once two or more people are placed, and a screen side."""
+    placed = _placed(placement, subjects, roster)
+    problems = []
+    if len(placed) >= 2 and not DEPTH.search(placement):
+        problems.append(f"still.placement places {', '.join(placed)} without their depth: say who is in the foreground, who in the midground (only with three or more people at "
+                        'different depths) and who in the background, or that they share one layer')
+    if placed and not SCREEN_SIDE.search(placement):
+        problems.append('still.placement gives no screen position: say for each person whether they are screen-left, centre or screen-right')
+    return problems
+
+
 def _covers(ranges, duration):
     """True when time ranges together cover ``[0, duration]``."""
     reach = 0.0
@@ -783,6 +866,11 @@ def validate_shot(output, shot, bible, roster, scenario, dialogue, generated=Fal
         for pattern, problem in BANNED:
             if value and pattern.search(value):
                 errors.append(f'{field} {problem}')
+        found = h3_prompt.style_words(value)
+        if found:
+            errors.append(f'{field} {h3_prompt.style_error(found)}; call the result "the video" or "the shot"')
+    if generated and content['still']['placement']:
+        errors.extend(_layer_problems(content['still']['placement'], content['subjects'], roster))
     if errors:
         _fail(errors)
     _, verdict, _ = sequence_prompt.build(shot, content, bible, roster, scenario, dialogue)

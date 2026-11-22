@@ -33,7 +33,7 @@ class SequenceAssistantTest(pipeline_tests.SequenceBase):
         self.assertEqual(self.client.post('/api/sequences/missing/assistant/sessions', json={}).status_code, 404)
         names = {item['function']['name'] for item in tools.schemas('sequence')}
         self.assertEqual(names, {'get_sequence', 'get_shot', 'get_cut_evidence', 'get_sequence_transcript', 'propose_shot_edit', 'propose_plan_edit', 'propose_bible_edit',
-                                 'get_characters', 'get_context_notes', 'load_skill'})
+                                 'get_characters', 'get_outfits', 'get_context_notes', 'load_skill'})
         self.assertNotIn('get_sequence', {item['function']['name'] for item in tools.schemas()})
         self.assertIn('check_h3_prompt', {item['function']['name'] for item in tools.schemas('cut')})
         _, label, ok = self.run_tool('get_result', {'type': 'video_analysis'})

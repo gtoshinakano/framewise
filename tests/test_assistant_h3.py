@@ -15,12 +15,11 @@ summary:
 [keyframe completion + reference generation] The shot continues from <Picture 1>: <Subject 1> traces a river on the map in <Subject 2>, presses his hand flat on the parchment and lifts his eyes toward the window, while the camera pushes in slowly from a medium shot to a medium close-up.
 
 retention_analysis:
-<Picture 1> ([Shot 1] first frame): fully_preserved - composition, painted style, palette and lighting of the opening frame.
+<Picture 1> ([Shot 1] first frame): fully_preserved - composition, palette and lighting of the opening frame.
 <Subject 1> (appears in [Shot 1]): fully_preserved - face, beard, mantle and mail follow <Picture 2> exactly, with no change of clothing.
 <Subject 2> (appears in [Shot 1]): fully_preserved - walls, oak table and arched window follow <Picture 3>.
 
 detailed_description:
-The target video is a 2D hand-painted gouache illustration with dark ink outlines, muted earthy colours and visible paper grain; it stays illustrated, never photographic.
 [Shot 1] The shot begins from <Picture 1>: a medium shot at eye level, <Subject 1> seen from the waist up behind the oak table on the left of the frame, the tall window on the right. Head to waist, never wider. Cold morning light falls through the window from the right and leaves the far wall in soft shadow; dust hangs in the beam.
 00:00.000-00:02.000: <Subject 1> looks down at the map and slowly traces a river line from top to bottom with his right index finger. He does not speak; his lips stay closed. The camera pushes in with small amplitude at slow speed.
 00:02.000-00:04.000: His finger stops. He presses his hand flat on the parchment, which creases under his palm, and his shoulders settle as he exhales through his nose.
@@ -74,6 +73,21 @@ class H3FormatTest(unittest.TestCase):
         self.assertTrue(any('summary: must start' in e for e in errors(EXAMPLE.replace('[keyframe completion + reference generation] ', ''))))
         self.assertTrue(any('[Shot 1]' in e for e in errors(EXAMPLE.replace('[Shot 1] The shot begins', 'The shot begins'))))
         self.assertTrue(any('non_diegetic_music' in e for e in errors(EXAMPLE.replace('non_diegetic_music:\nN/A', 'non_diegetic_music:\nSoft strings.'))))
+
+    def test_a_style_or_medium_word_is_refused_even_negated_but_names_and_acting_words_pass(self):
+        for sentence in ('The target video is a 2D hand-drawn illustration with dark ink outlines.', 'Keep the anime look.', 'It is not cartoonish and not cel-shaded.',
+                         'The animation holds the framing.'):
+            found = ' '.join(errors(EXAMPLE.replace('[Shot 1] The shot begins', sentence + '\n[Shot 1] The shot begins')))
+            self.assertIn('names a visual style or medium', found, sentence)
+        self.assertIn('(2d, hand-drawn, illustration)', ' '.join(errors(EXAMPLE.replace('[Shot 1] The shot begins', 'A 2D hand-drawn illustration.\n[Shot 1] The shot begins'))))
+        acting = EXAMPLE.replace('his shoulders settle', 'his brows drawn together, his shoulders settle').replace('whitewashed stone walls', 'painted stone walls')
+        self.assertTrue(h3_prompt.check(acting, EXAMPLE)['ok'], h3_prompt.check(acting, EXAMPLE)['errors'])
+        named = EXAMPLE.replace('Hermann von Salza', 'Anime Club President')  # a record name is not the prompt's wording
+        self.assertTrue(h3_prompt.check(named)['ok'], h3_prompt.check(named)['errors'])
+        quoted = EXAMPLE.replace('Quiet stone-hall', 'The hall sound follows “anime-room.wav”. Quiet stone-hall')
+        self.assertFalse(any('style' in e for e in errors(quoted, quoted)))
+        self.assertEqual(h3_prompt.style_words('Image texture: soft watercolour wash, fine grain'), [])
+        self.assertEqual(h3_prompt.style_words('Image texture: soft watercolour wash, fine grain', camera=True), ['watercolour'])
 
     def test_beats_are_contiguous_and_within_fifteen_seconds(self):
         gap = EXAMPLE.replace('00:02.000-00:04.000', '00:02.500-00:04.000')

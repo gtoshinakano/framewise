@@ -148,13 +148,36 @@ class RenderTest(unittest.TestCase):
         self.assertTrue(verdict['ok'], verdict['errors'])
         self.assertEqual((normal['camera']['detail'], normal['scenario_anchors']), ('', ''))
         self.assertIn('The camera holds a static shot.', prompt)
-        self.assertEqual(h3_prompt.parse(prompt)['sections']['overall_soundscape'], sequence_prompt.SOUND_SENTENCE + ' <Audio 1> carries no speech.')
+        self.assertEqual(h3_prompt.parse(prompt)['sections']['overall_soundscape'], sequence_prompt.SOUND_SENTENCE + ' ' + sequence_prompt.NO_SPEECH)
+        self.assertNotIn('carries no speech', prompt)  # untranscribed background voices are kept, never declared absent
         self.assertIn('its sound and timing to follow', prompt)
         self.assertEqual([item['label'] for item in derived['references']], ['<Picture 1>', '<Audio 1>'])
 
     def template(self, content=None, dialogue=DIALOGUE, scenario=SCENARIO, bible=BIBLE):
         normal, prompt, verdict, derived = self.build(content, scenario=scenario, dialogue=dialogue)
         return prompt, *sequence_prompt.template(shot(), normal, bible, derived['subjects'], derived['dialogue'], prompt)
+
+    def test_the_sound_section_keeps_every_sound_of_the_original_and_times_actions_to_it(self):
+        _, prompt, verdict, _ = self.build()
+        soundscape = h3_prompt.parse(prompt)['sections']['overall_soundscape']
+        for kept in ('completely, exactly as recorded', 'secondary voices', 'indistinct background talk', 'Nothing in it is removed, muted, cleaned up or replaced',
+                     'Each visible action that makes a sound lands exactly on that sound in <Audio 1>.'):
+            self.assertIn(kept, soundscape)
+        self.assertTrue(verdict['ok'], verdict['errors'])
+        # The director is told to put an action's own contact sound in its beat, and only that.
+        self.assertIn('Sound of actions:', direction.SHOT_SYSTEM)
+        self.assertIn('the only sound a beat names is the sound of its own action', direction.SHOT_SYSTEM)
+
+    def test_a_prompt_written_with_the_earlier_sound_wording_keeps_its_template(self):
+        normal, prompt, verdict, derived = self.build()
+        older = sequence_prompt.fill(sequence_prompt.render(shot(), normal, BIBLE, derived['subjects'], derived['dialogue'], sequence_prompt.line_slots(derived['dialogue']),
+                                                            sequence_prompt.LEGACY_SOUND),
+                                     sequence_prompt.slot_values(derived['dialogue'], sequence_prompt.line_slots(derived['dialogue']), BIBLE))
+        self.assertIn('Follow <Audio 1> exactly for all sound', older)
+        text, _ = sequence_prompt.template(shot(), normal, BIBLE, derived['subjects'], derived['dialogue'], older)
+        self.assertIn('Follow <Audio 1> exactly for all sound', text)
+        self.assertIsNotNone(sequence_prompt.template(shot(), normal, BIBLE, derived['subjects'], derived['dialogue'], prompt)[0])
+        self.assertIsNone(sequence_prompt.template(shot(), normal, BIBLE, derived['subjects'], derived['dialogue'], prompt.replace('pushes in', 'pulls out'))[0])
 
     def test_prompt_template_replaces_language_words_and_line_times_only(self):
         prompt, text, slots = self.template()
@@ -227,6 +250,34 @@ class RenderTest(unittest.TestCase):
         several = self.errors(lambda c: (c.update(summary='A cut.'), c['camera'].update(move='zoom')))
         self.assertTrue(several.startswith('(1) ') and '(2) ' in several)
 
+    def test_no_field_names_a_style_or_medium(self):
+        self.assertIn('keep_picture names a visual style or medium (animation)', self.errors(lambda c: c.update(keep_picture='composition and palette, identical throughout the animation')))
+        self.assertIn('still.lighting names a visual style or medium (animation)', self.errors(lambda c: c['still'].update(lighting="Soft daylight typical of the series' animation style.")))
+        self.assertIn('(anime, cel-shaded)', self.errors(lambda c: c['still'].update(subjects='Mai, not anime and not cel-shaded.')))
+        self.assertIn('subject Mai Sakurajima names a visual style or medium (illustrated)', self.errors(lambda c: c['subjects'][0].update(anchors='long black hair, illustrated look')))
+        acting = answer()
+        acting['beats'][0]['action'] += ' Her brows are drawn together beside the painted wall.'
+        direction.validate_shot(acting, shot(), BIBLE, ROSTER, SCENARIO, DIALOGUE)  # everyday words for acting and settings stay allowed
+        self.assertIn('not even to rule it out', direction.SHOT_SYSTEM)
+
+    def test_a_generated_still_names_the_depth_layer_and_screen_side_of_each_person(self):
+        def validate(placement, generated=True):
+            content = answer()
+            content['still']['placement'] = placement
+            return direction.validate_shot(content, shot(), BIBLE, ROSTER, SCENARIO, DIALOGUE, generated=generated)
+        flat = 'Mai stands screen-left facing Sakuta, who stands screen-right with his head turned toward her.'
+        with self.assertRaisesRegex(ValueError, r'still.placement places Mai Sakurajima, Sakuta Azusagawa without their depth'):
+            validate(flat)
+        validate(flat, generated=False)  # a hand edit of an older shot is not held to it
+        validate('Mai stands in the foreground screen-left; Sakuta stands in the background screen-right, head turned toward her.')
+        validate('Mai and Sakuta share the midground, Mai screen-left and Sakuta screen-right.')
+        with self.assertRaisesRegex(ValueError, 'gives no screen position'):
+            validate('Mai Sakurajima stands in the foreground facing the camera.')
+        validate('The platform is empty.')  # nobody placed, nothing to require
+        for rule in ('who is in the foreground, who is in the midground (only when three or more people stand at different depths) and who is in the background',
+                     'the outfit only as a very short reference of a few words', 'The character sheet sent with the still shows the full outfit'):
+            self.assertIn(rule, direction.SHOT_SYSTEM)
+
     def test_bible_and_review_validators(self):
         ctx = {'characters': [{'id': 'mai', 'name': 'Mai Sakurajima', 'notes': ''}], 'scenarios': [{'id': 'station', 'title': 'Fujisawa Station', 'content': ''}], 'results': {}}
         timeline = {'cuts': [{'id': 'c1', 'number': 7, 't0': 0, 't1': 4}, {'id': 'c2', 'number': 8, 't0': 4, 't1': 9}],
@@ -234,10 +285,12 @@ class RenderTest(unittest.TestCase):
         bible = copy.deepcopy(pipeline_tests.BIBLE)
         bible['scenes'] = [{'from_cut': 7, 'to_cut': 7, 'location': 'Platform', 'scenario': 'fujisawa station'}, {'from_cut': 8, 'to_cut': 8, 'location': 'Train', 'scenario': 'null'}]
         bible['characters'] = [{'name': 'MAI SAKURAJIMA', 'anchors': 'long black hair'}]
+        bible['outfits'] = [{**bible['outfits'][0], 'character': 'mai sakurajima'}]
         bible['voices'] = [{'speaker_label': 'SPEAKER_00', 'character': None, 'kind': 'narrator', 'confidence': 'high', 'reason': 'Narration.'}]
         normal = direction.validate_bible(bible, ctx, timeline)
         self.assertEqual([(scene['id'], scene['scenario'], scene['scenario_context_id']) for scene in normal['scenes']], [('S1', 'Fujisawa Station', 'station'), ('S2', None, None)])
         self.assertEqual((normal['characters'][0]['name'], normal['characters'][0]['character_context_id']), ('Mai Sakurajima', 'mai'))
+        self.assertEqual([(item['character'], item['character_context_id'], item['status']) for item in normal['outfits']], [('Mai Sakurajima', 'mai', 'new')])
         self.assertEqual((normal['voices'][0]['kind'], normal['voices'][0]['character'], normal['voices'][0]['source']), ('narrator', None, 'director'))
 
         def problems(change):

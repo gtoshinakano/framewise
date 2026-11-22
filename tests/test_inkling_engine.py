@@ -44,7 +44,7 @@ class VariantRegistryTest(unittest.TestCase):
         self.assertIn('--reasoning-budget', qwen)
         self.assertIn('--spec-type', local_text_runtime.variant_args('mtp'))
         inkling = local_text_runtime.server_flags('inkling')
-        self.assertNotIn('--reasoning-budget', inkling)  # a Qwen flag
+        self.assertIn('--reasoning-budget', inkling)  # a request that thinks has a cap: uncapped, Inkling used a whole answer budget on thinking
         args = local_text_runtime.variant_args('inkling')
         self.assertNotIn('--spec-type', args)  # no speculative drafter on the mainline-compatible build
         self.assertEqual(args[args.index('--temp') + 1], '1.0')  # the model card's sampling, no truncation

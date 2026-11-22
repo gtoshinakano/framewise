@@ -552,6 +552,20 @@ class CompositionProjectionTest(unittest.TestCase):
         validate(self.FIVE_SECTIONS + '\n' + '\n'.join(loose), duration=2, camera=True)
         self.assertLess(len(self.CAMERA_SECTION.encode()), 800)  # the section fits the 1 KB the byte cap grew by
 
+    def test_a_style_word_in_the_camera_section_goes_back_to_the_model_and_never_reaches_the_still(self):
+        from app import sequence_evidence
+        styled = self.FIVE_SECTIONS + '\n' + self.CAMERA_SECTION.replace('fine grain with gentle halation', 'soft anime cel-shading with subtle film grain')
+        with self.assertRaisesRegex(ValueError, r'Cinematic Camera names a visual style or medium \(anime, cel-shading\)'):
+            inference_worker.validate_production_brief(styled, duration=2, camera=True)
+        self.assertEqual(inference_worker.validate_production_brief(styled, duration=2), styled)  # a hand edit still saves
+        camera = sequence_evidence.still_camera({'summary': {'content': styled}})
+        self.assertNotIn('Image texture', camera)  # the still leaves that line out
+        self.assertIn('Camera body: ARRI Alexa 35', camera)
+        watercolour = self.FIVE_SECTIONS + '\n' + self.CAMERA_SECTION.replace('muted teal shadows', 'watercolour wash, muted teal shadows')
+        with self.assertRaisesRegex(ValueError, 'watercolour'):
+            inference_worker.validate_production_brief(watercolour, duration=2, camera=True)
+        self.assertIn('Image texture: fine grain with gentle halation', sequence_evidence.still_camera({'summary': {'content': self.FIVE_SECTIONS + '\n' + self.CAMERA_SECTION}}))
+
     def test_the_prompt_asks_for_the_camera_look_and_prefers_arri_alexa(self):
         system = inference_worker.PRODUCTION_BRIEF_SYSTEM
         for rule in ('### Cinematic Camera', 'Return all six headings', 'prefer the ARRI Alexa family', 'Alexa 35', 'Alexa Mini LF', 'Camera body, Lens, Focal length, Aperture, Lighting, Color grading, Image texture',

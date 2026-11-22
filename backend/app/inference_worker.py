@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 
 from . import db, gpu_device, job_kinds, job_scopes, media, worker, frame_source, prompt_context, local_text_runtime, remote_text
+from .assistant import h3_prompt
 
 log = logging.getLogger(__name__)
 MODEL_ID = "tencent/WeVisOne-VL-4B"
@@ -578,7 +579,14 @@ def validate_production_brief(text, duration=None, camera=False):
     if any(not text[m.end():(headings[i+1].start() if i+1 < len(headings) else len(text))].strip() for i,m in enumerate(headings)):
         raise ValueError('production brief contains an empty section')
     if CAMERA_SECTION in names:
-        validate_camera_section(text[headings[names.index(CAMERA_SECTION)].end():])
+        section = text[headings[names.index(CAMERA_SECTION)].end():]
+        validate_camera_section(section)
+        found = h3_prompt.style_words(section, camera=True) if camera else []
+        if found:
+            # The still generator reads this section as its camera; a style word there contradicts it. A hand edit still saves,
+            # and the still leaves such a line out (sequence_evidence.still_camera).
+            raise ValueError(f"{CAMERA_SECTION} names a visual style or medium ({', '.join(found)}): describe a real live-action camera, lens and look only, "
+                             'never a drawn or animated look, not even to rule it out')
     timeline = text[headings[2].end():headings[3].start()].strip()
     event_pattern = re.compile(r'^\s*(?:[-*]\s*)?\[\s*(\d+(?:\.\d+)?)\s*(?:(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*)?(?:s|secs?|seconds?)?\s*\]\s*(\S.*)$', re.I)
     previous_start = -1.

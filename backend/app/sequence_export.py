@@ -8,7 +8,8 @@ file is listed in ``manifest.json`` with its size and sha256; a file that cannot
 ``errors`` instead, never replaced by something else.
 
 Always: ``sequence.json`` (lean view), ``overview.json`` (digest), ``manifest.json``, ``contact-sheet.jpg``,
-``sequence.srt`` (when the range has burned-in subtitle lines), and per shot ``shot-NN.wav`` (exact),
+``sequence.srt`` (when the range has burned-in subtitle lines), ``outfits.json`` and ``outfits.md`` (when the bible names outfits: the
+full, complete description of each outfit the sequence uses, from the project's outfit library, enough to draw its character sheet), and per shot ``shot-NN.wav`` (exact),
 ``shot-NN-ref.wav`` (only for shots shorter than 5 s: the original audio from the shot's start for the generated length,
 silence only where the episode audio ends), ``shot-NN-initial.jpg``,
 ``shot-NN-last.jpg``, ``shot-NN-strip.jpg``, ``preview/shot-NN.jpg``, ``shot-NN-prompt.txt``,
@@ -105,6 +106,27 @@ class Archive:
         self.errors.append(packages.pack({'asset': asset, 'shot': shot, 'path': path, 'error': str(exc)[:500]}))
 
 
+def outfits_document(outfits):
+    """Every outfit the sequence's bible uses with its full description, grouped by character; ids match ``bible.outfits[].outfit_id`` in sequence.json."""
+    characters = {}
+    for item in outfits:
+        entry = characters.setdefault(item['character_context_id'], {'character': item['character_name'], 'character_context_id': item['character_context_id'], 'outfits': []})
+        entry['outfits'].append(packages.pack({'id': item['id'], 'name': item['name'], 'summary': item['summary'], 'description': item['description'],
+                                               'origin': item['origin'], 'needs_review': bool(item['needs_review']), 'updated_at': item['updated_at']}))
+    return {'contract': packages.CONTRACT, 'characters': list(characters.values())}
+
+
+def outfits_markdown(outfits):
+    lines = ['# Outfits', '']
+    current = None
+    for item in sorted(outfits, key=lambda item: (item['character_name'].casefold(), item['name'].casefold())):
+        if item['character_name'] != current:
+            current = item['character_name']
+            lines += [f'## {current}', '']
+        lines += [f"### {item['name']}", '', f"Summary: {item['summary']}", '', item['description'].strip(), '']
+    return '\n'.join(lines)
+
+
 def process_export(job, owner, episode, payload, publish):
     from . import worker
     if payload.get('contract') != packages.CONTRACT:
@@ -122,6 +144,12 @@ def process_export(job, owner, episode, payload, publish):
             out = Archive(z)
             out.add_bytes(dumps(packages.lean(full)), 'sequence.json', 'document', source='sequence-v2 lean view')
             out.add_bytes(dumps(packages.digest(full)), 'overview.json', 'digest', source='sequence-v2 digest')
+            if assets.get('outfits'):
+                try:
+                    out.add_bytes(dumps(outfits_document(assets['outfits'])), 'outfits.json', 'outfits', source='outfit library', count=len(assets['outfits']))
+                    out.add_bytes(outfits_markdown(assets['outfits']), 'outfits.md', 'outfits', source='outfit library')
+                except (KeyError, TypeError) as exc:
+                    out.error('outfits', exc, path='outfits.json')
             if 'sequence_audio' in include:
                 try:
                     wav = temp / 'sequence.wav'

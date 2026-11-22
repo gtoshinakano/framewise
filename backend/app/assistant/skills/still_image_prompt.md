@@ -20,12 +20,12 @@ Precedence: human answers > production brief Opening Frame > initial frame descr
 
 ## Prompt structure (generator-agnostic)
 1. **Shot**: shot size, camera angle and height, lens feel, and where the frame cuts the subject (e.g. "tight close-up from waist to mid-thigh, eye level, shallow depth of field").
-2. **Placement and gaze**: for each character visible in the opening frame, where they are in the frame (left, centre or right, foreground to background, relative to the others), their body state, which way the torso faces and the head points, and where the eyes look and at whom or what.
-3. **Subjects**: for each character visible in the opening frame, give a short identity tag (name only if user-verified or confirmed), visible appearance (hair, outfit), pose of the hands and expression. Describe only the parts that are visible.
+2. **Placement and gaze**: for each person visible in the opening frame, their depth layer (foreground, midground or background), their screen position (screen-left, centre or screen-right, relative to the others), their body state, which way the torso faces and the head points, and where the eyes look and at whom or what. With two or more people, name the layers explicitly: who is in the foreground, who in the midground (only when three or more people stand at different depths) and who in the background, or that they share one layer.
+3. **Subjects**: for each person visible in the opening frame, a short identity tag (name only if user-verified or confirmed), the pose of the hands and the expression, and the outfit as a very short reference of a few words (its name, or the main garment and colour): the character sheet supplies the full outfit, so never describe garments in detail. Add only a state of the clothes a sheet cannot show (a jacket open, sleeves rolled up). Describe only the parts that are visible.
 4. **Objects and layout**: foreground, midground and background elements, and how they relate in space.
 5. **Setting**: location type and environment details.
 6. **Lighting and colour**: light source, softness, time of day, palette.
-7. **Style**: do not state or enforce a style (no medium, art style or rendering technique); the person generating the image chooses it. Keep a style line only when the user's own prompt already has one.
+7. **No style**: never name a style or medium (anime, animation, cartoon, illustration, manga, cel shading, line art, 2D, 3D, CGI), not even to rule it out, and remove one the pasted prompt has. The still is described as a real camera photographs it, and a style word contradicts that camera (the brief's Cinematic Camera section, when the prompt uses it).
 8. **Constraints**: `no text, subtitles, captions, logos or watermarks`, `no additional characters`, and anything the brief's Continuity section requires.
 
 If the user's generator uses character reference images (for example "Image 2 = Tomoe reference"), keep that syntax and give each reference one job.

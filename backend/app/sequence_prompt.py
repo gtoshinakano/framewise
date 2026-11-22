@@ -260,18 +260,27 @@ def speech_sentence(line, language, slot=None):
 
 
 # The sound section never describes the audio: nobody who writes the prompt has heard it, and a guess ("a quiet room")
-# fights whatever music, steps or ambience the original really carries.
-SOUND_SENTENCE = ('Follow <Audio 1> exactly for all sound: its background sound, music and effects stay as recorded, nothing is added to them, '
-                  'and every movement keeps to its timing.')
+# fights whatever music, steps or ambience the original really carries. It names generic kinds of sound only to say that
+# every one of them is kept (2026-11-22: H3 dropped secondary voices, background talk and splashes it was not told to keep),
+# and asks for the picture's actions to land on their own sounds.
+SOUND_SENTENCE = ('Reproduce <Audio 1> completely, exactly as recorded: every sound in it keeps its own time and level, the speech and also any secondary voices, '
+                  'indistinct background talk, cries, effects, ambience and music. Nothing in it is removed, muted, cleaned up or replaced, and nothing is added. '
+                  'Each visible action that makes a sound lands exactly on that sound in <Audio 1>.')
+NO_SPEECH = '<Audio 1> holds no dialogue for anyone on screen; any voices in it are background sound and stay as recorded.'
+SOUND = {'sentence': SOUND_SENTENCE, 'silent': NO_SPEECH}
+# The sound wording of shots written before 2026-11-22. Their stored prompts keep it, so their template is rendered with it.
+LEGACY_SOUND = {'sentence': 'Follow <Audio 1> exactly for all sound: its background sound, music and effects stay as recorded, nothing is added to them, '
+                            'and every movement keeps to its timing.',
+                'silent': '<Audio 1> carries no speech.'}
 
 
-def audio_lines(lines, slots=None):
+def audio_lines(lines, slots=None, silent=NO_SPEECH):
     """What ``<Audio 1>`` drives, per speaker and voice range: whose lips follow it, and which words nobody on screen mouths.
 
     With ``slots`` (line id to ``1.M``) a run's span names the start of its first line and the end of its last one as placeholders.
     """
     if not lines:
-        return ['<Audio 1> carries no speech.']
+        return [silent]
     runs = {}
     for line in lines:
         key = (line['speaker'], tuple(line['range'] or ()), line['delivery'], line['subject'])
@@ -319,12 +328,14 @@ def voice_notes(subjects, lines):
     return notes
 
 
-def render(shot, content, bible, subjects, dialogue, slots=None):
+def render(shot, content, bible, subjects, dialogue, slots=None, sound=None):
     """The H3 prompt of a shot, from ``subject_definitions:`` to ``non_diegetic_music:``.
 
     With ``slots`` (line id to ``1.M``, see ``line_slots``) the result is the prompt template: the spoken language, each
-    line's words and the times taken from a line are placeholders, every other time stays as written.
+    line's words and the times taken from a line are placeholders, every other time stays as written. ``sound`` is the
+    app's sound wording (``SOUND``, or ``LEGACY_SOUND`` to rebuild a prompt written before it changed).
     """
+    sound = sound or SOUND
     language = '{language}' if slots else spoken_language(bible)
     lines = spoken(dialogue, content, subjects, shot['duration'])
 
@@ -360,7 +371,7 @@ def render(shot, content, bible, subjects, dialogue, slots=None):
                      if beat['start'] <= line['t0'] < beat['end'] or (last and line['t0'] >= beat['end']))
         description.append(f"{h3_prompt.fmt(beat['start'])}-{h3_prompt.fmt(beat['end'])}: {' '.join(parts)}")
 
-    soundscape = ' '.join([SOUND_SENTENCE, *audio_lines(lines, slots)])
+    soundscape = ' '.join([sound['sentence'], *audio_lines(lines, slots, sound['silent'])])
     return '\n'.join([
         'subject_definitions:', *definitions, '',
         'summary:', f"{h3_prompt.OMNI_PREFIX} {sentence(label_names(content.get('summary'), subjects))}", '',
@@ -405,16 +416,21 @@ def template(shot, content, bible, subjects, dialogue, prompt):
 
     The template is rendered from the stored direction like the prompt itself, never by searching the prose,
     and kept only when filling it with the shot's own words and times gives back the stored prompt exactly;
-    otherwise (the plan or the bible changed since the shot was written) it is None.
+    otherwise (the plan or the bible changed since the shot was written) it is None. A prompt written with the
+    earlier sound wording gets its template in that wording.
     """
     slots = line_slots(dialogue)
     if not prompt:
         return None, slots
-    try:
-        text = render(shot, content, bible, subjects, dialogue, slots)
-    except (KeyError, TypeError, ValueError, AttributeError):
-        return None, slots
-    return (text if fill(text, slot_values(dialogue, slots, bible)) == prompt else None), slots
+    values = slot_values(dialogue, slots, bible)
+    for sound in (SOUND, LEGACY_SOUND):
+        try:
+            text = render(shot, content, bible, subjects, dialogue, slots, sound)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None, slots
+        if fill(text, values) == prompt:
+            return text, slots
+    return None, slots
 
 
 def still_prompt(content, bible):

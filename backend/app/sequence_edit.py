@@ -8,7 +8,7 @@ import json
 import logging
 import math
 
-from . import sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, worker
+from . import outfit_library, sequence_compile, sequence_direction as direction, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, worker
 
 DIRECT_STEPS = ('direct', 'bible', 'plan')
 log = logging.getLogger(__name__)
@@ -514,7 +514,7 @@ def revise(conn, sequence, row, content, origin='manual_edit', provenance=None, 
             conn.execute('UPDATE sequences SET reviewed_compilation_id=NULL WHERE id=?', (sequence['id'],))
             return new_id
         if row['type'] == 'bible':
-            normal = direction.validate_bible(content, current['ctx'], current['timeline'])
+            normal = outfit_library.adopt_for(conn, sequence, direction.validate_bible(content, current['ctx'], current['timeline']), 'user' if origin == 'manual_edit' else 'director')
             return store.save(conn, sequence['id'], 'bible', normal, origin=origin, settings=settings, expected_current=row['id'])
         if row['type'] == 'plan':
             spans = normal_spans(content.get('shots'), current['timeline'])

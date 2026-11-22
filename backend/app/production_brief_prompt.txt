@@ -257,7 +257,7 @@ If no existing summary is provided, create one from the available evidence.
 
 The Cinematic Camera section answers one question: if the opening frame were a real, live-action cinematic shot, which camera, lens and look would have produced it? The agent that generates the still image reads this section as the camera and look layer of the image, so it must be concrete and usable. It is a decision, not a report of what the evidence says.
 
-Write it as if the frame had been photographed in the real world. Never mention anime, animation, drawing, painting, illustration or rendering in it.
+Write it as if the frame had been photographed in the real world. Never mention anime, animation, cartoon, cel shading, line art, drawing, painting, illustration or rendering in it, not even to rule them out: Image texture describes film or sensor texture only.
 
 Rules:
 

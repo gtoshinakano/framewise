@@ -26,6 +26,8 @@ BIBLE = {'logline': 'Hero greets someone in the street.', 'synopsis': 'Hero stan
          'spoken_language': 'Japanese',
          'scenes': [{'id': 'A', 'from_cut': 1, 'to_cut': 3, 'location': 'Shopping street', 'time_of_day': 'dusk', 'lighting': 'warm low sun', 'mood': 'calm', 'scenario': None}],
          'characters': [{'name': 'hero', 'role': 'the lead', 'anchors': 'slim build, short dark hair, green wool coat', 'outfit': 'green coat over a white shirt', 'arc': 'decides to leave'}],
+         'outfits': [{'character': 'hero', 'name': 'Green Coat', 'status': 'new', 'scenes': ['S1'], 'summary': 'Green wool coat over a white shirt.',
+                      'description': 'Long green wool coat, buttoned, over a white collared shirt; dark trousers and brown leather boots; no hat and no bag.'}],
          'voices': [{'speaker_label': 'SPEAKER_01', 'character': 'Somebody else', 'kind': 'character', 'confidence': 'low', 'reason': 'guess'},
                     {'speaker_label': 'SPEAKER_02', 'character': 'Hero', 'kind': 'character', 'confidence': 'medium', 'reason': 'Visibly speaking while it is heard.'}],
          'arc': 'From greeting to parting.', 'pacing': 'Even and calm.', 'continuity': ['The green coat stays on.'], 'open_questions': []}
@@ -35,7 +37,7 @@ def shot_answer(speakers=(), seconds=2.0):
     return {
         'subjects': [{'name': 'Hero', 'anchors': 'slim build, short dark hair, green wool coat over a white shirt', 'keep': 'face, hair and green coat follow the sheet exactly'}],
         'picture_line': 'Hero stands in the centre of a narrow street at dusk, facing the camera.',
-        'keep_picture': 'composition, cel-shaded style, warm palette and low sun of the opening frame',
+        'keep_picture': 'composition, warm palette and low sun of the opening frame',
         'still': {'shot': 'Medium shot at eye level, cropped at the waist.', 'placement': 'Hero stands in the centre midground, torso and head facing the camera, eyes looking straight into the lens.',
                   'subjects': 'Hero with arms at the sides, calm face, green coat buttoned.',
                   'layout': 'Shop fronts on both sides recede to a bright gap in the background.', 'setting': 'A narrow shopping street.', 'lighting': 'Low warm sun from the left, long soft shadows.'},

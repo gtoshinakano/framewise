@@ -216,6 +216,20 @@ def init_db():
             ON project_name_glossary(project_id,character_context_id,part,spelling,reading) WHERE character_context_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS project_name_glossary_other_idx
             ON project_name_glossary(project_id,spelling,reading) WHERE character_context_id IS NULL;
+        CREATE TABLE IF NOT EXISTS character_outfits (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            character_context_id TEXT NOT NULL REFERENCES context_items(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL,
+            origin TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('seed','user','director')),
+            source_sequence_id TEXT,
+            needs_review INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS character_outfits_name_idx ON character_outfits(character_context_id,lower(name));
         CREATE TABLE IF NOT EXISTS episode_audio_ranges (
             id TEXT PRIMARY KEY,
             episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
@@ -558,6 +572,8 @@ def init_db():
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
         from .name_glossary import seed
         seed(db)
+        from . import outfit_library
+        outfit_library.seed(db)
         migrate_queue_dependencies(db)
         checkpoint_columns = {row['name'] for row in db.execute('PRAGMA table_info(analysis_job_cuts)')}
         if 'source_cut_json' not in checkpoint_columns:

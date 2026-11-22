@@ -19,6 +19,24 @@ PROMPT_START = re.compile(r'^\s*(?:<(?:Picture|Audio|Video) \d+>|subject_definit
 OMNI_PREFIX = '[keyframe completion + reference generation]'
 MAX_CHARS = 7000
 MAX_SECONDS = 15.0
+# Words that name a medium or a drawn look (2026-11-22). Stills and H3 prompts describe the frame as a real camera films it (the
+# Cut summary's Cinematic Camera section), so a style word fights that camera and spoils the generation, even when negated.
+# Words with an everyday meaning in acting or settings ("drawn brows", "a painted wall") are left out here.
+STYLE = re.compile(r'\b(?:anime|animations?|animated|cartoon\w*|illustrat(?:ion|ions|ed|ive)|manga|cel(?:[- ]?shad\w*)?|hand[- ]drawn|line[- ]?art|linework|'
+                   r'painterly|chibi|[23]-?D|CGI?|styli[sz]ed|comic[- ]book|digital art|concept art|art style)\b', re.IGNORECASE)
+# The Cinematic Camera section is about a real camera only: there these name a medium too.
+CAMERA_STYLE = re.compile(r'\b(?:hand[- ]painted|gouache|watercolou?rs?|ink wash)\b', re.IGNORECASE)
+
+
+def style_words(text, camera=False):
+    """The style or medium words in ``text``, lower-cased, each once; ``camera`` adds the words a camera description never needs."""
+    patterns = (STYLE, CAMERA_STYLE) if camera else (STYLE,)
+    return list(dict.fromkeys(match.group(0).lower() for pattern in patterns for match in pattern.finditer(text or '')))
+
+
+def style_error(found):
+    return (f"names a visual style or medium ({', '.join(found)}): the prompt describes what a real camera films, so never name a drawn or animated look, "
+            'not even to rule it out')
 
 
 def strip_fences(text):
@@ -205,6 +223,12 @@ def check(prompt, original=None):
 
     if re.search(r'\bcuts?\b', prose('\n'.join(sections.values())), re.IGNORECASE):
         errors.append('The word "cut" appears; H3 reads it as an edit. Rephrase (e.g. "the shot").')
+    written = prose('\n'.join(sections.values()))
+    for name in sorted(subject_names(prompt).values(), key=len, reverse=True):
+        written = written.replace(name, ' ')  # a record name is not the model's to change
+    found = style_words(written)
+    if found:
+        errors.append(f'The prompt {style_error(found)}. Remove it: the look comes from the pictures.')
     if source:
         dropped_subjects = sorted(labels(original)['Subject'] - used['Subject'])
         if dropped_subjects:

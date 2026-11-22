@@ -13,6 +13,7 @@ import { ArchivedCuts } from './ArchivedCuts'
 import { Timeline } from './Timeline'
 import { AudioRangeDialog } from './AudioRangeDialog'
 import { NameGlossaryDialog } from './NameGlossaryDialog'
+import { OutfitsDialog } from './OutfitsDialog'
 import { CutGallery } from './CutGallery'
 import TranscriptEditor, { type AudioView } from './TranscriptEditor'
 import { SequencePanel } from './SequencePanel'
@@ -227,6 +228,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const refreshSequences = useCallback(() => { void sequenceApi.list(id).then(setSequences).catch(() => {}) }, [id])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [glossaryOpen, setGlossaryOpen] = useState(false)
+  const [outfitsOpen, setOutfitsOpen] = useState(false)
   const [audioRange, setAudioRange] = useState<(Pick<EpisodeAudioRange, 'start_time' | 'end_time' | 'kind'> & { id?: string }) | null>(null)
   const [prepareOpen, setPrepareOpen] = useState(false)
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
@@ -421,7 +423,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const undo = () => { if (history?.undo && !historyReason) void cutEdits.undo() }
   const redo = () => { if (history?.redo && !historyReason) void cutEdits.redo() }
   const step = (direction: 1 | -1) => { if (!activeSelected || !episode) return; const target = episode.cuts[activeSelected.cut_index + direction]; if (target) selectCut(target) }
-  useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !glossaryOpen && !audioRange && !prepareOpen && !queueOpen, {
+  useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !glossaryOpen && !outfitsOpen && !audioRange && !prepareOpen && !queueOpen, {
     playPause: togglePlay, split, undo, redo, previous: () => step(-1), next: () => step(1),
     nextNeeding: () => { if (!episode) return; const next = nextNeedingAction(episode.cuts, selectedId, cutFilters.active); if (next) selectCut(next) },
     filters: () => setFiltersOpen(true),
@@ -445,7 +447,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
       onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}
       onPrepareEpisode={() => setPrepareOpen(true)}
       queue={queueSummary} running={jobs.some(job => job.status === 'running')} onOpenQueue={focus => setQueueOpen(focus || 'top')}
-      onOpenSettings={() => setSettingsOpen(true)} onOpenGlossary={() => setGlossaryOpen(true)} onDeleteEpisode={() => void remove()} />
+      onOpenSettings={() => setSettingsOpen(true)} onOpenGlossary={() => setGlossaryOpen(true)} onOpenOutfits={() => setOutfitsOpen(true)} onDeleteEpisode={() => void remove()} />
     {!episode ? <div className="muted p-12">{loadError || 'Loading episode…'}</div> : <div className="editor-workspace" style={workspaceStyle}>
       <aside className="editor-cuts scrollbar" hidden={cutsCollapsed} aria-label="Cut list">
         <CutGallery cuts={episode.cuts} selectedId={selectedId} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} frameVersion={frameVersion} queueStates={cutQueueStates} onCollapse={() => setCutsCollapsed(true)} />
@@ -498,6 +500,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
       onOpenCut={cutId => { const cut = [...episode.cuts, ...episode.archived_cuts].find(item => item.id === cutId); if (cut) openCutAnalysis(cut); else toast({ tone: 'error', message: 'That cut no longer exists.' }) }}
       onOpenSequence={setSequenceOpen} />}
     {episode && glossaryOpen && <NameGlossaryDialog projectId={episode.project_id} onClose={() => setGlossaryOpen(false)} />}
+    {episode && outfitsOpen && <OutfitsDialog projectId={episode.project_id} onClose={() => setOutfitsOpen(false)} />}
     {episode && audioRange && <AudioRangeDialog episodeId={id} initial={audioRange} duration={duration} playhead={time} onClose={() => setAudioRange(null)} onSaved={refresh} />}
     {episode && settingsOpen && <EpisodeSettingsDialog episode={episode} initial={episode.settings} onSave={saveSettings} onDelete={() => void remove()} onClose={closeSettings} />}
     {episode && prepareOpen && <PrepareEpisodeDialog episodeId={id} savedLanguage={episode.subtitle_language} onClose={() => setPrepareOpen(false)}

@@ -82,7 +82,10 @@ def thinking_kwargs(enabled=False):
 
     Qwen reads ``enable_thinking`` and Inkling reads ``reasoning_effort``; each chat template ignores the other's
     variable, so both are always sent and a request never needs to know which engine answers it. Inkling's lowest effort
-    is not a guaranteed "off" (its model card says so), which is why JSON answers are grammar-constrained as before.
+    is not a guaranteed "off" (its model card says so): measured 2026-11-21, ``none`` and ``high`` differ by little, and a picture request
+    still reasons for a few hundred tokens. ``thinking_budget_tokens: 0`` does remove the reasoning from a plain request, but together
+    with a ``json_schema`` grammar it loops on forced end-of-thinking tokens and never writes the JSON, so it is never sent; the
+    server's ``--reasoning-budget`` (``server_flags``) caps the thinking a request may spend instead.
     """
     return {'enable_thinking': bool(enabled), 'reasoning_effort': 'high' if enabled else 'none'}
 
@@ -130,8 +133,8 @@ def variant_args(variant):
 
 def server_flags(variant):
     """The flags every start of ``variant``'s server shares (the arguments after the model, host, port, slots and context)."""
-    if family(variant) == 'inkling':
-        return ['--jinja', '--no-context-shift']
+    # Both engines cap the reasoning a request that asks for it may spend; without a cap Inkling spent a whole 6144-token answer
+    # budget on thinking and returned nothing (finish_reason=length, 2026-11-21).
     return ['--jinja', '--no-context-shift', '--reasoning-budget', os.environ.get('QWEN36_THINKING_BUDGET', '2048')]
 
 

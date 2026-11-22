@@ -1,5 +1,6 @@
 import { api, jsonBody } from './api'
 import type { DiffSegment } from './assistantApi'
+import type { BibleOutfit } from './outfitView'
 import { subscribeEpisodeEvents } from './episodeEvents'
 
 /** A shot boundary the user placed on the Dialogue timeline: the hard cut after `after_cut_id`, at `time` (episode seconds). */
@@ -109,6 +110,8 @@ export type Bible = {
   logline: string; synopsis: string; spoken_language: string; arc: string; pacing: string
   scenes: { id: string; from_cut: number; to_cut: number; location: string; time_of_day: string; lighting: string; mood: string; scenario: string | null }[]
   characters: { name: string; character_context_id: string; role: string; anchors: string; outfit: string; arc: string }[]
+  /** The named outfits of each character (the full descriptions live in the project's outfit library). Bibles written before 2026-11-21 have none. */
+  outfits?: BibleOutfit[]
   voices: { speaker_label: string; character: string | null; kind: 'character' | 'narrator' | 'unknown'; confidence: 'high' | 'medium' | 'low'; source: 'transcript' | 'director' | 'reviewed'; reason: string }[]
   continuity: string[]; open_questions: string[]
 }

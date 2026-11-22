@@ -453,6 +453,26 @@ def get_characters(ctx, args):
             'boxes_stale': stale or None, 'no_characters': bool(cut['no_characters']) or None}
 
 
+@tool('get_outfits', "The project's outfit library: each character's named outfits with a summary. Pass character for one character, and full=true to include the complete descriptions (long).",
+      {'character': {'type': 'string'}, 'full': {'type': 'boolean'}},
+      summary=lambda args, value: 'Read outfits', scope='any')
+def get_outfits(ctx, args):
+    from .. import outfit_library
+    cut = load_cut(ctx.cut_id)
+    with db.connect() as conn:
+        rows = outfit_library.rows(conn, cut['project_id'])
+    wanted = str(args.get('character') or '').strip().casefold()
+    grouped = {}
+    for row in rows:
+        if wanted and row['character_name'].casefold() != wanted:
+            continue
+        item = {'name': row['name'], 'summary': row['summary']}
+        if args.get('full'):
+            item['description'] = row['description']
+        grouped.setdefault(row['character_name'], []).append(item)
+    return {'outfits': [{'character': name, 'outfits': items} for name, items in grouped.items()] or 'no outfits in the library'}
+
+
 @tool('get_context_notes', 'Project synopsis and context notes (world, scenario, chapter, object, general).',
       {'kind': {'type': 'string', 'enum': ['chapter_synopsis', 'chapter_happenings', 'world', 'scenario', 'object', 'general']}},
       summary=lambda args, value: 'Read context notes', scope='any')

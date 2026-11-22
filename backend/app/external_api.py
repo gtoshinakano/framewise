@@ -977,7 +977,7 @@ class SequencePackage(SequenceModel):
     plan_problems: list[str] | None = None
     cuts: list[SequenceCut] | None = None
     speakers: dict[str, SequenceSpeaker] | None = Field(default=None, description='Speaker ids used by voices and lines.')
-    bible: dict[str, Any] | None = Field(default=None, description='logline, synopsis, spoken_language, arc, pacing, scenes, characters, voices, continuity (its open questions are in issues).')
+    bible: dict[str, Any] | None = Field(default=None, description='logline, synopsis, spoken_language, arc, pacing, scenes, characters, outfits (per character: outfit_id, name, summary and status existing|new; the full description is in the ZIP\'s outfits.json), voices, continuity (its open questions are in issues).')
     subtitles: SequenceSubtitleState | None = None
     issues: list[SequenceIssue] | None = Field(default=None, description='Everything to look at or decide, most severe first.')
     review: dict[str, Any] | None = Field(default=None, description="The continuity review's verdict (its issues are in issues).")

@@ -95,7 +95,7 @@ class SequenceExportTest(pipeline_tests.SequenceBase):
         self.subtitles()
         sequence_id = self.written()
         files, manifest = self.export(sequence_id)
-        expected = {'sequence.json', 'overview.json', 'manifest.json', 'contact-sheet.jpg', 'sequence.srt',
+        expected = {'sequence.json', 'overview.json', 'manifest.json', 'contact-sheet.jpg', 'sequence.srt', 'outfits.json', 'outfits.md',
                     *(f'shot-0{n}{suffix}' for n in (1, 2, 3) for suffix in SHOT_FILES), *(f'preview/shot-0{n}.jpg' for n in (1, 2, 3)),
                     'shot-01-ref.wav', 'shot-02-ref.wav'}  # only shots shorter than 5 s get a reference audio of the generated length
         self.assertEqual(set(files), expected)
@@ -130,6 +130,16 @@ class SequenceExportTest(pipeline_tests.SequenceBase):
         self.assertEqual(files['sequence.srt'].decode(), '1\n00:00:00,300 --> 00:00:01,500\nこんにちは\n\n2\n00:00:03,800 --> 00:00:04,600\nまたね\n')
         self.assertEqual(lean['shots'][1]['subtitles'], [{'t0': 1.8, 't1': 2.0, 'text': 'またね', 'crosses_shot': True}])
         self.assertEqual(lean['subtitles'], {'language': 'Japanese', 'extracted': True})
+        # The bible's outfit is summarised in sequence.json; its complete description travels in outfits.json and outfits.md.
+        outfit = lean['bible']['outfits'][0]
+        self.assertEqual((outfit['name'], outfit['status'], outfit['character']), ('Green Coat', 'new', 'Hero'))
+        self.assertNotIn('description', outfit)
+        listed = json.loads(files['outfits.json'])
+        self.assertEqual((listed['contract'], listed['characters'][0]['character']), ('sequence-v2', 'Hero'))
+        self.assertEqual((listed['characters'][0]['outfits'][0]['id'], listed['characters'][0]['outfits'][0]['description'].startswith('Long green wool coat')), (outfit['outfit_id'], True))
+        self.assertIn('### Green Coat', files['outfits.md'].decode())
+        self.assertEqual((by_path['outfits.json']['kind'], len(by_path['outfits.json']['sha256'])), ('outfits', 64))
+        self.assertEqual([item['name'] for item in digest['bible']['characters'][0]['outfits']] if isinstance(digest['bible']['characters'][0].get('outfits'), list) and isinstance(digest['bible']['characters'][0]['outfits'][0], dict) else digest['bible']['characters'][0]['outfits'], ['Green Coat'])
         # The export is a snapshot: sequence jobs and episode status are untouched by it.
         self.assertEqual(db.one("SELECT status FROM episodes WHERE id='e'")['status'], 'ready')
 

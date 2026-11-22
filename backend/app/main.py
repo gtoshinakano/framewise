@@ -85,6 +85,8 @@ from .sequences import router as sequences_router
 app.include_router(sequences_router)
 from .queue_api import router as queue_router
 app.include_router(queue_router)
+from .outfits_api import router as outfits_router
+app.include_router(outfits_router)
 from .visual_models_api import router as visual_models_router
 app.include_router(visual_models_router)
 from .point_detect_api import first_frame_spec, router as point_detect_router

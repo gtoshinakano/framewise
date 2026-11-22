@@ -11,7 +11,7 @@ import logging
 import os
 import time
 
-from . import db, job_inputs, local_text_runtime, worker
+from . import db, job_inputs, local_text_runtime, outfit_library, worker
 from . import sequence_compile, sequence_direction as direction, sequence_edit, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_timeline, sequence_view, subtitle_store
 
 log = logging.getLogger(__name__)
@@ -363,13 +363,14 @@ def run_bible(job, owner, payload, sequence, snapshot):
     final_voices = compiled['voices'] if compiled is not None and compiled['origin'] != 'source' else None
     worker.stage(job['id'], owner, job['episode_id'], 'Writing the sequence bible')
     output, model, settings, user_input = ask(job, owner, payload, 'bible', lambda level: evidence.bible_input(ctx, sequence, timeline, level, final_voices),
-                                              direction.bible_format(), lambda answer: direction.validate_bible(answer, ctx, timeline), 'Sequence bible')
+                                              direction.bible_format(), lambda answer: direction.validate_bible(answer, ctx, timeline, require_outfits=True), 'Sequence bible')
     if final_voices is not None:
         # The user reviewed who owns each voice; the model only wrote the story around it.
         output = {**output, 'voices': [{**voice, 'source': 'reviewed'} for voice in final_voices]}
     with snapshot.publish() as conn:
         if state['changed']:
             store.resnapshot(conn, sequence, state['cuts'])
+        output = outfit_library.adopt_for(conn, sequence, output)  # creates the outfits this bible proposes, in the transaction that saves it
         store.save(conn, sequence['id'], 'bible', output, model_id=model, job_id=job['id'], prompt=direction.BIBLE_SYSTEM, settings=result_settings(settings, snapshot), context=user_input)
         if payload.get('clear_extension'):
             conn.execute('UPDATE sequences SET extension_json=NULL WHERE id=?', (sequence['id'],))

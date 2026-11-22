@@ -9,6 +9,7 @@ import SequenceTimeline from './SequenceTimeline'
 import type { DiffSegment } from './assistantApi'
 import { DiffText } from './DiffText'
 import { CopyButton, copyText } from './Markdown'
+import { outfitsOf } from './outfitView'
 import { StaleChip } from './RunUi'
 import { sequenceApi, shotFrameUrl, type Bible, type BoundaryChoice, type Delivery, type RunStep, type SequenceBoundary, type SequenceDetail, type SequenceShot, type ShotDialogue, type ShotHistory } from './sequenceApi'
 import { boundaryChoices, changeAt, changeSize, clock, deciderLabel, DELIVERIES, deliveryLabel, edgeTags, hasOwnVoices, issueInstruction, issuesFor, progress, promptSections, revisionLabel, shotStatus, speakerRanges, stage, staleText, timecode, timecodeSegments, versionNote, type Tone } from './sequenceView'
@@ -294,6 +295,11 @@ function BibleView({ bible }: { bible: Bible }) {
     {bible.arc && <Field label="Arc">{bible.arc}</Field>}
     <Field label="Scenes"><ul className="space-y-1.5">{bible.scenes.map(scene => <li key={scene.id}><span className="font-semibold">{scene.id}</span> · cuts {scene.from_cut}–{scene.to_cut} · {scene.location}<span className="muted"> · {[scene.time_of_day, scene.lighting, scene.mood].filter(Boolean).join(' · ')}{scene.scenario ? ` · scenario “${scene.scenario}”` : ''}</span></li>)}</ul></Field>
     <Field label="Characters">{bible.characters.length ? <ul className="space-y-2">{bible.characters.map(person => <li key={person.name}><span className="font-semibold">{person.name}</span>{person.role ? <span className="muted"> · {person.role}</span> : null}<br /><span className="text-xs leading-5 text-[#c9cfda]">{person.anchors}{person.outfit ? ` · wears ${person.outfit}` : ''}</span></li>)}</ul> : 'No named character is on screen.'}</Field>
+    {(bible.outfits?.length ?? 0) > 0 && <Field label="Outfits"><ul className="space-y-2">{bible.characters.map(person => outfitsOf(bible.outfits, person.name).length > 0 && <li key={person.name}><span className="font-semibold">{person.name}</span>
+      <ul className="mt-0.5 space-y-1">{outfitsOf(bible.outfits, person.name).map(item => <li key={item.name} className="text-xs leading-5 text-[#c9cfda]">
+        <span className="font-semibold text-[#ece9f3]">{item.name}</span> <Tag tone={item.status === 'new' ? 'warn' : 'idle'} title={item.status === 'new' ? 'Created by this sequence and saved in the outfit library' : 'Already in the outfit library'}>{item.status === 'new' ? 'New' : 'In library'}</Tag>
+        {item.scenes?.length ? <span className="muted"> · {item.scenes.join(', ')}</span> : null}<br />{item.summary}</li>)}</ul></li>)}</ul>
+      <p className="muted mt-1 text-xs">The full descriptions are in the Outfits library (Characters menu) and in the download as outfits.json.</p></Field>}
     <Field label="Voices">{bible.voices.length ? <ul className="space-y-1.5">{bible.voices.map(voice => <li key={voice.speaker_label}><span className="font-mono text-xs">{voice.speaker_label}</span> → <span className="font-semibold">{voice.character || (voice.kind === 'narrator' ? 'Narrator' : 'unknown')}</span><span className="muted"> · {voice.source === 'reviewed' ? 'your reviewed dialogue' : voice.source === 'transcript' ? 'your transcript link' : `director, ${voice.confidence}`}{voice.reason && voice.source === 'director' ? ` · ${voice.reason}` : ''}</span></li>)}</ul> : 'Nobody speaks in this range.'}</Field>
     {bible.continuity.length > 0 && <Field label="Continuity rules"><ul className="list-disc space-y-1 pl-5">{bible.continuity.map((rule, index) => <li key={index}>{rule}</li>)}</ul></Field>}
     {bible.open_questions.length > 0 && <Field label="Open questions"><ul className="list-disc space-y-1 pl-5 text-[#ffd59a]">{bible.open_questions.map((question, index) => <li key={index}>{question}</li>)}</ul></Field>}

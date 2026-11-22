@@ -1,0 +1,12 @@
+[
+  {"character": "Fumika Nanjou", "name": "Pale Blue Blouse", "needs_review": false,
+   "description": "Pale blue long-sleeved collared blouse with the top buttons open and sleeves rolled up. Thin steel collar with a drop pendant, medium skirt, executive-secretary look."},
+  {"character": "Kaede Azusagawa", "name": "Panda Hoodie", "needs_review": false,
+   "description": "Loose white fleece pajama onesie. The hood is a panda face with black eye patches, nose and ears. Pink collar trim, white cuffs at wrists and ankles."},
+  {"character": "Mai Sakurajima", "name": "Black Bunny Costume", "needs_review": false,
+   "description": "Fitted black bunny costume with a rabbit-ear headband, white collar and cuffs, black bow tie and a fluffy tail. Dark sheer tights, black heels."},
+  {"character": "Mai Sakurajima", "name": "School Uniform", "needs_review": true,
+   "description": "Camel-tan blazer over a cream sweater vest and white shirt, with a brick-red tie. Slate-blue pleated skirt, black tights, brown loafers and a small pink bunny hair clip."},
+  {"character": "Sakuta Azusagawa", "name": "Restaurant Staff Uniform", "needs_review": true,
+   "description": "Shirt with a white collar, dark brown apron, dark tr"}
+]

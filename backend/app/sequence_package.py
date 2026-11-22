@@ -19,7 +19,7 @@ Whatever the app guesses is labelled: ``kind_guessed``, ``linked_by: name``, ``c
 import json
 import re
 
-from . import db, media, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_view, subtitle_store
+from . import db, media, outfit_library, sequence_evidence as evidence, sequence_prompt, sequence_store as store, sequence_view, subtitle_store
 from .visual_contracts import _match_name
 
 CONTRACT = 'sequence-v2'
@@ -417,17 +417,41 @@ def document(sequence_id, conn=None):
         full['bible']['scenes'] = [pack(scene) for scene in full['bible'].get('scenes') or []]
         full['bible']['voices'] = [pack(voice) for voice in full['bible'].get('voices') or []]
         full['bible']['characters'] = [pack(person) for person in full['bible'].get('characters') or []]
+    outfit_files, outfit_issues = outfit_assets(conn, episode['project_id'], bible)
+    if full['bible']:
+        full['bible']['outfits'] = [pack(item) for item in settled_outfits(bible, outfit_files)]
     review = store.loads(current['review_row']['content'], {}) if current['review_row'] else None
     full['review'] = pack({'verdict': review.get('verdict'), 'stale_reason': current['review_row']['stale_reason']}) if review else None
     rows = {'bible': current['bible_row'], 'plan': current['plan_row'], 'compilation': current['compilation_row'], 'review': current['review_row']}
     full['provenance'] = pack({**{key: revisions.get(row['id']) for key, row in rows.items() if row},
                                'shots': {str(shot['index']): revisions[shot['result']['id']] for shot in views if shot['result'] and shot['result']['id'] in revisions}})
     references = {cid: {'name': names.get(cid), 'candidates': candidates.get(cid) or []} for cid in sorted(wanted)}
-    full['issues'] = sort_issues([*built['issues'], *sequence_issues(full, current, bible, review, references, built)])
+    full['issues'] = sort_issues([*built['issues'], *outfit_issues, *sequence_issues(full, current, bible, review, references, built)])
     assets = {'episode': episode, 'shots': built['assets'], 'characters': references, 'voices': {cid: {'name': names.get(cid), 'samples': items} for cid, items in samples.items() if items},
-              'scenes': scene_frames(bible, timeline, current['ctx']) if timeline else {},
+              'scenes': scene_frames(bible, timeline, current['ctx']) if timeline else {}, 'outfits': outfit_files,
               'subtitles': [{'start_time': line['start_time'], 'end_time': line['end_time'], 'text': line['text']} for line in subtitle_lines]}
     return pack_document(full), assets
+
+
+def outfit_assets(conn, project_id, bible):
+    """The library rows the bible uses, with their full descriptions (they go into the download, not into sequence.json), and an issue for each one that is gone."""
+    wanted = [item['outfit_id'] for item in bible.get('outfits') or [] if item.get('outfit_id')]
+    by_id = {row['id']: row for row in outfit_library.rows(conn, project_id)}
+    files = [{key: by_id[outfit_id][key] for key in ('id', 'character_context_id', 'character_name', 'name', 'summary', 'description', 'origin', 'needs_review', 'updated_at')}
+             for outfit_id in dict.fromkeys(wanted) if outfit_id in by_id]
+    issues = [{'severity': 'warning', 'kind': 'outfit_missing',
+               'text': f"The outfit “{item.get('name')}” of {item.get('character')} was deleted from the outfit library; its full description is not in this download."}
+              for item in bible.get('outfits') or [] if item.get('outfit_id') not in by_id]
+    issues += [{'severity': 'warning', 'kind': 'outfit_unchecked',
+                'text': f"The description of the outfit “{item['name']}” of {item['character_name']} was imported from text that may be cut off; check it in the Outfits dialog."}
+               for item in files if item['needs_review']]
+    return files, issues
+
+
+def settled_outfits(bible, files):
+    """The bible's outfit entries with the library's current name and summary (the library is the truth after an edit)."""
+    live = {item['id']: item for item in files}
+    return [{**item, **({'name': live[item['outfit_id']]['name'], 'summary': live[item['outfit_id']]['summary']} if item.get('outfit_id') in live else {})} for item in bible.get('outfits') or []]
 
 
 def build_shots(current, views, roster, subtitle_lines):
@@ -682,7 +706,8 @@ def digest(full):
         'ready': full['ready'], 'pending': full.get('pending'), 'cuts_changed': full.get('cuts_changed'), 'cuts_missing': full.get('cuts_missing'),
         'plan_problems': full.get('plan_problems'),
         'bible': pack({'logline': bible.get('logline'), 'spoken_language': bible.get('spoken_language'),
-                       'characters': [pack({'name': person.get('name'), 'id': person.get('character_context_id'), 'anchors': person.get('anchors')}) for person in bible.get('characters') or []],
+                       'characters': [pack({'name': person.get('name'), 'id': person.get('character_context_id'), 'anchors': person.get('anchors'),
+                                            'outfits': [item.get('name') for item in bible.get('outfits') or [] if item.get('character') == person.get('name')]}) for person in bible.get('characters') or []],
                        'voices': [f"{voice.get('speaker_label')} → {voice.get('character') or voice.get('kind')} ({voice.get('confidence')}, {voice.get('source')})"
                                   for voice in bible.get('voices') or []]}),
         'subtitles': full.get('subtitles'), 'issues': issues, 'shots': shots})

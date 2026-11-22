@@ -10,8 +10,8 @@ import json
 import os
 import re
 
-from . import pose_detail, prompt_context, sequence_compile, sequence_prompt, sequence_timeline, subtitle_store
-from .assistant import compact
+from . import outfit_library, pose_detail, prompt_context, sequence_compile, sequence_prompt, sequence_timeline, subtitle_store
+from .assistant import compact, h3_prompt
 from .composition_brief import shot_props, short
 
 # The motion is read as ``video_analysis``: for a cut with a keyframe analysis that is its motion-direction view
@@ -55,9 +55,12 @@ def load(conn, sequence, cuts):
     for row in conn.execute(f'SELECT cut_id,content FROM cut_brief_instructions WHERE cut_id IN ({marks})', [cut['id'] for cut in cuts]):
         if row['content'].strip():
             results[row['cut_id']]['answers'] = row['content'].strip()
+    characters = [{'id': item['id'], 'name': item['title'], 'notes': item['content']} for item in items if item['kind'] == 'character']
+    outfits = [{key: row[key] for key in ('id', 'character_context_id', 'name', 'summary', 'description')}
+               for row in outfit_library.rows(conn, episode['project_id'], [character['id'] for character in characters])]
     return {'project': {'title': episode['project_title'], 'synopsis': episode['synopsis']}, 'episode': {'id': episode['id'], 'title': episode['title']},
             'subtitle_language': episode['subtitle_language'],
-            'characters': [{'id': item['id'], 'name': item['title'], 'notes': item['content']} for item in items if item['kind'] == 'character'],
+            'characters': characters, 'outfits': outfits,
             'scenarios': [{'id': item['id'], 'title': item['title'], 'content': item['content']} for item in items if item['kind'] == 'scenario'],
             'notes': [{'kind': item['kind'], 'title': item['title'], 'content': item['content']} for item in items if item['kind'] not in ('character', 'scenario')],
             'results': results}
@@ -225,6 +228,7 @@ def bible_input(ctx, sequence, timeline, level=0, final_voices=None):
             'director_instruction': sequence['instruction'].strip() or None,
             'sequence': {'seconds': timeline['duration'], 'cuts': [timeline['cuts'][0]['number'], timeline['cuts'][-1]['number']]},
             'characters': roster(ctx, level, timeline),
+            'outfit_library': outfit_library_view(ctx, level),
             'scenario_notes': [{'title': item['title'], 'content': item['content'][:(300, 200, 100, 0)[level]]} for item in ctx['scenarios']],
             'context_notes': _notes(ctx, level),
             'cuts': [cut_digest(cut, ctx['results'].get(cut['id'], {}), level) for cut in timeline['cuts']],
@@ -233,6 +237,20 @@ def bible_input(ctx, sequence, timeline, level=0, final_voices=None):
             'voices_are_final': final_voices,
             'dialogue_reviewed': reviewed(timeline),
             'pauses': timeline['pauses'] if level < 2 else None}
+
+
+def outfit_library_view(ctx, level=0):
+    """The outfits that already exist for each character, so the bible reuses them and proposes only what is missing."""
+    names = {character['id']: character['name'] for character in ctx['characters']}
+    grouped = {}
+    for outfit in ctx.get('outfits') or []:
+        item = {'name': outfit['name']}
+        if level < 3:
+            item['summary'] = (outfit['summary'] or '')[:(200, 160, 80)[min(level, 2)]]
+        if level == 0:
+            item['description'] = (outfit['description'] or '')[:400]
+        grouped.setdefault(outfit['character_context_id'], []).append(item)
+    return [{'character': names[cid], 'outfits': items} for cid, items in grouped.items() if cid in names]
 
 
 def reviewed(timeline):
@@ -253,6 +271,8 @@ def bible_brief(bible, level=0):
     brief = {key: bible.get(key) for key in ('logline', 'synopsis', 'spoken_language', 'arc', 'pacing', 'continuity')}
     brief['scenes'] = [{key: scene.get(key) for key in ('id', 'from_cut', 'to_cut', 'location', 'time_of_day', 'lighting', 'mood', 'scenario')} for scene in bible.get('scenes') or []]
     brief['characters'] = [{key: person.get(key) for key in (('name', 'role', 'anchors', 'outfit', 'arc') if level < 2 else ('name', 'anchors', 'outfit'))} for person in bible.get('characters') or []]
+    if bible.get('outfits'):
+        brief['outfits'] = [{key: item.get(key) for key in ('character', 'name', 'summary', 'scenes') if item.get(key)} for item in bible['outfits']]
     return brief
 
 
@@ -480,12 +500,17 @@ def shot_keyframes(results, offset, duration, level):
 
 
 def still_camera(results):
-    """The camera and look chosen for this cut's opening frame, copied from its Cut summary."""
+    """The camera and look chosen for this cut's opening frame, copied from its Cut summary.
+
+    A line that names a style or medium (a summary written before the check, or edited by hand) is left out: the still
+    is a photograph through this camera, and a style word contradicts it.
+    """
     summary = (results.get('summary') or {}).get('content') or ''
     section = CAMERA_SECTION.search(summary)
     if not section:
         return ''
-    return '\n'.join(line.strip().lstrip('-* ').replace('**', '') for line in section.group(1).splitlines() if line.strip())
+    lines = (line.strip().lstrip('-* ').replace('**', '') for line in section.group(1).splitlines() if line.strip())
+    return '\n'.join(line for line in lines if not h3_prompt.style_words(line, camera=True))
 
 
 def _without_ids(frame, level=0):
@@ -516,7 +541,11 @@ def shot_roster(ctx, bible, shot):
     people = dict(people_in(ctx['results'].get(shot['cut_id'], {})))
     by_name = {person.get('name'): person for person in bible.get('characters') or []}
     notes = {character['id']: character['notes'] for character in ctx['characters']}
+    named = {}
+    for item in bible.get('outfits') or []:
+        named.setdefault(item.get('character'), []).append(item.get('name'))
     return [{'name': name, 'character_context_id': character_id, 'anchors': (by_name.get(name) or {}).get('anchors'), 'outfit': (by_name.get(name) or {}).get('outfit'),
+             **({'outfit_names': named[name]} if named.get(name) else {}),
              'notes': (notes.get(character_id) or '')[:200] or None} for name, character_id in people.items()]
 
 
@@ -833,7 +862,10 @@ def shot_hashes(ctx, bible, shot):
     plan = {key: shot[key] for key in ('start_time', 'end_time', 'frame', 'scene', 'intent', 'opens', 'closes', 'lines')}
     if shot.get('fixed_voices'):
         plan['fixed_voices'] = shot['fixed_voices']  # only when set, so shots without any keep their fingerprint
+    kept = {'spoken_language': bible.get('spoken_language'), 'characters': bible.get('characters'), 'voices': bible.get('voices'),
+            'scene': scene, 'continuity': bible.get('continuity')}
+    if bible.get('outfits'):
+        kept['outfits'] = [[item.get('character'), item.get('name'), item.get('scenes')] for item in bible['outfits']]  # only when set, so earlier bibles keep their fingerprint
     return {'plan': _hash(plan),
-            'bible': _hash({'spoken_language': bible.get('spoken_language'), 'characters': bible.get('characters'), 'voices': bible.get('voices'),
-                            'scene': scene, 'continuity': bible.get('continuity')}),
+            'bible': _hash(kept),
             'evidence': _hash(evidence)}
