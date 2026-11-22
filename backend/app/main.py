@@ -93,6 +93,8 @@ from .missed_cuts_api import router as missed_cuts_router
 app.include_router(missed_cuts_router)
 from .review_decisions_api import router as review_decisions_router
 app.include_router(review_decisions_router)
+from .voice_resolver_api import router as voice_resolver_router
+app.include_router(voice_resolver_router)
 from .visual_models_api import router as visual_models_router
 app.include_router(visual_models_router)
 from .point_detect_api import first_frame_spec, router as point_detect_router
@@ -1405,6 +1407,9 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
                      (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, "manual_edit", segment["model_id"], segment["job_id"], segment_id, *metadata))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
         agent_log.note_override(conn, 'transcript_segments', segment_id)
+        if body.character_context_id and not segment['character_context_id']:
+            from . import voice_resolver
+            voice_resolver.close_settled(conn, episode['id'])
         structured_results.invalidate_transcript(conn, episode['id'], segment['start_time'], segment['end_time'])
         if (segment['start_time'], segment['end_time']) != (body.start_time, body.end_time):
             structured_results.invalidate_transcript(conn, episode['id'], body.start_time, body.end_time)
@@ -1491,6 +1496,8 @@ def assign_voice(episode_id: str, body: AssignVoiceInput):
             conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, line["id"]))
         if lines:
             structured_results.invalidate_transcript(conn, episode_id)
+            from . import voice_resolver
+            voice_resolver.close_settled(conn, episode_id)
     return {"updated": len(lines)}
 
 

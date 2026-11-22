@@ -397,6 +397,21 @@ def _line_split_invalidates(conn, job):
     line_splits.invalidate(conn, job)
 
 
+def _voice_resolver_gather(conn, job):
+    from . import voice_resolver
+    return voice_resolver.gather(conn, job)
+
+
+def _voice_resolver_inputs(conn, job):
+    from . import voice_resolver
+    return voice_resolver.inputs(conn, job)
+
+
+def _voice_resolver_invalidates(conn, job):
+    from . import voice_resolver
+    voice_resolver.invalidate(conn, job)
+
+
 def _review_decision_gather(conn, job):
     from . import review_decisions
     return review_decisions.gather(conn, job)
@@ -710,6 +725,13 @@ KINDS = {kind.pipeline: kind for kind in (
          keys=lambda payload, cut_ids: [f"voice_sample:{payload.get('character_context_id')}"],
          lane='audio', resources=frozenset({'gpu', 'audio'}), scope=_voice_scope, priority_class=lambda payload: 'interactive',
          inputs=_audio_inputs, gather=_audio_gather, invalidates=_audio_invalidates),
+    # Unknown voices given to characters (voice_resolver.py, autopilot M5): voice scores need the audio worker's embedding model;
+    # the decisions are written in the publish transaction.
+    Kind('voice_resolver', 'Voice resolver (agent)', True, keys=lambda payload, cut_ids: ['voice_resolver'], cancel_running=_always, retry=_always,
+         lane='audio', handler='voice_resolver.process', resources=frozenset({'gpu', 'audio'}),
+         scope=lambda payload: Scope(frozenset({'prepared_audio', 'voices', 'transcript', 'context', 'results', 'subtitles', 'cut_boundaries'}),
+                                     frozenset({'transcript'})),
+         priority_class=lambda payload: 'batch', inputs=_voice_resolver_inputs, gather=_voice_resolver_gather, invalidates=_voice_resolver_invalidates),
     # Media work runs on the CPU in the API process: listed, never counted, not cancellable while it runs.
     Kind('keyframes', 'Keyframe selection', False, cuts=_keyframe_cuts, cancel_running=_always, retry=_always, keys=lambda payload, cut_ids: ['keyframes'],
          resources=frozenset({'cpu_media'}), scope=_selection_scope,

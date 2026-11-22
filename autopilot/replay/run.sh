@@ -15,6 +15,14 @@ import sqlite3; s=sqlite3.connect('file:/data/app.sqlite3?mode=ro',uri=True); d=
   docker compose -f "$ROOT/compose.yml" cp video-analyzer:/tmp/replay-copy.sqlite3 "$WORK/app.sqlite3" >/dev/null
   docker compose -f "$ROOT/compose.yml" exec -T video-analyzer rm -f /tmp/replay-copy.sqlite3
 fi
-docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GIT_COMMIT="$(git -C "$ROOT" rev-parse --short HEAD)" \
+# REPLAY_IMAGE=framewise-audio-rocm:local runs a scorer that needs the audio models (voices --scores computed): on the CPU (no GPU
+# device is passed), with the model cache read-only and the Hugging Face hub offline.
+IMAGE=${REPLAY_IMAGE:-video-analyzer:local}
+EXTRA=()
+if [ "$IMAGE" != "video-analyzer:local" ]; then
+  EXTRA=(-v framewise_models:/models/cache:ro -e HF_HOME=/models/cache/huggingface -e HF_HUB_OFFLINE=1 -e PYANNOTE_METRICS_ENABLED=0
+         -e XDG_CACHE_HOME=/tmp/cache -e XDG_CONFIG_HOME=/tmp/config -e USER=replay -e MPLCONFIGDIR=/tmp/mpl -e HF_TOKEN="$(grep -s '^HF_TOKEN=' "$ROOT/.env" | cut -d= -f2-)")
+fi
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GIT_COMMIT="$(git -C "$ROOT" rev-parse --short HEAD)" "${EXTRA[@]}" \
   -v framewise_data:/data:ro -v "$ROOT/backend/app:/app/app:ro" -v "$ROOT/autopilot:/autopilot" -v "$WORK:/replay" \
-  -w /app -e PYTHONPATH=/app --entrypoint python video-analyzer:local "/autopilot/replay/$SCORER.py" --out /autopilot/replay/reports "$@"
+  -w /app -e PYTHONPATH=/app --entrypoint python "$IMAGE" "/autopilot/replay/$SCORER.py" --out /autopilot/replay/reports "$@"

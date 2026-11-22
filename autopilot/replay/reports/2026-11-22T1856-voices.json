@@ -1,0 +1,1188 @@
+{
+ "resolver": "voices",
+ "date": "2026-11-22T1856",
+ "commit": "239d8a4",
+ "scores": "computed",
+ "totals": {
+  "label_ask": 3107,
+  "label_right": 8802,
+  "label_left": 264,
+  "line_left": 7,
+  "line_ask": 2,
+  "label_wrong": 7
+ },
+ "labels": [
+  {
+   "episode": "Episode 2",
+   "label": "SPEAKER_01",
+   "truth": "Shoko Makinohara",
+   "lines": 6,
+   "counts": {
+    "ask": 4,
+    "ask:ask": 4,
+    "right": 2,
+    "phrase:right": 2
+   },
+   "label_decision": null,
+   "asked_why": "the line addresses Shoko Makinohara by name",
+   "label_voice": [
+    [
+     "Shoko Makinohara",
+     0.946
+    ],
+    [
+     "Rio Futaba",
+     0.492
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 2",
+   "label": "SPEAKER_05",
+   "truth": "Rio Futaba",
+   "lines": 21,
+   "counts": {
+    "left": 8,
+    ":left": 8,
+    "right": 13,
+    "phrase:right": 3,
+    "consensus:right": 10
+   },
+   "label_decision": null,
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Rio Futaba",
+     0.917
+    ],
+    [
+     "Saki Kamisato",
+     0.523
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 2",
+   "label": "SPEAKER_08",
+   "truth": "Mai Sakurajima",
+   "lines": 148,
+   "counts": {
+    "right": 128,
+    "label:right": 128,
+    "left": 20,
+    ":left": 20
+   },
+   "label_decision": [
+    "Mai Sakurajima",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Mai Sakurajima",
+     0.79
+    ],
+    [
+     "Rio Futaba",
+     0.415
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 2",
+   "label": "SPEAKER_09",
+   "truth": "Sakuta Azusagawa",
+   "lines": 190,
+   "counts": {
+    "right": 164,
+    "label:right": 164,
+    "left": 26,
+    ":left": 26
+   },
+   "label_decision": [
+    "Sakuta Azusagawa",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Sakuta Azusagawa",
+     0.873
+    ],
+    [
+     "Yuuma Kunimi",
+     0.526
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 4",
+   "label": "SPEAKER_01",
+   "truth": "Rio Futaba",
+   "lines": 626,
+   "counts": {
+    "ask": 626,
+    "ask:ask": 626
+   },
+   "label_decision": null,
+   "asked_why": "only one kind of signal (voice)",
+   "label_voice": [
+    [
+     "Rio Futaba",
+     0.865
+    ],
+    [
+     "Saki Kamisato",
+     0.511
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 4",
+   "label": "SPEAKER_02",
+   "truth": "Mai Sakurajima",
+   "lines": 304,
+   "counts": {
+    "ask": 304,
+    "ask:ask": 304
+   },
+   "label_decision": null,
+   "asked_why": "only one kind of signal (voice)",
+   "label_voice": [
+    [
+     "Mai Sakurajima",
+     0.825
+    ],
+    [
+     "Kaede Azusagawa",
+     0.421
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 4",
+   "label": "SPEAKER_03",
+   "truth": "Tomoe Koga",
+   "lines": 637,
+   "counts": {
+    "ask": 630,
+    "ask:ask": 630,
+    "left": 7,
+    ":left": 7
+   },
+   "label_decision": null,
+   "asked_why": "only one kind of signal (voice)",
+   "label_voice": [
+    [
+     "Tomoe Koga",
+     0.671
+    ],
+    [
+     "Shoko Makinohara",
+     0.616
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 4",
+   "label": "SPEAKER_05",
+   "truth": "Sakuta Azusagawa",
+   "lines": 1396,
+   "counts": {
+    "ask": 1390,
+    "ask:ask": 1390,
+    "left": 6,
+    ":left": 6
+   },
+   "label_decision": null,
+   "asked_why": "only one kind of signal (voice)",
+   "label_voice": [
+    [
+     "Sakuta Azusagawa",
+     0.896
+    ],
+    [
+     "Yuuma Kunimi",
+     0.528
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 5",
+   "label": "SPEAKER_01",
+   "truth": "Sakuta Azusagawa",
+   "lines": 1396,
+   "counts": {
+    "right": 1396,
+    "label:right": 1396
+   },
+   "label_decision": [
+    "Sakuta Azusagawa",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Sakuta Azusagawa",
+     0.865
+    ],
+    [
+     "Yuuma Kunimi",
+     0.615
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 5",
+   "label": "SPEAKER_02",
+   "truth": "Mai Sakurajima",
+   "lines": 395,
+   "counts": {
+    "right": 395,
+    "label:right": 395
+   },
+   "label_decision": [
+    "Mai Sakurajima",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Mai Sakurajima",
+     0.843
+    ],
+    [
+     "Rio Futaba",
+     0.406
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 5",
+   "label": "SPEAKER_03",
+   "truth": "Saki Kamisato",
+   "lines": 57,
+   "counts": {
+    "right": 57,
+    "label:right": 57
+   },
+   "label_decision": [
+    "Saki Kamisato",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Saki Kamisato",
+     0.829
+    ],
+    [
+     "Rio Futaba",
+     0.405
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 5",
+   "label": "SPEAKER_05",
+   "truth": "Tomoe Koga",
+   "lines": 822,
+   "counts": {
+    "right": 822,
+    "label:right": 822
+   },
+   "label_decision": [
+    "Tomoe Koga",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Tomoe Koga",
+     0.619
+    ],
+    [
+     "Saki Kamisato",
+     0.561
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 5",
+   "label": "SPEAKER_06",
+   "truth": "Rio Futaba",
+   "lines": 180,
+   "counts": {
+    "right": 180,
+    "label:right": 180
+   },
+   "label_decision": [
+    "Rio Futaba",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Rio Futaba",
+     0.834
+    ],
+    [
+     "Saki Kamisato",
+     0.54
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 6",
+   "label": "SPEAKER_02",
+   "truth": "Rio Futaba",
+   "lines": 243,
+   "counts": {
+    "right": 243,
+    "label:right": 243
+   },
+   "label_decision": [
+    "Rio Futaba",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Rio Futaba",
+     0.857
+    ],
+    [
+     "Saki Kamisato",
+     0.526
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 6",
+   "label": "SPEAKER_03",
+   "truth": "Mai Sakurajima",
+   "lines": 217,
+   "counts": {
+    "right": 217,
+    "label:right": 217
+   },
+   "label_decision": [
+    "Mai Sakurajima",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Mai Sakurajima",
+     0.825
+    ],
+    [
+     "Kaede Azusagawa",
+     0.403
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 6",
+   "label": "SPEAKER_05",
+   "truth": "Tomoe Koga",
+   "lines": 897,
+   "counts": {
+    "left": 197,
+    ":left": 197,
+    "right": 700,
+    "label:right": 700
+   },
+   "label_decision": [
+    "Tomoe Koga",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Tomoe Koga",
+     0.703
+    ],
+    [
+     "Shoko Makinohara",
+     0.577
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 6",
+   "label": "SPEAKER_07",
+   "truth": "Sakuta Azusagawa",
+   "lines": 1285,
+   "counts": {
+    "right": 1285,
+    "label:right": 1285
+   },
+   "label_decision": [
+    "Sakuta Azusagawa",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Sakuta Azusagawa",
+     0.792
+    ],
+    [
+     "Yuuma Kunimi",
+     0.606
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 7",
+   "label": "SPEAKER_00",
+   "truth": "Sakuta Azusagawa",
+   "lines": 1566,
+   "counts": {
+    "right": 1566,
+    "label:right": 1566
+   },
+   "label_decision": [
+    "Sakuta Azusagawa",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Sakuta Azusagawa",
+     0.766
+    ],
+    [
+     "Yuuma Kunimi",
+     0.607
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 7",
+   "label": "SPEAKER_02",
+   "truth": "Saki Kamisato",
+   "lines": 26,
+   "counts": {
+    "ask": 17,
+    "ask:ask": 17,
+    "right": 9,
+    "phrase:right": 9
+   },
+   "label_decision": null,
+   "asked_why": "only one kind of signal (voice)",
+   "label_voice": [
+    [
+     "Saki Kamisato",
+     0.739
+    ],
+    [
+     "Shoko Makinohara",
+     0.372
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 7",
+   "label": "SPEAKER_03",
+   "truth": "Rio Futaba",
+   "lines": 794,
+   "counts": {
+    "right": 794,
+    "label:right": 794
+   },
+   "label_decision": [
+    "Rio Futaba",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Rio Futaba",
+     0.826
+    ],
+    [
+     "Saki Kamisato",
+     0.476
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 7",
+   "label": "SPEAKER_05",
+   "truth": "Kaede Azusagawa",
+   "lines": 212,
+   "counts": {
+    "ask": 136,
+    "ask:ask": 136,
+    "right": 69,
+    "phrase:right": 69,
+    "wrong": 7,
+    "phrase:wrong": 7
+   },
+   "label_decision": null,
+   "asked_why": "only one kind of signal (picture)",
+   "label_voice": [
+    [
+     "Kaede Azusagawa",
+     0.643
+    ],
+    [
+     "Tomoe Koga",
+     0.598
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 7",
+   "label": "SPEAKER_06",
+   "truth": "Shoko Makinohara",
+   "lines": 204,
+   "counts": {
+    "right": 204,
+    "label:right": 204
+   },
+   "label_decision": [
+    "Shoko Makinohara",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Shoko Makinohara",
+     0.899
+    ],
+    [
+     "Rio Futaba",
+     0.546
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 7",
+   "label": "SPEAKER_07",
+   "truth": "Mai Sakurajima",
+   "lines": 558,
+   "counts": {
+    "right": 558,
+    "label:right": 558
+   },
+   "label_decision": [
+    "Mai Sakurajima",
+    "picture + voice"
+   ],
+   "asked_why": null,
+   "label_voice": [
+    [
+     "Mai Sakurajima",
+     0.843
+    ],
+    [
+     "Rio Futaba",
+     0.405
+    ]
+   ]
+  }
+ ],
+ "lines": [
+  {
+   "episode": "Episode 2",
+   "line_id": "92ac1331-786e-42f0-9d15-7848836b708c",
+   "truth": "Sakuta Azusagawa",
+   "result": "left",
+   "character": null,
+   "scope": "",
+   "why": ""
+  },
+  {
+   "episode": "Episode 2",
+   "line_id": "a92c8938-c3de-443f-8bd3-64ad88ad3a83",
+   "truth": "Sakuta Azusagawa",
+   "result": "left",
+   "character": null,
+   "scope": "",
+   "why": ""
+  },
+  {
+   "episode": "Episode 2",
+   "line_id": "57955b2f-7b6a-48b4-adf6-afc5de0cfdec",
+   "truth": "Sakuta Azusagawa",
+   "result": "left",
+   "character": null,
+   "scope": "",
+   "why": ""
+  },
+  {
+   "episode": "Episode 2",
+   "line_id": "206cc921-7d44-48c0-af63-dd6d922337bb",
+   "truth": "Tomoe Koga",
+   "result": "left",
+   "character": null,
+   "scope": "",
+   "why": ""
+  },
+  {
+   "episode": "Episode 2",
+   "line_id": "f00c0963-7160-4bf1-8c24-c91f1b1a7fc7",
+   "truth": "Crying Lost Child",
+   "result": "left",
+   "character": null,
+   "scope": "",
+   "why": ""
+  },
+  {
+   "episode": "Episode 2",
+   "line_id": "80e190fb-49f9-479a-afc5-1ed254da8c11",
+   "truth": "Tomoe Koga",
+   "result": "left",
+   "character": null,
+   "scope": "",
+   "why": ""
+  },
+  {
+   "episode": "Episode 2",
+   "line_id": "fb05aded-baad-4e1c-950f-ea829f1fcfad",
+   "truth": "Tomoe Koga",
+   "result": "left",
+   "character": null,
+   "scope": "",
+   "why": ""
+  },
+  {
+   "episode": "Episode 2",
+   "line_id": "d2bc16e8-c772-4a7c-8f0c-6aaf2f303609",
+   "truth": "Sakuta Azusagawa",
+   "result": "ask",
+   "character": null,
+   "scope": "ask",
+   "why": "only one kind of signal (picture)"
+  },
+  {
+   "episode": "Episode 2",
+   "line_id": "a2d9b522-0bab-4039-a947-ae1914fb3b46",
+   "truth": "Sakuta Azusagawa",
+   "result": "ask",
+   "character": null,
+   "scope": "ask",
+   "why": "only one kind of signal (picture)"
+  }
+ ],
+ "open": [
+  {
+   "episode": "Episode 2",
+   "action": "ask",
+   "label": "SPEAKER_02",
+   "lines": 1,
+   "candidates": [
+    "Sakuta Azusagawa"
+   ],
+   "new_voice": false,
+   "why": "no signal names anyone",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 4",
+   "action": "ask",
+   "label": "SPEAKER_04",
+   "lines": 68,
+   "candidates": [
+    "Kaede Azusagawa"
+   ],
+   "new_voice": false,
+   "why": "no signal names anyone",
+   "label_voice": [
+    [
+     "Kaede Azusagawa",
+     0.269
+    ],
+    [
+     "Shoko Makinohara",
+     0.179
+    ],
+    [
+     "Yuuma Kunimi",
+     0.173
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 4",
+   "action": "ask",
+   "label": "SPEAKER_06",
+   "lines": 175,
+   "candidates": [
+    "Sakuta Azusagawa"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (voice)",
+   "label_voice": [
+    [
+     "Sakuta Azusagawa",
+     0.45
+    ],
+    [
+     "Yuuma Kunimi",
+     0.398
+    ],
+    [
+     "Saki Kamisato",
+     0.179
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 4",
+   "action": "ask",
+   "label": "SPEAKER_07",
+   "lines": 40,
+   "candidates": [],
+   "new_voice": false,
+   "why": "no signal names anyone",
+   "label_voice": [
+    [
+     "Yuuma Kunimi",
+     0.276
+    ],
+    [
+     "Sakuta Azusagawa",
+     0.234
+    ],
+    [
+     "Rio Futaba",
+     0.162
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 4",
+   "action": "ask",
+   "label": "SPEAKER_00",
+   "lines": 22,
+   "candidates": [],
+   "new_voice": false,
+   "why": "no signal names anyone",
+   "label_voice": [
+    [
+     "Sakuta Azusagawa",
+     0.287
+    ],
+    [
+     "Yuuma Kunimi",
+     0.249
+    ],
+    [
+     "Mai Sakurajima",
+     0.181
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 5",
+   "action": "apply",
+   "label": "SPEAKER_04",
+   "character": "Kaede Azusagawa",
+   "scope": "phrase",
+   "lines": 12,
+   "why": "picture + voice",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 5",
+   "action": "apply",
+   "label": "SPEAKER_00",
+   "character": "Yuuma Kunimi",
+   "scope": "phrase",
+   "lines": 10,
+   "why": "picture + voice",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 5",
+   "action": "apply",
+   "label": "SPEAKER_00",
+   "character": "Sakuta Azusagawa",
+   "scope": "phrase",
+   "lines": 8,
+   "why": "picture + voice",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 5",
+   "action": "apply",
+   "label": "SPEAKER_00",
+   "character": "Sakuta Azusagawa",
+   "scope": "phrase",
+   "lines": 5,
+   "why": "picture + voice",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 5",
+   "action": "ask",
+   "label": "",
+   "lines": 6,
+   "candidates": [
+    "Mai Sakurajima"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 5",
+   "action": "ask",
+   "label": "",
+   "lines": 10,
+   "candidates": [
+    "Sakuta Azusagawa"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 5",
+   "action": "ask",
+   "label": "",
+   "lines": 5,
+   "candidates": [
+    "Tomoe Koga"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 5",
+   "action": "ask",
+   "label": "",
+   "lines": 1,
+   "candidates": [
+    "Yuuma Kunimi"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 5",
+   "action": "ask",
+   "label": "",
+   "lines": 1,
+   "candidates": [
+    "Yosuke Maezawa"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 5",
+   "action": "ask",
+   "label": "SPEAKER_04",
+   "lines": 90,
+   "candidates": [
+    "Yoneyama Nana",
+    "Kaede Azusagawa",
+    "Shoko Makinohara",
+    "Tomoe Koga"
+   ],
+   "new_voice": false,
+   "why": "no signal names anyone",
+   "label_voice": [
+    [
+     "Tomoe Koga",
+     0.348
+    ],
+    [
+     "Shoko Makinohara",
+     0.331
+    ],
+    [
+     "Kaede Azusagawa",
+     0.308
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 5",
+   "action": "ask",
+   "label": "SPEAKER_00",
+   "lines": 37,
+   "candidates": [
+    "Mai Sakurajima",
+    "Sakuta Azusagawa",
+    "Yosuke Maezawa"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (voice)",
+   "label_voice": [
+    [
+     "Sakuta Azusagawa",
+     0.691
+    ],
+    [
+     "Yuuma Kunimi",
+     0.546
+    ],
+    [
+     "Kaede Azusagawa",
+     0.262
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 6",
+   "action": "apply",
+   "label": "SPEAKER_04",
+   "character": "Tomoe Koga",
+   "scope": "phrase",
+   "lines": 3,
+   "why": "picture + voice",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 6",
+   "action": "apply",
+   "label": "SPEAKER_01",
+   "character": "Sakuta Azusagawa",
+   "scope": "label",
+   "lines": 33,
+   "why": "picture + voice",
+   "label_voice": [
+    [
+     "Sakuta Azusagawa",
+     0.674
+    ],
+    [
+     "Yuuma Kunimi",
+     0.383
+    ],
+    [
+     "Kaede Azusagawa",
+     0.203
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 6",
+   "action": "ask",
+   "label": "",
+   "lines": 9,
+   "candidates": [
+    "Sakuta Azusagawa"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 6",
+   "action": "ask",
+   "label": "",
+   "lines": 18,
+   "candidates": [
+    "Tomoe Koga"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 6",
+   "action": "ask",
+   "label": "SPEAKER_04",
+   "lines": 66,
+   "candidates": [
+    "Sakuta Azusagawa",
+    "Shoko Makinohara",
+    "Tomoe Koga"
+   ],
+   "new_voice": true,
+   "why": "only one kind of signal (picture)",
+   "label_voice": [
+    [
+     "Kaede Azusagawa",
+     0.232
+    ],
+    [
+     "Tomoe Koga",
+     0.225
+    ],
+    [
+     "Yuuma Kunimi",
+     0.128
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 6",
+   "action": "ask",
+   "label": "SPEAKER_06",
+   "lines": 55,
+   "candidates": [
+    "Sakuta Azusagawa",
+    "Tomoe Koga"
+   ],
+   "new_voice": false,
+   "why": "no signal names anyone",
+   "label_voice": [
+    [
+     "Yuuma Kunimi",
+     0.287
+    ],
+    [
+     "Sakuta Azusagawa",
+     0.238
+    ],
+    [
+     "Rio Futaba",
+     0.205
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 6",
+   "action": "ask",
+   "label": "SPEAKER_00",
+   "lines": 15,
+   "candidates": [
+    "Mai Sakurajima",
+    "Sakuta Azusagawa"
+   ],
+   "new_voice": false,
+   "why": "the signals disagree: picture → Sakuta Azusagawa, voice → Mai Sakurajima",
+   "label_voice": [
+    [
+     "Mai Sakurajima",
+     0.588
+    ],
+    [
+     "Saki Kamisato",
+     0.387
+    ],
+    [
+     "Rio Futaba",
+     0.386
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 7",
+   "action": "ask",
+   "label": "",
+   "lines": 3,
+   "candidates": [
+    "Shoko Makinohara"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 7",
+   "action": "ask",
+   "label": "",
+   "lines": 4,
+   "candidates": [
+    "Kaede Azusagawa"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (voice)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 7",
+   "action": "ask",
+   "label": "",
+   "lines": 4,
+   "candidates": [
+    "Sakuta Azusagawa"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 7",
+   "action": "ask",
+   "label": "",
+   "lines": 1,
+   "candidates": [
+    "Rio Futaba"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 7",
+   "action": "ask",
+   "label": "",
+   "lines": 2,
+   "candidates": [
+    "Mai Sakurajima"
+   ],
+   "new_voice": false,
+   "why": "only one kind of signal (picture)",
+   "label_voice": []
+  },
+  {
+   "episode": "Episode 7",
+   "action": "ask",
+   "label": "SPEAKER_04",
+   "lines": 53,
+   "candidates": [
+    "Mai Sakurajima",
+    "Sakuta Azusagawa",
+    "Kaede Azusagawa",
+    "Shoko Makinohara"
+   ],
+   "new_voice": false,
+   "why": "the signals disagree: picture → Sakuta Azusagawa, voice → Shoko Makinohara",
+   "label_voice": [
+    [
+     "Shoko Makinohara",
+     0.392
+    ],
+    [
+     "Kaede Azusagawa",
+     0.329
+    ],
+    [
+     "Rio Futaba",
+     0.266
+    ]
+   ]
+  },
+  {
+   "episode": "Episode 7",
+   "action": "ask",
+   "label": "SPEAKER_01",
+   "lines": 35,
+   "candidates": [
+    "Mai Sakurajima",
+    "Sakuta Azusagawa",
+    "Saki Kamisato",
+    "Rio Futaba"
+   ],
+   "new_voice": false,
+   "why": "the signals disagree: picture → Mai Sakurajima, voice → Saki Kamisato",
+   "label_voice": [
+    [
+     "Saki Kamisato",
+     0.481
+    ],
+    [
+     "Mai Sakurajima",
+     0.431
+    ],
+    [
+     "Rio Futaba",
+     0.415
+    ]
+   ]
+  }
+ ]
+}

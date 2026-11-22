@@ -22,13 +22,15 @@
     scripts/fw line-splits "Episode 6"           # what the line splitter would do with lines across hard cuts; add run to apply it
     scripts/fw review-decisions run "Episode 6"  # the agent answers the consistency review questions it can, asks about the rest
     scripts/fw review-decisions report "Episode 6"  # what it answered (undo ids), the questions for Claude or you, trust per topic
+    scripts/fw voices run "Episode 6"            # give unknown voices to characters where two signals agree, ask about the rest
+    scripts/fw voices report "Episode 6"         # open voices, what it gave to whom (undo ids), the voice questions with links
 
 Cut numbers are the editor's (1-based). RANGE is 100-120, 100..120, 7, 5- (to the end), -10 or all (the default).
 Only the HTTP API is used: FRAMEWISE_URL, else http://chopper.local:8080 (the server). It runs the same from any machine
 on the LAN, and nothing on the machine it runs from needs rebuilding or restarting.
 It queues, waits, retries, dismisses, cancels and reads. It never edits labels, boxes, transcript text, answers,
 dialogue or sequences itself, and never restarts containers; the autopilot's resolvers (missed-cuts, line-splits,
-review-decisions) change cuts, lines and answers in the server, each change logged as an undoable agent decision.
+review-decisions, voices) change cuts, lines, answers and speakers in the server, each change logged as an undoable agent decision.
 
 Exit codes: 0 ok or done, 1 error, 2 blocked on a person, 3 busy (work is queued or running).
 """
@@ -1368,6 +1370,101 @@ def cmd_review_decisions(api, args):
     raise Failure(f'unknown action {args.action!r}')
 
 
+# --- unknown voices given to characters (docs/autopilot/HARNESS.md M5) -------------------------------------------
+
+def _clock(seconds):
+    seconds = float(seconds or 0)
+    return f"{int(seconds // 60)}:{seconds % 60:05.2f}"
+
+
+def _character(data, question, text):
+    """A character id from a name (or part of one) among the question's candidates first, then the project's."""
+    wanted = text.strip().casefold()
+    pools = [[{'id': item['id'], 'title': item['name']} for item in (question.get('evidence') or {}).get('candidates') or []], data.get('characters') or []]
+    for pool in pools:
+        exact = [item for item in pool if item['title'].casefold() == wanted or item['id'] == text.strip()]
+        if exact:
+            return exact[0]
+        partial = [item for item in pool if wanted in item['title'].casefold()]
+        if len(partial) == 1:
+            return partial[0]
+        if len(partial) > 1:
+            raise Failure(f"{text!r} matches several characters: {', '.join(item['title'] for item in partial)}")
+    raise Failure(f"no character named {text!r} (characters: {', '.join(item['title'] for item in data.get('characters') or [])})")
+
+
+def cmd_voices(api, args):
+    if args.action in ('run', 'report'):
+        episode = find_episode(api, args.target, args.latest)
+        if args.action == 'run':
+            result = api.post(f"/api/episodes/{episode['id']}/voice-decisions", body={'run_id': args.run, 'attribution': not args.no_attribution})
+            emit(args, result, result.get('detail') or ('(dry run: nothing queued)' if result.get('dry_run') else
+                 f"queued the voice resolver: {result['job_id']}\nwait with: fw wait {episode['id'][:8]} --jobs {result['job_id']}"))
+            return OK
+        data = api.get(f"/api/episodes/{episode['id']}/voice-decisions")
+        if args.json:
+            emit(args, data, '')
+            return OK
+        total = sum(item['lines'] for item in data['open_voices'])
+        lines = [f"{episode['project']} / {episode['title']}: {total} line(s) without a character"
+                 + (' · ' + ', '.join(f"{item['label'] or '(no label)'} {item['lines']}" for item in data['open_voices']) if data['open_voices'] else '')]
+        last = data.get('last_run')
+        if last:
+            lines.append(f"last run: {last['status']} · {last['stage']}")
+        applied = [item for item in data['applied'] if not item['undone_at']]
+        if applied:
+            lines.append(f"GIVEN BY THE AGENT ({len(applied)}; undo one with fw agent undo ID --decision):")
+            for item in applied:
+                lines.append(f"  - {item['summary']}{' (changed by a person since)' if item['overridden_at'] else ''}  id {item['id']}")
+                if item['cut_id']:
+                    lines.append(f"    {cut_url(api, episode, item['cut_id'], 'analysis')}")
+        if data['questions']:
+            lines.append(f"VOICE QUESTIONS ({len(data['questions'])}; answer with fw voices answer ID \"Name\"|new|leave|unsure [--tier claude]):")
+            for item in data['questions']:
+                evidence = item['evidence'] or {}
+                lines.append(f"  - [{'Claude' if item['reviewer'] == 'claude' else 'person'}] {item['question']}  id {item['id']}")
+                if evidence.get('claude_note'):
+                    lines.append(f"      Claude: {evidence['claude_note']}")
+                for number, phrase in enumerate(evidence.get('phrases') or [], 1):
+                    signals = ', '.join(f"{key} {value}" for key, value in (phrase.get('signals') or {}).items()) or 'no signal'
+                    voice = ', '.join(f"{name} {score:.2f}" for name, score in phrase.get('voice_top') or [])
+                    lines.append(f"      P{number} cut {phrase.get('cut') or '?'} {_clock(phrase['start'])}-{_clock(phrase['end'])} “{phrase['text']}” · {signals}"
+                                 + (f" · voice {voice}" if voice else '') + (f" · addresses {', '.join(phrase['addressed'])}" if phrase.get('addressed') else ''))
+                    if phrase.get('cut_id'):
+                        lines.append(f"        {cut_url(api, episode, phrase['cut_id'], 'analysis')}")
+                lines.append(f"    frames: {api.url}/api/escalations/{item['id']}/voice-sheet")
+        print('\n'.join(lines))
+        return BLOCKED if data['questions'] else OK
+    if not args.target:
+        raise Failure(f'fw voices {args.action} needs a question id (fw voices report EP lists them)')
+    question = api.get(f'/api/escalations/{quote(args.target)}')
+    if question.get('kind') != 'voice':
+        raise Failure(f'{args.target} is not a voice question')
+    if args.action == 'sheet':
+        image = api.raw(f'/api/escalations/{quote(args.target)}/voice-sheet', {})
+        out = args.out or f"voice-{args.target[:8]}.jpg"
+        with open(out, 'wb') as handle:
+            handle.write(image)
+        emit(args, {'file': out, 'question': question['question']}, f"{out}\n{question['question']}")
+        return OK
+    if args.action == 'answer':
+        if not args.extra:
+            raise Failure('answer with a character name, new, leave or unsure')
+        reply = args.extra.strip()
+        body = {'tier': args.tier, 'run_id': args.run, 'note': args.note}
+        if reply.casefold() in ('new', 'leave', 'unsure'):
+            body['choice'] = reply.casefold()
+        else:
+            data = api.get(f"/api/episodes/{question['episode_id']}/voice-decisions")
+            body.update(choice='character', character_context_id=_character(data, question, reply)['id'])
+        result = api.post(f'/api/escalations/{quote(args.target)}/voice', body=body)
+        emit(args, result, {'resolved': f"given to the character: {result.get('lines')} line(s) (decision {result.get('decision_id')})",
+                            'handed_to_person': 'handed to the person', 'new_character': 'closed: create the character, then run fw voices run again',
+                            'left_unknown': 'closed: the voice stays unknown', 'outdated': 'its lines already have a character; closed'}.get(result.get('status'), str(result)))
+        return OK
+    raise Failure(f'unknown action {args.action!r}')
+
+
 # --- command line ------------------------------------------------------------------------------------------------
 
 def parser():
@@ -1489,6 +1586,18 @@ def parser():
     command.add_argument('--note', help='answer: why (kept with the decision)')
     command.add_argument('--out', help='sheet: file to write (default review-ID.jpg)')
     command.set_defaults(func=cmd_review_decisions)
+    command = sub.add_parser('voices', parents=[common],
+                             help='unknown voices given to characters: run EP, report EP, sheet ID, answer ID "Name"|new|leave|unsure')
+    command.add_argument('action', choices=('run', 'report', 'sheet', 'answer'))
+    command.add_argument('target', nargs='?', help='episode (run, report) or question id (sheet, answer)')
+    command.add_argument('extra', nargs='?', help='answer: a character name, new, leave or unsure')
+    command.add_argument('--latest', action='store_true', help='the newest episode')
+    command.add_argument('--run', help='the agent run (fw agent start)')
+    command.add_argument('--no-attribution', action='store_true', help='run: do not queue speaker attribution again afterwards')
+    command.add_argument('--tier', default='human', choices=('claude', 'human'), help='answer: who answers (claude = the second reviewer)')
+    command.add_argument('--note', help='answer: why (kept with the decision)')
+    command.add_argument('--out', help='sheet: file to write (default voice-ID.jpg)')
+    command.set_defaults(func=cmd_voices)
     command = sub.add_parser('close', parents=[common], help='close an escalation: resolved or dismissed')
     command.add_argument('escalation')
     command.add_argument('--status', default='resolved', choices=('resolved', 'dismissed'))

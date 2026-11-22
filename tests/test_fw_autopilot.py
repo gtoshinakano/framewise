@@ -185,6 +185,39 @@ class FwAutopilotTest(unittest.TestCase):
         with self.assertRaises(fw.Failure):
             run(api, 'review-decisions', 'answer', 'esc1', 'q2')
 
+    def test_voices_run_report_and_answer(self):
+        report = {'open_voices': [{'label': 'SPEAKER_04', 'lines': 69, 'first_time': 25.0}],
+                  'last_run': {'status': 'done', 'stage': 'Complete · 140 lines given a character, 1 voices for Claude, 0 for you'},
+                  'characters': [{'id': 'mai', 'title': 'Mai Sakurajima'}, {'id': 'sakuta', 'title': 'Sakuta Azusagawa'}],
+                  'applied': [{'id': 'd1', 'summary': 'Gave voice SPEAKER_05 (12 lines, 3.0s) to Tomoe Koga: picture + voice', 'undone_at': None,
+                               'overridden_at': None, 'cut_id': 'c2'}],
+                  'questions': [{'id': 'esc1', 'reviewer': 'claude', 'question': 'Who speaks SPEAKER_04 (69 lines in cuts 3, 9)? the signals disagree.',
+                                 'evidence': {'phrases': [{'start': 25.0, 'end': 26.5, 'text': 'ええちゃん', 'cut': 3, 'cut_id': 'c3',
+                                                           'signals': {'voice': 'Sakuta Azusagawa', 'picture': 'Mai Sakurajima'},
+                                                           'voice_top': [['Sakuta Azusagawa', 0.41]], 'addressed': []}]}}]}
+        api = AutopilotApi()
+        api.get = lambda path, params=None: report if path.endswith('/voice-decisions') else AutopilotApi.get(api, path, params)
+        code, out = run(api, 'voices', 'report', EPISODE['id'])
+        self.assertEqual(code, fw.BLOCKED)
+        self.assertIn('69 line(s) without a character · SPEAKER_04 69', out)
+        self.assertIn('to Tomoe Koga: picture + voice  id d1', out)
+        self.assertIn('P1 cut 3 0:25.00-0:26.50 “ええちゃん” · voice Sakuta Azusagawa, picture Mai Sakurajima · voice Sakuta Azusagawa 0.41', out)
+        self.assertIn('frames: http://framewise/api/escalations/esc1/voice-sheet', out)
+        api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {'job_id': 'j1'})[1]
+        run(api, 'voices', 'run', EPISODE['id'], '--no-attribution')
+        self.assertEqual(api.calls[-1][2], {'run_id': None, 'attribution': False})
+        question = {'kind': 'voice', 'episode_id': EPISODE['id'], 'evidence': {'candidates': [{'id': 'mai', 'name': 'Mai Sakurajima'}]}}
+        api.get = lambda path, params=None: question if path.startswith('/api/escalations/') else report
+        api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {'status': 'resolved', 'lines': 69, 'decision_id': 'd2'})[1]
+        _, out = run(api, 'voices', 'answer', 'esc1', 'sakuta', '--tier', 'claude', '--note', 'his mouth moves')
+        self.assertEqual(api.calls[-1], ('/api/escalations/esc1/voice', None, {'tier': 'claude', 'run_id': None, 'note': 'his mouth moves',
+                                                                             'choice': 'character', 'character_context_id': 'sakuta'}))
+        self.assertIn('69 line(s)', out)
+        run(api, 'voices', 'answer', 'esc1', 'unsure', '--tier', 'claude')
+        self.assertEqual(api.calls[-1][2]['choice'], 'unsure')
+        with self.assertRaises(fw.Failure):
+            run(api, 'voices', 'answer', 'esc1', 'Rio')
+
     def test_close_sends_the_resolution(self):
         api = AutopilotApi()
         run(api, 'close', 'esc1', '--resolution', '{"character": "mai"}')

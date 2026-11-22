@@ -82,7 +82,7 @@ def open_items(data, eligible):
         pt = audio_lines.subtitle_overlap(row, data['subtitles'])
         if pt:
             item['pt'] = ' / '.join(cue['text'].replace('\n', ' ') for cue in pt)[:240]
-        if row['id'] not in eligible or row['speaker_source'] in ('voice', 'voice_padded'):
+        if row['id'] not in eligible or row['speaker_source'] in DECIDED:
             item['decided'] = names.get(row['character_context_id'], 'unknown')
         else:
             evidence = json.loads(row['evidence_json'] or '{}').get('evidence', [])
@@ -91,8 +91,12 @@ def open_items(data, eligible):
     return shown, by_label
 
 
+# Speakers this job never re-decides: settled by the voice score, or given by the voice resolver (autopilot M5, two signals).
+DECIDED = ('voice', 'voice_padded', 'agent')
+
+
 def model_line(row):
-    return row['origin'] == 'model' and row['speaker_source'] != 'manual' and bool(row['words_json'])
+    return row['origin'] == 'model' and row['speaker_source'] not in ('manual', 'agent') and bool(row['words_json'])
 
 
 def revise(conn, episode_id, job_id, row, text, speaker, source, confidence, evidence):

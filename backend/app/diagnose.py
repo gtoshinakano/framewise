@@ -89,7 +89,7 @@ FIXES = {
     'out_of_scope': ('leave', 0, 'leave it: sequences are out of the autopilot\'s scope'),
 }
 # Pipelines triage can queue again with the current settings (triage.requeue); the others only through their own retry.
-REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'review_decisions', 'regen', 'missed_cuts', 'line_splits')
+REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'review_decisions', 'regen', 'missed_cuts', 'line_splits', 'voice_resolver')
 OUT_OF_SCOPE = ('sequence', 'brief_export')
 
 
@@ -457,7 +457,7 @@ def episode_problems(facts):
         items.append({'kind': 'setup', 'text': f"Setup is incomplete: {', '.join(missing)}", 'command': 'fw setup EP'})
     for voice in report['gates'].get('voices') or []:
         items.append({'kind': 'voice', 'text': f"Voice {voice['speaker_label'] or '(no label)'}: {voice['lines']} line(s) without a character",
-                      'first_time': voice['first_time']})
+                      'first_time': voice['first_time'], 'command': 'fw voices run EP'})
     checks = report['checks']
     if checks.get('speaker_attribution_stale'):
         items.append({'kind': 'stale', 'text': f"Speaker attribution is stale: {checks['speaker_attribution_stale']}", 'command': 'fw speakers EP'})
