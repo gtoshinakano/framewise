@@ -156,3 +156,33 @@ def preview_line_splits(episode_id: str):
                           **{key: plan.get(key) for key in ('action', 'why', 'at', 'left', 'right', 'start', 'end')}})
         applied = agent_log.decisions(conn, episode_id=episode_id, kind=line_splits.KIND, limit=1000)
         return {'counts': counts, 'lines': items, 'applied': applied}
+
+
+class LineSplitAnswer(BaseModel):
+    answer: Literal['apply', 'leave']
+    run_id: str | None = None
+    note: str | None = Field(default=None, max_length=1000)
+
+
+@router.post('/api/escalations/{escalation_id}/line-split', summary="Answer a line-split question (asked when the profile says Ask me): apply the plan or leave the line")
+def answer_line_split(escalation_id: str, body: LineSplitAnswer):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute("SELECT * FROM agent_escalations WHERE id=? AND kind='line_split'", (escalation_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Escalation not found')
+        if row['status'] != 'open':
+            raise HTTPException(409, 'This question is already closed')
+        line_id = row['group_key'].split(':', 1)[1]
+        if body.answer == 'leave':
+            agent_log.close_escalation(conn, escalation_id, 'resolved', {'answer': 'leave', 'note': body.note})
+            return {'status': 'left'}
+        line = conn.execute('SELECT * FROM transcript_segments WHERE id=? AND superseded_by IS NULL AND deleted=0', (line_id,)).fetchone()
+        planned = [item for item in line_splits.plan_episode(conn, row['episode_id'], [dict(line)]) if item[2]['action'] != 'leave'] if line else []
+        if not planned:
+            agent_log.close_escalation(conn, escalation_id, 'dismissed', {'why': 'the line changed or no longer crosses a cut'})
+            return {'status': 'outdated'}
+        source, cut, plan = planned[0]
+        made = line_splits.apply_plan(conn, source, cut, plan, run_id=body.run_id, tier='human')
+        agent_log.close_escalation(conn, escalation_id, 'resolved', {'answer': 'apply', 'rows': made, 'note': body.note})
+        return {'status': 'applied', 'rows': made}

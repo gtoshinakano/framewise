@@ -104,6 +104,14 @@ def requeue(conn, job, payload, cut_ids, prerequisite=False):
         if not again:
             raise Unfixable('line splits are switched off in the Autopilot profile')
         return [again]
+    if pipeline == 'character_decisions':
+        from . import character_decisions
+        parts = payload.get('parts') or {}
+        again = character_decisions.queue(conn, episode_id, run_id=payload.get('run_id'), first_index=payload.get('first_index') or 0,
+                                          last_index=payload.get('last_index'), boxes=parts.get('boxes', True), targets=parts.get('targets', True))
+        if not again:
+            raise Unfixable('box names and target frames are switched off in the Autopilot profile')
+        return [again]
     if pipeline == 'voice_resolver':
         from . import voice_resolver
         again = voice_resolver.queue(conn, episode_id, run_id=payload.get('run_id'), attribution=payload.get('attribution', True))

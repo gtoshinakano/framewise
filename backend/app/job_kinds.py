@@ -397,6 +397,21 @@ def _line_split_invalidates(conn, job):
     line_splits.invalidate(conn, job)
 
 
+def _character_decisions_gather(conn, job):
+    from . import character_decisions
+    return character_decisions.gather(conn, job)
+
+
+def _character_decisions_inputs(conn, job):
+    from . import character_decisions
+    return character_decisions.inputs(conn, job)
+
+
+def _character_decisions_invalidates(conn, job):
+    from . import character_decisions
+    character_decisions.invalidate(conn, job)
+
+
 def _voice_resolver_gather(conn, job):
     from . import voice_resolver
     return voice_resolver.gather(conn, job)
@@ -748,6 +763,14 @@ KINDS = {kind.pipeline: kind for kind in (
          resources=frozenset({'cpu_media'}), handler='line_splits.process',
          scope=lambda payload: Scope(frozenset({'transcript', 'cut_boundaries', 'prepared_audio'}), frozenset({'transcript'})),
          priority_class=lambda payload: 'batch', inputs=_line_split_inputs, gather=_line_split_gather, invalidates=_line_split_invalidates),
+    # First-frame names, unknown people and target-frame flags (character_decisions.py, autopilot M6): reads stored shortlists,
+    # CCIP vectors and keyframe states only (no model), so it runs on the CPU in the API process.
+    Kind('character_decisions', 'Character decisions (agent)', False, keys=lambda payload, cut_ids: ['character_decisions'],
+         resources=frozenset({'cpu_media'}), handler='character_decisions.process',
+         scope=lambda payload: Scope(frozenset({'cut_boundaries', 'detections', 'target_detections', 'keyframes', 'context', 'results'}),
+                                     frozenset({'detections', 'target_detections'})),
+         priority_class=lambda payload: 'batch', inputs=_character_decisions_inputs, gather=_character_decisions_gather,
+         invalidates=_character_decisions_invalidates),
     Kind('prepare', 'Prepare media', False, cancel_queued=False, keys=lambda payload, cut_ids: ['prepare'],
          resources=frozenset({'cpu_media'}),
          scope=lambda payload: Scope(frozenset({'original'}), frozenset({'proxy', 'prepared_audio', 'chunks', 'previews'})),

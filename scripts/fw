@@ -24,13 +24,17 @@
     scripts/fw review-decisions report "Episode 6"  # what it answered (undo ids), the questions for Claude or you, trust per topic
     scripts/fw voices run "Episode 6"            # give unknown voices to characters where two signals agree, ask about the rest
     scripts/fw voices report "Episode 6"         # open voices, what it gave to whom (undo ids), the voice questions with links
+    scripts/fw cast run "Episode 6"              # name boxes, unbox duplicates and background, group unknown people, settle target frames
+    scripts/fw cast report "Episode 6"           # what it applied (undo ids), the questions with box and target-frame sheets
+    scripts/fw autopilot "Episode 6" --go        # the whole flow with every gate's resolver; stale results re-run; ends with a digest
+    scripts/fw digest "Episode 6" --run RUN_ID   # what agents applied and what is left for the person, with links
 
 Cut numbers are the editor's (1-based). RANGE is 100-120, 100..120, 7, 5- (to the end), -10 or all (the default).
 Only the HTTP API is used: FRAMEWISE_URL, else http://chopper.local:8080 (the server). It runs the same from any machine
 on the LAN, and nothing on the machine it runs from needs rebuilding or restarting.
 It queues, waits, retries, dismisses, cancels and reads. It never edits labels, boxes, transcript text, answers,
 dialogue or sequences itself, and never restarts containers; the autopilot's resolvers (missed-cuts, line-splits,
-review-decisions, voices) change cuts, lines, answers and speakers in the server, each change logged as an undoable agent decision.
+review-decisions, voices, cast) change cuts, lines, answers, speakers, box labels and target-frame reviews in the server, each change logged as an undoable agent decision.
 
 Exit codes: 0 ok or done, 1 error, 2 blocked on a person, 3 busy (work is queued or running).
 """
@@ -649,6 +653,289 @@ def cmd_drive(api, args):
             print(f"stopped: {decision['step']} queued nothing; check those cuts by hand")
             return BLOCKED
         wait_queue(api, episode['id'], 0)
+
+
+# --- the autopilot (docs/autopilot/HARNESS.md M8) ------------------------------------------------------------------
+
+# Resolvers the autopilot runs at the gates `drive` stops at; each is idempotent (it acts only on what is still open).
+RESOLVERS = {
+    'missed_cuts': ('/api/episodes/{id}/missed-cuts', 'missed_cuts', 'hard cuts the detection missed (M2)'),
+    'line_splits': ('/api/episodes/{id}/line-splits', 'line_splits', 'lines across a hard cut (M3)'),
+    'voices': ('/api/episodes/{id}/voice-decisions', 'voices', 'unknown voices (M5)'),
+    'cast': ('/api/episodes/{id}/character-decisions', 'box_names', 'box names, unknown people, target frames (M6)'),
+    'review_decisions': ('/api/episodes/{id}/review-decisions', 'review_answers', 'review questions (M4)'),
+    'triage': ('/api/episodes/{id}/triage', 'failed_runs', 'failed runs with a fix rule (M1)'),
+}
+# A step that queues work makes these resolvers worth running again (their inputs change).
+REOPENS = {'setup': {'missed_cuts', 'line_splits', 'voices', 'cast'}, 'missed_cuts': {'line_splits', 'cast'}, 'speakers': {'voices'},
+           'target-frames': {'cast'}, 'consistency': {'review_decisions'}, 'stale:consistency': {'review_decisions'}, 'transcribe': {'line_splits', 'voices'}}
+FIXABLE = ('requeue', 'rerun', 'dismiss', 'prerequisite')
+# Stale results in pipeline order (D7): a cut is re-run from its earliest stale stage; titles the current flow no longer
+# makes (last frame, subtitle OCR) are left alone.
+STALE_STAGES = (('visual', ('Initial frame description', 'Keyframe analysis', 'Video analysis')), ('beats', ('Performance beats',)),
+                ('consistency', ('Consistency summary',)), ('summary', ('Cut summary',)))
+STALE_TRIES = 2
+
+
+def _numbers(items):
+    return {item['cut'] if isinstance(item, dict) else item for item in items}
+
+
+def autopilot_plan(report, queue_state, triage_items, modes, done, stuck, language=None):
+    """The next move of the autopilot. Like ``plan`` but a gate runs its resolver instead of stopping, gated cuts are held
+    back from the steps that would build on a guess, and stale results are re-run in pipeline order (D7).
+
+    ``done``: resolvers already run since their inputs last changed; ``stuck``: {step: cut numbers} a step was asked to do
+    but left as they were (they are not asked again in this session). Returns {'action': busy|run|resolve|waiting|done, ...}."""
+    running = queue_state.get('running') or []
+    if running or queue_state.get('waiting_total'):
+        labels = [f"{run['label']} ({run['status']})" for run in running][:3]
+        return {'action': 'busy', 'detail': f"running: {', '.join(labels) or 'none'}; waiting: {queue_state.get('waiting_total', 0)}"}
+
+    def resolve(name, why):
+        return {'action': 'resolve', 'resolver': name, 'detail': f"{RESOLVERS[name][2]}: {why}"}
+
+    def wanted(name):
+        return name not in done and modes.get(RESOLVERS[name][1], 'apply') != 'off'
+
+    if wanted('triage') and any(item['action'] in FIXABLE for item in triage_items):
+        return resolve('triage', f"{sum(item['action'] in FIXABLE for item in triage_items)} failed run(s) have a fix rule")
+    setup, progress, gates, checks = report['setup'], report['progress'], report['gates'], report['checks']
+    if setup.get('cuts') and setup.get('media') and wanted('missed_cuts'):
+        return resolve('missed_cuts', 'before anything is built on the cut boundaries')
+    if not all(setup.values()):
+        language = language or report['episode'].get('subtitle_language')
+        missing = [name for name, ok in setup.items() if not ok]
+        if 'setup' in stuck:
+            pass
+        elif not language:
+            return {'action': 'waiting', 'gate': 'language', 'detail': f"setup needs the subtitle language ({', '.join(missing)} missing): add --language"}
+        else:
+            return {'action': 'run', 'step': 'setup', 'language': language, 'detail': f"missing: {', '.join(missing)}"}
+    if setup.get('transcript') and wanted('line_splits'):
+        return resolve('line_splits', 'after transcription, before speakers')
+    stale = checks.get('speaker_attribution_stale')
+    if stale and stale != UNANSWERED_ATTRIBUTION and 'speakers' not in stuck:
+        return {'action': 'run', 'step': 'speakers', 'detail': f'speaker attribution is stale: {stale}'}
+    if gates['voices'] and wanted('voices'):
+        return resolve('voices', f"{sum(voice['lines'] for voice in gates['voices'])} line(s) without a character")
+    if (gates['first_frame'] or gates['target_frames'] or checks.get('auto_labels')) and wanted('cast'):
+        return resolve('cast', 'unnamed boxes, unconfirmed labels or flagged target frames')
+
+    def run(step, numbers, detail=None):
+        numbers = sorted(set(numbers) - set(stuck.get(step, ())))
+        return {'action': 'run', 'step': step, 'cuts': numbers, 'detail': detail or f'cuts {numbers_text(numbers)}'} if numbers else None
+
+    held_boxes = _numbers(gates['first_frame'])
+    held = held_boxes | _numbers(gates['target_frames'])
+    for step, numbers, hold in (('target-frames', progress['target_missing'], held_boxes), ('visual', progress['visual_missing'], held),
+                                ('beats', progress['beats_missing'], held), ('consistency', progress['consistency_missing'], held)):
+        if decision := run(step, set(numbers) - hold):
+            return decision
+    if gates['decisions'] and wanted('review_decisions'):
+        return resolve('review_decisions', f"{len(gates['decisions'])} cut(s) with review questions")
+    held_answers = held | _numbers(gates['decisions'])
+    if decision := run('summary', set(progress['summary_missing']) - held_answers):
+        return decision
+    if modes.get('stale_reruns', 'apply') != 'off':
+        earliest = {}
+        for item in checks.get('stale_results') or []:
+            for rank, (stage, titles) in enumerate(STALE_STAGES):
+                if item['title'] in titles:
+                    earliest[item['cut']] = min(rank, earliest.get(item['cut'], rank))
+        for rank, (stage, _) in enumerate(STALE_STAGES):
+            hold = held_answers if stage == 'summary' else held
+            numbers = [cut for cut, first in earliest.items() if first == rank and cut not in hold]
+            if decision := run(f'stale:{stage}', numbers, f"stale {stage}: cuts {numbers_text(sorted(numbers))}"):
+                return decision
+    waiting = {name: len(gates[name]) for name in ('first_frame', 'target_frames', 'voices', 'decisions') if gates[name]}
+    if waiting:
+        return {'action': 'waiting', 'gate': 'person', 'detail': 'left for the inbox: ' + ', '.join(f"{name.replace('_', ' ')} {count}" for name, count in waiting.items())}
+    return {'action': 'done', 'detail': 'nothing left up to the Cut summary'}
+
+
+def autopilot_execute(api, episode, decision, run_id, language=None):
+    """Queue what ``autopilot_plan`` chose; returns the job ids. Cut lists go per contiguous run (so held cuts between them
+    are never swept into a batch) or per cut."""
+    if decision['action'] == 'resolve':
+        path = RESOLVERS[decision['resolver']][0].format(id=episode['id'])
+        result = api.post(path, body={'run_id': run_id})
+        return job_ids(result) or (['(applied)'] if decision['resolver'] == 'triage' and (result.get('applied') or result.get('items')) else [])
+    step, numbers = decision['step'], decision.get('cuts') or []
+    if step == 'setup':
+        return job_ids(api.post(f"/api/episodes/{episode['id']}/prepare", body={'language': decision['language']}))
+    if step == 'speakers':
+        return job_ids(api.post(f"/api/episodes/{episode['id']}/speaker-attribution"))
+    by_number = cut_numbers(api, episode)
+    ids = []
+    if step.startswith('stale:') or step == 'beats':
+        stage = step.split(':', 1)[-1]
+        for number in numbers:
+            cut = by_number.get(number)
+            if not cut:
+                continue
+            try:
+                if stage == 'visual':
+                    for visual in ('initial_frame', 'keyframe_analysis'):
+                        ids += job_ids(api.post(f"/api/cuts/{cut['id']}/analysis-stages/run", body={'stage': visual}))
+                elif stage == 'beats':
+                    ids += job_ids(api.post(f"/api/cuts/{cut['id']}/performance-beats"))
+                elif stage == 'consistency':
+                    ids += job_ids(api.post(f"/api/cuts/{cut['id']}/consistency-summary"))
+                elif stage == 'summary':
+                    ids += job_ids(api.post(f"/api/cuts/{cut['id']}/regenerate-summary", body={'mode': 'regenerate'}))
+            except Failure as exc:
+                print(f"  cut {number}: {exc}", flush=True)
+        return ids
+    for first, last in runs_of(numbers):
+        flags = argparse.Namespace(redo=False, save=False, language=None, replace_manual=False)
+        ids += job_ids(run_step(api, episode, step, (first, last), flags))
+    return ids
+
+
+def runs_of(numbers):
+    """[(first, last)] of consecutive cut numbers."""
+    spans = []
+    for number in sorted(set(numbers)):
+        if spans and number == spans[-1][1] + 1:
+            spans[-1][1] = number
+        else:
+            spans.append([number, number])
+    return [tuple(span) for span in spans]
+
+
+def profile_modes(api, episode):
+    try:
+        return (api.get(f"/api/projects/{episode['project_id']}/autopilot-profile").get('profile') or {}).get('modes') or {}
+    except Failure:
+        return {}
+
+
+def cmd_autopilot(api, args):
+    """Drive an episode to its Cut summaries: run each gate's resolver, hold back only the cuts that wait for a person,
+    re-run stale results, triage failures between steps; end with a digest. Exit 0 done, 2 questions left, 3 busy (--once)."""
+    episode = find_episode(api, args.episode, args.latest)
+    if not args.go:
+        decision = autopilot_plan(review(api, episode['id']), queue(api, episode['id']),
+                                  api.get(f"/api/episodes/{episode['id']}/triage").get('items') or [], profile_modes(api, episode), set(), {}, args.language)
+        emit(args, decision, autopilot_line(decision) + '\n(add --go to run it; --once runs one step)')
+        return {'busy': BUSY, 'waiting': BLOCKED}.get(decision['action'], OK)
+    run_id = args.run or api.post(f"/api/episodes/{episode['id']}/agent-runs", body={'agent': args.agent, 'purpose': 'autopilot'}).get('id')
+    print(f"autopilot on {episode['project']} / {episode['title']} ({episode['id']}), agent run {run_id}", flush=True)
+    done, stuck, tries, counts = set(), {}, {}, {}
+    modes = profile_modes(api, episode)
+    started = time.time()
+    while True:
+        report, state = review(api, episode['id']), queue(api, episode['id'])
+        triage_items = api.get(f"/api/episodes/{episode['id']}/triage", {'run_id': run_id}).get('items') or []
+        decision = autopilot_plan(report, state, triage_items, modes, done, stuck, args.language)
+        if decision['action'] == 'busy':
+            if args.once:
+                print(autopilot_line(decision))
+                return BUSY
+            print(time.strftime('%H:%M:%S'), autopilot_line(decision), flush=True)
+            wait_queue(api, episode['id'], args.timeout or 0, quiet=True)
+            if args.timeout and time.time() - started > args.timeout:
+                print('stopped: timeout')
+                break
+            continue
+        if decision['action'] in ('waiting', 'done'):
+            print(time.strftime('%H:%M:%S'), autopilot_line(decision), flush=True)
+            break
+        print(time.strftime('%H:%M:%S'), autopilot_line(decision), flush=True)
+        ids = autopilot_execute(api, episode, decision, run_id, args.language)
+        key = decision.get('resolver') or decision['step']
+        counts[key] = counts.get(key, 0) + 1
+        if decision['action'] == 'resolve':
+            done.add(decision['resolver'])
+            if decision['resolver'] != 'triage':
+                done.discard('triage')
+        else:
+            numbers = tuple(decision.get('cuts') or ())
+            tries[(key, numbers)] = tries.get((key, numbers), 0) + 1
+            if not ids or tries[(key, numbers)] >= STALE_TRIES:
+                # queued nothing, or the same cuts came back: never ask again in this session
+                stuck.setdefault(key, set()).update(numbers or {0})
+                if not ids:
+                    print(f"  {key}: queued nothing for cuts {numbers_text(numbers) if numbers else '(episode)'}; left for a person", flush=True)
+            done.discard('triage')
+            done -= REOPENS.get(key, set())
+        if ids and ids != ['(applied)']:
+            print(f"  queued {len(ids)} job(s)", flush=True)
+        if args.once:
+            return OK
+    claude = api.get(f"/api/episodes/{episode['id']}/escalations", {'reviewer': 'claude'})['items']
+    api.post(f'/api/agent-runs/{run_id}/finish', body={'summary': {'steps': counts, 'stuck': {key: sorted(value) for key, value in stuck.items()},
+                                                                   'seconds': round(time.time() - started), 'for_claude': len(claude)}})
+    print()
+    return cmd_digest(api, argparse.Namespace(**{**vars(args), 'run': run_id, 'episode': episode['id'], 'latest': False}))
+
+
+def autopilot_line(decision):
+    action = decision['action']
+    if action == 'resolve':
+        return f"resolver {decision['resolver']} · {decision['detail']}"
+    if action == 'run':
+        return f"{decision['step']} · {decision.get('detail', '')}"
+    return f"{action}: {decision.get('detail', '')}"
+
+
+def cmd_digest(api, args):
+    """What the autopilot did (one run, or everything agents did in the episode) and what is left, with the links to open."""
+    episode = find_episode(api, args.episode, args.latest)
+    run_filter = {'run_id': args.run} if args.run else {}
+    decisions = [item for item in api.get(f"/api/episodes/{episode['id']}/agent-decisions", {'limit': 5000})
+                 if not run_filter or item['run_id'] == args.run]
+    open_items = api.get(f"/api/episodes/{episode['id']}/escalations")['items']
+    runs = {item['id']: item for item in api.get(f"/api/episodes/{episode['id']}/agent-runs")}
+    numbers = {cut['id']: number for number, cut in cut_numbers(api, episode).items()}
+    lines = [f"DIGEST · {episode['project']} / {episode['title']}" + (f" · run {args.run}" if args.run else ' · all agent runs')]
+    if args.run and args.run in runs:
+        summary = runs[args.run].get('summary') or {}
+        steps = summary.get('steps') or {}
+        if steps:
+            lines.append('steps: ' + ', '.join(f"{key} ×{value}" for key, value in sorted(steps.items())))
+        if summary.get('seconds'):
+            lines.append(f"took {summary['seconds'] // 60} min")
+    applied = [item for item in decisions if not item['undone_at']]
+    by_kind = {}
+    for item in applied:
+        entry = by_kind.setdefault(item['kind'], {'total': 0, 'tiers': {}})
+        entry['total'] += 1
+        entry['tiers'][item['tier']] = entry['tiers'].get(item['tier'], 0) + 1
+    lines.append(f"APPLIED ({len(applied)}; undo: fw agent undo RUN, or one with --decision):")
+    lines += [f"  - {kind}: {entry['total']} ({', '.join(f'{tier} {count}' for tier, count in sorted(entry['tiers'].items()))})" for kind, entry in sorted(by_kind.items())] or ['  (nothing)']
+    fixed = [item for item in applied if item['kind'] == 'failed_runs']
+    if fixed:
+        lines.append(f"failures fixed: {len(fixed)}")
+    claude = [item for item in open_items if item['reviewer'] == 'claude']
+    person = [item for item in open_items if item['reviewer'] == 'human']
+    lines.append(f"FOR CLAUDE ({len(claude)}): answer them with the resolver skills (fw inbox EP --reviewer claude)")
+    lines.append(f"FOR YOU ({len(person)}): the Inbox in the editor ({ui_link(api, episode)}) or the links below")
+    groups = {}
+    for item in person:
+        groups.setdefault(item['kind'], []).append(item)
+    for kind, items in sorted(groups.items()):
+        cut_list = sorted({numbers[cut_id] for item in items for cut_id in item['cut_ids'] if cut_id in numbers})
+        lines.append(f"  {kind} ({len(items)}): cuts {numbers_text(cut_list) if cut_list else '-'}")
+        place = {'box_label': 'characters', 'new_person': 'characters', 'target_frame': 'target-frames'}.get(kind, 'analysis')
+        lines += link_lines(api, episode, cut_list[:10], place, indent='    ')
+    open_failures = [item for item in api.get(f"/api/episodes/{episode['id']}/triage").get('items') or [] if item['action'] not in FIXABLE]
+    if open_failures:
+        lines.append(f"FAILURES LEFT ({len(open_failures)}): " + '; '.join(f"{item['label']} cut {numbers_text(item['cuts'])}: {item['cause_text']}" for item in open_failures[:8]))
+    touched = {item['cut_id'] for item in applied if item['cut_id']}
+    sequences = []
+    try:
+        sequences = api.get(f"/api/episodes/{episode['id']}/sequences")
+    except Failure:
+        pass
+    for sequence in sequences:
+        span = set(range(sequence.get('first_cut') or 0, (sequence.get('last_cut') or -1) + 1))
+        hit = sorted(numbers[cut_id] for cut_id in touched if numbers.get(cut_id) in span)
+        if hit:
+            lines.append(f"sequence “{sequence['title'][:60]}”: agent changes in cuts {numbers_text(hit)}; its shots may be stale (yours to decide, D9)")
+    emit(args, {'decisions': applied, 'for_claude': claude, 'for_person': person, 'failures': open_failures}, '\n'.join(lines))
+    return BLOCKED if person or claude else OK
 
 
 # --- reading -----------------------------------------------------------------------------------------------------
@@ -1465,6 +1752,119 @@ def cmd_voices(api, args):
     raise Failure(f'unknown action {args.action!r}')
 
 
+def cmd_characters(api, args):
+    """The character agent (M6): name boxes, group unknown people, settle target frames."""
+    if args.action in ('run', 'report'):
+        episode = find_episode(api, args.target, args.latest)
+        if args.action == 'run':
+            first, last = parse_range(args.extra)
+            body = {'run_id': args.run, 'from_cut': first, 'to_cut': last, 'boxes': not args.no_boxes, 'targets': not args.no_targets}
+            result = api.post(f"/api/episodes/{episode['id']}/character-decisions", body=body)
+            emit(args, result, result.get('detail') or ('(dry run: nothing queued)' if result.get('dry_run') else
+                 f"queued the character agent: {result['job_id']}\nwait with: fw wait {episode['id'][:8]} --jobs {result['job_id']}"))
+            return OK
+        data = api.get(f"/api/episodes/{episode['id']}/character-decisions")
+        if args.json:
+            emit(args, data, '')
+            return OK
+        lines = [f"{episode['project']} / {episode['title']}: character agent"]
+        last = data.get('last_run')
+        if last:
+            lines.append(f"last run: {last['status']} · {last['stage']}")
+        applied = [item for item in data['applied'] if not item['undone_at']]
+        if applied:
+            lines.append(f"APPLIED BY THE AGENT ({len(applied)}; undo one with fw agent undo ID --decision):")
+            for item in applied[:args.limit]:
+                lines.append(f"  - {item['summary']}{' (changed by a person since)' if item['overridden_at'] else ''}  id {item['id']}")
+                if item['cut_id']:
+                    place = 'target-frames' if item['kind'] == 'target_frames' else 'characters'
+                    lines.append(f"    {cut_url(api, episode, item['cut_id'], place)}")
+            if len(applied) > args.limit:
+                lines.append(f"  … {len(applied) - args.limit} more (--limit)")
+        if data['questions']:
+            lines.append(f"QUESTIONS ({len(data['questions'])}):")
+            for item in data['questions']:
+                evidence = item['evidence'] or {}
+                lines.append(f"  - [{'Claude' if item['reviewer'] == 'claude' else 'person'}] {item['kind']}: {item['question']}  id {item['id']}")
+                if evidence.get('claude_note'):
+                    lines.append(f"      Claude: {evidence['claude_note']}")
+                if item['kind'] == 'target_frame':
+                    for frame in evidence.get('frames') or []:
+                        lines.append(f"      {frame['frame']} (ordinal {frame['ordinal']}): {frame['why']}")
+                    lines.append(f"      sheet: {api.url}/api/escalations/{item['id']}/target-sheet")
+                    for cut_id in item['cut_ids'][:1]:
+                        lines.append(f"      {cut_url(api, episode, cut_id, 'target-frames')}")
+                else:
+                    for number, box in enumerate(evidence.get('boxes') or [], 1):
+                        shortlist = ', '.join(f"{name} {score:.2f}" for _, name, score in box.get('candidates') or [])
+                        lines.append(f"      B{number} cut {box['cut']} id {box['id'][:8]}{' (small)' if box.get('small') else ''}"
+                                     + (f" now {box['current']}" if box.get('current') else '') + (f" · {shortlist}" if shortlist else ''))
+                    lines.append(f"      sheet: {api.url}/api/escalations/{item['id']}/box-sheet")
+                    for cut_id in item['cut_ids'][:3]:
+                        lines.append(f"      {cut_url(api, episode, cut_id, 'characters')}")
+        print('\n'.join(lines))
+        return BLOCKED if data['questions'] else OK
+    if not args.target:
+        raise Failure(f'fw cast {args.action} needs a question id (fw cast report EP lists them)')
+    question = api.get(f'/api/escalations/{quote(args.target)}')
+    kind = question.get('kind')
+    if kind not in ('box_label', 'new_person', 'target_frame'):
+        raise Failure(f'{args.target} is not a character question')
+    if args.action == 'sheet':
+        path = 'target-sheet' if kind == 'target_frame' else 'box-sheet'
+        image = api.raw(f'/api/escalations/{quote(args.target)}/{path}', {})
+        out = args.out or f"{kind}-{args.target[:8]}.jpg"
+        with open(out, 'wb') as handle:
+            handle.write(image)
+        emit(args, {'file': out, 'question': question['question']}, f"{out}\n{question['question']}")
+        return OK
+    if args.action != 'answer':
+        raise Failure(f'unknown action {args.action!r}')
+    if not args.extra:
+        raise Failure('answer: see fw cast --help for the forms per question kind')
+    body = {'tier': args.tier, 'run_id': args.run, 'note': args.note}
+    reply = args.extra.strip()
+    if kind == 'target_frame':
+        # "ok" (every listed frame), "person", or per frame "11028=ok,11040=person"
+        frames = [frame['ordinal'] for frame in (question['evidence'] or {}).get('frames') or []]
+        if reply.casefold() in ('ok', 'person'):
+            body['frames'] = {str(ordinal): reply.casefold() for ordinal in frames}
+        else:
+            body['frames'] = dict(part.split('=', 1) for part in reply.split(','))
+        result = api.post(f'/api/escalations/{quote(args.target)}/target-frames', body=body)
+    elif kind == 'box_label':
+        # "confirm" (all), "reject" (all), or "confirm=B1,B3 reject=B2", optionally "--character Name"
+        boxes = [box['id'] for box in (question['evidence'] or {}).get('boxes') or []]
+        picks = {'confirm': [], 'reject': []}
+        for part in reply.split():
+            key, _, which = part.partition('=')
+            key = key.casefold()
+            if key not in picks:
+                raise Failure(f'cannot read {part!r}: use confirm, reject, confirm=B1,B2 or reject=B3')
+            picks[key] += boxes if not which else [boxes[int(item.strip().lstrip('Bb')) - 1] for item in which.split(',')]
+        body.update(confirm=picks['confirm'], reject=picks['reject'])
+        if args.character:
+            data = api.get(f"/api/episodes/{question['episode_id']}/character-decisions")
+            body['character_context_id'] = _character(data, {'evidence': {}}, args.character)['id']
+        result = api.post(f'/api/escalations/{quote(args.target)}/box-labels', body=body)
+    else:
+        # "Name" (an existing character), "new" (--title), "background", "leave" or "unsure"
+        word = reply.casefold()
+        if word in ('new', 'background', 'leave', 'unsure'):
+            body['choice'] = word
+            if word == 'new':
+                if not args.title:
+                    raise Failure('new: give the name with --title "Name"')
+                body.update(title=args.title, is_main=args.main, episode_only=args.episode_only)
+        else:
+            data = api.get(f"/api/episodes/{question['episode_id']}/character-decisions")
+            body.update(choice='character', character_context_id=_character(data, {'evidence': {}}, reply)['id'])
+        result = api.post(f'/api/escalations/{quote(args.target)}/person', body=body)
+    emit(args, result, 'handed to the person' if result.get('handed_to_person') else
+         ('resolved' if result.get('resolved') else f"applied; still open: {result.get('left') or 'some boxes'}"))
+    return OK
+
+
 # --- command line ------------------------------------------------------------------------------------------------
 
 def parser():
@@ -1598,6 +1998,40 @@ def parser():
     command.add_argument('--note', help='answer: why (kept with the decision)')
     command.add_argument('--out', help='sheet: file to write (default voice-ID.jpg)')
     command.set_defaults(func=cmd_voices)
+    command = sub.add_parser('cast', parents=[common],
+                             help='character agent (M6): run EP [RANGE], report EP, sheet ID, answer ID REPLY')
+    command.add_argument('action', choices=('run', 'report', 'sheet', 'answer'))
+    command.add_argument('target', nargs='?', help='episode (run, report) or question id (sheet, answer)')
+    command.add_argument('extra', nargs='?', help='run: cut range; answer: box_label "confirm"|"reject"|"confirm=B1,B2 reject=B3", '
+                         'new_person "Name"|new|background|leave|unsure, target_frame ok|person|"ORD=ok,ORD=person"')
+    command.add_argument('--latest', action='store_true', help='the newest episode')
+    command.add_argument('--run', help='the agent run (fw agent start)')
+    command.add_argument('--no-boxes', action='store_true', help='run: leave first-frame boxes alone')
+    command.add_argument('--no-targets', action='store_true', help='run: leave target frames alone')
+    command.add_argument('--limit', type=int, default=40, help='report: applied decisions to list')
+    command.add_argument('--tier', default='human', choices=('claude', 'human'), help='answer: who answers (claude = the second reviewer)')
+    command.add_argument('--character', help='answer (box_label): confirm these boxes as this character instead of the proposal')
+    command.add_argument('--title', help='answer new: the new character\'s name')
+    command.add_argument('--main', action='store_true', help='answer new: a main character')
+    command.add_argument('--episode-only', action='store_true', help='answer new: only in this episode')
+    command.add_argument('--note', help='answer: why (kept with the decision)')
+    command.add_argument('--out', help='sheet: file to write')
+    command.set_defaults(func=cmd_characters, range=None)
+    command = sub.add_parser('autopilot', parents=[common], help='drive an episode to its Cut summaries with the resolvers at every gate (M8)')
+    command.add_argument('episode', nargs='?', help='episode id, or text of "Project / Episode"')
+    command.add_argument('--latest', action='store_true', help='the newest episode')
+    command.add_argument('--go', action='store_true', help='run it (without: print the next move)')
+    command.add_argument('--once', action='store_true', help='with --go: one step, then exit (3 when busy)')
+    command.add_argument('--run', help='an agent run to add to (default: start one)')
+    command.add_argument('--agent', default='fw-autopilot', help='the agent name recorded on the run')
+    command.add_argument('--language', help='subtitle language for setup')
+    command.add_argument('--timeout', type=int, default=0, help='stop waiting after this many seconds (0: no limit)')
+    command.set_defaults(func=cmd_autopilot)
+    command = sub.add_parser('digest', parents=[common], help='what agents did and what is left, with the links to open')
+    command.add_argument('episode', nargs='?', help='episode id, or text of "Project / Episode"')
+    command.add_argument('--latest', action='store_true', help='the newest episode')
+    command.add_argument('--run', help='one agent run (default: everything agents did)')
+    command.set_defaults(func=cmd_digest)
     command = sub.add_parser('close', parents=[common], help='close an escalation: resolved or dismissed')
     command.add_argument('escalation')
     command.add_argument('--status', default='resolved', choices=('resolved', 'dismissed'))

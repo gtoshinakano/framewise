@@ -27,6 +27,8 @@ import { InspectorRail, type InspectorTab } from './InspectorRail'
 import { CutInspector } from './CutInspector'
 import { ChunkInspector } from './ChunkInspector'
 import { QueueDrawer } from './QueueDrawer'
+import { InboxDrawer } from './InboxDrawer'
+import { elsewhereText, mineCount, type InboxCounts } from './inboxView'
 import type { QueueSummary } from './queueView'
 import { EpisodeSettingsDialog } from './EpisodeSettingsDialog'
 import { PrepareEpisodeDialog } from './PrepareEpisodeDialog'
@@ -248,6 +250,11 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const [queueOpen, setQueueOpen] = useState<false | 'top' | 'attention'>(false)
   const closeQueue = useCallback(() => setQueueOpen(false), [])
   const [queueSummary, setQueueSummary] = useState<QueueSummary | null>(null)
+  const [inboxOpen, setInboxOpen] = useState(false)
+  const [inboxCounts, setInboxCounts] = useState<InboxCounts | null>(null)
+  const loadInboxCounts = useCallback(() => { api<InboxCounts>('/autopilot/inbox-counts').then(setInboxCounts).catch(() => undefined) }, [])
+  useEffect(() => { loadInboxCounts(); const timer = setInterval(loadInboxCounts, 60000); return () => clearInterval(timer) }, [loadInboxCounts])
+  useEpisodeEvents(change => { if (change.data || change.jobs) loadInboxCounts() }, id)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [cutsCollapsed, setCutsCollapsed] = usePref('editor.cutsCollapsed', false)
   const [timelineHeight, setTimelineHeight] = usePref<number | null>('editor.timelineHeight', null)
@@ -445,7 +452,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const undo = () => { if (history?.undo && !historyReason) void cutEdits.undo() }
   const redo = () => { if (history?.redo && !historyReason) void cutEdits.redo() }
   const step = (direction: 1 | -1) => { if (!activeSelected || !episode) return; const target = episode.cuts[activeSelected.cut_index + direction]; if (target) selectCut(target) }
-  useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !glossaryOpen && !outfitsOpen && !autopilotOpen && !audioRange && !prepareOpen && !queueOpen, {
+  useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !glossaryOpen && !outfitsOpen && !autopilotOpen && !inboxOpen && !audioRange && !prepareOpen && !queueOpen, {
     playPause: togglePlay, split, undo, redo, previous: () => step(-1), next: () => step(1),
     nextNeeding: () => { if (!episode) return; const next = nextNeedingAction(episode.cuts, selectedId, cutFilters.active); if (next) selectCut(next) },
     filters: () => setFiltersOpen(true),
@@ -469,6 +476,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
       onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}
       onPrepareEpisode={() => setPrepareOpen(true)}
       queue={queueSummary} running={jobs.some(job => job.status === 'running')} onOpenQueue={focus => setQueueOpen(focus || 'top')}
+      inbox={{ mine: mineCount(inboxCounts, id), elsewhere: elsewhereText(inboxCounts, id) }} onOpenInbox={() => setInboxOpen(true)}
       onOpenSettings={() => setSettingsOpen(true)} onOpenGlossary={() => setGlossaryOpen(true)} onOpenOutfits={() => setOutfitsOpen(true)} onOpenAutopilot={() => setAutopilotOpen(true)} onDeleteEpisode={() => void remove()} />
     {!episode ? <div className="muted p-12">{loadError || 'Loading episode…'}</div> : <div className="editor-workspace" style={workspaceStyle}>
       <aside className="editor-cuts scrollbar" hidden={cutsCollapsed} aria-label="Cut list">
@@ -518,6 +526,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
     {episode && queueOpen && <QueueDrawer episodeId={id} focus={queueOpen === 'attention' ? 'attention' : null} onClose={closeQueue} onChanged={refresh} onSummary={setQueueSummary}
       onOpenCut={cutId => { const cut = [...episode.cuts, ...episode.archived_cuts].find(item => item.id === cutId); if (cut) openCutAnalysis(cut); else toast({ tone: 'error', message: 'That cut no longer exists.' }) }}
       onOpenSequence={setSequenceOpen} />}
+    {episode && inboxOpen && <InboxDrawer episodeId={id} onClose={() => { setInboxOpen(false); loadInboxCounts() }} onChanged={() => { void refresh(); loadInboxCounts() }} />}
     {episode && glossaryOpen && <NameGlossaryDialog projectId={episode.project_id} onClose={() => setGlossaryOpen(false)} />}
     {episode && outfitsOpen && <OutfitsDialog projectId={episode.project_id} onClose={() => setOutfitsOpen(false)} />}
     {episode && autopilotOpen && <AutopilotProfileDialog projectId={episode.project_id} onClose={() => setAutopilotOpen(false)} />}

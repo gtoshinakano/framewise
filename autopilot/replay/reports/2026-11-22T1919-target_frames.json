@@ -1,0 +1,705 @@
+{
+ "resolver": "target_frames",
+ "date": "2026-11-22T1919",
+ "commit": "d55b128",
+ "tally": {
+  "right": 95,
+  "left_picture_right": 8,
+  "left_picture_user_reviewed": 5,
+  "extra_crop_right": 87,
+  "extra_crop_user_reviewed": 16
+ },
+ "asked": {
+  "count_changed,suspected_merge": 16,
+  "count_changed,unmatched": 43,
+  "count_changed": 86,
+  "count_changed,low_match,suspected_merge,unmatched": 5,
+  "count_changed,suspected_merge,unmatched": 14,
+  "jump": 6,
+  "count_changed,low_match,unmatched": 5,
+  "count_changed,low_match": 14,
+  "count_changed,jump,low_match,unmatched": 1,
+  "suspected_merge": 46,
+  "count_changed,jump,suspected_merge,unmatched": 1,
+  "suspected_merge,unmatched": 8,
+  "jump,unmatched": 3,
+  "count_changed,low_match,suspected_merge": 3,
+  "low_match": 5,
+  "count_changed,jump,low_match": 2,
+  "count_changed,jump": 3,
+  "jump,low_match,suspected_merge": 1,
+  "low_match,suspected_merge,unmatched": 1,
+  "unmatched": 1,
+  "jump,low_match": 1,
+  "low_match,suspected_merge": 1,
+  "low_match,unmatched": 1
+ },
+ "wrong": [],
+ "right": [
+  {
+   "episode": "Episode 2",
+   "cut": 9,
+   "frame": "F6",
+   "user_reviewed": true,
+   "rule": "left_picture"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 9,
+   "frame": "F7",
+   "user_reviewed": true,
+   "rule": "left_picture"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 9,
+   "frame": "F8",
+   "user_reviewed": true,
+   "rule": "left_picture"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 12,
+   "frame": "F3",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 12,
+   "frame": "F4",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 12,
+   "frame": "F5",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 113,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 114,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 114,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 122,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 159,
+   "frame": "F3",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 161,
+   "frame": "F5",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 163,
+   "frame": "F8",
+   "user_reviewed": true,
+   "rule": "left_picture"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 163,
+   "frame": "F9",
+   "user_reviewed": true,
+   "rule": "left_picture"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 168,
+   "frame": "F6",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 170,
+   "frame": "F2",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 170,
+   "frame": "F3",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 170,
+   "frame": "F4",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 170,
+   "frame": "F5",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 171,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 171,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 171,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 173,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 173,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 179,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "left_picture"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 180,
+   "frame": "F2",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 180,
+   "frame": "F3",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 180,
+   "frame": "F4",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 180,
+   "frame": "F5",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 180,
+   "frame": "F6",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 189,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 189,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 189,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 189,
+   "frame": "F6",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 189,
+   "frame": "F7",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 189,
+   "frame": "F9",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 189,
+   "frame": "F10",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 190,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 216,
+   "frame": "F9",
+   "user_reviewed": true,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 247,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 247,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 248,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 248,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 252,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 252,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 268,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 274,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 274,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 274,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 274,
+   "frame": "F5",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 275,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 275,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 275,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 275,
+   "frame": "F5",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 275,
+   "frame": "F6",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 276,
+   "frame": "F6",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 280,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 280,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 280,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 280,
+   "frame": "F7",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 280,
+   "frame": "F8",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 280,
+   "frame": "F9",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 280,
+   "frame": "F10",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 287,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 287,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 287,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 287,
+   "frame": "F5",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 292,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 292,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 299,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "left_picture"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 305,
+   "frame": "F6",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 305,
+   "frame": "F7",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 305,
+   "frame": "F8",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 310,
+   "frame": "F9",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 314,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 314,
+   "frame": "F5",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 314,
+   "frame": "F6",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 314,
+   "frame": "F7",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 314,
+   "frame": "F8",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 316,
+   "frame": "F5",
+   "user_reviewed": false,
+   "rule": "left_picture"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 160,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 160,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 160,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 160,
+   "frame": "F5",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 160,
+   "frame": "F6",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 160,
+   "frame": "F7",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 160,
+   "frame": "F8",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 160,
+   "frame": "F9",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 160,
+   "frame": "F10",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 164,
+   "frame": "F12",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 170,
+   "frame": "F2",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 170,
+   "frame": "F3",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 170,
+   "frame": "F4",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 170,
+   "frame": "F6",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 170,
+   "frame": "F7",
+   "user_reviewed": false,
+   "rule": "extra_crop"
+  }
+ ]
+}

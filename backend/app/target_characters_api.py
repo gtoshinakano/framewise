@@ -375,6 +375,12 @@ def review_frame(run_id: str, ordinal: int, body: FrameReview):
         run = _editable_run(conn, run_id)
         _frame(run, ordinal)
         target_reviews.update_frames(conn, run, {ordinal}, reviewed=body.reviewed)
+        if not body.reviewed:
+            target_reviews.note_frame_override(conn, run_id, {ordinal})
+        from . import character_decisions
+        episode = conn.execute('SELECT episode_id FROM cuts WHERE id=?', (run['cut_id'],)).fetchone()
+        if episode:
+            character_decisions.close_settled(conn, episode['episode_id'])
     return {'ok': True}
 
 

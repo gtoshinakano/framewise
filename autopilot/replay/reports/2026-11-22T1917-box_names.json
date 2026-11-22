@@ -1,0 +1,1061 @@
+{
+ "resolver": "box_names",
+ "date": "2026-11-22T1917",
+ "commit": "d55b128",
+ "cases": 305,
+ "named": {
+  "claude": 217,
+  "name_right": 80,
+  "name_wrong": 4,
+  "remove": 3,
+  "unknown": 1
+ },
+ "confirmed": {
+  "claude": 191,
+  "confirm_right": 82,
+  "confirm_wrong": 32
+ },
+ "named_wrong": [
+  {
+   "episode": "Episode 4",
+   "cut": 208,
+   "rule": "near",
+   "why": "similarity 0.62, 0.16 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 292,
+   "rule": "near",
+   "why": "similarity 0.93, 0.34 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 102,
+   "rule": "shortlist",
+   "why": "similarity 0.81, 0.21 ahead of the next"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 386,
+   "rule": "near",
+   "why": "similarity 0.75, 0.09 ahead of the next, boxed in the cut next to it"
+  }
+ ],
+ "confirmed_wrong": [
+  {
+   "episode": "Episode 2",
+   "cut": 133,
+   "rule": "shortlist",
+   "why": "similarity 0.86, 0.16 ahead of the next"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 295,
+   "rule": "shortlist",
+   "why": "similarity 0.95, 0.14 ahead of the next"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 153,
+   "rule": "near",
+   "why": "similarity 0.93, 0.14 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 165,
+   "rule": "near",
+   "why": "similarity 0.81, 0.17 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 314,
+   "rule": "near",
+   "why": "similarity 0.71, 0.06 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 52,
+   "rule": "near",
+   "why": "similarity 0.89, 0.07 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 56,
+   "rule": "shortlist",
+   "why": "similarity 0.85, 0.10 ahead of the next"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 67,
+   "rule": "near",
+   "why": "similarity 0.83, 0.18 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 280,
+   "rule": "near",
+   "why": "similarity 0.87, 0.17 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 282,
+   "rule": "near",
+   "why": "similarity 0.89, 0.16 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 292,
+   "rule": "near",
+   "why": "similarity 0.93, 0.34 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 35,
+   "rule": "near",
+   "why": "similarity 0.91, 0.08 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 93,
+   "rule": "near",
+   "why": "similarity 0.89, 0.15 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 102,
+   "rule": "shortlist",
+   "why": "similarity 0.81, 0.21 ahead of the next"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 104,
+   "rule": "near",
+   "why": "similarity 0.87, 0.11 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 139,
+   "rule": "near",
+   "why": "similarity 0.73, 0.18 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 140,
+   "rule": "near",
+   "why": "similarity 0.70, 0.20 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 154,
+   "rule": "shortlist",
+   "why": "similarity 0.91, 0.07 ahead of the next"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 279,
+   "rule": "shortlist",
+   "why": "similarity 0.91, 0.21 ahead of the next"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 283,
+   "rule": "near",
+   "why": "similarity 0.82, 0.07 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 70,
+   "rule": "near",
+   "why": "similarity 0.96, 0.07 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 79,
+   "rule": "shortlist",
+   "why": "similarity 0.80, 0.07 ahead of the next"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 238,
+   "rule": "shortlist",
+   "why": "similarity 0.89, 0.10 ahead of the next"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 242,
+   "rule": "near",
+   "why": "similarity 0.85, 0.11 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 313,
+   "rule": "near",
+   "why": "similarity 0.91, 0.21 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 386,
+   "rule": "near",
+   "why": "similarity 0.75, 0.09 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 7",
+   "cut": 5,
+   "rule": "near",
+   "why": "similarity 0.79, 0.21 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 7",
+   "cut": 138,
+   "rule": "near",
+   "why": "similarity 0.78, 0.15 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 7",
+   "cut": 184,
+   "rule": "near",
+   "why": "similarity 0.77, 0.09 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 7",
+   "cut": 198,
+   "rule": "near",
+   "why": "similarity 0.73, 0.10 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 7",
+   "cut": 208,
+   "rule": "near",
+   "why": "similarity 0.76, 0.12 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 7",
+   "cut": 222,
+   "rule": "near",
+   "why": "similarity 0.92, 0.10 ahead of the next, boxed in the cut next to it"
+  }
+ ],
+ "bars": {
+  "NAME_MIN": 0.72,
+  "NAME_MARGIN": 0.1,
+  "NAME_MIN_NEAR": 0.58,
+  "NAME_MARGIN_NEAR": 0.08,
+  "CLOSE_MIN": 0.5,
+  "CONFIRM_MIN": 0.8,
+  "CONFIRM_MARGIN": 0.06,
+  "CONFIRM_MIN_NEAR": 0.7,
+  "CONFIRM_MARGIN_NEAR": 0.06
+ },
+ "sweep": [
+  {
+   "near": false,
+   "min": 0.5,
+   "margin": 0.03,
+   "covered": 68,
+   "of": 108,
+   "right": 33,
+   "precision": 0.485
+  },
+  {
+   "near": false,
+   "min": 0.5,
+   "margin": 0.05,
+   "covered": 59,
+   "of": 108,
+   "right": 29,
+   "precision": 0.492
+  },
+  {
+   "near": false,
+   "min": 0.5,
+   "margin": 0.08,
+   "covered": 37,
+   "of": 108,
+   "right": 22,
+   "precision": 0.595
+  },
+  {
+   "near": false,
+   "min": 0.5,
+   "margin": 0.1,
+   "covered": 26,
+   "of": 108,
+   "right": 17,
+   "precision": 0.654
+  },
+  {
+   "near": false,
+   "min": 0.5,
+   "margin": 0.15,
+   "covered": 18,
+   "of": 108,
+   "right": 11,
+   "precision": 0.611
+  },
+  {
+   "near": false,
+   "min": 0.55,
+   "margin": 0.03,
+   "covered": 67,
+   "of": 108,
+   "right": 33,
+   "precision": 0.493
+  },
+  {
+   "near": false,
+   "min": 0.55,
+   "margin": 0.05,
+   "covered": 58,
+   "of": 108,
+   "right": 29,
+   "precision": 0.5
+  },
+  {
+   "near": false,
+   "min": 0.55,
+   "margin": 0.08,
+   "covered": 37,
+   "of": 108,
+   "right": 22,
+   "precision": 0.595
+  },
+  {
+   "near": false,
+   "min": 0.55,
+   "margin": 0.1,
+   "covered": 26,
+   "of": 108,
+   "right": 17,
+   "precision": 0.654
+  },
+  {
+   "near": false,
+   "min": 0.55,
+   "margin": 0.15,
+   "covered": 18,
+   "of": 108,
+   "right": 11,
+   "precision": 0.611
+  },
+  {
+   "near": false,
+   "min": 0.58,
+   "margin": 0.03,
+   "covered": 66,
+   "of": 108,
+   "right": 33,
+   "precision": 0.5
+  },
+  {
+   "near": false,
+   "min": 0.58,
+   "margin": 0.05,
+   "covered": 58,
+   "of": 108,
+   "right": 29,
+   "precision": 0.5
+  },
+  {
+   "near": false,
+   "min": 0.58,
+   "margin": 0.08,
+   "covered": 37,
+   "of": 108,
+   "right": 22,
+   "precision": 0.595
+  },
+  {
+   "near": false,
+   "min": 0.58,
+   "margin": 0.1,
+   "covered": 26,
+   "of": 108,
+   "right": 17,
+   "precision": 0.654
+  },
+  {
+   "near": false,
+   "min": 0.58,
+   "margin": 0.15,
+   "covered": 18,
+   "of": 108,
+   "right": 11,
+   "precision": 0.611
+  },
+  {
+   "near": false,
+   "min": 0.6,
+   "margin": 0.03,
+   "covered": 65,
+   "of": 108,
+   "right": 33,
+   "precision": 0.508
+  },
+  {
+   "near": false,
+   "min": 0.6,
+   "margin": 0.05,
+   "covered": 57,
+   "of": 108,
+   "right": 29,
+   "precision": 0.509
+  },
+  {
+   "near": false,
+   "min": 0.6,
+   "margin": 0.08,
+   "covered": 37,
+   "of": 108,
+   "right": 22,
+   "precision": 0.595
+  },
+  {
+   "near": false,
+   "min": 0.6,
+   "margin": 0.1,
+   "covered": 26,
+   "of": 108,
+   "right": 17,
+   "precision": 0.654
+  },
+  {
+   "near": false,
+   "min": 0.6,
+   "margin": 0.15,
+   "covered": 18,
+   "of": 108,
+   "right": 11,
+   "precision": 0.611
+  },
+  {
+   "near": false,
+   "min": 0.65,
+   "margin": 0.03,
+   "covered": 62,
+   "of": 108,
+   "right": 33,
+   "precision": 0.532
+  },
+  {
+   "near": false,
+   "min": 0.65,
+   "margin": 0.05,
+   "covered": 55,
+   "of": 108,
+   "right": 29,
+   "precision": 0.527
+  },
+  {
+   "near": false,
+   "min": 0.65,
+   "margin": 0.08,
+   "covered": 35,
+   "of": 108,
+   "right": 22,
+   "precision": 0.629
+  },
+  {
+   "near": false,
+   "min": 0.65,
+   "margin": 0.1,
+   "covered": 25,
+   "of": 108,
+   "right": 17,
+   "precision": 0.68
+  },
+  {
+   "near": false,
+   "min": 0.65,
+   "margin": 0.15,
+   "covered": 18,
+   "of": 108,
+   "right": 11,
+   "precision": 0.611
+  },
+  {
+   "near": false,
+   "min": 0.7,
+   "margin": 0.03,
+   "covered": 48,
+   "of": 108,
+   "right": 30,
+   "precision": 0.625
+  },
+  {
+   "near": false,
+   "min": 0.7,
+   "margin": 0.05,
+   "covered": 43,
+   "of": 108,
+   "right": 27,
+   "precision": 0.628
+  },
+  {
+   "near": false,
+   "min": 0.7,
+   "margin": 0.08,
+   "covered": 30,
+   "of": 108,
+   "right": 21,
+   "precision": 0.7
+  },
+  {
+   "near": false,
+   "min": 0.7,
+   "margin": 0.1,
+   "covered": 23,
+   "of": 108,
+   "right": 17,
+   "precision": 0.739
+  },
+  {
+   "near": false,
+   "min": 0.7,
+   "margin": 0.15,
+   "covered": 16,
+   "of": 108,
+   "right": 11,
+   "precision": 0.688
+  },
+  {
+   "near": false,
+   "min": 0.72,
+   "margin": 0.03,
+   "covered": 44,
+   "of": 108,
+   "right": 26,
+   "precision": 0.591
+  },
+  {
+   "near": false,
+   "min": 0.72,
+   "margin": 0.05,
+   "covered": 41,
+   "of": 108,
+   "right": 25,
+   "precision": 0.61
+  },
+  {
+   "near": false,
+   "min": 0.72,
+   "margin": 0.08,
+   "covered": 29,
+   "of": 108,
+   "right": 20,
+   "precision": 0.69
+  },
+  {
+   "near": false,
+   "min": 0.72,
+   "margin": 0.1,
+   "covered": 23,
+   "of": 108,
+   "right": 17,
+   "precision": 0.739
+  },
+  {
+   "near": false,
+   "min": 0.72,
+   "margin": 0.15,
+   "covered": 16,
+   "of": 108,
+   "right": 11,
+   "precision": 0.688
+  },
+  {
+   "near": false,
+   "min": 0.75,
+   "margin": 0.03,
+   "covered": 38,
+   "of": 108,
+   "right": 24,
+   "precision": 0.632
+  },
+  {
+   "near": false,
+   "min": 0.75,
+   "margin": 0.05,
+   "covered": 36,
+   "of": 108,
+   "right": 23,
+   "precision": 0.639
+  },
+  {
+   "near": false,
+   "min": 0.75,
+   "margin": 0.08,
+   "covered": 29,
+   "of": 108,
+   "right": 20,
+   "precision": 0.69
+  },
+  {
+   "near": false,
+   "min": 0.75,
+   "margin": 0.1,
+   "covered": 23,
+   "of": 108,
+   "right": 17,
+   "precision": 0.739
+  },
+  {
+   "near": false,
+   "min": 0.75,
+   "margin": 0.15,
+   "covered": 16,
+   "of": 108,
+   "right": 11,
+   "precision": 0.688
+  },
+  {
+   "near": false,
+   "min": 0.8,
+   "margin": 0.03,
+   "covered": 26,
+   "of": 108,
+   "right": 17,
+   "precision": 0.654
+  },
+  {
+   "near": false,
+   "min": 0.8,
+   "margin": 0.05,
+   "covered": 25,
+   "of": 108,
+   "right": 17,
+   "precision": 0.68
+  },
+  {
+   "near": false,
+   "min": 0.8,
+   "margin": 0.08,
+   "covered": 22,
+   "of": 108,
+   "right": 16,
+   "precision": 0.727
+  },
+  {
+   "near": false,
+   "min": 0.8,
+   "margin": 0.1,
+   "covered": 19,
+   "of": 108,
+   "right": 15,
+   "precision": 0.789
+  },
+  {
+   "near": false,
+   "min": 0.8,
+   "margin": 0.15,
+   "covered": 13,
+   "of": 108,
+   "right": 10,
+   "precision": 0.769
+  },
+  {
+   "near": true,
+   "min": 0.5,
+   "margin": 0.03,
+   "covered": 153,
+   "of": 197,
+   "right": 101,
+   "precision": 0.66
+  },
+  {
+   "near": true,
+   "min": 0.5,
+   "margin": 0.05,
+   "covered": 131,
+   "of": 197,
+   "right": 90,
+   "precision": 0.687
+  },
+  {
+   "near": true,
+   "min": 0.5,
+   "margin": 0.08,
+   "covered": 92,
+   "of": 197,
+   "right": 63,
+   "precision": 0.685
+  },
+  {
+   "near": true,
+   "min": 0.5,
+   "margin": 0.1,
+   "covered": 60,
+   "of": 197,
+   "right": 39,
+   "precision": 0.65
+  },
+  {
+   "near": true,
+   "min": 0.5,
+   "margin": 0.15,
+   "covered": 41,
+   "of": 197,
+   "right": 28,
+   "precision": 0.683
+  },
+  {
+   "near": true,
+   "min": 0.55,
+   "margin": 0.03,
+   "covered": 152,
+   "of": 197,
+   "right": 101,
+   "precision": 0.664
+  },
+  {
+   "near": true,
+   "min": 0.55,
+   "margin": 0.05,
+   "covered": 130,
+   "of": 197,
+   "right": 90,
+   "precision": 0.692
+  },
+  {
+   "near": true,
+   "min": 0.55,
+   "margin": 0.08,
+   "covered": 91,
+   "of": 197,
+   "right": 63,
+   "precision": 0.692
+  },
+  {
+   "near": true,
+   "min": 0.55,
+   "margin": 0.1,
+   "covered": 59,
+   "of": 197,
+   "right": 39,
+   "precision": 0.661
+  },
+  {
+   "near": true,
+   "min": 0.55,
+   "margin": 0.15,
+   "covered": 41,
+   "of": 197,
+   "right": 28,
+   "precision": 0.683
+  },
+  {
+   "near": true,
+   "min": 0.58,
+   "margin": 0.03,
+   "covered": 151,
+   "of": 197,
+   "right": 101,
+   "precision": 0.669
+  },
+  {
+   "near": true,
+   "min": 0.58,
+   "margin": 0.05,
+   "covered": 129,
+   "of": 197,
+   "right": 90,
+   "precision": 0.698
+  },
+  {
+   "near": true,
+   "min": 0.58,
+   "margin": 0.08,
+   "covered": 91,
+   "of": 197,
+   "right": 63,
+   "precision": 0.692
+  },
+  {
+   "near": true,
+   "min": 0.58,
+   "margin": 0.1,
+   "covered": 59,
+   "of": 197,
+   "right": 39,
+   "precision": 0.661
+  },
+  {
+   "near": true,
+   "min": 0.58,
+   "margin": 0.15,
+   "covered": 41,
+   "of": 197,
+   "right": 28,
+   "precision": 0.683
+  },
+  {
+   "near": true,
+   "min": 0.6,
+   "margin": 0.03,
+   "covered": 150,
+   "of": 197,
+   "right": 100,
+   "precision": 0.667
+  },
+  {
+   "near": true,
+   "min": 0.6,
+   "margin": 0.05,
+   "covered": 128,
+   "of": 197,
+   "right": 89,
+   "precision": 0.695
+  },
+  {
+   "near": true,
+   "min": 0.6,
+   "margin": 0.08,
+   "covered": 91,
+   "of": 197,
+   "right": 63,
+   "precision": 0.692
+  },
+  {
+   "near": true,
+   "min": 0.6,
+   "margin": 0.1,
+   "covered": 59,
+   "of": 197,
+   "right": 39,
+   "precision": 0.661
+  },
+  {
+   "near": true,
+   "min": 0.6,
+   "margin": 0.15,
+   "covered": 41,
+   "of": 197,
+   "right": 28,
+   "precision": 0.683
+  },
+  {
+   "near": true,
+   "min": 0.65,
+   "margin": 0.03,
+   "covered": 141,
+   "of": 197,
+   "right": 98,
+   "precision": 0.695
+  },
+  {
+   "near": true,
+   "min": 0.65,
+   "margin": 0.05,
+   "covered": 123,
+   "of": 197,
+   "right": 87,
+   "precision": 0.707
+  },
+  {
+   "near": true,
+   "min": 0.65,
+   "margin": 0.08,
+   "covered": 86,
+   "of": 197,
+   "right": 61,
+   "precision": 0.709
+  },
+  {
+   "near": true,
+   "min": 0.65,
+   "margin": 0.1,
+   "covered": 57,
+   "of": 197,
+   "right": 38,
+   "precision": 0.667
+  },
+  {
+   "near": true,
+   "min": 0.65,
+   "margin": 0.15,
+   "covered": 40,
+   "of": 197,
+   "right": 28,
+   "precision": 0.7
+  },
+  {
+   "near": true,
+   "min": 0.7,
+   "margin": 0.03,
+   "covered": 119,
+   "of": 197,
+   "right": 85,
+   "precision": 0.714
+  },
+  {
+   "near": true,
+   "min": 0.7,
+   "margin": 0.05,
+   "covered": 104,
+   "of": 197,
+   "right": 76,
+   "precision": 0.731
+  },
+  {
+   "near": true,
+   "min": 0.7,
+   "margin": 0.08,
+   "covered": 74,
+   "of": 197,
+   "right": 54,
+   "precision": 0.73
+  },
+  {
+   "near": true,
+   "min": 0.7,
+   "margin": 0.1,
+   "covered": 52,
+   "of": 197,
+   "right": 35,
+   "precision": 0.673
+  },
+  {
+   "near": true,
+   "min": 0.7,
+   "margin": 0.15,
+   "covered": 36,
+   "of": 197,
+   "right": 25,
+   "precision": 0.694
+  },
+  {
+   "near": true,
+   "min": 0.72,
+   "margin": 0.03,
+   "covered": 105,
+   "of": 197,
+   "right": 75,
+   "precision": 0.714
+  },
+  {
+   "near": true,
+   "min": 0.72,
+   "margin": 0.05,
+   "covered": 93,
+   "of": 197,
+   "right": 68,
+   "precision": 0.731
+  },
+  {
+   "near": true,
+   "min": 0.72,
+   "margin": 0.08,
+   "covered": 70,
+   "of": 197,
+   "right": 51,
+   "precision": 0.729
+  },
+  {
+   "near": true,
+   "min": 0.72,
+   "margin": 0.1,
+   "covered": 51,
+   "of": 197,
+   "right": 35,
+   "precision": 0.686
+  },
+  {
+   "near": true,
+   "min": 0.72,
+   "margin": 0.15,
+   "covered": 35,
+   "of": 197,
+   "right": 25,
+   "precision": 0.714
+  },
+  {
+   "near": true,
+   "min": 0.75,
+   "margin": 0.03,
+   "covered": 88,
+   "of": 197,
+   "right": 63,
+   "precision": 0.716
+  },
+  {
+   "near": true,
+   "min": 0.75,
+   "margin": 0.05,
+   "covered": 79,
+   "of": 197,
+   "right": 57,
+   "precision": 0.722
+  },
+  {
+   "near": true,
+   "min": 0.75,
+   "margin": 0.08,
+   "covered": 62,
+   "of": 197,
+   "right": 45,
+   "precision": 0.726
+  },
+  {
+   "near": true,
+   "min": 0.75,
+   "margin": 0.1,
+   "covered": 47,
+   "of": 197,
+   "right": 33,
+   "precision": 0.702
+  },
+  {
+   "near": true,
+   "min": 0.75,
+   "margin": 0.15,
+   "covered": 33,
+   "of": 197,
+   "right": 24,
+   "precision": 0.727
+  },
+  {
+   "near": true,
+   "min": 0.8,
+   "margin": 0.03,
+   "covered": 60,
+   "of": 197,
+   "right": 42,
+   "precision": 0.7
+  },
+  {
+   "near": true,
+   "min": 0.8,
+   "margin": 0.05,
+   "covered": 54,
+   "of": 197,
+   "right": 38,
+   "precision": 0.704
+  },
+  {
+   "near": true,
+   "min": 0.8,
+   "margin": 0.08,
+   "covered": 44,
+   "of": 197,
+   "right": 32,
+   "precision": 0.727
+  },
+  {
+   "near": true,
+   "min": 0.8,
+   "margin": 0.1,
+   "covered": 38,
+   "of": 197,
+   "right": 27,
+   "precision": 0.711
+  },
+  {
+   "near": true,
+   "min": 0.8,
+   "margin": 0.15,
+   "covered": 28,
+   "of": 197,
+   "right": 21,
+   "precision": 0.75
+  }
+ ]
+}

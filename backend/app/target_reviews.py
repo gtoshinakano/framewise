@@ -16,6 +16,16 @@ def record(conn, run, action, before=(), after=(), **details):
     conn.execute('''INSERT INTO target_corrections(cut_id,run_id,selection_key,action,before_json,after_json,details_json)
                     VALUES (?,?,?,?,?,?,?)''', (run['cut_id'], run['id'], run['selection_key'], action,
                     json.dumps(list(before)), json.dumps(list(after)), json.dumps(details)))
+    if action != 'selection_replaced':
+        ordinals = {item.get('frame_ordinal') for item in [*before, *after] if isinstance(item, dict)} - {None}
+        note_frame_override(conn, run['id'], ordinals)
+
+
+def note_frame_override(conn, run_id, ordinals):
+    """A person edited target frames the agent marked reviewed (autopilot M6): note it on those decisions."""
+    for ordinal in ordinals:
+        conn.execute("""UPDATE agent_decisions SET overridden_at=CURRENT_TIMESTAMP WHERE target_table='target_detection_runs' AND target_id=?
+            AND undone_at IS NULL AND overridden_at IS NULL AND json_extract(after_json,'$.ordinal')=?""", (run_id, ordinal))
 
 
 def archive_selection(conn, cut_id, current_key):

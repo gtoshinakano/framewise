@@ -1,4 +1,4 @@
-import { AlertTriangle, BookOpen, Bot, Shirt, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
+import { AlertTriangle, BookOpen, Bot, Inbox, Shirt, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
 import { LocalModelControl } from './LocalModelControl'
 import { VisualEngineControl } from './VisualEngineControl'
 import { Menu, type MenuEntry } from './Popover'
@@ -9,7 +9,7 @@ export type CharacterStep = 'character-boxes' | 'character-detection' | 'charact
 const go = (path: string) => { window.location.hash = path }
 
 /** The episode editor's top bar: where you are, the episode-wide actions grouped in menus, and the queue. */
-export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, onOpenSettings, onOpenGlossary, onOpenOutfits, onOpenAutopilot, onDeleteEpisode }: {
+export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, inbox, onOpenInbox, onOpenSettings, onOpenGlossary, onOpenOutfits, onOpenAutopilot, onDeleteEpisode }: {
   projectId?: string
   projectTitle?: string
   episodeTitle?: string
@@ -29,6 +29,9 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   /** Anything of this episode running, GPU or media work. */
   running: boolean
   onOpenQueue: (focus?: 'attention') => void
+  /** Open autopilot questions: this episode's for the person, and a title naming other episodes with questions. */
+  inbox: { mine: number; elsewhere: string }
+  onOpenInbox: () => void
   onOpenSettings: () => void
   onOpenGlossary: () => void
   onOpenOutfits: () => void
@@ -87,6 +90,14 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
         className="inline-flex h-8 items-center gap-1 whitespace-nowrap rounded-lg border border-[#63363e] bg-[#2b191f] px-2 text-xs font-semibold text-[#ff9fa7] hover:bg-[#3a2027]">
         <AlertTriangle size={13} aria-hidden />{attentionText(queue.attention)}
       </button>}
+      <button type="button" onClick={onOpenInbox} className="icon-btn icon-btn-md icon-btn-text"
+        title={[inbox.mine ? `${inbox.mine} autopilot question${inbox.mine === 1 ? '' : 's'} wait for you` : 'Autopilot inbox: nothing waits for you', inbox.elsewhere].filter(Boolean).join('. ')}
+        aria-label={`Autopilot inbox${inbox.mine ? `, ${inbox.mine} waiting` : ''}`}>
+        <Inbox size={16} className={inbox.mine ? 'text-[#f5c678]' : undefined} aria-hidden />
+        <span className="hidden xl:inline">Inbox</span>
+        {inbox.mine > 0 && <span className="font-mono tabular-nums text-[#f5c678]">{inbox.mine}</span>}
+        {!inbox.mine && inbox.elsewhere && <i className="h-1.5 w-1.5 rounded-full bg-[#f5c678]" aria-hidden />}
+      </button>
       <VisualEngineControl compact />
       <LocalModelControl compact />
       <Menu label="Episode" items={episodeItems} align="end" width="w-72" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md" aria-label="Episode menu" title="Episode menu"><MoreHorizontal size={16} aria-hidden /></button>} />

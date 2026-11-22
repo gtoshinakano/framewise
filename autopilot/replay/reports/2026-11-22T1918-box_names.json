@@ -1,0 +1,190 @@
+{
+ "resolver": "box_names",
+ "date": "2026-11-22T1918",
+ "commit": "d55b128",
+ "cases": 305,
+ "named": {
+  "claude": 220,
+  "name_right": 80,
+  "name_wrong": 4,
+  "unknown": 1
+ },
+ "confirmed": {
+  "confirm_right": 49,
+  "confirm_wrong": 23
+ },
+ "named_wrong": [
+  {
+   "episode": "Episode 4",
+   "cut": 208,
+   "rule": "near",
+   "why": "similarity 0.62, 0.16 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 292,
+   "rule": "near",
+   "why": "similarity 0.93, 0.34 ahead of the next, boxed in the cut next to it"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 102,
+   "rule": "shortlist",
+   "why": "similarity 0.81, 0.21 ahead of the next"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 386,
+   "rule": "near",
+   "why": "similarity 0.75, 0.09 ahead of the next, boxed in the cut next to it"
+  }
+ ],
+ "confirmed_wrong": [
+  {
+   "episode": "Episode 2",
+   "cut": 133,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.86"
+  },
+  {
+   "episode": "Episode 2",
+   "cut": 295,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.95"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 153,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.93"
+  },
+  {
+   "episode": "Episode 3",
+   "cut": 165,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.81"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 52,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.89"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 56,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.85"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 67,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.83"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 280,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.87"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 282,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.89"
+  },
+  {
+   "episode": "Episode 4",
+   "cut": 292,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.93"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 35,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.91"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 93,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.89"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 102,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.81"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 104,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.87"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 154,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.91"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 279,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.91"
+  },
+  {
+   "episode": "Episode 5",
+   "cut": 283,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.82"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 70,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.96"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 79,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.80"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 238,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.89"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 242,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.85"
+  },
+  {
+   "episode": "Episode 6",
+   "cut": 313,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.91"
+  },
+  {
+   "episode": "Episode 7",
+   "cut": 222,
+   "rule": "bar 0.80/0.06",
+   "why": "leader 0.92"
+  }
+ ],
+ "bars": {
+  "NAME_MIN": 0.72,
+  "NAME_MARGIN": 0.1,
+  "NAME_MIN_NEAR": 0.58,
+  "NAME_MARGIN_NEAR": 0.08,
+  "CLOSE_MIN": 0.5,
+  "DUPLICATE_IOU": 0.7
+ }
+}

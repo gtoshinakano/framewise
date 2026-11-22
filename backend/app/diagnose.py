@@ -89,7 +89,7 @@ FIXES = {
     'out_of_scope': ('leave', 0, 'leave it: sequences are out of the autopilot\'s scope'),
 }
 # Pipelines triage can queue again with the current settings (triage.requeue); the others only through their own retry.
-REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'review_decisions', 'regen', 'missed_cuts', 'line_splits', 'voice_resolver')
+REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'review_decisions', 'regen', 'missed_cuts', 'line_splits', 'voice_resolver', 'character_decisions')
 OUT_OF_SCOPE = ('sequence', 'brief_export')
 
 
@@ -347,6 +347,12 @@ def fix_for(link, cut_number):
     if state == 'off':
         return {'text': 'switch analysis on for this cut if it should be analysed', 'command': None}
     if state == 'person':
+        if step in ('boxes', 'target_frames'):
+            return {'text': f"the character agent names what it can and asks about the rest; then a person settles it ({PLACES[step]})",
+                    'command': 'fw cast run EP', 'place': PLACES[step]}
+        if step == 'answers':
+            return {'text': f"the review-answer agent answers what it can; then a person settles it ({PLACES[step]})",
+                    'command': 'fw review-decisions run EP', 'place': PLACES[step]}
         return {'text': f"a person settles it in the editor ({PLACES[step]})", 'command': None, 'place': PLACES[step]}
     if state == 'failed':
         action, _, text = FIXES[link['cause']]

@@ -3,7 +3,7 @@ import contextlib
 import io
 import unittest
 
-from tests.test_fw_cli import EPISODE, FakeApi, fw
+from tests.test_fw_cli import EPISODE, IDLE, FakeApi, fw, report
 
 
 class AutopilotApi(FakeApi):
@@ -222,6 +222,60 @@ class FwAutopilotTest(unittest.TestCase):
         api = AutopilotApi()
         run(api, 'close', 'esc1', '--resolution', '{"character": "mai"}')
         self.assertEqual(api.calls[-1], ('/api/escalations/esc1/close', {}, {'status': 'resolved', 'resolution': {'character': 'mai'}}))
+
+
+class AutopilotPlanTest(unittest.TestCase):
+    """The M8 orchestrator's plan: resolvers at the gates, held cuts, the stale sweep (pure, no API)."""
+
+    def plan(self, rep, done=(), stuck=None, triage=(), modes=None, queue_state=IDLE):
+        return fw.autopilot_plan(rep, queue_state, list(triage), modes or {}, set(done), stuck or {})
+
+    ALL = {'missed_cuts', 'line_splits', 'voices', 'cast', 'review_decisions', 'triage'}
+
+    def test_resolvers_run_in_flow_order_before_their_gates(self):
+        self.assertEqual(self.plan(report())['resolver'], 'missed_cuts')
+        self.assertEqual(self.plan(report(), done={'missed_cuts'})['resolver'], 'line_splits')
+        fixable = [{'action': 'requeue'}]
+        self.assertEqual(self.plan(report(), triage=fixable)['resolver'], 'triage')
+        self.assertEqual(self.plan(report(), done={'triage'}, triage=fixable)['resolver'], 'missed_cuts')
+        voices = report(gates__voices=[{'speaker_label': 'S1', 'lines': 4, 'first_time': 1.0}])
+        self.assertEqual(self.plan(voices, done={'missed_cuts', 'line_splits'})['resolver'], 'voices')
+        self.assertEqual(self.plan(report(), modes={'missed_cuts': 'off', 'line_splits': 'off'})['action'], 'done')
+        self.assertEqual(self.plan(report(), queue_state={'running': [{'label': 'x', 'status': 'running'}], 'waiting_total': 0})['action'], 'busy')
+
+    def test_gated_cuts_are_held_back_and_the_rest_continue(self):
+        rep = report(gates__first_frame=[{'cut': 2, 'unlabeled_boxes': 1}], gates__target_frames=[{'cut': 4}],
+                     progress__target_missing=[1, 2], progress__visual_missing=[1, 2, 4, 5])
+        self.assertEqual(self.plan(rep, done=self.ALL - {'cast'})['resolver'], 'cast')
+        first = self.plan(rep, done=self.ALL)
+        self.assertEqual((first['step'], first['cuts']), ('target-frames', [1]))
+        rep['progress']['target_missing'] = [2]
+        second = self.plan(rep, done=self.ALL)
+        self.assertEqual((second['step'], second['cuts']), ('visual', [1, 5]))
+        stuck = self.plan(rep, done=self.ALL, stuck={'visual': {1, 5}})
+        self.assertEqual(stuck['action'], 'waiting')
+        self.assertIn('first frame 1', stuck['detail'])
+
+    def test_review_questions_run_the_decider_and_hold_only_their_summaries(self):
+        rep = report(gates__decisions=[{'cut': 3, 'questions': 2, 'draft': False}], progress__summary_missing=[1, 4])
+        self.assertEqual(self.plan(rep, done=self.ALL - {'review_decisions'})['resolver'], 'review_decisions')
+        decision = self.plan(rep, done=self.ALL)
+        self.assertEqual((decision['step'], decision['cuts']), ('summary', [1, 4]))
+
+    def test_stale_sweep_goes_from_each_cuts_earliest_stage(self):
+        stale = [{'cut': 1, 'title': 'Cut summary'}, {'cut': 1, 'title': 'Consistency summary'}, {'cut': 2, 'title': 'Performance beats'},
+                 {'cut': 3, 'title': 'Cut summary'}, {'cut': 4, 'title': 'Subtitle OCR'}]
+        rep = report(checks={'speaker_attribution_stale': None, 'stale_results': stale}, gates__decisions=[{'cut': 3, 'questions': 1, 'draft': True}])
+        first = self.plan(rep, done=self.ALL)
+        self.assertEqual((first['step'], first['cuts']), ('stale:beats', [2]))
+        second = self.plan(rep, done=self.ALL, stuck={'stale:beats': {2}})
+        self.assertEqual((second['step'], second['cuts']), ('stale:consistency', [1]))
+        third = self.plan(rep, done=self.ALL, stuck={'stale:beats': {2}, 'stale:consistency': {1}})
+        self.assertEqual(third['action'], 'waiting')   # cut 3's summary waits for its answers; cut 4's OCR is left alone
+        self.assertEqual(self.plan(rep, done=self.ALL, modes={'stale_reruns': 'off'})['action'], 'waiting')
+
+    def test_runs_of_consecutive_cuts(self):
+        self.assertEqual(fw.runs_of([5, 1, 2, 3, 7, 8]), [(1, 3), (5, 5), (7, 8)])
 
 
 if __name__ == '__main__':

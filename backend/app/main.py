@@ -23,7 +23,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results, episode_events, episode_jobs
-from . import agent_log, audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range, transcript_corrections
+from . import agent_log, character_decisions, audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range, transcript_corrections
 from .transcript_parts import manual_metadata
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
@@ -94,6 +94,8 @@ app.include_router(missed_cuts_router)
 from .review_decisions_api import router as review_decisions_router
 app.include_router(review_decisions_router)
 from .voice_resolver_api import router as voice_resolver_router
+from .character_decisions_api import router as character_decisions_router
+app.include_router(character_decisions_router)
 app.include_router(voice_resolver_router)
 from .visual_models_api import router as visual_models_router
 app.include_router(visual_models_router)
@@ -1704,6 +1706,15 @@ def remove_stale_character_frame(run_id: str, position: Literal['first', 'last']
     return {'ok': True, 'run_id': run_id, 'position': position, 'removed_detections': removed}
 
 
+def row_episode(conn, run_id=None, detection_id=None):
+    """The episode of a detection run (or of the run a detection belongs to)."""
+    if detection_id:
+        found = conn.execute('SELECT run_id FROM character_detections WHERE id=?', (detection_id,)).fetchone()
+        run_id = found['run_id'] if found else None
+    row = conn.execute('SELECT c.episode_id FROM character_detection_runs r JOIN cuts c ON c.id=r.cut_id WHERE r.id=?', (run_id,)).fetchone()
+    return row['episode_id'] if row else None
+
+
 @app.put('/api/character-detections/{detection_id}')
 def label_character_detection(detection_id: str, body: CharacterDetectionLabelInput):
     with db.connect() as conn:
@@ -1719,6 +1730,8 @@ def label_character_detection(detection_id: str, body: CharacterDetectionLabelIn
             raise HTTPException(409, 'Remove the saved reference before changing this label')
         conn.execute("UPDATE character_detections SET character_context_id=?,label_source=?,match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (body.character_context_id, 'manual' if body.character_context_id else None, detection_id))
         structured_results.opening_box_edited(conn, row['run_id'], row['position'])
+        agent_log.note_override(conn, 'character_detections', detection_id)
+        character_decisions.close_settled(conn, row_episode(conn, row['run_id']))
     return {'ok': True}
 
 
@@ -1732,42 +1745,16 @@ def create_character_from_detection(detection_id: str, body: NewCharacterInput):
     title = body.title.strip()
     if not title:
         raise HTTPException(400, 'Enter a character name')
+    request = {'title': title, 'content': body.content, 'is_main': body.is_main, 'episode_only': body.episode_only}
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('''SELECT d.id,d.run_id,d.position,r.cut_start,r.cut_end,c.id AS cut_id,c.active,c.start_time,c.end_time,
-                                     c.episode_id,e.project_id FROM character_detections d
-                              JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id
-                              JOIN episodes e ON e.id=c.episode_id WHERE d.id=?''', (detection_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, 'Detection not found')
-        if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
-            raise HTTPException(409, 'Remove the saved reference before changing this label')
-        if not row['active'] or row['cut_start'] != row['start_time'] or row['cut_end'] != row['end_time']:
-            raise HTTPException(409, 'Cut timing changed. Detect characters again before labelling this box')
-        request = {'title': title, 'content': body.content, 'is_main': body.is_main, 'episode_only': body.episode_only}
-        existing = conn.execute("""SELECT j.id,json_extract(j.payload_json,'$.character_context_id') AS character_id
-            FROM jobs j JOIN character_detections d ON d.id=? AND d.character_context_id=json_extract(j.payload_json,'$.character_context_id')
-            WHERE j.episode_id=? AND j.pipeline='character_profile' AND j.status IN ('queued','running')
-            AND json_extract(j.payload_json,'$.detection_id')=? AND json_extract(j.payload_json,'$.creation')=json(?) LIMIT 1""",
-            (detection_id, row['episode_id'], detection_id, json.dumps(request, ensure_ascii=False))).fetchone()
-        if existing:
-            character = dict(conn.execute('SELECT * FROM context_items WHERE id=?', (existing['character_id'],)).fetchone())
-            return {'character': character, 'job_id': existing['id']}
-        # Sequences link subjects to records by name, so two characters must not share one.
-        if conn.execute("SELECT 1 FROM context_items WHERE project_id=? AND kind='character' AND lower(trim(title))=lower(?)", (row['project_id'], title)).fetchone():
-            raise HTTPException(409, f'A character named “{title}” already exists in this project')
-        character_id = str(uuid.uuid4())
-        conn.execute("INSERT INTO context_items (id,project_id,episode_id,kind,title,content,is_main) VALUES (?,?,?,'character',?,?,?)",
-                     (character_id, row['project_id'], row['episode_id'] if body.episode_only else None, title, body.content, int(body.is_main)))
-        conn.execute("UPDATE character_detections SET character_context_id=?,label_source='manual',match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (character_id, detection_id))
-        structured_results.opening_box_edited(conn, row['run_id'], row['position'])
-        structured_results.invalidate_context(conn, row['project_id'], row['episode_id'] if body.episode_only else None)
-        from . import visual_models
-        payload = {'detection_id': detection_id, 'character_context_id': character_id, 'cut_id': row['cut_id'], 'creation': request,
-                   'models': visual_models.snapshot(conn, ('character_profile',))}
-        job_id = worker.insert_job(conn, row['episode_id'], 'character_profile', payload)
-        worker.sync_episode_status(conn, row['episode_id'])
-    return {'character': db.one('SELECT * FROM context_items WHERE id=?', (character_id,)), 'job_id': job_id}
+        try:
+            created = character_decisions.create_character(conn, detection_id, request)
+        except character_decisions.Refused as exc:
+            raise HTTPException(exc.args[1] if len(exc.args) > 1 else 409, str(exc.args[0])) from exc
+        agent_log.note_override(conn, 'character_detections', detection_id)
+        character_decisions.close_settled(conn, created['character'].get('episode_id') or row_episode(conn, detection_id=detection_id))
+    return created
 
 
 @app.put('/api/character-detections/{detection_id}/recognition-use')
@@ -1786,10 +1773,13 @@ def delete_character_detection(detection_id: str):
         conn.execute('BEGIN IMMEDIATE')
         if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
             raise HTTPException(409, 'Remove the saved reference before deleting this detection')
+        episode_id = row_episode(conn, detection_id=detection_id)
         removed = conn.execute('DELETE FROM character_detections WHERE id=? RETURNING run_id,position', (detection_id,)).fetchone()
         if not removed:
             raise HTTPException(404, 'Detection not found')
         structured_results.opening_box_edited(conn, removed['run_id'], removed['position'])
+        agent_log.note_override(conn, 'character_detections', detection_id)
+        character_decisions.close_settled(conn, episode_id)
     return {'ok': True}
 
 

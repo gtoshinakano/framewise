@@ -202,6 +202,15 @@ def open_escalation(episode_id: str, body: EscalationInput):
         return agent_log.escalation_view(row)
 
 
+@router.get('/api/autopilot/inbox-counts', summary='Open questions per episode (the person\'s and Claude\'s), for the inbox badge')
+def inbox_counts():
+    with db.connect() as conn:
+        rows = conn.execute("""SELECT a.episode_id,e.title,p.title AS project_title,SUM(a.reviewer='human') AS for_person,SUM(a.reviewer='claude') AS for_claude
+            FROM agent_escalations a JOIN episodes e ON e.id=a.episode_id JOIN projects p ON p.id=e.project_id
+            WHERE a.status='open' GROUP BY a.episode_id ORDER BY e.title""").fetchall()
+        return {'episodes': [{key: row[key] for key in ('episode_id', 'title', 'project_title', 'for_person', 'for_claude')} for row in rows]}
+
+
 @router.get('/api/escalations/{escalation_id}')
 def get_escalation(escalation_id: str):
     with db.connect() as conn:
