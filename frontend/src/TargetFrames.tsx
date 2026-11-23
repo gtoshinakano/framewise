@@ -354,11 +354,41 @@ function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, o
   const visible = run?.slots.filter(slot => !slot.ignored) ?? []
   const chosen = boxes.find(box => box.id === selectedBox)
   const card = useRef<HTMLElement>(null)
+  // Hover shortcuts: A marks the frame reviewed; D removes the box under the pointer, or starts drawing where there is none.
+  const hovering = useRef<{ point: Point | null } | null>(null)
+  const lastDelete = useRef(0)
   const editor: EditorBox[] = boxes.map(item => ({ id: item.id, box: item.box, color: boxColor(item.slot), label: `${item.slot + 1}. ${slotName(run?.slots.find(slot => slot.slot === item.slot))}` }))
   const mirrored = !!info?.mirror
   const room = !!run && canDraw(run, ordinal, maxBoxes)
   const summary = info?.review
-  return <figure ref={card} id={`target-frame-${ordinal}`} tabIndex={0} className="overflow-hidden rounded-lg border hairline bg-black focus-visible:outline focus-visible:outline-[#bba7ef]"
+  const live = useRef({ locked, mirrored, drawing, room, boxes, summary, info, ordinal, onReview, onRemove, onDrawing })
+  live.current = { locked, mirrored, drawing, room, boxes, summary, info, ordinal, onReview, onRemove, onDrawing }
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const lower = event.key.toLowerCase()
+      if ((lower !== 'a' && lower !== 'd') || event.repeat || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || !hovering.current) return
+      const target = event.target as HTMLElement | null
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return
+      if (document.querySelectorAll('[aria-modal="true"]').length > 1) return
+      const now = live.current
+      if (now.locked || now.mirrored || !now.info) return
+      event.preventDefault()
+      if (lower === 'a') {
+        if (now.summary && !now.summary.reviewed && frameNeedsReview(now.info)) now.onReview(now.ordinal, true)
+        return
+      }
+      if (now.drawing) { now.onDrawing(false); return }
+      const point = hovering.current.point
+      const inside = point ? now.boxes.filter(item => point[0] >= item.box[0] && point[0] <= item.box[2] && point[1] >= item.box[1] && point[1] <= item.box[3])
+        .sort((a, b) => (a.box[2] - a.box[0]) * (a.box[3] - a.box[1]) - (b.box[2] - b.box[0]) * (b.box[3] - b.box[1]))[0] : undefined
+      if (inside) { lastDelete.current = Date.now(); now.onRemove(inside.id) }
+      else if (now.room && Date.now() - lastDelete.current > 600) now.onDrawing(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  return <figure ref={card} id={`target-frame-${ordinal}`} tabIndex={0}
+    onPointerEnter={() => { hovering.current = { point: null } }} onPointerLeave={() => { hovering.current = null }} className="overflow-hidden rounded-lg border hairline bg-black focus-visible:outline focus-visible:outline-[#bba7ef]"
     onKeyDown={event => {
       if (locked || mirrored || drawing || !chosen || event.ctrlKey || event.altKey || event.metaKey || (event.target as HTMLElement).closest('input,select,textarea,[contenteditable]')) return
       const colour = /^[1-8]$/.test(event.key) ? Number(event.key) - 1 : null
@@ -367,7 +397,13 @@ function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, o
       else return
       event.stopPropagation(); event.preventDefault()
     }}>
-    <div className="relative w-full" style={{ aspectRatio: info ? `${info.image_size[0]} / ${info.image_size[1]}` : '16 / 9' }}>
+    <div className="relative w-full" onPointerMove={event => {
+      if (!info) return
+      const rect = event.currentTarget.getBoundingClientRect()
+      const scale = Math.min(rect.width / info.image_size[0], rect.height / info.image_size[1])
+      const x = (event.clientX - rect.left - (rect.width - info.image_size[0] * scale) / 2) / scale, y = (event.clientY - rect.top - (rect.height - info.image_size[1] * scale) / 2) / scale
+      hovering.current = { point: [x, y] }
+    }} onPointerLeave={() => { if (hovering.current) hovering.current = { point: null } }} style={{ aspectRatio: info ? `${info.image_size[0]} / ${info.image_size[1]}` : '16 / 9' }}>
       <img loading="lazy" className="absolute inset-0 h-full w-full object-contain" src={src} alt={`Target frame ${index + 1} at ${frame.relative_timestamp_seconds.toFixed(3)} seconds`} />
       {run && info && <BoxEditor size={info.image_size} boxes={editor} editable={!locked && !mirrored} drawing={drawing && !locked && !mirrored} label={`Frame ${index + 1} character boxes`}
         onDrawn={onDraw} onChange={onMove} onRemove={onRemove} selectedId={selectedBox} onPick={room ? onPick : undefined} picking={picking}
@@ -380,7 +416,7 @@ function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, o
           : <span className="muted">{frame.reason.replaceAll('_', ' ')}</span>}
           {run && info && <>
             <span className="muted tabular-nums">{mirrored ? boxes.length : `${boxes.length}/${maxBoxes}`}</span>
-            {!mirrored && <button type="button" className="inline-flex items-center gap-1 text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked || (!room && !drawing)} title="Drag a box around a person, or double-click the person on the frame to find their box" onClick={() => onDrawing(!drawing)}>{drawing ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing ? 'Cancel drawing' : 'Draw box'}</button>}
+            {!mirrored && <button type="button" className="inline-flex items-center gap-1 text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked || (!room && !drawing)} title="Drag a box around a person, or double-click the person on the frame to find their box. Shortcut: hover the frame and press D" onClick={() => onDrawing(!drawing)}>{drawing ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing ? 'Cancel drawing' : 'Draw box'}</button>}
           </>}
           {onRemoveFrame && <ActionButton compact variant="danger" icon={<ImageMinus size={12} />} disabled={frameLocked} onClick={onRemoveFrame}
             aria-label={`Remove frame ${index + 1} from the analysis`} title={frameLocked ? 'A cut keeps at least two frames' : 'Remove this frame from the analysis; its boxes are kept in the correction log'} />}</span></div>
@@ -408,6 +444,7 @@ function FrameCard({ index, frame, src, info, run, drawing, locked, onDrawing, o
         <ActionButton compact variant="danger" icon={<Trash2 size={12} />} disabled={locked} onClick={() => onRemove(item.id)} aria-label={`Remove box in frame ${index + 1}`} title="Remove this box" />
       </div>)}
       {!mirrored && chosen && <p className="muted text-[11px]">1–8 recolours the selected box. Delete removes it here. Shift+Delete ignores the person across the cut.</p>}
+      {!mirrored && <p className="muted text-[11px]">Hover: D removes the box under the pointer or starts drawing, A marks the frame reviewed.</p>}
       {!mirrored && info && candidates.length > 0 && <ul aria-label="Suggested changes" className="space-y-1">
         {candidates.map(item => {
           const canSplit = item.parts?.length === 2 && item.parts.every(part => part.slot_hint != null && visible.some(slot => slot.slot === part.slot_hint))

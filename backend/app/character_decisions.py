@@ -1023,7 +1023,7 @@ def target_sheet(conn, escalation_id):
         index, frame = next(((i, f) for i, f in enumerate(frames, 1) if f.get('ordinal') == ordinal), (None, None))
         if frame is None:
             continue
-        image = _frame_at(conn, item['episode_id'], frame['time'], 480)
+        image = np.array(_frame_at(conn, item['episode_id'], frame['time'], 480))  # a writable copy: the decoder's array is read-only
         size = frame.get('image_size') or [1280, 720]
         scale = image.shape[1] / size[0]
         for slot, b in boxes.get(ordinal, []):

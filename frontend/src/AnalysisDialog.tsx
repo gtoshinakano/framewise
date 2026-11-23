@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, X } from 'lucide-react'
 import { PlayerProvider, PlayerSlot, SourcePlayer, usePlayer, usePlayerValue } from './SourcePlayer'
 import { prefetchCutJobs, useCutJobs } from './cutJobs'
@@ -186,10 +186,20 @@ const AnalysisDialogContent = memo(function AnalysisDialogContent({ cut, cuts, n
     window.dispatchEvent(new Event('framewise:cut-timeline-changed'))
     window.dispatchEvent(new Event('framewise:brief-instructions-changed'))
   }
+  // On Results the layout fills the dialog and has no scrollbar, but a hidden-overflow box can still be scrolled by
+  // scrollIntoView, focus or a scroll position carried over from the Run tab, which pushes the whole content up with no
+  // way back. Keep those boxes at the top there (the wide layout only; narrow screens scroll the page normally).
+  const grid = useRef<HTMLDivElement>(null)
+  const resultsColumn = useRef<HTMLDivElement>(null)
+  const pinTop = useCallback(() => {
+    if (tab !== 'results' || !window.matchMedia('(min-width: 1024px)').matches) return
+    for (const box of [grid.current, resultsColumn.current]) if (box && box.scrollTop !== 0) box.scrollTop = 0
+  }, [tab])
+  useLayoutEffect(pinTop, [pinTop])
   return <>
     {assistantMounted && <CutAssistant cut={cut} active={tab === 'assistant'} onResultsChanged={resultsChanged} />}
-    <div className={`${tab === 'assistant' ? 'hidden' : 'grid'} min-h-0 flex-1 gap-5 overflow-y-auto p-5 lg:overflow-hidden ${tab === 'run' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(400px,460px)]' : 'lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)] 2xl:grid-cols-[19rem_minmax(0,1fr)]'}`}>
-      <div className={`scrollbar flex flex-col gap-3 ${tab === 'run' ? 'lg:order-2 lg:min-h-0 lg:overflow-y-auto lg:pr-1' : 'order-2 min-h-0 lg:overflow-hidden'}`}>
+    <div ref={grid} onScroll={pinTop} className={`${tab === 'assistant' ? 'hidden' : 'grid'} min-h-0 flex-1 gap-5 overflow-y-auto p-5 lg:overflow-hidden ${tab === 'run' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(400px,460px)]' : 'lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)] 2xl:grid-cols-[19rem_minmax(0,1fr)]'}`}>
+      <div ref={resultsColumn} onScroll={pinTop} className={`scrollbar flex flex-col gap-3 ${tab === 'run' ? 'lg:order-2 lg:min-h-0 lg:overflow-y-auto lg:pr-1' : 'order-2 min-h-0 lg:overflow-hidden'}`}>
         {/* Both stay mounted so unsaved settings and drafts survive a tab switch. */}
         <div className={tab === 'results' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
           <CutNeedsBar needs={needs} escalations={agentWork.escalations} decisions={agentWork.decisions} onJump={onJump} onChanged={agentMarks.onChanged} />

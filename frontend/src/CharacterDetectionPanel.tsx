@@ -84,6 +84,9 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
   const [resize, setResize] = useState<Resize | null>(null)
   // Last pointer position over a frame, in image pixels, for the "@" shortcut.
   const hover = useRef<{ position: 'first' | 'last'; point: [number, number] } | null>(null)
+  // The person card under the pointer (A and D act on it too) and when a box was last deleted with D.
+  const cardHover = useRef<string | null>(null)
+  const lastDelete = useRef(0)
   const [picking, setPicking] = useState<{ position: 'first' | 'last'; point: Point } | null>(null)
   const toast = useToast()
   const job = jobs.find(item => item.pipeline === 'character_detect' && item.cuts?.some(cut => cut.id === cutId))
@@ -246,18 +249,38 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
   const frameBoundaryChanged = (position: 'first' | 'last') => !!run && (position === 'first' ? run.cut_start !== cutStart : run.cut_end !== cutEnd)
   const hasOutdatedFrame = !!run?.frames.some(frame => frameBoundaryChanged(frame.position))
   // "@" starts a box at the pointer on the hovered frame and a second "@" finishes it there (Escape cancels).
-  const keyState = useRef({ run, start, drawing, locked, finish })
-  keyState.current = { run, start, drawing, locked, finish }
+  const keyState = useRef({ run, start, drawing, locked, finish, removeBox, label })
+  keyState.current = { run, start, drawing, locked, finish, removeBox, label }
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && keyState.current.start) { setStart(null); setCurrent(null); setDrawing(null); return }
-      if (event.key !== '@' || event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return
+      const lower = event.key.toLowerCase()
+      if ((event.key !== '@' && lower !== 'a' && lower !== 'd') || event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return
       const target = event.target as HTMLElement | null
       if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return
       if (document.querySelectorAll('[aria-modal="true"]').length > 1) return
       const { run: currentRun, start: from, drawing: where, locked: isLocked, finish: complete } = keyState.current
       const over = hover.current
       if (!currentRun || isLocked) return
+      if (event.key !== '@') {
+        // A confirms and D removes the box under the pointer (or the hovered person card); D elsewhere on a frame starts drawing.
+        if (event.shiftKey || (!over && !cardHover.current)) return
+        if (from) return
+        if (lower === 'd' && where) { event.preventDefault(); setDrawing(null); return }
+        const frameBoxes = over ? currentRun.detections.filter(item => item.position === over.position) : []
+        const inside = over ? frameBoxes.filter(item => over.point[0] >= item.box[0] && over.point[0] <= item.box[2] && over.point[1] >= item.box[1] && over.point[1] <= item.box[3]).sort((a, b) => (a.box[2] - a.box[0]) * (a.box[3] - a.box[1]) - (b.box[2] - b.box[0]) * (b.box[3] - b.box[1]))[0] : currentRun.detections.find(item => item.id === cardHover.current)
+        if (lower === 'a') {
+          if (inside && inside.label_source === 'auto' && inside.character_context_id) { event.preventDefault(); keyState.current.label(inside.id, inside.character_context_id) }
+          return
+        }
+        if (inside) {
+          if (inside.is_reference) return
+          event.preventDefault(); lastDelete.current = Date.now(); cardHover.current = null; keyState.current.removeBox(inside.id)
+        } else if (over && Date.now() - lastDelete.current > 600) {
+          event.preventDefault(); setDrawing(over.position); setStart(null); setCurrent(null)
+        }
+        return
+      }
       event.preventDefault()
       if (from && where) {
         const frame = currentRun.frames.find(item => item.position === where)
@@ -276,7 +299,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
         <label className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold leading-4 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#c3aeff] ${noChars ? 'border-[#6b5a2f] bg-[#2a2314] text-[#e6c58b]' : 'border-[#353c48] bg-[#1b202a] text-[#929aa9] hover:border-[#6b5a2f] hover:text-[#e6c58b]'} ${working ? 'opacity-60' : ''}`} title={noChars ? 'Marked as having no characters. Batch detection and cut analysis ignore this shot’s boxes. Untick to use them again.' : 'Tick if nobody appears in this shot. Batch detection skips it and cut analysis ignores any boxes.'}>
           <input type="checkbox" className="m-0 h-3.5 w-3.5 cursor-pointer accent-[#e6c58b]" checked={noChars} disabled={working || priorSaving} onChange={event => void toggleNoCharacters(event.target.checked)} />
           {noChars && <UserX size={12} aria-hidden />}{noChars ? 'No characters in this shot · skipped' : 'No characters in this shot'}
-        </label></h3><p className="muted mt-1 text-[11px]">Finds people in the first frame and names them from your labelled boxes. Double-click a person the detector missed to box them; Detect characters names the new boxes later. Your labels and drawn boxes are kept.</p></div>
+        </label></h3><p className="muted mt-1 text-[11px]">Finds people in the first frame and names them from your labelled boxes. Double-click a person the detector missed to box them; Detect characters names the new boxes later. Your labels and drawn boxes are kept. Shortcuts while hovering: A confirms the box under the pointer, D removes it (or starts drawing where there is no box).</p></div>
       <div className="flex items-center gap-2"><ActionButton icon={<ScanFace size={14} />} pending={detecting} disabled={working || !!saving || priorSaving} onClick={() => void detect()} title="Find and name the people in this cut's first frame">Detect characters</ActionButton></div>
     </div>
     {noChars && <p role="status" className="flex items-start gap-2 rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#e6c58b]"><UserX size={14} className="mt-0.5 shrink-0" aria-hidden />Marked as no characters. These frames are dimmed, their boxes are disabled, and they are ignored by batch detection and cut analysis. Untick the chip to edit them again.</p>}
@@ -310,7 +333,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
         }
         removeTargets.push({ x, y, radius })
       }
-      return <div key={frame.position} className="space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs text-[#d5dbe5]">{frame.position === 'first' ? 'First' : 'Last'} frame · {frame.time.toFixed(2)}s</strong><div className="flex items-center gap-2">{run.stale && boundaryChanged && <ActionButton compact variant="danger" icon={<Trash2 size={12} />} disabled={working || !!saving || hasReference} onClick={() => void removeStaleFrame(frame.position)} title={hasReference ? 'Remove the saved project reference first' : `Remove this outdated ${frame.position} frame and its character boxes from the stale run`}>Remove frame</ActionButton>}<button type="button" className="inline-flex items-center gap-1 text-xs text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked} onClick={() => { setDrawing(drawing === frame.position ? null : frame.position); setStart(null); setCurrent(null) }}>{drawing === frame.position ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing === frame.position ? 'Cancel drawing' : 'Draw box'}<kbd className="ml-1 rounded border border-[#3b4352] px-1 font-mono text-[10px] leading-4 text-[#929aa9]" title="Hover a frame and press @ to start a box, press @ again to finish it">@</kbd></button></div></div>
+      return <div key={frame.position} className="space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs text-[#d5dbe5]">{frame.position === 'first' ? 'First' : 'Last'} frame · {frame.time.toFixed(2)}s</strong><div className="flex items-center gap-2">{run.stale && boundaryChanged && <ActionButton compact variant="danger" icon={<Trash2 size={12} />} disabled={working || !!saving || hasReference} onClick={() => void removeStaleFrame(frame.position)} title={hasReference ? 'Remove the saved project reference first' : `Remove this outdated ${frame.position} frame and its character boxes from the stale run`}>Remove frame</ActionButton>}<button type="button" className="inline-flex items-center gap-1 text-xs text-[#c3aeff] hover:underline disabled:opacity-40" disabled={locked} onClick={() => { setDrawing(drawing === frame.position ? null : frame.position); setStart(null); setCurrent(null) }}>{drawing === frame.position ? <XCircle size={12} aria-hidden /> : <PencilLine size={12} aria-hidden />}{drawing === frame.position ? 'Cancel drawing' : 'Draw box'}<kbd className="ml-1 rounded border border-[#3b4352] px-1 font-mono text-[10px] leading-4 text-[#929aa9]" title="Hover a frame and press D to start drawing, or @ to start a box at the pointer and @ again to finish it. Over a box: D removes it, A confirms an automatic name.">D</kbd></button></div></div>
         <div onPointerMove={event => { const rect = event.currentTarget.getBoundingClientRect(); hover.current = { position: frame.position, point: [Math.max(0, Math.min(frame.image_size[0], (event.clientX - rect.left) * frame.image_size[0] / rect.width)), Math.max(0, Math.min(frame.image_size[1], (event.clientY - rect.top) * frame.image_size[1] / rect.height))] } }} onPointerLeave={() => { hover.current = null }} className={`relative overflow-hidden bg-black ${noChars ? 'pointer-events-none select-none' : ''}`} aria-disabled={noChars || undefined} style={{ aspectRatio: `${frame.image_size[0]} / ${frame.image_size[1]}` }}><img src={img} alt={`${frame.position} detected frame`} loading="lazy" decoding="async" className={`absolute inset-0 h-full w-full transition-[filter,opacity] ${noChars ? 'opacity-35 grayscale' : ''}`} /><svg viewBox={`0 0 ${frame.image_size[0]} ${frame.image_size[1]}`} className={`absolute inset-0 h-full w-full ${noChars ? 'opacity-40 grayscale' : ''} ${drawing === frame.position ? 'touch-none cursor-crosshair' : 'pointer-events-none'}`} aria-label={`${frame.position} frame character boxes`} onPointerDown={event => { if (drawing !== frame.position) return; event.currentTarget.setPointerCapture(event.pointerId); const p = coords(event, frame); setStart(p); setCurrent(p) }} onPointerMove={event => { if (drawing === frame.position && start) setCurrent(coords(event, frame)) }} onPointerUp={event => { if (drawing === frame.position && start) void finish(frame, coords(event, frame)) }}>
           {!locked && !picking && drawing !== frame.position && <PickLayer size={frame.image_size} onPick={event => void pick(frame, svgPoint(event, frame))} />}
           {people.map((person, index) => {
@@ -340,7 +363,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
         {!people.length && <p className="muted text-xs">No people detected. Double-click a person or use Draw box to add one.</p>}
         {people.map((person, index) => {
           const color = BOX_COLORS[index % BOX_COLORS.length]
-          return <div key={person.id} className={`rounded-lg border hairline bg-[#1e2430] p-2 text-xs transition-opacity ${noChars ? 'opacity-45' : ''}`} aria-disabled={noChars || undefined} style={{ borderLeft: `4px solid ${noChars ? '#4a5262' : color}` }}>
+          return <div key={person.id} onPointerEnter={() => { cardHover.current = person.id }} onPointerLeave={() => { if (cardHover.current === person.id) cardHover.current = null }} className={`rounded-lg border hairline bg-[#1e2430] p-2 text-xs transition-opacity ${noChars ? 'opacity-45' : ''}`} aria-disabled={noChars || undefined} style={{ borderLeft: `4px solid ${noChars ? '#4a5262' : color}` }}>
             <div className="flex flex-wrap items-center gap-1.5"><span className="w-5 shrink-0 text-center font-semibold" style={{ color }}>{index + 1}</span>
               <select aria-label={`Character for box ${index + 1}`} className="field !w-auto min-w-32 flex-1 !px-2 !py-1.5 !text-xs" value={person.character_context_id || ''} disabled={locked || person.is_reference} onChange={event => { if (event.target.value === NEW_CHARACTER) setAdding(person.id); else void label(person.id, event.target.value || null) }}><option value="">Unknown</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}<option value={NEW_CHARACTER}>+ Add new character…</option></select>
               {person.label_source !== 'manual' && !person.is_reference && <ActionButton compact icon={<UserPlus size={13} />} disabled={locked} onClick={() => setAdding(person.id)} title="Create a new project character from this box and describe its features" aria-label={`Add new character from box ${index + 1}`} />}
