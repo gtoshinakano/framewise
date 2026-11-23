@@ -287,6 +287,8 @@ class StagePlanTest(unittest.TestCase):
         self.assertEqual(fw.stage_next('evaluate', data, {'visual'})['step'], 'beats')
         self.assertIsNone(fw.stage_next('evaluate', data, {'visual', 'beats'}))
         self.assertEqual(fw.stage_next('evaluate', data, set(), only='beats')['cuts'], [5])
+        self.assertEqual(fw.stage_next('evaluate', data, set(), only='visual')['beats'], 'off')
+        self.assertNotIn('beats', fw.stage_next('evaluate', data, set()))
 
     def test_prepare_cuts_runs_the_cast_resolver_only_after_it_changed_something(self):
         self.assertIsNone(fw.stage_next('prepare_cuts', targets(), set()))
@@ -305,6 +307,8 @@ class StagePlanTest(unittest.TestCase):
     def test_visual_is_queued_in_chunks_that_queue_beats_only_when_ready(self):
         api = AutopilotApi()
         api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {'job_ids': ['j']})[1]
+        fw.stage_execute(api, EPISODE, {'step': 'visual', 'cuts': [7], 'beats': 'off'}, 'run1')
+        self.assertEqual(api.calls.pop()[1]['beats'], 'off')
         ids = fw.stage_execute(api, EPISODE, {'step': 'visual', 'cuts': list(range(1, 41)) + [45]}, 'run1')
         self.assertEqual(len(ids), 4)
         spans = [(params['from_cut'], params['to_cut']) for _, params, _ in api.calls]

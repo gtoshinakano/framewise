@@ -11,7 +11,7 @@ Work from the repository root with `scripts/fw`. The rules are in `docs/autopilo
 scripts/fw targets EP [RANGE]                     # every stage's dry run: targets per step, cuts held for the person and why
 scripts/fw evaluate EP [RANGE] --dry-run          # what evaluate would run now
 scripts/fw evaluate EP [RANGE]                    # visual → beats → consistency, each once, on its targets
-scripts/fw evaluate EP [RANGE] --only visual      # one step only (visual | beats | consistency)
+scripts/fw evaluate EP [RANGE] --only visual      # one step only (visual | beats | consistency); --only visual queues no beats
 ```
 
 **A target** is a cut whose result is missing or stale *and* whose inputs are settled: first-frame boxes named or

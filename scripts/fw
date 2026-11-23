@@ -743,7 +743,8 @@ def stage_next(stage, data, done, only=None):
     if stage == 'evaluate':
         for step in EVALUATE_STEPS:
             if step not in done and (only is None or only == step) and (cuts := _cuts_of(data['evaluate'][step])):
-                return run(step, cuts)
+                # --only visual: saving the keyframes queues no beats either (beats=off); otherwise beats follow ready cuts
+                return {**run(step, cuts), **({'beats': 'off'} if only == 'visual' else {})}
         return None
     if stage == 'results':
         section = data['results']
@@ -773,7 +774,7 @@ def stage_execute(api, episode, action, run_id, language=None):
         ids = []
         for first, last in runs_of(numbers):
             for start in range(first, last + 1, VISUAL_CHUNK):
-                params = {'from_cut': start, 'to_cut': min(last, start + VISUAL_CHUNK - 1), 'only_missing': True, 'beats': 'when_ready'}
+                params = {'from_cut': start, 'to_cut': min(last, start + VISUAL_CHUNK - 1), 'only_missing': True, 'beats': action.get('beats', 'when_ready')}
                 ids += job_ids(api.post(f"/api/episodes/{episode['id']}/visual-analysis", params))
         return ids
     if step in ('beats', 'consistency', 'summary'):
@@ -2205,7 +2206,7 @@ def parser():
         command.add_argument('--timeout', type=int, default=0, help='stop waiting after this many seconds (exit 3; 0: no limit)')
         command.add_argument('--language', help='prepare: the subtitle language (default: the episode setting)')
         if stage == 'evaluate':
-            command.add_argument('--only', choices=EVALUATE_STEPS, help='run only this step')
+            command.add_argument('--only', choices=EVALUATE_STEPS, help='run only this step (visual: no beats are queued after it)')
     episode_command('targets', cmd_targets, 'the dry run of every stage: target cuts per step, cuts held for you and why, the inbox', rng=True)
     command = sub.add_parser('autopilot', help='replaced by prepare, prepare-cuts, lines, evaluate and results')
     command.add_argument('rest', nargs=argparse.REMAINDER)
