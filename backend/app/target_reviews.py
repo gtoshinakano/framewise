@@ -19,6 +19,11 @@ def record(conn, run, action, before=(), after=(), **details):
     if action != 'selection_replaced':
         ordinals = {item.get('frame_ordinal') for item in [*before, *after] if isinstance(item, dict)} - {None}
         note_frame_override(conn, run['id'], ordinals)
+        # An edit may have settled a question that was raised for this run (flags gone, colour named or ignored).
+        from . import character_decisions
+        episode = conn.execute('SELECT episode_id FROM cuts WHERE id=?', (run['cut_id'],)).fetchone()
+        if episode:
+            character_decisions.close_settled(conn, episode['episode_id'])
 
 
 def note_frame_override(conn, run_id, ordinals):

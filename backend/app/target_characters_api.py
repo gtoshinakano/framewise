@@ -193,6 +193,10 @@ def label_slot(run_id: str, slot: int, body: TargetSlotLabel):
             raise HTTPException(400, 'Character not found in this project')
         conn.execute("UPDATE target_slots SET character_context_id=?,label_source='manual' WHERE run_id=? AND slot=?",
                      (character_id, run_id, slot))
+        from . import character_decisions
+        episode = conn.execute('SELECT episode_id FROM cuts WHERE id=?', (run['cut_id'],)).fetchone()
+        if episode:
+            character_decisions.close_settled(conn, episode['episode_id'])
     return {'ok': True}
 
 

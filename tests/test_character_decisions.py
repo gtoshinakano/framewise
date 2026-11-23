@@ -224,6 +224,44 @@ class JobTest(unittest.TestCase):
         decision = next(item for item in self.client.get('/api/episodes/e/agent-decisions').json() if item['kind'] == 'target_frames')
         self.assertEqual(self.client.post(f"/api/agent-decisions/{decision['id']}/undo").json(), {'undone': True})
 
+    def test_target_question_closes_when_its_colour_is_settled_by_an_edit(self):
+        with db.connect() as conn:
+            frames = [{'ordinal': 1, 'time': 10.0, 'image_size': [1280, 720], 'mirror': True, 'review': {'score': 1, 'flags': {}}},
+                      {'ordinal': 2, 'time': 11.0, 'image_size': [1280, 720], 'review': {'score': 0.85, 'flags': {'count_changed': {'first': 1, 'here': 0}}}}]
+            conn.execute("""INSERT INTO target_detection_runs(id,cut_id,selection_key,cut_start,cut_end,frames_json) VALUES ('t3','c3','k',10,15,?)""",
+                         (json.dumps(frames),))
+            conn.execute("INSERT INTO target_slots(run_id,slot,origin,character_context_id,label_source) VALUES ('t3',0,'first_frame',?, 'inherited')", (MAI,))
+            conn.execute("INSERT INTO target_slots(run_id,slot,origin,label_source) VALUES ('t3',1,'appeared','auto')")
+            conn.execute("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json) VALUES ('td1','t3',1,0,'[600,100,900,600]'),('td2','t3',2,1,'[100,100,300,600]')")
+            agent_log.escalate(conn, episode_id='e', kind='target_frame', group_key='cut:c3', question='q', cut_ids=['c3'], options=['ok', 'person'],
+                               evidence={'run_id': 't3', 'frames': [], 'unnamed_colours': [2], 'cut': 3})
+        def open_targets():
+            return [item for item in self.client.get('/api/episodes/e/escalations').json()['items'] if item['kind'] == 'target_frame']
+        self.assertEqual(len(open_targets()), 1)
+        # Answering ok with nothing listed cannot close it while the colour is unnamed.
+        self.client.put('/api/target-runs/t3/frames/2/reviewed', json={'reviewed': True})
+        self.assertEqual(len(open_targets()), 1)
+        self.client.put('/api/target-slots/t3/1/ignored', json={'ignored': True})
+        self.assertEqual(open_targets(), [])
+
+    def test_target_question_closes_when_its_colour_has_no_boxes_left(self):
+        with db.connect() as conn:
+            frames = [{'ordinal': 1, 'time': 10.0, 'image_size': [1280, 720], 'mirror': True, 'review': {'score': 1, 'flags': {}}},
+                      {'ordinal': 2, 'time': 11.0, 'image_size': [1280, 720], 'review': {'score': 1, 'flags': {}}}]
+            conn.execute("""INSERT INTO target_detection_runs(id,cut_id,selection_key,cut_start,cut_end,frames_json) VALUES ('t3','c3','k',10,15,?)""",
+                         (json.dumps(frames),))
+            conn.execute("INSERT INTO target_slots(run_id,slot,origin,character_context_id,label_source) VALUES ('t3',0,'first_frame',?, 'inherited')", (MAI,))
+            conn.execute("INSERT INTO target_slots(run_id,slot,origin,label_source) VALUES ('t3',1,'appeared','auto')")
+            conn.execute("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json) VALUES ('td1','t3',2,1,'[600,100,900,600]')")
+            agent_log.escalate(conn, episode_id='e', kind='target_frame', group_key='cut:c3', question='q', cut_ids=['c3'], options=['ok', 'person'],
+                               evidence={'run_id': 't3', 'frames': [], 'unnamed_colours': [2], 'cut': 3})
+        def open_targets():
+            return [item for item in self.client.get('/api/episodes/e/escalations').json()['items'] if item['kind'] == 'target_frame']
+        self.client.put('/api/target-runs/t3/frames/2/reviewed', json={'reviewed': True})
+        self.assertEqual(len(open_targets()), 1)
+        self.client.delete('/api/target-detections/td1')
+        self.assertEqual(open_targets(), [])
+
     def test_profile_off_and_registrations(self):
         self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'box_names': 'off', 'target_frames': 'off'}}})
         self.assertIsNone(self.client.post('/api/episodes/e/character-decisions', json={}).json()['job_id'])

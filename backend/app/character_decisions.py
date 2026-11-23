@@ -642,6 +642,39 @@ def publish_targets(conn, episode_id, payload, counts, names):
         counts['asked_target_cuts'] += 1
 
 
+def visible_target_state(conn, run):
+    """The run's frames with the flags the Target frames tab shows (edits applied) and its slots by number."""
+    from . import target_reviews
+    slot_rows = [dict(row) for row in conn.execute('SELECT slot,character_context_id,ignored FROM target_slots WHERE run_id=? ORDER BY slot', (run['id'],))]
+    boxes = [target_reviews.box_row(row) for row in conn.execute(
+        'SELECT d.* FROM target_detections d JOIN target_slots s ON s.run_id=d.run_id AND s.slot=d.slot WHERE d.run_id=? AND s.ignored=0 ORDER BY d.rowid', (run['id'],))]
+    frames = target_reviews.visible_reviews(_load(run['frames_json'], []), slot_rows, boxes, _load(run['candidates_json'], []))
+    used = Counter(row['slot'] for row in conn.execute('SELECT slot FROM target_detections WHERE run_id=?', (run['id'],)))
+    return frames, {row['slot']: {**row, 'boxes': used[row['slot']]} for row in slot_rows}
+
+
+def unnamed_left(slots, colours):
+    """The listed colours (1-based) that are still shown, have boxes and have no character. A colour with no boxes left has
+    nothing to name."""
+    return [colour for colour in colours or [] if (slots.get(colour - 1) or {}).get('ignored') is not None
+            and not slots[colour - 1]['ignored'] and not slots[colour - 1]['character_context_id'] and slots[colour - 1].get('boxes')]
+
+
+def target_settled(conn, evidence):
+    """A target-frame question is settled once its run is gone, every listed frame is reviewed or has no flag now, and every
+    listed colour is named or ignored (or gone)."""
+    run = conn.execute('SELECT * FROM target_detection_runs WHERE id=?', (evidence.get('run_id'),)).fetchone()
+    if run is None:
+        return True
+    frames, slots = visible_target_state(conn, run)
+    by_ordinal = {frame.get('ordinal'): frame for frame in frames}
+    for frame in evidence.get('frames') or []:
+        review = by_ordinal.get(frame['ordinal'], {}).get('review') or {}
+        if not review.get('reviewed') and review.get('flags'):
+            return False
+    return not unnamed_left(slots, evidence.get('unnamed_colours'))
+
+
 def close_settled(conn, episode_id):
     """Resolve open questions whose items were settled elsewhere: boxes labelled or removed, frames reviewed or replaced."""
     closed = 0
@@ -657,14 +690,7 @@ def close_settled(conn, episode_id):
                           or (purpose != 'auto' and rows[box_id]['label_source'] == 'auto') for box_id in ids)
         elif item['kind'] == ESC_TARGET:
             evidence = item['evidence'] or {}
-            run = conn.execute('SELECT frames_json FROM target_detection_runs WHERE id=?', (evidence.get('run_id'),)).fetchone()
-            if run is None:
-                settled = True
-            else:
-                frames = {frame.get('ordinal'): frame for frame in _load(run['frames_json'], [])}
-                wanted = [frame['ordinal'] for frame in evidence.get('frames') or []]
-                settled = all((frames.get(ordinal, {}).get('review') or {}).get('reviewed') or not (frames.get(ordinal, {}).get('review') or {}).get('flags')
-                              for ordinal in wanted) and not evidence.get('unnamed_colours')
+            settled = target_settled(conn, evidence)
         else:
             continue
         if settled and agent_log.close_escalation(conn, item['id'], 'resolved', {'by': 'settled elsewhere'}):
@@ -847,7 +873,9 @@ def answer_target(conn, escalation_id, *, frames, tier='human', run_id=None, not
             done.append(mark_reviewed(conn, run, ordinal, tier=tier, run_id=run_id, episode_id=item['episode_id'],
                                       why=f'{tier} checked it' + (f': {note}' if note else ''), evidence={'escalation': escalation_id}))
     left = [ordinal for ordinal in listed if answers.get(ordinal) != 'ok']
-    if left or evidence.get('unnamed_colours'):
+    _, slots = visible_target_state(conn, run)
+    evidence['unnamed_colours'] = unnamed_left(slots, evidence.get('unnamed_colours'))
+    if left or evidence['unnamed_colours']:
         evidence['frames'] = [listed[ordinal] for ordinal in left]
         conn.execute('UPDATE agent_escalations SET evidence_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', (json.dumps(evidence), escalation_id))
         if tier == 'claude':
