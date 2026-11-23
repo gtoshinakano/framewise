@@ -18,6 +18,16 @@ class CutNeedsTest(unittest.TestCase):
     def people(self, cuts, cut_id):
         return {item['key']: item['count'] for item in cuts[cut_id]['people']}
 
+    def test_a_low_confidence_speaker_nobody_confirmed_is_its_own_need(self):
+        with db.connect() as conn:
+            conn.execute("UPDATE transcript_segments SET confidence='low',speaker_source='qwen' WHERE episode_id='e' AND character_context_id IS NOT NULL")
+        count = sum(self.people(self.needs(), cut).get('speaker_unsure', 0) for cut in ('c1', 'c2', 'c3', 'c4'))
+        with db.connect() as conn:
+            expected = conn.execute("SELECT COUNT(*) FROM transcript_segments WHERE episode_id='e' AND superseded_by IS NULL AND deleted=0 AND confidence='low' AND character_context_id IS NOT NULL").fetchone()[0]
+            conn.execute("UPDATE transcript_segments SET speaker_source='manual' WHERE episode_id='e'")
+        self.assertGreaterEqual(count, 1 if expected else 0)
+        self.assertEqual(sum(self.people(self.needs(), cut).get('speaker_unsure', 0) for cut in ('c1', 'c2', 'c3', 'c4')), 0)
+
     def test_gates_checks_and_steps_by_cut(self):
         cuts = self.needs()
         self.assertEqual(self.people(cuts, 'c1'), {'box_names': 1, 'voice': 1, 'lines_to_check': 1})

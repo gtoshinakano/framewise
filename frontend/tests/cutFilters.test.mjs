@@ -65,7 +65,7 @@ test('every filter belongs to a group, listed in group order', () => {
   assert.deepEqual(groups.map(entry => entry.group), ['Needs you', 'Claude', 'Analysis', 'Characters', 'Text steps', 'Health', 'Length'])
   assert.equal(groups.flatMap(entry => entry.filters).length, CUT_FILTERS.length)
   assert.deepEqual(groups[0].filters.map(filter => filter.key),
-    ['missed_cut', 'line_split', 'voice', 'box_names', 'target_frames', 'decisions', 'picture_check', 'lines_to_check', 'failed_run'])
+    ['missed_cut', 'line_split', 'voice', 'speaker_unsure', 'box_names', 'target_frames', 'decisions', 'picture_check', 'lines_to_check', 'failed_run'])
   assert.deepEqual(groups[1].filters.map(filter => filter.key), ['claude_pending', 'agent_answered'])
 })
 

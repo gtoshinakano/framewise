@@ -154,3 +154,28 @@ export function speakerColor(label: string) {
   for (const char of label) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
   return SPEAKER_COLORS[hash % SPEAKER_COLORS.length]
 }
+
+export type SpeakerConfidence = { level: 'medium' | 'low'; blocking: boolean; label: string; detail: string }
+
+/**
+ * How sure the app is of a line's speaker, for the chip in the line list: null for a high-confidence line or one a person or
+ * an agent set. `blocking` is the autopilot's rule (cut_readiness): a low-confidence speaker nobody confirmed holds the cut's beats.
+ * The detail reads the line's evidence: the best voice match, its lead over the next, and what Qwen said.
+ */
+export function speakerConfidence(line: Pick<TranscriptSegment, 'confidence' | 'speaker_source' | 'evidence_json'>, names?: ReadonlyMap<string, string>): SpeakerConfidence | null {
+  const level = line.confidence
+  if (level !== 'medium' && level !== 'low') return null
+  if (line.speaker_source === 'manual' || line.speaker_source === 'agent') return null
+  let evidence: { top?: number; gap?: number; evidence?: [string, number][]; qwen?: { speaker?: string | null; reason?: string | null } } = {}
+  try { evidence = line.evidence_json ? JSON.parse(line.evidence_json) || {} : {} } catch { evidence = {} }
+  const parts: string[] = []
+  const best = evidence.evidence?.[0]
+  if (typeof evidence.top === 'number') {
+    const who = best ? names?.get(best[0]) : undefined
+    parts.push(`Voice match ${who ? `${who} ` : ''}${evidence.top.toFixed(2)}${typeof evidence.gap === 'number' ? `, ${evidence.gap.toFixed(2)} ahead of the next` : ''}`)
+  }
+  if (evidence.qwen?.speaker) parts.push(`Qwen chose ${evidence.qwen.speaker}${evidence.qwen.reason ? ` (${evidence.qwen.reason})` : ''}`)
+  const how = line.speaker_source === 'qwen' ? 'chosen from the conversation' : line.speaker_source ? 'chosen from the voice' : ''
+  const head = level === 'low' ? 'Low confidence: the autopilot holds this cut\'s beats until you set or confirm the speaker' : 'Medium confidence'
+  return { level, blocking: level === 'low', label: level === 'low' ? 'unsure' : 'check', detail: [head + (how ? `, ${how}` : ''), ...parts].join(' · ') }
+}

@@ -12,7 +12,7 @@ from . import agent_log, db, review_report
 router = APIRouter(prefix='/api')
 
 # The editor's order of an episode's flow (frontend/src/cutNeeds.ts NEED_ORDER).
-PEOPLE = ('missed_cut', 'line_split', 'voice', 'box_names', 'target_frames', 'decisions', 'picture_check', 'lines_to_check', 'failed_run')
+PEOPLE = ('missed_cut', 'line_split', 'voice', 'speaker_unsure', 'box_names', 'target_frames', 'decisions', 'picture_check', 'lines_to_check', 'failed_run')
 # Escalation kind -> the person's need it stands for.
 ESCALATION_NEED = {'missed_cut': 'missed_cut', 'line_split': 'line_split', 'voice': 'voice', 'box_label': 'box_names',
                    'new_person': 'box_names', 'target_frame': 'target_frames', 'review_question': 'decisions', 'failed_run': 'failed_run'}
@@ -68,6 +68,9 @@ def needs(conn, episode_id):
     analysed = [cut for cut in cuts if cut['id'] not in off]
     for cut_id, count in _lines_by_cut(conn, episode_id, analysed, 'character_context_id IS NULL').items():
         person(cut_id, 'voice', count)
+    # Low confidence and not set by a person or an agent: the lines cut_readiness holds beats back for.
+    for cut_id, count in _lines_by_cut(conn, episode_id, analysed, "character_context_id IS NOT NULL AND confidence='low' AND COALESCE(speaker_source,'') NOT IN ('manual','agent')").items():
+        person(cut_id, 'speaker_unsure', count)
     for cut_id, count in _lines_by_cut(conn, episode_id, analysed, "confidence IN ('medium','low')").items():
         person(cut_id, 'lines_to_check', count)
 

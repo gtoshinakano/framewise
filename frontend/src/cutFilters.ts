@@ -24,6 +24,7 @@ const NEED_LOOK: Record<NeedKey, { color: string; hint: string; fallback?: (cut:
   missed_cut: { color: '#ff9f6e', hint: 'The agent found a possible hard cut inside this cut and asks you whether to split it' },
   line_split: { color: '#f7b2d9', hint: 'A transcript line crosses this cut\'s hard cut and the agent asks how to divide it' },
   voice: { color: '#f0c979', hint: 'Spoken lines in this cut have no character, or the agent asks who a voice is' },
+  speaker_unsure: { color: '#e8b04a', hint: 'A line has a low-confidence speaker nobody confirmed: the autopilot holds this cut\'s beats until you set or confirm it' },
   box_names: { color: '#4cc9f0', hint: 'A first-frame box has no character, or the agent asks who a person is',
     fallback: cut => expectsCharacters(cut) && !!cut.has_boxes && !!cut.has_unlabeled_boxes },
   target_frames: { color: '#e2709c', hint: 'Target frames are flagged for review or show an unnamed person',

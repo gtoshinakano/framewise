@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, type KeyboardEvent, type PointerEvent, type
 import { Check, Merge, Plus, Scissors, Trash2, X } from 'lucide-react'
 import type { ContextItem, Cut, TranscriptSegment } from './api'
 import { IconButton } from './EditorUi'
-import { contiguousRange, crossing, speakerColor, stamp } from './lineEditView'
+import { contiguousRange, crossing, speakerColor, speakerConfidence, stamp } from './lineEditView'
 
 /** The line being worked on: an existing one opened for editing, a new one, or the result of a merge that is not saved yet. */
 export type Draft = {
@@ -156,12 +156,14 @@ export function TranscriptLines({ cut, lines, characters, names, selected, onSel
         const speaker = assigned || line.speaker_label || 'Unknown speaker'
         const color = speakerColor(speaker)
         const side = crossing(line, cut)
+        const sure = speakerConfidence(line, names)
         return <li key={line.id} data-line={line.id} role="option" aria-selected={isSelected} tabIndex={0} className="flex select-none items-start gap-1.5 outline-none focus-visible:[&>div]:ring-1 focus-visible:[&>div]:ring-[#c3aeff]"
           onPointerDown={event => press(event, line.id)} onPointerEnter={() => enter(line.id)} onKeyDown={event => rowKey(event, line)} onDoubleClick={event => { if (!(event.target as HTMLElement).closest(INTERACTIVE)) onEdit(line) }}
           title="Double-click to edit">
           <div style={{ borderLeftColor: color }} className={`min-w-0 flex-1 cursor-pointer rounded-md border-l-[3px] px-2 py-1 text-left ${isSelected ? 'bg-[#3a3058] ring-1 ring-[#8f78d8]' : active ? 'bg-[#322a48]' : 'bg-[#232a35] hover:bg-[#2a3140]'}`}>
             <span className="flex items-center gap-1.5"><span style={{ color }} className="block min-w-0 truncate text-[10px] font-bold uppercase tracking-wide">{speaker}</span>
               {side && <span className="shrink-0 rounded border border-[#6d5526] px-1 text-[9px] text-[#f0c979]" title={`${stamp(line.start_time)}–${stamp(line.end_time)}`}>{side === 'before' ? 'starts before cut' : side === 'after' ? 'continues after cut' : 'spans the cut'}</span>}
+              {sure && <span className={`shrink-0 rounded border px-1 text-[9px] ${sure.blocking ? 'border-[#8a6a2a] bg-[#3a2c12] text-[#f5c678]' : 'border-[#4a4a3a] text-[#c9bd8a]'}`} title={sure.detail}>{sure.label}</span>}
               <span className="muted ml-auto shrink-0 text-[9px] tabular-nums">{stamp(line.start_time)}–{stamp(line.end_time)}</span></span>
             <span className="block break-words text-[12px] leading-[1.45]">{line.text}</span>
           </div>

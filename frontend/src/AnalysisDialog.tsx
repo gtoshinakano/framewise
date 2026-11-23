@@ -215,7 +215,7 @@ const AnalysisDialogContent = memo(function AnalysisDialogContent({ cut, cuts, n
         {showsVideo && <div className={`shrink-0 ${tab === 'run' ? 'mx-auto w-full lg:max-w-[82vh]' : 'mx-auto w-full max-w-sm lg:max-w-none'}`}>{proxyReady
           ? <PlayerSlot className="aspect-video"><PlayheadReadout start={cut.start_time} end={cut.end_time} />{tab === 'results' && <FrameTools cut={cut} results={results} frameVersion={frameVersion} onPreview={() => setFramesOpen(true)} />}</PlayerSlot>
           : <div className="relative aspect-video overflow-hidden rounded-xl border hairline bg-black"><div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div></div>}</div>}
-        {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} canPlay={proxyReady} projectId={projectId} episodeId={episodeId} onChanged={onStarted} marks={{ voice: hasNeed(needs, 'voice'), lines: hasNeed(needs, 'lines_to_check') }} />}
+        {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} canPlay={proxyReady} projectId={projectId} episodeId={episodeId} onChanged={onStarted} marks={{ voice: hasNeed(needs, 'voice'), lines: hasNeed(needs, 'lines_to_check') || hasNeed(needs, 'speaker_unsure') }} />}
       </div>
     </div>
     {framesOpen && <FramesDialog cut={cut} results={results} frameVersion={frameVersion} onClose={() => setFramesOpen(false)} />}

@@ -98,3 +98,21 @@ test('positions and times convert between the graph and the episode clock', () =
   assert.equal(timeAt(window, 0.25), 12)
   assert.equal(timeAt(window, 2), 24)
 })
+
+import { speakerConfidence } from '../src/lineEditView.ts'
+
+test('speaker confidence: only medium and low lines nobody confirmed get a chip, and low ones block', () => {
+  const names = new Map([['a', 'Sakuta Azusagawa']])
+  const evidence = JSON.stringify({ top: 0.382, gap: 0.046, evidence: [['a', 0.382]], qwen: { speaker: 'Sakuta Azusagawa', reason: 'turn' } })
+  assert.equal(speakerConfidence({ confidence: 'high', speaker_source: 'voice', evidence_json: evidence }, names), null)
+  assert.equal(speakerConfidence({ confidence: null, speaker_source: 'manual', evidence_json: null }, names), null)
+  assert.equal(speakerConfidence({ confidence: 'low', speaker_source: 'manual', evidence_json: evidence }, names), null)
+  const low = speakerConfidence({ confidence: 'low', speaker_source: 'qwen', evidence_json: evidence }, names)
+  assert.equal(low.blocking, true)
+  assert.equal(low.label, 'unsure')
+  assert.match(low.detail, /Voice match Sakuta Azusagawa 0\.38, 0\.05 ahead of the next/)
+  assert.match(low.detail, /Qwen chose Sakuta Azusagawa \(turn\)/)
+  const medium = speakerConfidence({ confidence: 'medium', speaker_source: 'voice_padded', evidence_json: 'not json' }, names)
+  assert.equal(medium.blocking, false)
+  assert.equal(medium.label, 'check')
+})

@@ -7,7 +7,7 @@ import { Popover } from './Popover'
 
 /** Icons per filter. A filter added later without an entry here gets the generic filter icon. */
 const FILTER_ICONS: Partial<Record<CutFilterKey, LucideIcon>> = {
-  missed_cut: Scissors, line_split: SplitSquareHorizontal, voice: AudioLines, box_names: UserRound, target_frames: ScanFace, decisions: MessageCircleQuestion,
+  missed_cut: Scissors, line_split: SplitSquareHorizontal, voice: AudioLines, speaker_unsure: CircleAlert, box_names: UserRound, target_frames: ScanFace, decisions: MessageCircleQuestion,
   picture_check: ImageOff, lines_to_check: CircleAlert, failed_run: TriangleAlert, claude_pending: Bot, agent_answered: UserRoundCheck,
   needs_analysis: ScanEye, no_boxes: BoxSelect, needs_consistency: ClipboardCheck, needs_summary: FileText, job_failed: TriangleAlert, long_cut: Timer,
 }
