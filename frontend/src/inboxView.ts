@@ -148,11 +148,16 @@ export function choicesFor(item: Escalation): Choice[] {
     case 'voice': {
       const proposed = item.proposal?.character_context_id
       const candidates: { id: string; name: string }[] = evidence.candidates ?? []
+      const cards: { id: string; name: string }[] = evidence.cards ?? []
       return [
         ...candidates.map(candidate => ({ key: candidate.id, label: candidate.name, proposed: candidate.id === proposed, tone: candidate.id === proposed ? 'primary' as const : undefined,
           request: post(id, 'voice', { choice: 'character', character_context_id: candidate.id }) })),
+        // Unregistered cards boxed in those cuts first: a minor person without a record (the same number as their box).
+        ...cards.map(card => ({ key: card.id, label: card.name, hint: 'Unregistered: a minor person boxed in these cuts',
+          request: post(id, 'voice', { choice: 'unregistered', character_context_id: card.id }) })),
+        { key: 'unregistered', label: 'New Unregistered', hint: 'A minor person without a record: gets the next Unregistered number', request: post(id, 'voice', { choice: 'unregistered' }) },
         { key: 'new', label: 'New character', hint: 'Closes it: create the character and its voice sample, then run the resolver again', request: post(id, 'voice', { choice: 'new' }) },
-        { key: 'leave', label: 'Leave unknown', request: post(id, 'voice', { choice: 'leave' }) },
+        { key: 'leave', label: evidence.unsure ? 'Keep as it is' : 'Leave unknown', hint: 'Never asked again', request: post(id, 'voice', { choice: 'leave' }) },
       ]
     }
     case 'box_label': {
@@ -170,6 +175,7 @@ export function choicesFor(item: Escalation): Choice[] {
         ...candidates.filter(([, name]) => name).slice(0, 3).map(([characterId, name, score]) => ({ key: characterId, label: `${name}`, hint: `similarity ${score.toFixed(2)}`,
           request: post(id, 'person', { choice: 'character', character_context_id: characterId }) })),
         { key: 'new', label: 'New character…', tone: 'primary' as const, input: 'title' as const },
+        { key: 'unregistered', label: 'Unregistered', hint: 'A minor person who matters for a line: label the boxes with the next Unregistered number', request: post(id, 'person', { choice: 'unregistered' }) },
         { key: 'background', label: 'Background', hint: 'Unbox every box of this person', request: post(id, 'person', { choice: 'background' }) },
         { key: 'leave', label: 'Leave', hint: 'Keep the boxes unnamed and stop asking', request: post(id, 'person', { choice: 'leave' }) },
       ]

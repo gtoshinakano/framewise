@@ -22,7 +22,7 @@ def gather(conn, job):
     transcript = db.all_rows("""SELECT id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,
         words_json,speaker_source,evidence_json,confidence FROM transcript_segments
         WHERE episode_id=? AND deleted=0 AND superseded_by IS NULL ORDER BY start_time,end_time,id""", (episode_id,), conn=conn)
-    characters = db.all_rows("""SELECT id,title FROM context_items WHERE project_id=? AND kind='character'
+    characters = db.all_rows("""SELECT id,title,unregistered FROM context_items WHERE project_id=? AND kind='character'
         AND (episode_id IS NULL OR episode_id=?) ORDER BY episode_id IS NULL DESC,title,id""", (project_id, episode_id), conn=conn)
     cuts = db.all_rows("""SELECT id,start_time,end_time,no_characters,cut_index FROM cuts WHERE episode_id=? AND active=1 ORDER BY start_time,cut_index""",
                        (episode_id,), conn=conn)
@@ -60,11 +60,14 @@ def insert(conn, episode_id, *, span=None, dependencies=()):
 
 def open_items(data, eligible):
     names = {item['id']: item['title'] for item in data['characters']}
+    cards = {item['id'] for item in data['characters'] if item.get('unregistered')}
     casts = {}
     for box in data['boxes']:
         title = names.get(box['character_context_id'])
         if title:
-            casts.setdefault(box['cut_id'], {}).setdefault(title, None)
+            # An Unregistered card is a minor person on screen, never a listed character: "other" is its answer.
+            shown_as = f'{title} (unregistered)' if box['character_context_id'] in cards else title
+            casts.setdefault(box['cut_id'], {}).setdefault(shown_as, None)
     cuts = data['cuts']
     starts = [cut['start_time'] for cut in cuts]
     shown, by_label = [], {}
@@ -91,12 +94,13 @@ def open_items(data, eligible):
     return shown, by_label
 
 
-# Speakers this job never re-decides: settled by the voice score, or given by the voice resolver (autopilot M5, two signals).
-DECIDED = ('voice', 'voice_padded', 'agent')
+# Speakers this job never re-decides: settled by the voice score, given by the voice resolver (autopilot M5, two signals),
+# or left as they are by the person (one question per unknown voice, HARNESS.md D29).
+DECIDED = ('voice', 'voice_padded', 'agent', 'left_unknown')
 
 
 def model_line(row):
-    return row['origin'] == 'model' and row['speaker_source'] not in ('manual', 'agent') and bool(row['words_json'])
+    return row['origin'] == 'model' and row['speaker_source'] not in ('manual', 'agent', 'left_unknown') and bool(row['words_json'])
 
 
 def revise(conn, episode_id, job_id, row, text, speaker, source, confidence, evidence):
@@ -124,7 +128,10 @@ def process(job_id, owner):
         data = snapshot.data
         eligible = {row['id'] for row in rows_in_range(data['transcript'], payload.get('range')) if model_line(row)}
         shown, by_label = open_items(data, eligible)
-        names = {row['title']: row['id'] for row in reversed(data['characters'])}
+        # The answer's names: registered characters only. An Unregistered person is "other" (voice_resolver gives the line to
+        # the card when it is the only one boxed in the cut).
+        names = {row['title']: row['id'] for row in reversed(data['characters']) if not row.get('unregistered')}
+        system = speaker_prompt.system_open(any('(unregistered)' in name for item in shown for name in item.get('on_screen') or ()))
         models = {}
         failed_windows = []
 
@@ -153,7 +160,7 @@ def process(job_id, owner):
                 return values
 
             try:
-                return call(speaker_prompt.SYSTEM_OPEN, speaker_prompt.user_message(window, names, conversation),
+                return call(system, speaker_prompt.user_message(window, names, conversation),
                             speaker_prompt.answer_schema([item['id'] for item in window], names), validate, 6144, label)
             except RuntimeError as exc:
                 if 'returned an invalid analysis after' not in str(exc):

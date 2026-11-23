@@ -41,13 +41,23 @@ For each `[Claude]` voice in the report (`fw inbox EP --reviewer claude` lists t
    mouth moves in the frames of each phrase. You cannot hear the audio: the voice score is the only sound evidence.
 3. Answer with a character name only when the frames show that character speaking across the phrases and nothing
    contradicts it (`--tier claude --run RUN --note` what the frames show). Otherwise `unsure` with a note: the person
-   answers it. Claude never answers `new` or `leave` (they go to the person) and never answers a voice that waits for the person.
+   answers it. Claude never answers `new`, `leave` or an Unregistered card (they go to the person: which number a minor
+   person gets is the person's choice) and never answers a voice that waits for the person. When the frames show a minor
+   person without a record speaking, answer `unsure` with a note saying so.
 
 ## The person
 
-`fw voices answer ID "Name"` gives the voice to a character (written as a manual edit), `new` closes it when the voice is a
-character that does not exist yet (create it, add a voice sample, run again), `leave` keeps it unknown and never asks
-again. Settling the voice in the app (Unknown voices block, a line's character select) closes the question by itself.
+`fw voices answer ID "Name"` gives the voice to a character (written as a manual edit). `"Unregistered N"` gives it to that
+Unregistered card (a minor person who speaks but has no record; the question lists the cards boxed in its cuts) and
+`unregistered` to a new card with the next number. `new` closes it when the voice is a character that does not exist yet
+(create it, add a voice sample, run again). `leave` keeps every line as it is (no speaker, or the unsure guess) and marks
+it `left_unknown`: nothing flags those lines again (voices gate, cut needs, held reasons, Lines to check) and speaker
+attribution never asks about them. Settling the voice in the app (Unknown voices block, a line's character select or its
+"Don't ask again") closes the question by itself.
+
+A voice is asked **once** (HARNESS.md D29): open lines are lines with no speaker and low-confidence guesses nobody
+decided, both in the same question per voice. When speaker attribution said "other" for a phrase and its cut has exactly
+one Unregistered card boxed, the resolver gives the phrase to that card itself (tier `rules`, undoable).
 
 ## Final report: the links to open
 

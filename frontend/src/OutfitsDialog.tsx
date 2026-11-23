@@ -21,7 +21,7 @@ export function OutfitsDialog({ projectId, onClose }: { projectId: string; onClo
     dialog.current?.showModal()
     const controller = new AbortController()
     Promise.all([api<Outfit[]>(url, { signal: controller.signal }), api<ContextItem[]>(`/projects/${projectId}/context`, { signal: controller.signal })])
-      .then(([outfits, context]) => { setRows(outfits); setCharacters(context.filter(item => item.kind === 'character')) })
+      .then(([outfits, context]) => { setRows(outfits); setCharacters(context.filter(item => item.kind === 'character' && !item.unregistered)) })
       .catch(err => { if (!controller.signal.aborted) setError((err as Error).message) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => { controller.abort(); dialog.current?.close() }

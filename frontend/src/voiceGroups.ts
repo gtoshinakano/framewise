@@ -1,6 +1,6 @@
 import type { Cut, TranscriptSegment } from './api'
 
-/** A diarization voice of the episode that still has lines with no character on them. */
+/** A diarization voice of the episode that still has lines with no character on them (and not left as they are by the person). */
 export type UnknownVoice = { label: string; lines: number; inCut: number }
 
 /**
@@ -11,7 +11,8 @@ export type UnknownVoice = { label: string; lines: number; inCut: number }
 export function unknownVoices(segments: TranscriptSegment[], cut: Pick<Cut, 'start_time' | 'end_time'>): UnknownVoice[] {
   const groups = new Map<string, UnknownVoice>()
   for (const segment of segments) {
-    if (segment.deleted || segment.superseded_by || segment.character_context_id) continue
+    // A line the person left unknown is never asked about again (backend cut_readiness.speaker_open).
+    if (segment.deleted || segment.superseded_by || segment.character_context_id || segment.speaker_source === 'left_unknown') continue
     const label = segment.speaker_label || ''
     let group = groups.get(label)
     if (!group) { group = { label, lines: 0, inCut: 0 }; groups.set(label, group) }

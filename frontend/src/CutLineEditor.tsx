@@ -34,7 +34,8 @@ type Props = {
   characters: ContextItem[]
   names: Map<string, string>
   busy: boolean
-  onAssign: (line: TranscriptSegment, characterId: string | null) => void
+  onAssign: (line: TranscriptSegment, characterId: string | null, leftUnknown?: boolean) => void
+  newCard?: () => Promise<string | null>
   onChanged: () => void
 }
 
@@ -46,7 +47,7 @@ const bodyOf = (line: TranscriptSegment): LineBody => ({ start_time: line.start_
  * Lines are whole sentences, so one may start before the cut or end after it: the graph then starts and ends where the lines do,
  * shows the cut's boundaries, and a line added here cannot be dragged out of the cut.
  */
-export function CutLineEditor({ cut, waveform, transcript, hasAudio, preparing, video, canPlay, episodeId, characters, names, busy, onAssign, onChanged }: Props) {
+export function CutLineEditor({ cut, waveform, transcript, hasAudio, preparing, video, canPlay, episodeId, characters, names, busy, onAssign, newCard, onChanged }: Props) {
   const toast = useToast()
   const lines = useMemo(() => transcript.filter(line => !line.deleted && !line.superseded_by && line.start_time < cut.end_time && line.end_time > cut.start_time).sort((a, b) => a.start_time - b.start_time || a.id.localeCompare(b.id)), [transcript, cut.start_time, cut.end_time])
   const view = useMemo(() => windowFor(cut, lines), [cut.start_time, cut.end_time, lines])
@@ -221,7 +222,7 @@ export function CutLineEditor({ cut, waveform, transcript, hasAudio, preparing, 
       <span className="muted truncate text-[10px] tabular-nums" title="The part of the audio shown above">{stamp(view.start)} → {stamp(view.end)}</span>
     </div>
     <TranscriptLines cut={cut} lines={lines} characters={characters} names={names} selected={live} onSelect={setSelected} draft={draft} onDraft={setDraft} busy={busy || working} time={playhead}
-      onEdit={edit} onSave={() => void save()} onCancel={() => setDraft(null)} onDelete={() => void remove()} onSplit={caret => void split(caret)} canSplit={canSplit} onMerge={merge} onAdd={add} onAssign={onAssign}
+      onEdit={edit} onSave={() => void save()} onCancel={() => setDraft(null)} onDelete={() => void remove()} onSplit={caret => void split(caret)} canSplit={canSplit} onMerge={merge} onAdd={add} onAssign={onAssign} newCard={newCard}
       hint={mixedSpeakers ? 'These lines have different speakers: pick who speaks the merged line.' : 'Click a line to see its range above; double-click to edit; drag across lines to select several. Lines may extend beyond the cut.'} />
   </div>
 }

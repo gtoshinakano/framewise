@@ -51,7 +51,7 @@ def reference_snapshots(conn, project_id, per_character_limit=2, matching_only=F
                           FROM character_image_references r JOIN context_items ci ON ci.id=r.character_context_id
                           JOIN character_detections d ON d.id=r.detection_id
                           JOIN character_detection_runs run ON run.id=d.run_id JOIN cuts c ON c.id=run.cut_id
-                          JOIN episodes e ON e.id=c.episode_id WHERE ci.project_id=? AND ci.kind='character' AND (?=0 OR d.recognition_use IS NOT 0) ORDER BY r.created_at DESC,r.rowid DESC''', (project_id, int(matching_only))).fetchall()
+                          JOIN episodes e ON e.id=c.episode_id WHERE ci.project_id=? AND ci.kind='character' AND COALESCE(ci.unregistered,0)=0 AND (?=0 OR d.recognition_use IS NOT 0) ORDER BY r.created_at DESC,r.rowid DESC''', (project_id, int(matching_only))).fetchall()
     result, counts = [], {}
     for row in rows:
         item = dict(row)

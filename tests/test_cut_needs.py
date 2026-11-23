@@ -30,7 +30,8 @@ class CutNeedsTest(unittest.TestCase):
 
     def test_gates_checks_and_steps_by_cut(self):
         cuts = self.needs()
-        self.assertEqual(self.people(cuts, 'c1'), {'box_names': 1, 'voice': 1, 'lines_to_check': 1})
+        # The low line without a speaker counts once, as a voice, not also as a line to check.
+        self.assertEqual(self.people(cuts, 'c1'), {'box_names': 1, 'voice': 1})
         self.assertEqual(self.people(cuts, 'c2'), {'target_frames': 2})
         self.assertEqual(self.people(cuts, 'c3'), {'voice': 2, 'decisions': 2, 'picture_check': 1})
         self.assertEqual(self.people(cuts, 'c4'), {})

@@ -103,14 +103,18 @@ def episode_context(conn, cut):
                                                          (cut['episode_id'], cut['end_time'], cut['start_time']))]
     voices = []
     for label in labels:
-        linked, unlinked = {}, 0
-        for row in conn.execute("""SELECT c.title AS name,count(*) AS lines FROM transcript_segments t LEFT JOIN context_items c ON c.id=t.character_context_id
-                                   WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0 AND t.speaker_label=? GROUP BY c.title ORDER BY lines DESC""", (cut['episode_id'], label)):
-            if row['name']:
+        linked, unlinked, minor = {}, 0, 0
+        for row in conn.execute("""SELECT c.title AS name,COALESCE(c.unregistered,0) AS card,count(*) AS lines FROM transcript_segments t
+                                   LEFT JOIN context_items c ON c.id=t.character_context_id WHERE t.episode_id=? AND t.superseded_by IS NULL AND t.deleted=0
+                                   AND t.speaker_label=? GROUP BY c.title ORDER BY lines DESC""", (cut['episode_id'], label)):
+            if row['card']:
+                minor += row['lines']  # Unregistered cards are different minor people from cut to cut: never one name to count
+            elif row['name']:
                 linked[row['name']] = row['lines']
             else:
                 unlinked += row['lines']
-        voices.append(_present(speaker_label=label, lines_linked_in_episode=linked, unlinked_lines_in_episode=unlinked))
+        voices.append(_present(speaker_label=label, lines_linked_in_episode=linked, unlinked_lines_in_episode=unlinked,
+                               unregistered_lines_in_episode=minor or None))
     if voices:
         out['voices'] = voices
     return out

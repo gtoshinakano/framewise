@@ -51,7 +51,8 @@ For each `[Claude]` question in `fw cast report EP` (or `fw inbox EP --reviewer 
    tell, e.g. a back view or a fragment. Never guess between look-alikes.
 2. **new_person** (borderline unknown person): fetch the sheet. Answer `"Name"` only when the person is clearly an
    existing character; `background` when it is a passer-by who does not interact; otherwise `unsure` (the person decides,
-   and only the person can say *new*).
+   and only the person can say *new* or give an Unregistered number; say in the note when it looks like a minor person
+   who matters for a line).
 3. **target_frame**: fetch the sheet (F1 = the opening frame, then each flagged frame, colours numbered as in the tab,
    grey = crops nobody has). `ok` a frame whose boxes are right as they are (everyone who matters boxed with the right
    colour, nobody boxed twice); `person` a frame where a box is missing, merged, swapped or misplaced. Claude never
@@ -62,8 +63,10 @@ Always pass `--tier claude --run RUN` and a short `--note` saying what you saw.
 ## The person
 
 `fw cast answer ID confirm` (their confirmation is their own label: a gallery example), `"Name"`, `new --title "Name"
-[--main] [--episode-only]` (creates the character from the clearest box and queues its profile description), `background`
-or `leave`. Labelling, removing a box or marking a frame reviewed in the app closes the matching question by itself.
+[--main] [--episode-only]` (creates the character from the clearest box and queues its profile description),
+`"Unregistered N"` or `unregistered` (a minor person who matters for a line but needs no record: the boxes get that
+numbered card, or the next number; no profile, never a recognition example or target), `background` or `leave`.
+Labelling, removing a box or marking a frame reviewed in the app closes the matching question by itself.
 
 ## Final report: the links to open
 

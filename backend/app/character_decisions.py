@@ -36,7 +36,7 @@ import re
 import uuid
 from collections import Counter, defaultdict
 
-from . import agent_log, anime_gallery, db, job_inputs, structured_results, worker
+from . import agent_log, anime_gallery, db, job_inputs, structured_results, unregistered, worker
 
 PIPELINE = 'character_decisions'
 KIND_BOXES = 'box_names'          # autopilot_profile.DECISIONS and agent_decisions.kind
@@ -563,7 +563,7 @@ def publish_boxes(conn, episode_id, payload, counts, names):
                            question=(f'Unknown person in {len(cuts_seen)} cut(s) ({why}). Who is it?' if weight != 'background'
                                      else f'Unknown small figure ({why}). Background?'),
                            cut_ids=list(dict.fromkeys(box['cut_id'] for box in members)),
-                           options=['character', 'new', 'background', 'leave'],
+                           options=['character', 'unregistered', 'new', 'background', 'leave'],
                            proposal={'weight': weight, 'representative': representative['id'],
                                      'candidates': [[cid, names.get(cid), score] for cid, score in representative['candidates'][:3]]},
                            evidence={'weight': weight, 'why': why, 'cuts': cuts_seen, 'boxes': [_box_brief(box, names) for box in members[:60]],
@@ -798,7 +798,9 @@ def answer_person(conn, escalation_id, *, choice, character_id=None, title=None,
                   boxes=None, tier='human', run_id=None, note=None):
     """Answer a ``new_person`` question. ``character``: an existing character (the representative box becomes the person's own
     ``manual`` label when the person answers, the rest are the agent's); ``new``: create the character (person only) from the
-    representative box; ``background``: unbox the group; ``leave``: close it without changes; ``unsure`` (Claude): hand it on.
+    representative box; ``unregistered``: label the group with an Unregistered card (``character_id``, else a new number;
+    person only: which number is the person's choice); ``background``: unbox the group; ``leave``: close it without changes;
+    ``unsure`` (Claude): hand it on.
     ``boxes`` limits the answer to some of the group's boxes (the others stay open)."""
     item = _open(conn, escalation_id, (ESC_PERSON,))
     _check_reviewer(item, tier)
@@ -806,12 +808,24 @@ def answer_person(conn, escalation_id, *, choice, character_id=None, title=None,
     names = titles(conn, episode_id)
     listed = [box['id'] for box in (item['evidence'] or {}).get('boxes') or []]
     chosen = [box_id for box_id in (boxes or listed) if box_id in listed]
-    if tier == 'claude' and choice in ('new', 'leave', 'unsure'):
-        agent_log.hand_to_person(conn, escalation_id, note or ('Claude thinks this is a new character' if choice == 'new' else None))
+    cards = unregistered.card_ids_for(conn, names)
+    if tier == 'claude' and choice == 'character' and character_id in cards:
+        choice = 'unregistered'
+    if tier == 'claude' and choice in ('new', 'leave', 'unsure', 'unregistered'):
+        hint = {'new': 'Claude thinks this is a new character', 'unregistered': 'Claude thinks this is an unregistered minor person'}.get(choice)
+        agent_log.hand_to_person(conn, escalation_id, note or hint)
         return {'handed_to_person': True}
     if choice == 'unsure':
         raise Refused('Only Claude can answer unsure')
     done, created = [], None
+    if choice == 'unregistered':
+        if not character_id:
+            project_id = conn.execute('SELECT project_id FROM episodes WHERE id=?', (episode_id,)).fetchone()[0]
+            card = unregistered.create_next(conn, project_id)
+            character_id, names[card['id']] = card['id'], card['title']
+        elif character_id not in cards:
+            raise Refused('Choose an Unregistered card of this project')
+        choice = 'character'
     if choice in ('character', 'new'):
         representative = (item['proposal'] or {}).get('representative')
         if representative not in chosen:
@@ -910,6 +924,8 @@ def create_character(conn, detection_id, request):
         character = dict(conn.execute('SELECT * FROM context_items WHERE id=?', (existing['character_id'],)).fetchone())
         return {'character': character, 'job_id': existing['id']}
     # Sequences link subjects to records by name, so two characters must not share one.
+    if unregistered.is_card(title):
+        raise Refused("Names of the form 'Unregistered N' are reserved for Unregistered cards", 400)
     if conn.execute("SELECT 1 FROM context_items WHERE project_id=? AND kind='character' AND lower(trim(title))=lower(?)", (row['project_id'], title)).fetchone():
         raise Refused(f'A character named “{title}” already exists in this project', 409)
     character_id = str(uuid.uuid4())

@@ -21,7 +21,7 @@ class VoiceRun(BaseModel):
 
 
 class VoiceAnswer(BaseModel):
-    choice: Literal['character', 'new', 'leave', 'unsure']
+    choice: Literal['character', 'unregistered', 'new', 'leave', 'unsure']
     character_context_id: str | None = None
     tier: Literal['claude', 'human'] = 'human'
     run_id: str | None = None

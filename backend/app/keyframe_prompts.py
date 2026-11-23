@@ -6,6 +6,8 @@ numbers belong to it, so change it only with a new experiment run and a new ``PR
 
 Stdlib only. The DWPose numbers and the measured camera are never put into the prompt; the app merges them afterwards.
 """
+from . import unregistered
+
 PROMPT_VERSION = 'observer-roster-v1'
 
 COMMON_RULES = '''Frames are labelled F<n> with their time in seconds from the start of the shot. They are keyframes picked where the picture changed, so the time between two frames varies.
@@ -43,6 +45,8 @@ def roster_lines(sample):
     for person in people:
         seen = f", first seen in {person['first_seen']}" if person.get('first_seen') and person['first_seen'] != 'F1' else ''
         lines.append(f"- {person['name']}: box {person['box']} ({person['side']}{seen})")
+    if unregistered.present(person['name'] for person in people):
+        lines.append(unregistered.RULE)
     return lines
 
 

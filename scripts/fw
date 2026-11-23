@@ -1776,7 +1776,8 @@ def _clock(seconds):
 def _character(data, question, text):
     """A character id from a name (or part of one) among the question's candidates first, then the project's."""
     wanted = text.strip().casefold()
-    pools = [[{'id': item['id'], 'title': item['name']} for item in (question.get('evidence') or {}).get('candidates') or []], data.get('characters') or []]
+    evidence = question.get('evidence') or {}
+    pools = [[{'id': item['id'], 'title': item['name']} for item in [*(evidence.get('candidates') or []), *(evidence.get('cards') or [])]], data.get('characters') or []]
     for pool in pools:
         exact = [item for item in pool if item['title'].casefold() == wanted or item['id'] == text.strip()]
         if exact:
@@ -1815,7 +1816,7 @@ def cmd_voices(api, args):
                 if item['cut_id']:
                     lines.append(f"    {cut_url(api, episode, item['cut_id'], 'analysis')}")
         if data['questions']:
-            lines.append(f"VOICE QUESTIONS ({len(data['questions'])}; answer with fw voices answer ID \"Name\"|new|leave|unsure [--tier claude]):")
+            lines.append(f"VOICE QUESTIONS ({len(data['questions'])}; answer with fw voices answer ID \"Name\"|\"Unregistered N\"|unregistered|new|leave|unsure [--tier claude]):")
             for item in data['questions']:
                 evidence = item['evidence'] or {}
                 lines.append(f"  - [{'Claude' if item['reviewer'] == 'claude' else 'person'}] {item['question']}  id {item['id']}")
@@ -1845,10 +1846,11 @@ def cmd_voices(api, args):
         return OK
     if args.action == 'answer':
         if not args.extra:
-            raise Failure('answer with a character name, new, leave or unsure')
+            raise Failure('answer with a character name, "Unregistered N", unregistered (a new number), new, leave or unsure')
         reply = args.extra.strip()
         body = {'tier': args.tier, 'run_id': args.run, 'note': args.note}
-        if reply.casefold() in ('new', 'leave', 'unsure'):
+        # leave keeps the speaker as it is for good; an Unregistered card is a minor person without a record (person only)
+        if reply.casefold() in ('new', 'leave', 'unsure', 'unregistered'):
             body['choice'] = reply.casefold()
         else:
             data = api.get(f"/api/episodes/{question['episode_id']}/voice-decisions")
@@ -1856,7 +1858,7 @@ def cmd_voices(api, args):
         result = api.post(f'/api/escalations/{quote(args.target)}/voice', body=body)
         emit(args, result, {'resolved': f"given to the character: {result.get('lines')} line(s) (decision {result.get('decision_id')})",
                             'handed_to_person': 'handed to the person', 'new_character': 'closed: create the character, then run fw voices run again',
-                            'left_unknown': 'closed: the voice stays unknown', 'outdated': 'its lines already have a character; closed'}.get(result.get('status'), str(result)))
+                            'left_unknown': f"closed: {result.get('lines')} line(s) keep their speaker and are never asked about again", 'outdated': 'its lines already have a character; closed'}.get(result.get('status'), str(result)))
         return OK
     raise Failure(f'unknown action {args.action!r}')
 
@@ -1957,9 +1959,9 @@ def cmd_characters(api, args):
             body['character_context_id'] = _character(data, {'evidence': {}}, args.character)['id']
         result = api.post(f'/api/escalations/{quote(args.target)}/box-labels', body=body)
     else:
-        # "Name" (an existing character), "new" (--title), "background", "leave" or "unsure"
+        # "Name" (an existing character or an "Unregistered N" card), "unregistered" (a new card), "new" (--title), "background", "leave" or "unsure"
         word = reply.casefold()
-        if word in ('new', 'background', 'leave', 'unsure'):
+        if word in ('new', 'background', 'leave', 'unsure', 'unregistered'):
             body['choice'] = word
             if word == 'new':
                 if not args.title:
@@ -2096,7 +2098,7 @@ def parser():
     command.add_argument('--out', help='sheet: file to write (default review-ID.jpg)')
     command.set_defaults(func=cmd_review_decisions)
     command = sub.add_parser('voices', parents=[common],
-                             help='unknown voices given to characters: run EP, report EP, sheet ID, answer ID "Name"|new|leave|unsure')
+                             help='unknown voices given to characters: run EP, report EP, sheet ID, answer ID "Name"|"Unregistered N"|unregistered|new|leave|unsure')
     command.add_argument('action', choices=('run', 'report', 'sheet', 'answer'))
     command.add_argument('target', nargs='?', help='episode (run, report) or question id (sheet, answer)')
     command.add_argument('extra', nargs='?', help='answer: a character name, new, leave or unsure')

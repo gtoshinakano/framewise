@@ -23,7 +23,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import analysis_context, db, episode_requests, media, worker, cut_history, cut_previews, storage, frame_source, frame_cache, subtitle_store, summary_jobs, audio_worker, prompt_context, job_kinds, runs, structured_results, episode_events, episode_jobs
-from . import agent_log, character_decisions, audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range, transcript_corrections
+from . import agent_log, character_decisions, audio_ranges, name_glossary, speaker_attribution, line_edit, waveform_range, transcript_corrections, unregistered, cut_readiness
 from .transcript_parts import manual_metadata
 from .analysis_context import json_object_or_empty, serialize_cut, serialize_transcript
 from .external_api import AnalysisContext, AnalysisResult, ContextItem, EpisodeSubtitles, Transcript, VoiceSample, router as external_router
@@ -270,6 +270,7 @@ class TranscriptInput(BaseModel):
     text: str = Field(min_length=1, max_length=20000)
     speaker_label: str = Field(default="", max_length=200)
     character_context_id: str | None = None
+    left_unknown: bool = Field(default=False, description="Keep the speaker as it is (none, or an unsure guess) and never ask about it again.")
 
 
 class TranscriptMergeInput(BaseModel):
@@ -461,9 +462,21 @@ def list_context(project_id: str):
     return db.all_rows("SELECT * FROM context_items WHERE project_id=? ORDER BY kind,title", (project_id,))
 
 
+@app.post("/api/projects/{project_id}/unregistered-characters", responses={200: {"model": ContextItem}})
+def create_unregistered_character(project_id: str):
+    """A new numbered Unregistered card (the lowest free number) for a minor person who needs a line or a box but no record."""
+    require_project(project_id)
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        card = unregistered.create_next(conn, project_id)
+    return card
+
+
 @app.post("/api/projects/{project_id}/context")
 def create_context(project_id: str, body: ContextInput):
     require_project(project_id)
+    if body.kind == 'character' and unregistered.is_card(body.title):
+        raise HTTPException(400, "Names of the form 'Unregistered N' are reserved for Unregistered cards")
     if body.episode_id and require_episode(body.episode_id)["project_id"] != project_id:
         raise HTTPException(400, "Episode belongs to another project")
     context_id = str(uuid.uuid4())
@@ -481,6 +494,10 @@ def update_context(context_id: str, body: ContextInput):
         raise HTTPException(404, "Context item not found")
     if body.episode_id and require_episode(body.episode_id)["project_id"] != item["project_id"]:
         raise HTTPException(400, "Episode belongs to another project")
+    if unregistered.is_card(item) and (body.kind != 'character' or body.title.strip() != item['title'] or body.content.strip()
+                                       or body.is_main or body.episode_id):
+        # Prompts read the fixed title as the person's handle; a card has no details, episode or main flag.
+        raise HTTPException(400, "An Unregistered card cannot be renamed, scoped or given details; create a character for that person instead")
     with db.connect() as conn:
         conn.execute("UPDATE context_items SET episode_id=?,kind=?,title=?,content=?,is_main=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                      (body.episode_id, body.kind, body.title.strip(), body.content, int(body.is_main and body.kind == 'character'), context_id))
@@ -1146,9 +1163,11 @@ def list_voice_samples(project_id: str):
 
 
 def validate_voice_character(episode, character_id, conn=None):
-    character = db.one("SELECT id FROM context_items WHERE id=? AND project_id=? AND kind='character'", (character_id, episode["project_id"]), conn=conn)
+    character = db.one("SELECT id,unregistered FROM context_items WHERE id=? AND project_id=? AND kind='character'", (character_id, episode["project_id"]), conn=conn)
     if not character:
         raise HTTPException(400, "Choose a character from this project")
+    if unregistered.is_card(character):
+        raise HTTPException(400, "An Unregistered card stands for different people: it has no voice samples")
 
 
 def validate_voice_ranges(episode, ranges, minimum=2):
@@ -1292,7 +1311,7 @@ def save_glossary_entry(project_id, body, entry_id=None):
     values = (spelling, reading, body.character_context_id, body.part)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        if body.character_context_id and not conn.execute("""SELECT 1 FROM context_items WHERE id=? AND project_id=? AND kind='character'""",
+        if body.character_context_id and not conn.execute("""SELECT 1 FROM context_items WHERE id=? AND project_id=? AND kind='character' AND unregistered=0""",
                                                         (body.character_context_id, project_id)).fetchone():
             raise HTTPException(422, 'Choose a character from this project.')
         try:
@@ -1405,6 +1424,9 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
     validate_transcript(episode, body)
     new_id = str(uuid.uuid4())
     metadata = manual_metadata(segment, body.model_dump())
+    if body.left_unknown:
+        # The line editor's "Unknown – don't ask again": settled with or without a character (cut_readiness.speaker_open).
+        metadata = (metadata[0], cut_readiness.LEFT_UNKNOWN, None, metadata[3])
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         current = conn.execute("SELECT superseded_by,deleted FROM transcript_segments WHERE id=?", (segment_id,)).fetchone()
@@ -1414,7 +1436,7 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
                      (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, "manual_edit", segment["model_id"], segment["job_id"], segment_id, *metadata))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
         agent_log.note_override(conn, 'transcript_segments', segment_id)
-        if body.character_context_id and not segment['character_context_id']:
+        if (body.character_context_id and not segment['character_context_id']) or metadata[1] in cut_readiness.DECIDED_SPEAKERS:
             from . import voice_resolver
             voice_resolver.close_settled(conn, episode['id'])
         structured_results.invalidate_transcript(conn, episode['id'], segment['start_time'], segment['end_time'])
@@ -1487,14 +1509,14 @@ def split_transcript_segment(segment_id: str, body: TranscriptSplitInput):
 
 @app.post("/api/episodes/{episode_id}/transcript/assign-voice")
 def assign_voice(episode_id: str, body: AssignVoiceInput):
-    """Give one diarization voice a character on every current line that still has none."""
+    """Give one diarization voice a character on every current line whose speaker is still open (none, or an unsure guess)."""
     episode = require_episode(episode_id)
     require_character(episode, body.character_context_id)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        lines = conn.execute("""SELECT * FROM transcript_segments
+        lines = conn.execute(f"""SELECT * FROM transcript_segments
             WHERE episode_id=? AND superseded_by IS NULL AND deleted=0
-            AND coalesce(speaker_label,'')=? AND character_context_id IS NULL
+            AND coalesce(speaker_label,'')=? AND {cut_readiness.open_speaker_sql()}
             ORDER BY start_time,id""", (episode_id, body.speaker_label)).fetchall()
         for line in lines:
             new_id = str(uuid.uuid4())
@@ -1797,6 +1819,8 @@ def save_character_reference(detection_id: str):
             raise HTTPException(404, 'Detection not found')
         if not detection['character_context_id']:
             raise HTTPException(400, 'Assign a character before saving a reference')
+        if unregistered.card_ids_for(conn, [detection['character_context_id']]):
+            raise HTTPException(400, 'An Unregistered card stands for different people: it has no references')
         ref = conn.execute('SELECT id FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone()
         if ref:
             return {'id': ref['id']}
@@ -1863,7 +1887,7 @@ def list_character_references(project_id: str):
     rows = db.all_rows('''SELECT ref.id,ref.character_context_id,ci.title AS character_name,d.id AS detection_id,d.position,d.box_json,
                                  r.id AS run_id,r.frames_json FROM character_image_references ref
                            JOIN context_items ci ON ci.id=ref.character_context_id JOIN character_detections d ON d.id=ref.detection_id
-                           JOIN character_detection_runs r ON r.id=d.run_id WHERE ci.project_id=? AND ci.kind='character' ORDER BY ci.title,ref.created_at DESC''', (project_id,))
+                           JOIN character_detection_runs r ON r.id=d.run_id WHERE ci.project_id=? AND ci.kind='character' AND COALESCE(ci.unregistered,0)=0 ORDER BY ci.title,ref.created_at DESC''', (project_id,))
     for row in rows:
         frame = next((frame for frame in json.loads(row.pop('frames_json')) if frame['position'] == row['position']), None)
         row['image_size'] = frame['image_size'] if frame else None

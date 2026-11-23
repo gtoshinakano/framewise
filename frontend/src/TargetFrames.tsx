@@ -5,7 +5,9 @@ import { api, keyframeFrameUrl, type ContextItem, type KeyframeAnalysis, type Ke
 import { BetweenFrames } from './BetweenFrames'
 import { BoxEditor, type EditorBox } from './BoxEditor'
 import { boxColor } from './boxColors'
-import { cachedCharacters, loadCharacters } from './runCache'
+import { cachedCharacters, chosenCharacter, loadCharacters } from './runCache'
+import { CharacterOptions } from './CharacterOptions'
+import { NEW_CARD } from './unregisteredView'
 import { detectAt, NOTHING_FOUND, type Point } from './pointDetect'
 import { useToast } from './Toasts'
 import { ActionButton, StaleChip, StatusChip } from './RunUi'
@@ -156,9 +158,15 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
       }
     })
   }
-  const label = (slot: number, characterId: string | null) => edit(
+  const label = (slot: number, characterId: string | null, items = characters) => edit(
     () => api(`/target-slots/${live!.id}/${slot}`, { method: 'PUT', body: JSON.stringify({ character_context_id: characterId }) }),
-    current => ({ ...current, slots: current.slots.map(item => item.slot === slot ? { ...item, character_context_id: characterId, character_name: characters.find(entry => entry.id === characterId)?.title ?? null, label_source: 'manual' } : item) }))
+    current => ({ ...current, slots: current.slots.map(item => item.slot === slot ? { ...item, character_context_id: characterId, character_name: items.find(entry => entry.id === characterId)?.title ?? null, label_source: 'manual' } : item) }))
+  /** "+ Unregistered N" makes the card first, then names the colour with it. */
+  const labelWith = (slot: number, value: string) => {
+    if (value !== NEW_CARD) { label(slot, value || null); return }
+    let items = characters
+    void chosenCharacter(projectId, value, next => { items = next; setCharacters(next) }).then(id => { if (id) label(slot, id, items) })
+  }
   const move = (id: string, box: Box) => edit(
     () => api(`/target-detections/${id}/box`, { method: 'PUT', body: JSON.stringify({ box }) }),
     current => ({ ...current, detections: current.detections.map(item => item.id === id ? { ...item, box, source: 'manual' } : item) }))
@@ -251,7 +259,7 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
           return <div key={slot.slot} className="flex flex-wrap items-center gap-1.5 rounded-lg bg-[#1e2430] p-1.5 text-xs" style={{ borderLeft: `4px solid ${boxColor(slot.slot)}` }}>
             <span className="w-5 shrink-0 text-center font-semibold" style={{ color: boxColor(slot.slot) }}>{slot.slot + 1}</span>
             <select aria-label={`Character for colour ${slot.slot + 1}`} className="field !w-auto min-w-32 flex-1 !px-2 !py-1.5 !text-xs" value={slot.character_context_id || ''} disabled={locked}
-              onChange={event => label(slot.slot, event.target.value || null)}><option value="">Unknown</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+              onChange={event => labelWith(slot.slot, event.target.value)}><option value="">Unknown</option><CharacterOptions characters={characters} /></select>
             <StatusChip tone={chip.tone} title={chip.title}>{chip.text}</StatusChip>
             {joins.length > 0 && <select aria-label={`Colour ${slot.slot + 1} is the same person as`} className="field !w-auto !px-2 !py-1.5 !text-xs" value="" disabled={locked}
               title="The detector took one person for two colours. Pick the colour they really are: all these boxes join it. Where both have a box in a frame, the one you drew or moved stays."

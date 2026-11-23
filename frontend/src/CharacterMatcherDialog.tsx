@@ -20,7 +20,7 @@ export function CharacterMatcherDialog({ projectId, episodeId, onClose }: { proj
   useEffect(() => {
     dialog.current?.showModal()
     Promise.all([api<Item[]>(url), api<ContextItem[]>(`/projects/${projectId}/context`)]).then(([rows, context]) => {
-      const chars = context.filter(c => c.kind === 'character')
+      const chars = context.filter(c => c.kind === 'character' && !c.unregistered)
       setItems(rows); setCharacters(chars); setCharacter(chars[0]?.id || '')
     }).catch(e => setError((e as Error).message))
     return () => { dialog.current?.close() }

@@ -2,6 +2,8 @@ import { useEpisodeEvents } from './episodeEvents'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { AudioLines, Captions, History, ListMusic, Mic, Play, Plus, RefreshCw, Save, Trash2, Wrench, X } from 'lucide-react'
 import { api, type AudioSelection, type ContextItem, type Job, type SubtitleRun, type TranscriptSegment } from './api'
+import { CharacterOptions } from './CharacterOptions'
+import { registered } from './unregisteredView'
 import { IconButton, Section, SegmentedControl } from './EditorUi'
 import { PANEL_ACCENT } from './InspectorRail'
 import SubtitlePanel from './SubtitlePanel'
@@ -72,7 +74,7 @@ function SegmentEditor({ draft, setDraft, characters, duration, playhead, busy, 
     <div className="grid grid-cols-2 gap-2">
       <label className="block"><span className="label !mb-1 !text-[10px]">Speaker label</span><input className="field !py-1.5 text-sm" maxLength={200} disabled={historical} value={draft.speaker_label} onChange={event => setDraft({ ...draft, speaker_label: event.target.value })} placeholder="e.g. Narrator" /></label>
       <label className="block"><span className="label !mb-1 !text-[10px]">Character</span><select className="field !py-1.5 text-sm" disabled={historical} value={draft.character_context_id || ''} onChange={event => setDraft({ ...draft, character_context_id: event.target.value || null })}>
-        <option value="">Unassigned</option>{characters.map(character => <option key={character.id} value={character.id}>{character.title}</option>)}
+        <option value="">Unassigned</option><CharacterOptions characters={characters} allowNew={false} />
       </select></label>
     </div>
     <div className="flex items-center gap-1.5">
@@ -200,7 +202,9 @@ export default function TranscriptEditor({ episodeId, projectId, duration, playh
     catch (err) { setError((err as Error).message) }
     finally { setBusy(false) }
   }
-  const needsCheck = (segment: TranscriptSegment) => segment.confidence === 'medium' || segment.confidence === 'low'
+  // Unsure speakers nobody decided (lineEditView.speakerConfidence; backend review_report._lines_to_check).
+  const needsCheck = (segment: TranscriptSegment) => (segment.confidence === 'medium' || segment.confidence === 'low')
+    && !['manual', 'agent', 'left_unknown'].includes(segment.speaker_source ?? '')
   const checkCount = segments.filter(needsCheck).length
   const visibleSegments = history ? historySegments : checkOnly ? segments.filter(needsCheck) : segments
   const pageCount = Math.max(1, Math.ceil(visibleSegments.length / PAGE_SIZE))
@@ -277,7 +281,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, playh
       </>}
       {view === 'voices' && <div className="space-y-4 p-4">
         <p className="muted text-[11px] leading-4">A voice reference helps match speakers to characters across this project. Add excerpts of one speaker totalling 2–60 seconds, or upload a recording.</p>
-        <label className="block"><span className="label">Character</span><select className="field !py-2" value={voiceCharacter} onChange={event => setVoiceCharacter(event.target.value)}><option value="">Choose character</option>{characters.map(character => <option key={character.id} value={character.id}>{character.title}</option>)}</select></label>
+        <label className="block"><span className="label">Character</span><select className="field !py-2" value={voiceCharacter} onChange={event => setVoiceCharacter(event.target.value)}><option value="">Choose character</option>{registered(characters).map(character => <option key={character.id} value={character.id}>{character.title}</option>)}</select></label>
         <div className="rounded-lg border hairline p-3">
           <p className="mb-2 text-xs font-semibold">From this episode</p>
           <TimeRangeInput compact start={voiceStart} end={voiceEnd} min={0} max={duration} playhead={playhead} onChange={setVoiceRange} onPlay={hasAudio ? playRange : undefined} />

@@ -19,7 +19,7 @@ Whatever the app guesses is labelled: ``kind_guessed``, ``linked_by: name``, ``c
 import json
 import re
 
-from . import db, media, outfit_library, sequence_evidence as evidence, sequence_prompt, sequence_reference, sequence_store as store, sequence_view, subtitle_store
+from . import db, media, outfit_library, sequence_evidence as evidence, sequence_prompt, sequence_reference, sequence_store as store, sequence_view, subtitle_store, unregistered
 from .visual_contracts import _match_name
 
 CONTRACT = 'sequence-v2'
@@ -81,7 +81,8 @@ def _text(value):
 
 def speaker_kind(name, character_context_id):
     if character_context_id:
-        return 'character'
+        # An Unregistered card (unregistered.py): a numbered minor person, not one character across shots.
+        return 'unregistered' if unregistered.is_card(name or '') else 'character'
     if name == sequence_prompt.NARRATOR:
         return 'narrator'
     if name == sequence_prompt.UNKNOWN_SPEAKER:
@@ -102,7 +103,7 @@ class Speakers:
             self.table[self.ids[name]] = {'name': name, 'kind': speaker_kind(name, character_context_id), 'character_context_id': character_context_id, 'speaker_labels': []}
         entry = self.table[self.ids[name]]
         if character_context_id and not entry['character_context_id']:
-            entry.update(character_context_id=character_context_id, kind='character')
+            entry.update(character_context_id=character_context_id, kind=speaker_kind(name, character_context_id))
         if label and label not in entry['speaker_labels']:
             entry['speaker_labels'].append(label)
         return self.ids[name]
@@ -136,7 +137,7 @@ def roster_of(ctx, bible):
         if person.get('character_context_id'):
             people.setdefault(person['character_context_id'], {'name': person['name'], 'character_context_id': person['character_context_id']})
     for person in ctx['characters'] if ctx else []:
-        people.setdefault(person['id'], {'name': person['name'], 'character_context_id': person['id']})
+        people.setdefault(person['id'], {'name': person['name'], 'character_context_id': person['id'], **({'unregistered': True} if person.get('unregistered') else {})})
     return list(people.values())
 
 
@@ -148,9 +149,13 @@ def link_subjects(subjects, roster, frame):
                 'context_id': subject.get('context_id'), 'picture': subject.get('picture'), 'anchors': subject.get('anchors'), 'keep': subject.get('keep')}
         if subject['kind'] == 'character':
             item['linked_by'] = 'prompt'
+        elif subject.get('unregistered'):
+            item.update(kind='unregistered', linked_by='prompt')
         elif subject['kind'] != 'scenario':
             person = _match_name(subject['name'], roster)
-            if person:
+            if person and person.get('unregistered'):
+                item.update(kind='unregistered', character_context_id=person['character_context_id'], linked_by='name')
+            elif person:
                 item.update(kind='character', character_context_id=person['character_context_id'], linked_by='name', record_name=person['name'] if person['name'] != subject['name'] else None)
             else:
                 item.update(kind=guess_kind(subject['name'], frame), kind_guessed=True)
@@ -282,9 +287,12 @@ def _detection_candidate(row, source):
 
 
 def character_candidates(conn, ids, cut_ids):
-    """Per character id: crops Framewise can offer, best first. Saved gallery references first (largest box), else manually labelled boxes in the sequence's cuts."""
+    """Per character id: crops Framewise can offer, best first. Saved gallery references first (largest box), else manually labelled boxes in the sequence's cuts.
+    An Unregistered card gets none: it stands for different people (unregistered.py)."""
+    cards = unregistered.card_ids_for(conn, ids)
+    ids = [cid for cid in ids if cid not in cards]
     if not ids:
-        return {}
+        return {cid: [] for cid in cards}
     marks = ','.join('?' * len(ids))
     found = {cid: [] for cid in ids}
     for row in conn.execute(f'''SELECT r.character_context_id,d.id AS detection_id,d.position,d.box_json,run.frames_json,run.cut_start,run.cut_end,
@@ -306,7 +314,7 @@ def character_candidates(conn, ids, cut_ids):
                 found[row['character_context_id']].append(item)
     for cid, items in found.items():
         items.sort(key=lambda item: (item['source'] != 'saved_reference', -item['area']))
-    return found
+    return {**found, **{cid: [] for cid in cards}}
 
 
 def wav_seconds(path):
@@ -545,7 +553,7 @@ def shot_issues(shot, content, frame, written, template, check):
     if shot.get('generate_seconds'):
         add('info', 'padded_shot', 'Shorter than 5 s: generate generate_seconds (the prompt ends on a hold), trim to duration; shot-NN-ref.wav is the original audio from the start of the shot for that length.')
     for subject in shot.get('subjects') or []:
-        if subject.get('linked_by') == 'name' and not subject.get('picture'):
+        if subject.get('linked_by') == 'name' and subject.get('kind') == 'character' and not subject.get('picture'):
             add('warning', 'no_sheet', f"{subject.get('record_name') or subject['name']} has no character sheet in the prompt: the cut's analysis did not mark them, so <Picture 1> is the only "
                                        'reference. Detect characters on the cut and rewrite the shot in Framewise to get one.')
         elif subject.get('kind') in ('person', 'unknown') and not subject.get('character_context_id'):

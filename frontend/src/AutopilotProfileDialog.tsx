@@ -28,7 +28,7 @@ export function AutopilotProfileDialog({ projectId, onClose }: { projectId: stri
       .then(([response, context]) => {
         setData(response)
         setDraft(response.profile)
-        setCharacters(orderCharacters(context.filter(item => item.kind === 'character')))
+        setCharacters(orderCharacters(context.filter(item => item.kind === 'character' && !item.unregistered)))
       })
       .catch(err => { if (!controller.signal.aborted) setError((err as Error).message) })
     return () => { controller.abort(); dialog.current?.close() }

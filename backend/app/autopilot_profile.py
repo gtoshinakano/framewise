@@ -143,7 +143,8 @@ def policy(conn, episode_id, kind, run_id=None):
 
 
 def character_ids(conn, project_id):
-    return [row[0] for row in conn.execute("SELECT id FROM context_items WHERE project_id=? AND kind='character'", (project_id,))]
+    # Unregistered cards are many minor people: they have no relevance of their own.
+    return [row[0] for row in conn.execute("SELECT id FROM context_items WHERE project_id=? AND kind='character' AND COALESCE(unregistered,0)=0", (project_id,))]
 
 
 def load(conn, project_id):

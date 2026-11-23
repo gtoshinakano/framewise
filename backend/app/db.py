@@ -641,6 +641,8 @@ def init_db():
             ('character_detections', 'recognition_use', 'INTEGER'),
             ('character_detections', 'gallery_status', 'TEXT'),
             ('character_detections', 'gallery_note', 'TEXT'),
+            # A numbered Unregistered card (unregistered.py): a minor person with a line or a box but no record.
+            ('context_items', 'unregistered', 'INTEGER NOT NULL DEFAULT 0'),
         ):
             columns = {row['name'] for row in db.execute(f'PRAGMA table_info({table})')}
             if column not in columns:

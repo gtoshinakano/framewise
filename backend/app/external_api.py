@@ -84,6 +84,8 @@ class ContextItem(BaseModel):
     title: str
     content: str
     is_main: bool = Field(False, description="Characters only: the user marked this character as a main character.")
+    unregistered: bool = Field(False, description="Characters only: a numbered 'Unregistered N' card for a minor person without a record. "
+                               "The same number is one person; it has no details, references, voice samples or recognition examples.")
     created_at: str
     updated_at: str
 
@@ -98,7 +100,7 @@ class Transcript(BaseModel):
     character_context_id: str | None = Field(description="Optional ID of the corresponding character context item.")
     character_name: str | None = None
     words_json: str | None = Field(None, description="JSON-encoded aligner words as [start, end, text] arrays, in episode seconds.")
-    speaker_source: str | None = None
+    speaker_source: str | None = Field(None, description="voice, voice_padded, qwen, agent, manual or left_unknown (the person left the speaker as it is).")
     confidence: str | None = Field(None, description="Model evidence for speaker attribution: high, medium or low.")
     evidence_json: str | None = Field(None, description="JSON-encoded voice scores and attribution evidence.")
     deleted: bool = Field(description="True for a deletion revision returned in transcript history.")
@@ -792,7 +794,7 @@ class SequenceCut(SequenceModel):
 
 class SequenceSpeaker(SequenceModel):
     name: str = Field(description="The name the shots' voices use: the character, Narrator, the diarization label of an unresolved voice, or Unknown speaker.")
-    kind: Literal['character', 'narrator', 'voice', 'unknown'] = Field(description='character has a record; voice is a diarization label nobody resolved; unknown has no label at all.')
+    kind: Literal['character', 'unregistered', 'narrator', 'voice', 'unknown'] = Field(description='character has a record; unregistered is a numbered Unregistered card (a minor person without a record, no sheet); voice is a diarization label nobody resolved; unknown has no label at all.')
     character_context_id: str | None = None
     speaker_labels: list[str] | None = Field(default=None, description="Diarization labels of this speaker's lines.")
 
@@ -896,7 +898,7 @@ class SequenceLine(SequenceModel):
 class SequenceSubject(SequenceModel):
     n: int = Field(description='<Subject n> in the prompt.')
     name: str = Field(description='The name the prompt uses.')
-    kind: Literal['character', 'person', 'object', 'place', 'unknown', 'scenario'] = Field(description='character has a record; scenario is the place of a scenario note.')
+    kind: Literal['character', 'unregistered', 'person', 'object', 'place', 'unknown', 'scenario'] = Field(description='character has a record; unregistered is a numbered Unregistered card (a minor person, no sheet); scenario is the place of a scenario note.')
     character_context_id: str | None = None
     context_id: str | None = Field(default=None, description='For scenario: the scenario context item.')
     picture: int | None = Field(default=None, description='<Picture N> that carries this subject; absent when it is only seen in the initial frame.')

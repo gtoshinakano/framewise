@@ -84,17 +84,22 @@ def _consistency(conn, cut_id):
 
 
 def _voices(conn, episode_id, start, end):
-    rows = conn.execute("""SELECT speaker_label,COUNT(*) AS lines,MIN(start_time) AS first_time FROM transcript_segments
+    # An unknown voice is asked once: lines the person left as they are no longer count (cut_readiness.speaker_open).
+    rows = conn.execute(f"""SELECT speaker_label,COUNT(*) AS lines,MIN(start_time) AS first_time FROM transcript_segments
         WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND character_context_id IS NULL
+        AND COALESCE(speaker_source,'')<>'{cut_readiness.LEFT_UNKNOWN}'
         AND (? IS NULL OR end_time>?) AND (? IS NULL OR start_time<?)
         GROUP BY speaker_label ORDER BY lines DESC, first_time""", (episode_id, start, start, end, end)).fetchall()
     return [{'speaker_label': row['speaker_label'], 'lines': row['lines'], 'first_time': round(row['first_time'], 2)} for row in rows]
 
 
 def _lines_to_check(conn, episode_id, start, end):
-    # frontend/src/TranscriptEditor.tsx needsCheck
-    rows = conn.execute("""SELECT start_time,speaker_label,confidence,text FROM transcript_segments
+    # frontend/src/TranscriptEditor.tsx needsCheck: unsure lines nobody decided, other than the ones a voice question asks
+    # about already (no character: the voices gate), so one line is flagged once.
+    decided = ','.join(f"'{value}'" for value in cut_readiness.DECIDED_SPEAKERS)
+    rows = conn.execute(f"""SELECT start_time,speaker_label,confidence,text FROM transcript_segments
         WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND confidence IN ('medium','low')
+        AND character_context_id IS NOT NULL AND COALESCE(speaker_source,'') NOT IN ({decided})
         AND (? IS NULL OR end_time>?) AND (? IS NULL OR start_time<?) ORDER BY start_time""", (episode_id, start, start, end, end)).fetchall()
     return {'count': len(rows),
             'lines': [{'start_time': round(row['start_time'], 2), 'speaker_label': row['speaker_label'], 'confidence': row['confidence'],

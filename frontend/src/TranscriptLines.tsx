@@ -3,6 +3,11 @@ import { Check, Merge, Plus, Scissors, Trash2, X } from 'lucide-react'
 import type { ContextItem, Cut, TranscriptSegment } from './api'
 import { IconButton } from './EditorUi'
 import { contiguousRange, crossing, speakerColor, speakerConfidence, stamp } from './lineEditView'
+import { CharacterOptions } from './CharacterOptions'
+import { NEW_CARD } from './unregisteredView'
+
+/** Select value: keep the speaker as it is and never ask about the line again (speaker_source left_unknown). */
+const LEAVE = '__left_unknown'
 
 /** The line being worked on: an existing one opened for editing, a new one, or the result of a merge that is not saved yet. */
 export type Draft = {
@@ -46,7 +51,10 @@ type Props = {
   canSplit: boolean
   onMerge: () => void
   onAdd: () => void
-  onAssign: (line: TranscriptSegment, characterId: string | null) => void
+  /** ``leftUnknown``: keep the speaker as it is and never ask again. */
+  onAssign: (line: TranscriptSegment, characterId: string | null, leftUnknown?: boolean) => void
+  /** Makes the card a "+ Unregistered N" choice stands for; without it the choice is not offered. */
+  newCard?: () => Promise<string | null>
   hint?: ReactNode
 }
 
@@ -54,7 +62,7 @@ type Item = { type: 'line'; line: TranscriptSegment } | { type: 'draft' }
 
 const INTERACTIVE = 'select,button,textarea,input,a'
 
-export function TranscriptLines({ cut, lines, characters, names, selected, onSelect, draft, onDraft, busy, time, onEdit, onSave, onCancel, onDelete, onSplit, canSplit, onMerge, onAdd, onAssign, hint }: Props) {
+export function TranscriptLines({ cut, lines, characters, names, selected, onSelect, draft, onDraft, busy, time, onEdit, onSave, onCancel, onDelete, onSplit, canSplit, onMerge, onAdd, onAssign, newCard, hint }: Props) {
   const area = useRef<HTMLTextAreaElement>(null)
   const anchor = useRef<string | null>(null)
   const dragging = useRef(false)
@@ -100,10 +108,16 @@ export function TranscriptLines({ cut, lines, characters, names, selected, onSel
     else if (event.key === ' ') { event.preventDefault(); anchor.current = line.id; onSelect([line.id]) }
     else if (event.key === 'Escape') onSelect([])
   }
-  const speakerSelect = (value: string | null, label: string, onChange: (id: string | null) => void, unassignedStyle: boolean) =>
-    <select aria-label={label} disabled={busy} value={value || ''} onChange={event => onChange(event.target.value || null)}
+  const speakerSelect = (value: string | null, label: string, onChange: (id: string | null) => void, unassignedStyle: boolean, onLeave?: () => void) =>
+    <select aria-label={label} disabled={busy} value={value || ''} onChange={event => {
+      const chosen = event.target.value
+      if (chosen === LEAVE) onLeave?.()
+      else if (chosen === NEW_CARD) void newCard?.().then(id => { if (id) onChange(id) })
+      else onChange(chosen || null)
+    }}
       className={`field shrink-0 !w-[6.2rem] !rounded-md !py-0.5 !text-[10px] ${unassignedStyle ? '!border-[#6d5526] !text-[#f0c979]' : ''}`}>
-      <option value="">Unassigned</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
+      <option value="">Unassigned</option><CharacterOptions characters={characters} allowNew={!!newCard} />
+      {onLeave && <option value={LEAVE}>Don't ask again (keep as it is)</option>}
     </select>
 
   function draftRow() {
@@ -167,7 +181,8 @@ export function TranscriptLines({ cut, lines, characters, names, selected, onSel
               <span className="muted ml-auto shrink-0 text-[9px] tabular-nums">{stamp(line.start_time)}–{stamp(line.end_time)}</span></span>
             <span className="block break-words text-[12px] leading-[1.45]">{line.text}</span>
           </div>
-          {speakerSelect(line.character_context_id, assigned ? `Character speaking "${line.text.slice(0, 48)}"` : 'Who speaks this line?', id => onAssign(line, id), !line.character_context_id)}
+          {speakerSelect(line.character_context_id, assigned ? `Character speaking "${line.text.slice(0, 48)}"` : 'Who speaks this line?', id => onAssign(line, id), !line.character_context_id,
+            line.speaker_source !== 'left_unknown' && (!line.character_context_id || sure?.blocking) ? () => onAssign(line, line.character_context_id, true) : undefined)}
         </li>
       })}
     </ul> : draft ? <ul className="space-y-1">{draftRow()}</ul> : <p className="muted text-[11px]">No transcript segments overlap this cut.</p>}

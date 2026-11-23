@@ -33,7 +33,7 @@ class LabelAnswer(BaseModel):
 
 
 class PersonAnswer(BaseModel):
-    choice: Literal['character', 'new', 'background', 'leave', 'unsure']
+    choice: Literal['character', 'unregistered', 'new', 'background', 'leave', 'unsure']
     character_context_id: str | None = None
     title: str | None = Field(default=None, max_length=200)
     content: str = Field(default='', max_length=20000)

@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from . import db, gpu_device, job_kinds, job_scopes, media, worker, frame_source, prompt_context, local_text_runtime, remote_text
+from . import db, gpu_device, job_kinds, job_scopes, media, worker, frame_source, prompt_context, local_text_runtime, remote_text, unregistered
 from .assistant import h3_prompt
 
 log = logging.getLogger(__name__)
@@ -650,6 +650,10 @@ def process_regen(job_id, owner):
             request["sampled_frames"] = candidates
             if payload.get("production_brief"):
                 request["human_instructions"] = values['human_instructions']
+            cards = sorted(set(unregistered.HANDLE.findall(json.dumps(request["current_results"], ensure_ascii=False))))
+            if cards:
+                # The brief names people as the analysis does: an Unregistered handle stays as written, never a guessed name.
+                request["unregistered_people"] = {'names': cards, 'rule': unregistered.RULE}
         model = payload["model"]
         provider, thinking = payload.get('text_provider', 'openrouter'), payload.get('local_thinking', False)
         telemetry = {}

@@ -76,7 +76,9 @@ def selected(conn, cut_id, config, *, strict=False):
         raise ValueError("One or more selected context items no longer apply to this cut")
     detections = character_detections(conn, cut_id)
     detected_ids = {d['character_context_id'] for d in detections['detections'] if d['character_context_id']} if detections and not detections['stale'] else set()
-    context["context_items"] = [item for item in context["context_items"] if item["id"] in ids or (item['kind'] == 'character' and item['id'] in detected_ids)]
+    # An Unregistered card (unregistered.py) has no details to give a prompt: its boxes name it, the item adds nothing.
+    context["context_items"] = [item for item in context["context_items"] if not item.get('unregistered')
+                                and (item["id"] in ids or (item['kind'] == 'character' and item['id'] in detected_ids))]
     context["additional_context"] = config.get('additional_context', '')
     if detections and not detections['stale']:
         context['character_detections'] = {'run_id': detections['id'], 'model_id': detections['model_id'], 'model_revision': detections['model_revision'],

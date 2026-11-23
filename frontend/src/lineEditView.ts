@@ -165,7 +165,7 @@ export type SpeakerConfidence = { level: 'medium' | 'low'; blocking: boolean; la
 export function speakerConfidence(line: Pick<TranscriptSegment, 'confidence' | 'speaker_source' | 'evidence_json'>, names?: ReadonlyMap<string, string>): SpeakerConfidence | null {
   const level = line.confidence
   if (level !== 'medium' && level !== 'low') return null
-  if (line.speaker_source === 'manual' || line.speaker_source === 'agent') return null
+  if (line.speaker_source === 'manual' || line.speaker_source === 'agent' || line.speaker_source === 'left_unknown') return null
   let evidence: { top?: number; gap?: number; evidence?: [string, number][]; qwen?: { speaker?: string | null; reason?: string | null } } = {}
   try { evidence = line.evidence_json ? JSON.parse(line.evidence_json) || {} : {} } catch { evidence = {} }
   const parts: string[] = []

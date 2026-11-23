@@ -20,7 +20,7 @@ export function NameGlossaryDialog({ projectId, onClose }: { projectId: string; 
     dialog.current?.showModal()
     const controller = new AbortController()
     Promise.all([api<Entry[]>(url, { signal: controller.signal }), api<ContextItem[]>(`/projects/${projectId}/context`, { signal: controller.signal })])
-      .then(([entries, context]) => { setRows(entries); setCharacters(context.filter(item => item.kind === 'character')) })
+      .then(([entries, context]) => { setRows(entries); setCharacters(context.filter(item => item.kind === 'character' && !item.unregistered)) })
       .catch(err => { if (!controller.signal.aborted) setError((err as Error).message) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => { controller.abort(); dialog.current?.close() }

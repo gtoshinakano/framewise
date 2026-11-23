@@ -55,13 +55,15 @@ def box_problem(box, image_size):
 
 
 def exemplar_rows(project_id, conn=None):
-    """Confirmed boxes in each cut's latest run, plus saved references from any run."""
+    """Confirmed boxes in each cut's latest run, plus saved references from any run. Unregistered cards stand for different
+    people (unregistered.py): never an example, so recognition never proposes one."""
     return db.all_rows('''SELECT d.id,d.character_context_id,d.position,d.box_json,d.recognition_use,d.gallery_status,d.gallery_note,
             r.id AS run_id,r.frames_json,r.cut_start,r.cut_end,c.id AS cut_id,e.id AS episode_id,e.project_id,e.original_ext,
             EXISTS(SELECT 1 FROM character_image_references x WHERE x.detection_id=d.id) AS is_reference
         FROM character_detections d JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id
         JOIN episodes e ON e.id=c.episode_id
         JOIN context_items ci ON ci.id=d.character_context_id AND ci.kind='character' AND ci.project_id=e.project_id
+            AND COALESCE(ci.unregistered,0)=0
         WHERE e.project_id=? AND d.label_source='manual' AND (
             r.rowid=(SELECT max(r2.rowid) FROM character_detection_runs r2 WHERE r2.cut_id=r.cut_id)
             OR EXISTS(SELECT 1 FROM character_image_references x WHERE x.detection_id=d.id))
@@ -74,7 +76,7 @@ def evidence(conn, project_id):
         row.pop('gallery_status')
         row.pop('gallery_note')
     names = {row['id']: row['title'] for row in db.all_rows(
-        "SELECT id,title FROM context_items WHERE project_id=? AND kind='character'", (project_id,), conn=conn)}
+        "SELECT id,title FROM context_items WHERE project_id=? AND kind='character' AND COALESCE(unregistered,0)=0", (project_id,), conn=conn)}
     return rows, names
 
 

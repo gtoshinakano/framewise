@@ -59,16 +59,20 @@ def assign(content, roster, scenario=None):
 
     ``roster`` maps exact character names to their context ids. A subject whose name is on the roster
     is a character and gets a sheet picture (the first ``MAX_SHEETS`` of them); any other subject is
-    an unnamed person described from the initial frame. The scenario, when there is one, is the last
-    subject and the last picture.
+    an unnamed person described from the initial frame. An Unregistered card on the roster
+    (``unregistered: true``) keeps its record id but stays a person without a sheet: it stands for
+    different minor people. The scenario, when there is one, is the last subject and the last picture.
     """
-    ids = {person['name']: person['character_context_id'] for person in roster}
+    cards = {person['name'] for person in roster if person.get('unregistered')}
+    ids = {person['name']: person['character_context_id'] for person in roster if person['name'] not in cards}
     subjects, pictures = [], [{'label': '<Picture 1>', 'role': 'initial_frame'}]
     for item in content.get('subjects') or []:
         number = len(subjects) + 1
         subject = {'number': number, 'label': f'<Subject {number}>', 'name': item['name'], 'kind': 'person', 'character_context_id': None, 'picture': None,
                    'anchors': item.get('anchors') or '', 'keep': item.get('keep') or ''}
-        if item['name'] in ids:
+        if item['name'] in cards:
+            subject.update(unregistered=True, character_context_id=next(person['character_context_id'] for person in roster if person['name'] == item['name']))
+        elif item['name'] in ids:
             subject.update(kind='character', character_context_id=ids[item['name']])
             if sum(1 for picture in pictures if picture['role'] == 'character_sheet') < MAX_SHEETS:
                 subject['picture'] = len(pictures) + 1

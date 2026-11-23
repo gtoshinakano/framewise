@@ -39,7 +39,7 @@ def _text(value):
 def load(conn, sequence, cuts):
     """Project context and every cut's current results, in one pass."""
     episode = dict(conn.execute('SELECT e.id,e.title,e.project_id,e.subtitle_language,p.title AS project_title,p.synopsis FROM episodes e JOIN projects p ON p.id=e.project_id WHERE e.id=?', (sequence['episode_id'],)).fetchone())
-    items = [dict(row) for row in conn.execute('SELECT id,kind,title,content FROM context_items WHERE project_id=? AND (episode_id IS NULL OR episode_id=?) ORDER BY kind,title', (episode['project_id'], episode['id']))]
+    items = [dict(row) for row in conn.execute('SELECT id,kind,title,content,unregistered FROM context_items WHERE project_id=? AND (episode_id IS NULL OR episode_id=?) ORDER BY kind,title', (episode['project_id'], episode['id']))]
     marks = ','.join('?' for _ in cuts)
     results = {cut['id']: {} for cut in cuts}
     for row in conn.execute(f'SELECT id,cut_id,title,content,origin,settings_json FROM analysis_results WHERE superseded_by IS NULL AND cut_id IN ({marks}) ORDER BY rowid DESC', [cut['id'] for cut in cuts]):
@@ -55,9 +55,12 @@ def load(conn, sequence, cuts):
     for row in conn.execute(f'SELECT cut_id,content FROM cut_brief_instructions WHERE cut_id IN ({marks})', [cut['id'] for cut in cuts]):
         if row['content'].strip():
             results[row['cut_id']]['answers'] = row['content'].strip()
-    characters = [{'id': item['id'], 'name': item['title'], 'notes': item['content']} for item in items if item['kind'] == 'character']
+    # An Unregistered card (unregistered.py) is a minor person's handle: on the roster so lines and subjects can name it,
+    # never a bible character, an outfit owner or a sheet.
+    characters = [{'id': item['id'], 'name': item['title'], 'notes': item['content'], **({'unregistered': True} if item.get('unregistered') else {})}
+                  for item in items if item['kind'] == 'character']
     outfits = [{key: row[key] for key in ('id', 'character_context_id', 'name', 'summary', 'description')}
-               for row in outfit_library.rows(conn, episode['project_id'], [character['id'] for character in characters])]
+               for row in outfit_library.rows(conn, episode['project_id'], [character['id'] for character in characters if not character.get('unregistered')])]
     return {'project': {'title': episode['project_title'], 'synopsis': episode['synopsis']}, 'episode': {'id': episode['id'], 'title': episode['title']},
             'subtitle_language': episode['subtitle_language'],
             'characters': characters, 'outfits': outfits,
@@ -198,7 +201,7 @@ def roster(ctx, level=0, timeline=None):
     not what a character wears in these cuts.
     """
     limit = (300, 200, 120, 60)[level]
-    people = [{'name': character['name'], 'notes': character['notes'][:limit]} for character in ctx['characters']]
+    people = [{'name': character['name'], 'notes': character['notes'][:limit]} for character in ctx['characters'] if not character.get('unregistered')]
     if timeline is None or level >= 3:
         return people
     seen = {}
@@ -228,6 +231,7 @@ def bible_input(ctx, sequence, timeline, level=0, final_voices=None):
             'director_instruction': sequence['instruction'].strip() or None,
             'sequence': {'seconds': timeline['duration'], 'cuts': [timeline['cuts'][0]['number'], timeline['cuts'][-1]['number']]},
             'characters': roster(ctx, level, timeline),
+            'unregistered_people': unregistered_note(ctx),
             'outfit_library': outfit_library_view(ctx, level),
             'scenario_notes': [{'title': item['title'], 'content': item['content'][:(300, 200, 100, 0)[level]]} for item in ctx['scenarios']],
             'context_notes': _notes(ctx, level),
@@ -541,12 +545,20 @@ def shot_roster(ctx, bible, shot):
     people = dict(people_in(ctx['results'].get(shot['cut_id'], {})))
     by_name = {person.get('name'): person for person in bible.get('characters') or []}
     notes = {character['id']: character['notes'] for character in ctx['characters']}
+    cards = {character['id'] for character in ctx['characters'] if character.get('unregistered')}
     named = {}
     for item in bible.get('outfits') or []:
         named.setdefault(item.get('character'), []).append(item.get('name'))
     return [{'name': name, 'character_context_id': character_id, 'anchors': (by_name.get(name) or {}).get('anchors'), 'outfit': (by_name.get(name) or {}).get('outfit'),
-             **({'outfit_names': named[name]} if named.get(name) else {}),
+             **({'outfit_names': named[name]} if named.get(name) else {}), **({'unregistered': True} if character_id in cards else {}),
              'notes': (notes.get(character_id) or '')[:200] or None} for name, character_id in people.items()]
+
+
+def unregistered_note(ctx):
+    """What an ``Unregistered N`` name means, when the project has any: None otherwise, so inputs without one are unchanged."""
+    from . import unregistered
+    names = [character['name'] for character in ctx['characters'] if character.get('unregistered')]
+    return {'names': names, 'rule': unregistered.RULE + ' They have no character record, no sheet and no outfit; never list them as bible characters.'} if names else None
 
 
 def shot_dialogue(shot, bible):
@@ -741,6 +753,7 @@ def shot_input(conn, ctx, sequence, timeline, bible, shots, index, instruction='
                           'hands_over': ((previous or {}).get('continuity') or {}).get('to_next')} if index else None,
         'next_shot': {**neighbour(shots[index + 1]), 'opens_with': opens_with(shots[index + 1]) if level < 3 else None} if index + 1 < len(shots) else None,
         'characters': [{key: value for key, value in person.items() if key != 'character_context_id' and value} for person in shot_roster(ctx, bible, shot)],
+        'unregistered_people': unregistered_note(ctx) if any(person.get('unregistered') for person in shot_roster(ctx, bible, shot)) else None,
         'cuts': cuts,
         'dialogue_reviewed': reviewed(timeline),
         'dialogue': dialogue or 'Nobody speaks during this shot.',

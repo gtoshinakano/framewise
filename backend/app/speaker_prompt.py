@@ -16,6 +16,13 @@ Rules.
 3. The Portuguese translation is loose: use it for where sentences begin and end, whether two people speak inside one subtitle (a leading dash marks a second speaker) and rough meaning only.
 4. speaker is one of the listed characters, "other" for a person who is not listed (announcer, passer-by, crowd), or "unknown" when the evidence does not decide. Prefer unknown to a guess.
 5. confidence: high when two independent cues agree, medium when one clear cue supports it, low when the evidence is weak. reason is the single main cue."""
+# Added only when a cut of the episode shows an Unregistered card, so the prompt is unchanged otherwise.
+UNREGISTERED_NOTE = ('\n6. A person shown on screen as "Unregistered N (unregistered)" is a minor person without a character record: '
+                     'when they speak a line, answer "other", never a listed character.')
+
+
+def system_open(unregistered_on_screen=False):
+    return SYSTEM_OPEN + (UNREGISTERED_NOTE if unregistered_on_screen else '')
 
 
 def answer_schema(ids, names):

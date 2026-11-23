@@ -2,7 +2,9 @@ import { useEpisodeRevision } from './episodeEvents'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Bookmark, BookmarkMinus, CheckCircle2, ChevronDown, Info, Loader2, PencilLine, ScanFace, Trash2, UserPlus, UserX, XCircle } from 'lucide-react'
 import { api, type ContextItem, type Job } from './api'
-import { cachedCharacters, cachedReferences, invalidateReferences, loadCharacters, loadReferences, type CharacterReference } from './runCache'
+import { cachedCharacters, cachedReferences, chosenCharacter, invalidateReferences, loadCharacters, loadReferences, type CharacterReference } from './runCache'
+import { CharacterOptions } from './CharacterOptions'
+import { isCard, NEW_CARD } from './unregisteredView'
 import { ActionButton, Elapsed, Skeleton, StatusChip } from './RunUi'
 import type { CharacterSummary } from './runState'
 import { PoseDetailCard } from './PoseDetailCard'
@@ -131,8 +133,8 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     } catch (reason) { setError((reason as Error).message) } finally { setWorking(false) }
   }
   /** Changes paint immediately; the queue preserves their order on the server. */
-  function label(detectionId: string, characterId: string | null) {
-    const name = characters.find(item => item.id === characterId)?.title ?? null
+  function label(detectionId: string, characterId: string | null, knownName?: string) {
+    const name = knownName ?? characters.find(item => item.id === characterId)?.title ?? null
     setRun(value => value && { ...value, detections: value.detections.map(item => item.id === detectionId ? { ...item, character_context_id: characterId, character_name: name, label_source: characterId ? 'manual' : null, match_reason: null } : item) })
     enqueueEdit(async () => { await api(`/character-detections/${savedId(detectionId)}`, { method: 'PUT', body: JSON.stringify({ character_context_id: characterId }) }) })
   }
@@ -150,6 +152,14 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
         void onStarted()
       })
     })
+  }
+  /** "+ Unregistered N" makes the card first, then labels the box with it. */
+  function labelWith(detectionId: string, value: string) {
+    if (value !== NEW_CARD) { label(detectionId, value || null); return }
+    let items: ContextItem[] = []
+    void chosenCharacter(projectId, value, next => { items = next; setCharacters(next) }).then(id => {
+      if (id) label(detectionId, id, items.find(item => item.id === id)?.title)
+    }).catch(reason => setError((reason as Error).message))
   }
   const [adding, setAdding] = useState<string | null>(null)
   function setMatchingUse(detectionId: string, use: boolean | null) {
@@ -363,18 +373,21 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
         {!people.length && <p className="muted text-xs">No people detected. Double-click a person or use Draw box to add one.</p>}
         {people.map((person, index) => {
           const color = BOX_COLORS[index % BOX_COLORS.length]
+          // An Unregistered card stands for different minor people: no references, no matching use, no shortlist.
+          const card = isCard(characters.find(item => item.id === person.character_context_id))
           return <div key={person.id} onPointerEnter={() => { cardHover.current = person.id }} onPointerLeave={() => { if (cardHover.current === person.id) cardHover.current = null }} className={`rounded-lg border hairline bg-[#1e2430] p-2 text-xs transition-opacity ${noChars ? 'opacity-45' : ''}`} aria-disabled={noChars || undefined} style={{ borderLeft: `4px solid ${noChars ? '#4a5262' : color}` }}>
             <div className="flex flex-wrap items-center gap-1.5"><span className="w-5 shrink-0 text-center font-semibold" style={{ color }}>{index + 1}</span>
-              <select aria-label={`Character for box ${index + 1}`} className="field !w-auto min-w-32 flex-1 !px-2 !py-1.5 !text-xs" value={person.character_context_id || ''} disabled={locked || person.is_reference} onChange={event => { if (event.target.value === NEW_CHARACTER) setAdding(person.id); else void label(person.id, event.target.value || null) }}><option value="">Unknown</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}<option value={NEW_CHARACTER}>+ Add new character…</option></select>
+              <select aria-label={`Character for box ${index + 1}`} className="field !w-auto min-w-32 flex-1 !px-2 !py-1.5 !text-xs" value={person.character_context_id || ''} disabled={locked || person.is_reference} onChange={event => { if (event.target.value === NEW_CHARACTER) setAdding(person.id); else labelWith(person.id, event.target.value) }}><option value="">Unknown</option><CharacterOptions characters={characters} /><option value={NEW_CHARACTER}>+ Add new character…</option></select>
               {person.label_source !== 'manual' && !person.is_reference && <ActionButton compact icon={<UserPlus size={13} />} disabled={locked} onClick={() => setAdding(person.id)} title="Create a new project character from this box and describe its features" aria-label={`Add new character from box ${index + 1}`} />}
               {person.is_reference ? <StatusChip tone="blue" icon={<Bookmark size={11} />}>Reference</StatusChip> : person.label_source === 'auto' ? <StatusChip tone="amber" title={person.match_reason || 'Automatic match, not yet confirmed by you'}>Auto · unverified</StatusChip> : person.label_source === 'manual' ? <StatusChip tone="green" icon={<CheckCircle2 size={11} />}>Confirmed</StatusChip> : <StatusChip tone="grey">No name</StatusChip>}
               {person.label_source === 'auto' && <ActionButton compact icon={<CheckCircle2 size={13} />} disabled={locked} onClick={() => void label(person.id, person.character_context_id)} title="Mark this label as yours; it then helps recognize this character elsewhere">Confirm</ActionButton>}
-              {person.character_context_id && <ActionButton compact icon={person.is_reference ? <BookmarkMinus size={13} /> : <Bookmark size={13} />} disabled={locked || !!saving} onClick={() => void action(() => api(`/character-detections/${savedId(person.id)}/reference`, { method: person.is_reference ? 'DELETE' : 'POST' }), true)} title={person.is_reference ? 'Stop using this box as a saved reference' : 'Keep this box as a reference image for the whole project'} aria-label={person.is_reference ? 'Remove reference' : 'Save as reference'} />}
+              {person.character_context_id && !card && <ActionButton compact icon={person.is_reference ? <BookmarkMinus size={13} /> : <Bookmark size={13} />} disabled={locked || !!saving} onClick={() => void action(() => api(`/character-detections/${savedId(person.id)}/reference`, { method: person.is_reference ? 'DELETE' : 'POST' }), true)} title={person.is_reference ? 'Stop using this box as a saved reference' : 'Keep this box as a reference image for the whole project'} aria-label={person.is_reference ? 'Remove reference' : 'Save as reference'} />}
               <ActionButton compact variant="danger" icon={<Trash2 size={13} />} disabled={locked || person.is_reference} onClick={() => void removeBox(person.id)} title={person.is_reference ? 'Remove the reference first' : 'Remove this box'} aria-label={`Remove box ${index + 1}`} />
             </div>
             {person.label_source === 'auto' && person.match_reason && <p className="mt-1 text-[11px] text-[#e6c58b]">{person.match_reason}</p>}
-            <Suggestions person={person} disabled={locked} onPick={id => void label(person.id, id)} />
-            {person.label_source === 'manual' && <MatchingUse person={person} disabled={locked} onChange={use => setMatchingUse(person.id, use)} />}
+            {!card && <Suggestions person={person} disabled={locked} onPick={id => void label(person.id, id)} />}
+            {card && <p className="muted mt-1 text-[11px]">Unregistered: a minor person without a record. Use the same number for this person's lines; recognition never learns from it.</p>}
+            {person.label_source === 'manual' && !card && <MatchingUse person={person} disabled={locked} onChange={use => setMatchingUse(person.id, use)} />}
             {frame.position === 'first' && person.character_context_id && <PoseDetailCard cutId={cutId} person={person} frameBoxes={people} refreshKey={poseKey} disabled={locked} />}
           </div>
         })}

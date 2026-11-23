@@ -1,4 +1,5 @@
 import { api, type AnalysisConfig, type AnalysisContext, type ContextItem } from './api'
+import { NEW_CARD } from './unregisteredView'
 
 // Small stale-while-revalidate caches for the Run settings tab. The dialog remounts its content for every
 // cut, so without these each Next/Previous click would wait for the same requests again.
@@ -45,6 +46,20 @@ export async function loadCharacters(projectId: string): Promise<ContextItem[]> 
   const items = (await api<ContextItem[]>(`/projects/${projectId}/context`)).filter(item => item.kind === 'character')
   characters.set(projectId, items)
   return items
+}
+
+/** A new Unregistered card (the lowest free number); refreshes the cached characters. */
+export async function createCard(projectId: string): Promise<{ card: ContextItem; characters: ContextItem[] }> {
+  const card = await api<ContextItem>(`/projects/${projectId}/unregistered-characters`, { method: 'POST' })
+  return { card, characters: await loadCharacters(projectId) }
+}
+
+/** The character id a select's value stands for: a new card is created first. */
+export async function chosenCharacter(projectId: string, value: string, onCharacters?: (items: ContextItem[]) => void): Promise<string | null> {
+  if (value !== NEW_CARD) return value || null
+  const { card, characters } = await createCard(projectId)
+  onCharacters?.(characters)
+  return card.id
 }
 
 export async function loadReferences(projectId: string): Promise<CharacterReference[]> {

@@ -3,7 +3,7 @@ import json
 import math
 import re
 
-from . import pose_detail
+from . import pose_detail, unregistered
 
 def subtitle_note(language, boxes, space):
     """Closing sentence for visual prompts: the one subtitle language and where the strip sits, if known."""
@@ -130,7 +130,8 @@ def resolve_frame(raw, people):
     for person in people:
         details = by_ref.get(person['ref'], {name: '' for name in PERSON_TEXT})
         characters.append({'character': person['name'], 'character_context_id': person['character_context_id'], **{name: details[name] for name in PERSON_TEXT},
-                           POSE_KEY: pose_detail.resolve(details.get(POSE_KEY), person, people)})
+                           POSE_KEY: pose_detail.resolve(details.get(POSE_KEY), person, people),
+                           **({'unregistered': True} if unregistered.is_card(person['name'] or '') else {})})
     result = {name: _text(value.get(name)) for name in FRAME_TEXT}
     result['visible_characters'] = characters
     for name in FRAME_TAIL:
@@ -147,6 +148,8 @@ def person_context(people, frame_label):
     lines = [f'Marked characters in the {frame_label} (box = x1,y1,x2,y2 on a 0-1000 grid over the whole frame):']
     for person in people:
         lines.append(f"- {person['ref']}: {person['name']}" + (f", box {person['box']}" if person.get('box') else ''))
+    if unregistered.present(person['name'] for person in people):
+        lines.append(unregistered.RULE)
     return '\n'.join(lines)
 
 

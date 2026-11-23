@@ -2,7 +2,7 @@
 import functools
 import json
 
-from . import prompt_context
+from . import prompt_context, unregistered
 
 INTRO = '''You are an evidence reviewer for a pipeline that re-creates an anime episode shot by shot with AI. Each cut becomes one generated shot, made in three steps: (1) a still image of the opening frame, (2) the dialogue audio, (3) a video that animates the still.
 
@@ -309,6 +309,20 @@ def delivery_checks(line, motion):
     return []
 
 
+def _names_in(result):
+    """The character names of a first-frame or keyframe result."""
+    content = (result or {}).get('content') if isinstance(result, dict) else None
+    if not isinstance(content, dict):
+        return set()
+    people = [*(content.get('visible_characters') or []), *(content.get('roster') or [])]
+    return {_text_name(person) for person in people if isinstance(person, dict) and _text_name(person)}
+
+
+def _text_name(person):
+    value = person.get('character') or person.get('name')
+    return value.strip() if isinstance(value, str) else ''
+
+
 def build_input(results, transcripts, context_items, subtitles=None, series=None, episode=None):
     result_map = {item['type']: item for item in results}
     parts = []
@@ -340,6 +354,10 @@ def build_input(results, transcripts, context_items, subtitles=None, series=None
     checks = app_checks(result_map, named)
     if checks:
         evidence['app_checks'] = checks
+    cards = sorted({segment.get('character_name') for segment in named if unregistered.is_card(segment.get('character_name') or '')}
+                   | {name for name in (_names_in(result_map.get('initial_frame')) | _names_in(keyframes)) if unregistered.is_card(name)})
+    if cards:
+        evidence['unregistered_people'] = {'names': cards, 'rule': unregistered.RULE + ' Never ask who an Unregistered person really is or whether they need a record.'}
     if series:
         evidence['series'] = series
     if episode:

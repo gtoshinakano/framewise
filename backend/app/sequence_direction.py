@@ -10,7 +10,7 @@ edited the result by hand.
 import math
 import re
 
-from . import outfit_library, sequence_compile, sequence_evidence, sequence_prompt, sequence_timeline, still_vocabulary
+from . import outfit_library, sequence_compile, sequence_evidence, sequence_prompt, sequence_timeline, still_vocabulary, unregistered
 from .assistant import h3_prompt
 
 FRAMING = """You are the director of a short video of at most three minutes that re-creates a sequence of an episode with AI, shot by shot. Each shot is generated on its own: first a still image of its opening frame, then a MiniMax H3 video of at most 15 seconds that animates that still in sync with the ORIGINAL audio of the episode. The original audio is kept unchanged under the whole video, so it is the spine every decision follows.
@@ -429,6 +429,8 @@ def _bible_outfits(given, characters, scenes, ctx, errors, required):
         if not isinstance(item, dict):
             continue
         name = _canonical(item.get('character'), list(present))
+        if name is None and unregistered.is_card(_str(item.get('character'))):
+            continue  # Unregistered people have no outfits
         if name is None:
             errors.append(f"outfit \"{_str(item.get('name'))}\": \"{_str(item.get('character'))}\" is not one of the bible's characters; use one of: {', '.join(present) or 'none'}")
             continue
@@ -498,9 +500,12 @@ def validate_bible(output, ctx, timeline, require_outfits=False):
         errors.append(f'scenes stop at cut {expected - 1}; they must cover every cut up to {last}')
     names = [character['name'] for character in ctx['characters']]
     ids = {character['name']: character['id'] for character in ctx['characters']}
+    cards = {character['name'] for character in ctx['characters'] if character.get('unregistered')}
     characters = []
     for person in output.get('characters') if isinstance(output.get('characters'), list) else []:
         name = _canonical(person.get('name'), names) if isinstance(person, dict) else None
+        if name in cards:
+            continue  # an Unregistered person is not a bible character (no anchors, no outfit, no sheet)
         if name is None:
             errors.append(f"character \"{_str(person.get('name')) if isinstance(person, dict) else person}\" has no character record; use exact names from: {', '.join(names) or 'none (there are no records)'}")
             continue

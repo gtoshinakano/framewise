@@ -10,14 +10,18 @@ cut when the job says ``beats: when_ready``). The autopilot runs a step only for
 A box label is settled when a person or an agent set it, or when the gallery match is strong (the label is the top
 candidate, its score at least ``STRONG_SCORE`` and ahead of the next character by ``STRONG_LEAD``). Speech is settled when
 every line overlapping the cut has a character and none of them is low confidence unless a person or an agent set its
-speaker, and the episode's transcript and speaker attribution are not stale. Each failed check gives a short reason that
+speaker, and the episode's transcript and speaker attribution are not stale. A line the person left as it is (``left_unknown``,
+the voice question's "Leave unknown" or the line editor's "Unknown – don't ask again") is settled with or without a character:
+an unknown speaker is asked once (HARNESS.md D29). ``speaker_open``/``open_speaker_sql`` are that one rule, shared by every
+surface that flags a speaker (review report, cut needs, the voice resolver). Each failed check gives a short reason that
 the hand-off shows the person. Nothing here is an approval status, and nothing is saved.
 """
 import json
 
 STRONG_SCORE = 0.95
 STRONG_LEAD = 0.06
-DECIDED_SPEAKERS = ('manual', 'agent')
+LEFT_UNKNOWN = 'left_unknown'
+DECIDED_SPEAKERS = ('manual', 'agent', LEFT_UNKNOWN)
 OVERLAP = 0.1  # seconds a line must share with the cut to count as its speech
 # speaker_attribution's own marker for lines it could not attribute: those lines have no character, which is checked per line
 UNATTRIBUTED = 'Some lines could not be attributed'
@@ -136,6 +140,28 @@ def _beats(conn, cut, keyframes, video):
     return []
 
 
+def speaker_open(row):
+    """Whether a transcript line still needs a speaker decision: no character (unless the person left it so), or a
+    low-confidence character nobody decided."""
+    def value(key):
+        try:
+            return row[key]
+        except (KeyError, IndexError):
+            return None
+    source = value('speaker_source') or ''
+    if not value('character_context_id'):
+        return source != LEFT_UNKNOWN
+    return value('confidence') == 'low' and source not in DECIDED_SPEAKERS
+
+
+def open_speaker_sql(alias=''):
+    """``speaker_open`` as an SQL condition over transcript_segments (``alias.`` prefixed when given)."""
+    a = f'{alias}.' if alias else ''
+    decided = ','.join(f"'{value}'" for value in DECIDED_SPEAKERS)
+    return (f"(({a}character_context_id IS NULL AND COALESCE({a}speaker_source,'')<>'{LEFT_UNKNOWN}') OR "
+            f"({a}character_context_id IS NOT NULL AND {a}confidence='low' AND COALESCE({a}speaker_source,'') NOT IN ({decided})))")
+
+
 def episode_speech(episode):
     if not episode or episode.get('has_audio') == 0:
         return None
@@ -155,9 +181,11 @@ def _speech(conn, episode, cut, episode_reasons):
     for row in conn.execute("""SELECT start_time,character_context_id,confidence,speaker_source FROM transcript_segments
         WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND MIN(end_time, ?) - MAX(start_time, ?) > ?
         ORDER BY start_time""", (episode['id'], cut['end_time'], cut['start_time'], OVERLAP)):
+        if not speaker_open(row):
+            continue
         if not row['character_context_id']:
             reasons.append(f"line at {clock(row['start_time'])} has no speaker")
-        elif row['confidence'] == 'low' and row['speaker_source'] not in DECIDED_SPEAKERS:
+        else:
             reasons.append(f"line at {clock(row['start_time'])} has a low-confidence speaker")
     return reasons
 

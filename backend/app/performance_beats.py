@@ -23,7 +23,7 @@ import logging
 import os
 import time
 
-from . import db, job_inputs, keyframe_view, prompt_context, structured_results, worker
+from . import db, job_inputs, keyframe_view, prompt_context, structured_results, unregistered, worker
 
 log = logging.getLogger('framewise.performance_beats')
 
@@ -172,7 +172,8 @@ def gather(conn, cut_id):
     series = prompt_context.series_context({
         'project': {'synopsis': project['synopsis'] if project else ''}, 'episode': {'title': cut['episode_title']},
         'chunks': _rows(conn, 'SELECT title,notes FROM chunks WHERE episode_id=? AND start_time<? AND end_time>? ORDER BY chunk_index', (cut['episode_id'], cut['end_time'], cut['start_time'])),
-        'context_items': _rows(conn, 'SELECT kind,title,content FROM context_items WHERE project_id=? AND (episode_id IS NULL OR episode_id=?)', (cut['project_id'], cut['episode_id']))})
+        'context_items': _rows(conn, 'SELECT kind,title,content FROM context_items WHERE project_id=? AND (episode_id IS NULL OR episode_id=?) AND COALESCE(unregistered,0)=0',
+                               (cut['project_id'], cut['episode_id']))})
     opening = None
     if first and isinstance(first.get('content'), dict):
         from .consistency_summary import _without_ids
@@ -183,6 +184,10 @@ def gather(conn, cut_id):
             'characters': sorted(roster), 'anchors': anchors, 'max_beats': max_beats}
     if series:
         data['series'] = series
+    cards = sorted({name for name in [*roster, *(line['speaker'] for line in lines)] if unregistered.is_card(name or '')})
+    if cards:
+        # Two Unregistered people are two people: each line's speaker says which one speaks it, and their beats keep the number.
+        data['unregistered_people'] = {'names': cards, 'rule': unregistered.RULE + ' A line\'s speaker says which of them speaks it.'}
     if cut['subtitle_language']:
         data['dialogue_language'] = cut['subtitle_language']
     context = {'duration': duration, 'anchors': anchors, 'names': roster, 'lines': lines, 'max_beats': max_beats,
