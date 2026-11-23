@@ -281,6 +281,11 @@ class TranscriptMergeInput(BaseModel):
     character_context_id: str | None = None
 
 
+class SpeakerConfirmInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    segment_ids: list[str] = Field(min_length=1, max_length=200, description="Current lines whose speaker the person confirms as it is.")
+
+
 class SplitPart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=20000)
@@ -1445,6 +1450,30 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
         if metadata[0] != segment['words_json'] or (segment['start_time'], segment['end_time']) != (body.start_time, body.end_time):
             subtitle_store.invalidate_probes(conn, episode['id'])
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
+
+
+@app.post("/api/episodes/{episode_id}/transcript/confirm-speakers")
+def confirm_transcript_speakers(episode_id: str, body: SpeakerConfirmInput):
+    """The person accepts the speaker the app chose: each line becomes a manual revision with the same text, times and character.
+
+    Only the speaker's provenance changes (``speaker_source='manual'``, no confidence), so nothing derived from the words goes stale;
+    ``cut_readiness`` and the review lists stop asking about the line. A line that is no longer current or has no character is skipped."""
+    require_episode(episode_id)
+    confirmed, skipped = [], []
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        for segment_id in dict.fromkeys(body.segment_ids):
+            old = conn.execute("SELECT * FROM transcript_segments WHERE id=? AND episode_id=?", (segment_id, episode_id)).fetchone()
+            if not old or old["superseded_by"] or old["deleted"] or not old["character_context_id"]:
+                skipped.append(segment_id)
+                continue
+            new_id = str(uuid.uuid4())
+            conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,origin,model_id,job_id,parent_id,words_json,speaker_source,confidence,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (new_id, episode_id, old["start_time"], old["end_time"], old["text"], old["speaker_label"], old["character_context_id"], "manual_edit",
+                          old["model_id"], old["job_id"], segment_id, old["words_json"], "manual", None, old["evidence_json"]))
+            conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
+            confirmed.append(new_id)
+    return {"confirmed": len(confirmed), "skipped": skipped}
 
 
 @app.delete("/api/transcript-segments/{segment_id}")

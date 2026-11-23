@@ -55,6 +55,8 @@ type Props = {
   onAssign: (line: TranscriptSegment, characterId: string | null, leftUnknown?: boolean) => void
   /** Makes the card a "+ Unregistered N" choice stands for; without it the choice is not offered. */
   newCard?: () => Promise<string | null>
+  /** The person accepts the speakers as they are. */
+  onConfirm: (lines: TranscriptSegment[]) => void
   hint?: ReactNode
 }
 
@@ -62,7 +64,7 @@ type Item = { type: 'line'; line: TranscriptSegment } | { type: 'draft' }
 
 const INTERACTIVE = 'select,button,textarea,input,a'
 
-export function TranscriptLines({ cut, lines, characters, names, selected, onSelect, draft, onDraft, busy, time, onEdit, onSave, onCancel, onDelete, onSplit, canSplit, onMerge, onAdd, onAssign, newCard, hint }: Props) {
+export function TranscriptLines({ cut, lines, characters, names, selected, onSelect, draft, onDraft, busy, time, onEdit, onSave, onCancel, onDelete, onSplit, canSplit, onMerge, onAdd, onAssign, newCard, onConfirm, hint }: Props) {
   const area = useRef<HTMLTextAreaElement>(null)
   const anchor = useRef<string | null>(null)
   const dragging = useRef(false)
@@ -84,6 +86,7 @@ export function TranscriptLines({ cut, lines, characters, names, selected, onSel
     if (draft && !placed) result.push({ type: 'draft' })
     return result
   }, [lines, draft])
+  const unsure = useMemo(() => lines.filter(line => line.character_context_id && speakerConfidence(line)), [lines])
   const order = useMemo(() => lines.filter(line => !(draft?.kind === 'merge' && draft.ids.includes(line.id))).map(line => line.id), [lines, draft])
 
   // The selected line scrolls into view when it was picked on the graph.
@@ -158,6 +161,7 @@ export function TranscriptLines({ cut, lines, characters, names, selected, onSel
         <IconButton icon={Merge} label="Merge the selected lines" size="sm" text="Merge" disabled={busy} onClick={onMerge} />
         <IconButton icon={X} label="Clear the selection" size="sm" onClick={() => onSelect([])} />
       </>}
+      {unsure.length > 0 && !draft && <IconButton icon={Check} label="Confirm the speaker of every line marked unsure or check, as it is" size="sm" text={`Confirm ${unsure.length}`} disabled={busy} onClick={() => onConfirm(unsure)} />}
       <IconButton icon={Plus} label="Add a line at the playhead" size="sm" text="Add" disabled={busy || !!draft} onClick={onAdd} />
     </div>
     {items.length ? <ul ref={list} role="listbox" aria-multiselectable aria-label="Spoken lines" className="scrollbar min-h-0 max-h-80 flex-1 space-y-1 overflow-y-auto pr-0.5 lg:max-h-none">
@@ -177,7 +181,7 @@ export function TranscriptLines({ cut, lines, characters, names, selected, onSel
           <div style={{ borderLeftColor: color }} className={`min-w-0 flex-1 cursor-pointer rounded-md border-l-[3px] px-2 py-1 text-left ${isSelected ? 'bg-[#3a3058] ring-1 ring-[#8f78d8]' : active ? 'bg-[#322a48]' : 'bg-[#232a35] hover:bg-[#2a3140]'}`}>
             <span className="flex items-center gap-1.5"><span style={{ color }} className="block min-w-0 truncate text-[10px] font-bold uppercase tracking-wide">{speaker}</span>
               {side && <span className="shrink-0 rounded border border-[#6d5526] px-1 text-[9px] text-[#f0c979]" title={`${stamp(line.start_time)}–${stamp(line.end_time)}`}>{side === 'before' ? 'starts before cut' : side === 'after' ? 'continues after cut' : 'spans the cut'}</span>}
-              {sure && <span className={`shrink-0 rounded border px-1 text-[9px] ${sure.blocking ? 'border-[#8a6a2a] bg-[#3a2c12] text-[#f5c678]' : 'border-[#4a4a3a] text-[#c9bd8a]'}`} title={sure.detail}>{sure.label}</span>}
+              {sure && <button type="button" disabled={busy || !line.character_context_id} onClick={() => onConfirm([line])} className={`shrink-0 rounded border px-1 text-[9px] ${sure.blocking ? 'border-[#8a6a2a] bg-[#3a2c12] text-[#f5c678]' : 'border-[#4a4a3a] text-[#c9bd8a]'}`} title={`${sure.detail}. Click to confirm the speaker as it is.`}>{sure.label} · confirm</button>}
               <span className="muted ml-auto shrink-0 text-[9px] tabular-nums">{stamp(line.start_time)}–{stamp(line.end_time)}</span></span>
             <span className="block break-words text-[12px] leading-[1.45]">{line.text}</span>
           </div>

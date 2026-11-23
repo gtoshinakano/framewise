@@ -18,15 +18,26 @@ class CutNeedsTest(unittest.TestCase):
     def people(self, cuts, cut_id):
         return {item['key']: item['count'] for item in cuts[cut_id]['people']}
 
-    def test_a_low_confidence_speaker_nobody_confirmed_is_its_own_need(self):
+    def test_a_low_confidence_speaker_is_its_own_need_until_the_person_confirms_it(self):
         with db.connect() as conn:
-            conn.execute("UPDATE transcript_segments SET confidence='low',speaker_source='qwen' WHERE episode_id='e' AND character_context_id IS NOT NULL")
-        count = sum(self.people(self.needs(), cut).get('speaker_unsure', 0) for cut in ('c1', 'c2', 'c3', 'c4'))
+            conn.execute("INSERT INTO context_items(id,project_id,kind,title,content) VALUES ('who','p','character','Who','')")
+            conn.execute("UPDATE transcript_segments SET character_context_id='who',confidence='low',speaker_source='qwen' WHERE episode_id='e' AND superseded_by IS NULL AND deleted=0")
+            lines = [dict(row) for row in conn.execute("SELECT * FROM transcript_segments WHERE episode_id='e' AND character_context_id IS NOT NULL AND superseded_by IS NULL AND deleted=0")]
+        self.assertTrue(lines)
+        unsure = lambda: sum(self.people(self.needs(), cut).get('speaker_unsure', 0) for cut in ('c1', 'c2', 'c3', 'c4'))
+        self.assertGreaterEqual(unsure(), 1)
+        answer = self.client.post('/api/episodes/e/transcript/confirm-speakers', json={'segment_ids': [line['id'] for line in lines] + ['missing']}).json()
+        self.assertEqual(answer['confirmed'], len(lines))
+        self.assertEqual(answer['skipped'], ['missing'])
+        self.assertEqual(unsure(), 0)
         with db.connect() as conn:
-            expected = conn.execute("SELECT COUNT(*) FROM transcript_segments WHERE episode_id='e' AND superseded_by IS NULL AND deleted=0 AND confidence='low' AND character_context_id IS NOT NULL").fetchone()[0]
-            conn.execute("UPDATE transcript_segments SET speaker_source='manual' WHERE episode_id='e'")
-        self.assertGreaterEqual(count, 1 if expected else 0)
-        self.assertEqual(sum(self.people(self.needs(), cut).get('speaker_unsure', 0) for cut in ('c1', 'c2', 'c3', 'c4')), 0)
+            now = [dict(row) for row in conn.execute("SELECT * FROM transcript_segments WHERE episode_id='e' AND character_context_id IS NOT NULL AND superseded_by IS NULL AND deleted=0")]
+        self.assertEqual(sorted((row['text'], row['start_time'], row['character_context_id']) for row in now),
+                         sorted((row['text'], row['start_time'], row['character_context_id']) for row in lines))
+        self.assertTrue(all(row['speaker_source'] == 'manual' and row['confidence'] is None for row in now))
+        # Confirming twice is a no-op: the old ids are no longer current.
+        again = self.client.post('/api/episodes/e/transcript/confirm-speakers', json={'segment_ids': [line['id'] for line in lines]}).json()
+        self.assertEqual(again['confirmed'], 0)
 
     def test_gates_checks_and_steps_by_cut(self):
         cuts = self.needs()
