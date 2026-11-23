@@ -96,23 +96,44 @@ Answer with one JSON object and nothing else: {{"text": "<the subtitle text, or 
 USER_PROMPT = 'Transcribe the subtitle in this strip.'
 
 
-def parse_reading(raw, language):
-    """Validate one model answer. Returns ``{'text', 'legible'}``; raises ValueError for a malformed answer."""
+def _answer_object(raw):
+    """The JSON object in a model answer: the whole text, a fenced block, or the first {...} when prose surrounds it."""
     text = raw.strip()
     if text.startswith('```'):
         text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text, flags=re.I).strip()
     try:
-        data = json.loads(text)
-    except ValueError as exc:
-        raise ValueError('The subtitle answer was not valid JSON') from exc
-    if not isinstance(data, dict) or not isinstance(data.get('text'), str) or data.get('legible') not in ('full', 'partial', 'none'):
-        raise ValueError('The subtitle answer did not follow the required shape')
-    lines = [re.sub(r'[^\S\n]+', ' ', unicodedata.normalize('NFC', line)).strip() for line in data['text'].replace('\r', '\n').split('\n')]
+        return json.loads(text)
+    except ValueError:
+        pass
+    start, end = text.find('{'), text.rfind('}')
+    if 0 <= start < end:
+        try:
+            return json.loads(text[start:end + 1])
+        except ValueError:
+            pass
+    raise ValueError('The subtitle answer was not valid JSON: ' + text[:80].replace('\n', ' '))
+
+
+def parse_reading(raw, language):
+    """Validate one model answer. Returns ``{'text', 'legible'}``; raises ValueError for a malformed answer.
+
+    The text must be a string (null means nothing was seen). A missing or unknown ``legible`` is read as
+    ``partial`` when there is text, so the line keeps a low confidence instead of failing the whole run.
+    """
+    data = _answer_object(raw)
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    if not isinstance(data, dict) or not (isinstance(data.get('text'), str) or data.get('text') is None):
+        raise ValueError('The subtitle answer did not follow the required shape: ' + str(raw).strip()[:80].replace('\n', ' '))
+    legible = data.get('legible')
+    legible = legible.strip().lower() if isinstance(legible, str) else None
+    lines = [re.sub(r'[^\S\n]+', ' ', unicodedata.normalize('NFC', line)).strip() for line in (data.get('text') or '').replace('\r', '\n').split('\n')]
     value = '\n'.join(line for line in lines if line)
     if len(value) > 600:
         raise ValueError('The subtitle answer was unreasonably long')
-    legible = data['legible'] if value else 'none'
-    return {'text': value, 'legible': legible}
+    if not value:
+        return {'text': '', 'legible': 'none'}
+    return {'text': value, 'legible': legible if legible in ('full', 'partial') else 'partial'}
 
 
 def classify_reading(reading, language):
@@ -130,20 +151,21 @@ def classify_reading(reading, language):
 def request_reading(server_url, jpeg, language, timeout=180, attempts=3, thinking=False):
     from .frame_model import thinking_kwargs
     image = base64.b64encode(jpeg).decode('ascii')
-    body = json.dumps({'messages': [{'role': 'system', 'content': system_prompt(language)},
-                                    {'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image}},
-                                                                 {'type': 'text', 'text': USER_PROMPT}]}],
-                       'temperature': 0, 'max_tokens': 400, 'response_format': {'type': 'json_object'},
-                       'chat_template_kwargs': thinking_kwargs(thinking)}).encode()
     last = None
     for attempt in range(attempts):
+        # temperature 0 gives the same malformed answer on every retry, so a retry samples a little
+        body = json.dumps({'messages': [{'role': 'system', 'content': system_prompt(language)},
+                                        {'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image}},
+                                                                     {'type': 'text', 'text': USER_PROMPT}]}],
+                           'temperature': 0 if attempt == 0 else .4, 'max_tokens': 400, 'response_format': {'type': 'json_object'},
+                           'chat_template_kwargs': thinking_kwargs(thinking)}).encode()
         request = urllib.request.Request(server_url + '/v1/chat/completions', data=body, headers={'Content-Type': 'application/json'}, method='POST')
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 choice = json.load(response)['choices'][0]
             if choice.get('finish_reason') == 'length':
                 raise ValueError('The subtitle answer was cut off')
-            return parse_reading(choice['message']['content'], language)
+            return parse_reading(choice['message'].get('content') or '', language)
         except (OSError, urllib.error.URLError, KeyError, IndexError, TypeError, ValueError) as exc:
             last = exc
             time.sleep(min(2., .5 * (attempt + 1)))

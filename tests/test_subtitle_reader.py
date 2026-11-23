@@ -84,10 +84,23 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(reader.parse_reading(answer('   ', 'full'), self.language), {'text': '', 'legible': 'none'})
 
     def test_malformed_answers_are_rejected(self):
-        for raw in ('not json', '[]', json.dumps({'text': 'x'}), json.dumps({'text': 5, 'legible': 'full'}),
-                    json.dumps({'text': 'x', 'legible': 'maybe'}), answer('x' * 601)):
+        for raw in ('not json', '[]', json.dumps({'text': 5, 'legible': 'full'}), json.dumps([1, 2]),
+                    answer('x' * 601)):
             with self.assertRaises(ValueError, msg=raw[:40]):
                 reader.parse_reading(raw, self.language)
+
+    def test_near_miss_answers_are_read_with_a_low_confidence(self):
+        self.assertEqual(reader.parse_reading(json.dumps({'text': 'x'}), self.language), {'text': 'x', 'legible': 'partial'})
+        self.assertEqual(reader.parse_reading(json.dumps({'text': 'x', 'legible': 'maybe'}), self.language), {'text': 'x', 'legible': 'partial'})
+        self.assertEqual(reader.parse_reading(json.dumps({'text': 'x', 'legible': 'Full'}), self.language), {'text': 'x', 'legible': 'full'})
+        self.assertEqual(reader.parse_reading(json.dumps({'text': None, 'legible': 'none'}), self.language), {'text': '', 'legible': 'none'})
+        self.assertEqual(reader.parse_reading('Here it is: ' + answer('Sim') + ' done', self.language)['text'], 'Sim')
+        self.assertEqual(reader.parse_reading(json.dumps([{'text': 'Sim', 'legible': 'full'}]), self.language)['text'], 'Sim')
+
+    def test_the_error_keeps_what_the_model_said(self):
+        with self.assertRaises(ValueError) as caught:
+            reader.parse_reading('I cannot read this image', self.language)
+        self.assertIn('I cannot read', str(caught.exception))
 
 
 class MergeTest(unittest.TestCase):
