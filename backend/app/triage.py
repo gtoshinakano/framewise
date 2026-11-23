@@ -133,6 +133,13 @@ def requeue(conn, job, payload, cut_ids, prerequisite=False):
         if not checked:
             raise Unfixable('missed-cut checks are switched off in the Autopilot profile')
         return [checked]
+    if pipeline == 'subtitles':
+        from . import main
+        language = payload.get('language') or (conn.execute('SELECT subtitle_language FROM episodes WHERE id=?', (episode_id,)).fetchone() or [None])[0]
+        if not language:
+            raise Unfixable('the episode has no subtitle language')
+        # the new run reuses every saved reading; accept_unread lets it finish when only a handful stay unreadable
+        return [main.queue_subtitles(conn, episode_id, language, accept_unread=True)]
     cuts = _cuts(conn, cut_ids)
     if not cuts:
         raise Unfixable('its cuts are archived')

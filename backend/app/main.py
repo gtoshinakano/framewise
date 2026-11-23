@@ -1054,8 +1054,11 @@ def extract_episode_subtitles(episode_id: str, body: SubtitleRunInput):
     return {"job_id": job_id, "language": language["name"]}
 
 
-def queue_subtitles(conn, episode_id, language, depends_on=()):
-    job_id = worker.enqueue_in(conn, episode_id, 'subtitles', {'language': language, 'depends_on': list(depends_on)})
+def queue_subtitles(conn, episode_id, language, depends_on=(), accept_unread=False):
+    payload = {'language': language, 'depends_on': list(depends_on)}
+    if accept_unread:
+        payload['accept_unread'] = True  # subtitle_pipeline.finish: complete with at most UNREAD_SHARE of the images unread
+    job_id = worker.enqueue_in(conn, episode_id, 'subtitles', payload)
     conn.execute('UPDATE episodes SET subtitle_language=? WHERE id=?', (language, episode_id))
     return job_id
 
@@ -1732,7 +1735,7 @@ def label_character_detection(detection_id: str, body: CharacterDetectionLabelIn
             raise HTTPException(409, 'Remove the saved reference before changing this label')
         conn.execute("UPDATE character_detections SET character_context_id=?,label_source=?,match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (body.character_context_id, 'manual' if body.character_context_id else None, detection_id))
         structured_results.opening_box_edited(conn, row['run_id'], row['position'])
-        agent_log.note_override(conn, 'character_detections', detection_id)
+        agent_log.note_override(conn, 'character_detections', detection_id, now={'character_context_id': body.character_context_id})
         character_decisions.close_settled(conn, row_episode(conn, row['run_id']))
     return {'ok': True}
 
@@ -2080,7 +2083,7 @@ def enqueue_analysis(episode_id: str, cut_id: str, stages: list[str] | None = No
 
 
 def insert_visual_job(conn, episode_id, cuts, *, stages=None, batch=False, only_missing=False,
-                      characters_resolved=False, from_index=0, dynamic_cuts=False):
+                      characters_resolved=False, from_index=0, dynamic_cuts=False, beats='always'):
     from . import visual_models
 
     cut_ids = [cut['id'] for cut in cuts]
@@ -2093,6 +2096,9 @@ def insert_visual_job(conn, episode_id, cuts, *, stages=None, batch=False, only_
         payload['only_missing'] = True
     if characters_resolved:
         payload['characters_resolved'] = True
+    if beats != 'always':
+        # keyframe_analysis reads it when it saves: 'when_ready' queues beats only for a ready cut (cut_readiness), 'off' never
+        payload['beats'] = beats
     if dynamic_cuts:
         payload.update(dynamic_cuts=True, from_index=from_index,
                        default_config=AnalysisConfig(**text_generation_settings(conn)).model_dump())
@@ -2110,8 +2116,12 @@ def insert_visual_job(conn, episode_id, cuts, *, stages=None, batch=False, only_
 
 @app.post('/api/episodes/{episode_id}/visual-analysis')
 def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, to_cut: int | None = None,
-                                  only_missing: bool = True, characters_resolved: bool = False):
-    """Queue one model-major run. Check cut readiness and unfinished stages at start."""
+                                  only_missing: bool = True, characters_resolved: bool = False,
+                                  beats: Literal['always', 'when_ready', 'off'] = 'always'):
+    """Queue one model-major run. Check cut readiness and unfinished stages at start.
+
+    ``beats``: whether saving a cut's keyframes queues its first performance beats (``always``, the editor's default),
+    only when the cut's inputs are settled (``when_ready``, the autopilot) or never (``off``)."""
     span = episode_requests.cut_range(from_cut, to_cut)
     first_index, last_index = span['first_index'], span.get('last_index')
     with db.connect() as conn:
@@ -2125,7 +2135,7 @@ def queue_episode_visual_analysis(episode_id: str, from_cut: int | None = None, 
         dynamic_cuts = bool(worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts')))
         job_ids = [insert_visual_job(conn, episode_id, cuts, batch=True, only_missing=only_missing,
                                      characters_resolved=characters_resolved, from_index=first_index,
-                                     dynamic_cuts=dynamic_cuts)] if cuts or dynamic_cuts else []
+                                     dynamic_cuts=dynamic_cuts, beats=beats)] if cuts or dynamic_cuts else []
     return {'queued': len(cuts), 'skipped': 0, 'blocked': {'unknown_characters': [], 'not_detected': []}, 'job_ids': job_ids}
 
 

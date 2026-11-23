@@ -668,13 +668,16 @@ RESOLVERS = {
 }
 # A step that queues work makes these resolvers worth running again (their inputs change).
 REOPENS = {'setup': {'missed_cuts', 'line_splits', 'voices', 'cast'}, 'missed_cuts': {'line_splits', 'cast'}, 'speakers': {'voices'},
-           'target-frames': {'cast'}, 'consistency': {'review_decisions'}, 'stale:consistency': {'review_decisions'}, 'transcribe': {'line_splits', 'voices'}}
+           'characters': {'cast'}, 'target-frames': {'cast'}, 'consistency': {'review_decisions'}, 'transcribe': {'line_splits', 'voices'}}
 FIXABLE = ('requeue', 'rerun', 'dismiss', 'prerequisite')
 # Stale results in pipeline order (D7): a cut is re-run from its earliest stale stage; titles the current flow no longer
 # makes (last frame, subtitle OCR) are left alone.
 STALE_STAGES = (('visual', ('Initial frame description', 'Keyframe analysis', 'Video analysis')), ('beats', ('Performance beats',)),
                 ('consistency', ('Consistency summary',)), ('summary', ('Cut summary',)))
 STALE_TRIES = 2
+# Profile kinds that are off unless the profile turns them on (autopilot_profile.OFF_BY_DEFAULT, D27).
+OFF_BY_DEFAULT = ('review_answers', 'cut_summaries')
+VISUAL_CHUNK = 16  # cuts per visual job: beats of a finished chunk start while the next chunk runs; a failure costs one chunk
 
 
 def _numbers(items):
@@ -682,11 +685,15 @@ def _numbers(items):
 
 
 def autopilot_plan(report, queue_state, triage_items, modes, done, stuck, language=None):
-    """The next move of the autopilot. Like ``plan`` but a gate runs its resolver instead of stopping, gated cuts are held
-    back from the steps that would build on a guess, and stale results are re-run in pipeline order (D7).
+    """The next move of the autopilot. Like ``plan`` but a gate runs its resolver instead of stopping, and every expensive
+    step runs only for cuts whose inputs are settled (the report's ``progress.held``, from ``cut_readiness``; D26):
+    visual analysis waits for settled boxes and target frames, beats also for a current visual analysis and settled speech,
+    the consistency review also for current beats. Missing and stale results go through the same gated step (D7), each
+    cut from its earliest stage. "Your answers" and the Cut summary run only when the profile turns them on (D27).
 
     ``done``: resolvers already run since their inputs last changed; ``stuck``: {step: cut numbers} a step was asked to do
-    but left as they were (they are not asked again in this session). Returns {'action': busy|run|resolve|waiting|done, ...}."""
+    but left as they were (they are not asked again in this session). Returns {'action': busy|run|resolve|waiting|done, ...};
+    ``waiting``/``done`` carry ``held`` ({step: [{cut, reasons}]}) for the hand-off."""
     running = queue_state.get('running') or []
     if running or queue_state.get('waiting_total'):
         labels = [f"{run['label']} ({run['status']})" for run in running][:3]
@@ -695,8 +702,11 @@ def autopilot_plan(report, queue_state, triage_items, modes, done, stuck, langua
     def resolve(name, why):
         return {'action': 'resolve', 'resolver': name, 'detail': f"{RESOLVERS[name][2]}: {why}"}
 
+    def mode(kind):
+        return modes.get(kind, 'off' if kind in OFF_BY_DEFAULT else 'apply')
+
     def wanted(name):
-        return name not in done and modes.get(RESOLVERS[name][1], 'apply') != 'off'
+        return name not in done and mode(RESOLVERS[name][1]) != 'off'
 
     if wanted('triage') and any(item['action'] in FIXABLE for item in triage_items):
         return resolve('triage', f"{sum(item['action'] in FIXABLE for item in triage_items)} failed run(s) have a fix rule")
@@ -712,6 +722,14 @@ def autopilot_plan(report, queue_state, triage_items, modes, done, stuck, langua
             return {'action': 'waiting', 'gate': 'language', 'detail': f"setup needs the subtitle language ({', '.join(missing)} missing): add --language"}
         else:
             return {'action': 'run', 'step': 'setup', 'language': language, 'detail': f"missing: {', '.join(missing)}"}
+
+    def run(step, numbers, detail=None):
+        numbers = sorted(set(numbers) - set(stuck.get(step, ())))
+        return {'action': 'run', 'step': step, 'cuts': numbers, 'detail': detail or f'cuts {numbers_text(numbers)}'} if numbers else None
+
+    # boxes for cuts without a detection of their current boundaries (the pieces of a split cut, cuts setup skipped)
+    if decision := run('characters', progress.get('boxes_missing') or [], f"first-frame boxes: cuts {numbers_text(progress.get('boxes_missing') or [])}"):
+        return decision
     if setup.get('transcript') and wanted('line_splits'):
         return resolve('line_splits', 'after transcription, before speakers')
     stale = checks.get('speaker_attribution_stale')
@@ -722,36 +740,49 @@ def autopilot_plan(report, queue_state, triage_items, modes, done, stuck, langua
     if (gates['first_frame'] or gates['target_frames'] or checks.get('auto_labels')) and wanted('cast'):
         return resolve('cast', 'unnamed boxes, unconfirmed labels or flagged target frames')
 
-    def run(step, numbers, detail=None):
-        numbers = sorted(set(numbers) - set(stuck.get(step, ())))
-        return {'action': 'run', 'step': step, 'cuts': numbers, 'detail': detail or f'cuts {numbers_text(numbers)}'} if numbers else None
-
-    held_boxes = _numbers(gates['first_frame'])
-    held = held_boxes | _numbers(gates['target_frames'])
-    for step, numbers, hold in (('target-frames', progress['target_missing'], held_boxes), ('visual', progress['visual_missing'], held),
-                                ('beats', progress['beats_missing'], held), ('consistency', progress['consistency_missing'], held)):
-        if decision := run(step, set(numbers) - hold):
-            return decision
-    if gates['decisions'] and wanted('review_decisions'):
-        return resolve('review_decisions', f"{len(gates['decisions'])} cut(s) with review questions")
-    held_answers = held | _numbers(gates['decisions'])
-    if decision := run('summary', set(progress['summary_missing']) - held_answers):
+    held_report = progress.get('held')
+    held = {step: _numbers((held_report or {}).get(step) or []) for step in ('target_frames', 'visual', 'beats', 'consistency')}
+    if held_report is None:  # a server without cut_readiness: hold only behind the open checkpoints, as before
+        held['target_frames'] = _numbers(gates['first_frame'])
+        held['visual'] = held['beats'] = held['consistency'] = held['target_frames'] | _numbers(gates['target_frames'])
+    held['beats'] |= held['visual']
+    held['consistency'] |= held['beats']
+    if decision := run('target-frames', set(progress['target_missing']) - held['target_frames']):
         return decision
-    if modes.get('stale_reruns', 'apply') != 'off':
-        earliest = {}
+
+    # what each gated stage still has to make: missing results plus stale ones, each cut from its earliest stale stage
+    earliest = {}
+    if mode('stale_reruns') != 'off':
         for item in checks.get('stale_results') or []:
             for rank, (stage, titles) in enumerate(STALE_STAGES):
                 if item['title'] in titles:
                     earliest[item['cut']] = min(rank, earliest.get(item['cut'], rank))
-        for rank, (stage, _) in enumerate(STALE_STAGES):
-            hold = held_answers if stage == 'summary' else held
-            numbers = [cut for cut, first in earliest.items() if first == rank and cut not in hold]
-            if decision := run(f'stale:{stage}', numbers, f"stale {stage}: cuts {numbers_text(sorted(numbers))}"):
-                return decision
+    stale_at = {stage: {cut for cut, rank in earliest.items() if rank == index} for index, (stage, _) in enumerate(STALE_STAGES)}
+    needs = {'visual': set(progress['visual_missing']) | stale_at['visual'],
+             'beats': set(progress['beats_missing']) | stale_at['beats'],
+             'consistency': set(progress['consistency_missing']) | stale_at['consistency']}
+    needs['beats'] -= needs['visual']
+    needs['consistency'] -= needs['visual'] | needs['beats']
+    for step in ('visual', 'beats', 'consistency'):
+        if decision := run(step, needs[step] - held[step]):
+            return decision
+    if gates['decisions'] and wanted('review_decisions'):
+        return resolve('review_decisions', f"{len(gates['decisions'])} cut(s) with review questions")
+    if mode('cut_summaries') == 'apply':
+        held_answers = held['consistency'] | _numbers(gates['decisions'])
+        summaries = (set(progress['summary_missing']) | stale_at['summary']) - needs['visual'] - needs['beats'] - needs['consistency']
+        if decision := run('summary', summaries - held_answers):
+            return decision
     waiting = {name: len(gates[name]) for name in ('first_frame', 'target_frames', 'voices', 'decisions') if gates[name]}
-    if waiting:
-        return {'action': 'waiting', 'gate': 'person', 'detail': 'left for the inbox: ' + ', '.join(f"{name.replace('_', ' ')} {count}" for name, count in waiting.items())}
-    return {'action': 'done', 'detail': 'nothing left up to the Cut summary'}
+    # the cuts a step still needs but may not run yet: the person's list for the hand-off
+    blocked = {step: sorted(needs[step] & held[step]) for step in ('visual', 'beats', 'consistency') if needs[step] & held[step]}
+    reasons = {step: [item for item in (held_report or {}).get(step) or [] if item['cut'] in set(cuts)] for step, cuts in blocked.items()}
+    if waiting or blocked:
+        parts = [f"{name.replace('_', ' ')} {count}" for name, count in waiting.items()]
+        parts += [f"{step} held for {len(cuts)} cut(s)" for step, cuts in blocked.items()]
+        return {'action': 'waiting', 'gate': 'person', 'detail': 'left for the person: ' + ', '.join(parts), 'held': reasons}
+    return {'action': 'done', 'detail': 'nothing left up to the consistency review' if mode('cut_summaries') != 'apply'
+            else 'nothing left up to the Cut summary', 'held': {}}
 
 
 def autopilot_execute(api, episode, decision, run_id, language=None):
@@ -766,23 +797,28 @@ def autopilot_execute(api, episode, decision, run_id, language=None):
         return job_ids(api.post(f"/api/episodes/{episode['id']}/prepare", body={'language': decision['language']}))
     if step == 'speakers':
         return job_ids(api.post(f"/api/episodes/{episode['id']}/speaker-attribution"))
+    if step == 'visual':
+        # one job per chunk of contiguous cuts; only the stages that are missing or stale run (only_missing), and saving a
+        # cut's keyframes queues its beats only when the cut is ready (beats=when_ready), so beats overlap later chunks
+        ids = []
+        for first, last in runs_of(numbers):
+            for start in range(first, last + 1, VISUAL_CHUNK):
+                params = {'from_cut': start, 'to_cut': min(last, start + VISUAL_CHUNK - 1), 'only_missing': True, 'beats': 'when_ready'}
+                ids += job_ids(api.post(f"/api/episodes/{episode['id']}/visual-analysis", params))
+        return ids
     by_number = cut_numbers(api, episode)
     ids = []
-    if step.startswith('stale:') or step == 'beats':
-        stage = step.split(':', 1)[-1]
+    if step in ('beats', 'consistency', 'summary'):
         for number in numbers:
             cut = by_number.get(number)
             if not cut:
                 continue
             try:
-                if stage == 'visual':
-                    for visual in ('initial_frame', 'keyframe_analysis'):
-                        ids += job_ids(api.post(f"/api/cuts/{cut['id']}/analysis-stages/run", body={'stage': visual}))
-                elif stage == 'beats':
+                if step == 'beats':
                     ids += job_ids(api.post(f"/api/cuts/{cut['id']}/performance-beats"))
-                elif stage == 'consistency':
+                elif step == 'consistency':
                     ids += job_ids(api.post(f"/api/cuts/{cut['id']}/consistency-summary"))
-                elif stage == 'summary':
+                else:
                     ids += job_ids(api.post(f"/api/cuts/{cut['id']}/regenerate-summary", body={'mode': 'regenerate'}))
             except Failure as exc:
                 print(f"  cut {number}: {exc}", flush=True)
@@ -818,13 +854,18 @@ def cmd_autopilot(api, args):
     if not args.go:
         decision = autopilot_plan(review(api, episode['id']), queue(api, episode['id']),
                                   api.get(f"/api/episodes/{episode['id']}/triage").get('items') or [], profile_modes(api, episode), set(), {}, args.language)
-        emit(args, decision, autopilot_line(decision) + '\n(add --go to run it; --once runs one step)')
+        held = handoff_lines(api, episode, decision.get('held') or {}) if decision['action'] in ('waiting', 'done') else []
+        emit(args, decision, autopilot_line(decision) + ('\n' + '\n'.join(held) if held else '') + '\n(add --go to run it; --once runs one step)')
         return {'busy': BUSY, 'waiting': BLOCKED}.get(decision['action'], OK)
     run_id = args.run or api.post(f"/api/episodes/{episode['id']}/agent-runs", body={'agent': args.agent, 'purpose': 'autopilot'}).get('id')
     print(f"autopilot on {episode['project']} / {episode['title']} ({episode['id']}), agent run {run_id}", flush=True)
     done, stuck, tries, counts = set(), {}, {}, {}
     modes = profile_modes(api, episode)
     started = time.time()
+    phase = autopilot_phase(api, episode, run_id)
+    print(f"phase {phase}: " + ('analysis; it stops with the cuts it held back for you' if phase == 1 else
+                                'fixes made since the last run: stale and missing steps, through the same gates'), flush=True)
+    decision, claude_seen = {}, None
     while True:
         report, state = review(api, episode['id']), queue(api, episode['id'])
         triage_items = api.get(f"/api/episodes/{episode['id']}/triage", {'run_id': run_id}).get('items') or []
@@ -834,7 +875,12 @@ def cmd_autopilot(api, args):
                 print(autopilot_line(decision))
                 return BUSY
             print(time.strftime('%H:%M:%S'), autopilot_line(decision), flush=True)
-            wait_queue(api, episode['id'], args.timeout or 0, quiet=True)
+            # wait in slices so new second-reviewer items are announced while the GPU works (the skill answers them meanwhile)
+            while not wait_queue(api, episode['id'], CLAUDE_POLL_SECONDS, quiet=True):
+                claude_seen = announce_claude(api, episode, claude_seen)
+                if args.timeout and time.time() - started > args.timeout:
+                    break
+            claude_seen = announce_claude(api, episode, claude_seen)
             if args.timeout and time.time() - started > args.timeout:
                 print('stopped: timeout')
                 break
@@ -865,10 +911,69 @@ def cmd_autopilot(api, args):
         if args.once:
             return OK
     claude = api.get(f"/api/episodes/{episode['id']}/escalations", {'reviewer': 'claude'})['items']
-    api.post(f'/api/agent-runs/{run_id}/finish', body={'summary': {'steps': counts, 'stuck': {key: sorted(value) for key, value in stuck.items()},
-                                                                   'seconds': round(time.time() - started), 'for_claude': len(claude)}})
+    held = decision.get('held') or {}
+    api.post(f'/api/agent-runs/{run_id}/finish', body={'summary': {
+        'steps': counts, 'stuck': {key: sorted(value) for key, value in stuck.items()}, 'seconds': round(time.time() - started),
+        'for_claude': len(claude), 'phase': phase,
+        'held': {step: [{'cut': item['cut'], 'reasons': item.get('reasons') or []} for item in items] for step, items in held.items()}}})
     print()
+    if held:
+        print('\n'.join(handoff_lines(api, episode, held)))
+        print()
     return cmd_digest(api, argparse.Namespace(**{**vars(args), 'run': run_id, 'episode': episode['id'], 'latest': False}))
+
+
+CLAUDE_POLL_SECONDS = 120
+
+
+def autopilot_phase(api, episode, run_id):
+    """1 for the first autopilot run of the episode, then 2, 3 …: phase 1 analyses, the next ones re-run what the person's fixes made stale."""
+    try:
+        runs = api.get(f"/api/episodes/{episode['id']}/agent-runs") or []
+    except Failure:
+        return 1
+    return 1 + sum(1 for item in runs if item.get('purpose') == 'autopilot' and item.get('status') == 'finished' and item.get('id') != run_id)
+
+
+def announce_claude(api, episode, seen):
+    """Print a line when the number of open second-reviewer items changes; returns the new count."""
+    try:
+        count = len(api.get(f"/api/episodes/{episode['id']}/escalations", {'reviewer': 'claude'}).get('items') or [])
+    except Failure:
+        return seen
+    if count != seen and (count or seen):
+        print(time.strftime('%H:%M:%S'), f"for Claude: {count} open item(s) (fw inbox EP --reviewer claude)", flush=True)
+    return count
+
+
+# where a held cut's reason is fixed (cutRoute places)
+HELD_PLACES = (('target frame', 'target-frames'), ('unnamed person', 'target-frames'), ('box', 'characters'), ('first-frame boxes', 'characters'))
+
+
+def held_place(reasons):
+    for reason in reasons:
+        for prefix, place in HELD_PLACES:
+            if reason.startswith(prefix) or prefix in reason:
+                return place
+    return 'analysis'
+
+
+def handoff_lines(api, episode, held):
+    """The cuts the autopilot held back and why, one link each: fix these, then run the autopilot again (phase 2)."""
+    items = {}
+    for step in ('visual', 'beats', 'consistency'):
+        for item in held.get(step) or []:
+            items.setdefault(item['cut'], (step, item.get('reasons') or []))
+    if not items:
+        return []
+    lines = [f"HELD FOR YOU ({len(items)} cut(s)): fix these, then run `fw autopilot EP --go` again (phase 2)"]
+    for number in sorted(items)[:LINK_LIMIT]:
+        step, reasons = items[number]
+        lines.append(f"  - cut {number} (before {step}): {'; '.join(reasons)}")
+        lines.append(f"    {url_for_number(api, episode, number, held_place(reasons)) or '(cut not found)'}")
+    if len(items) > LINK_LIMIT:
+        lines.append(f"  … {len(items) - LINK_LIMIT} more: fw autopilot EP (without --go) lists the plan; fw review EP lists every gate")
+    return lines
 
 
 def autopilot_line(decision):
@@ -896,7 +1001,11 @@ def cmd_digest(api, args):
         if steps:
             lines.append('steps: ' + ', '.join(f"{key} ×{value}" for key, value in sorted(steps.items())))
         if summary.get('seconds'):
-            lines.append(f"took {summary['seconds'] // 60} min")
+            lines.append(f"took {summary['seconds'] // 60} min" + (f" · phase {summary['phase']}" if summary.get('phase') else ''))
+        held = summary.get('held') or {}
+        held_cuts = sorted({item['cut'] for items in held.values() for item in items})
+        if held_cuts:
+            lines.append(f"HELD BACK ({len(held_cuts)} cut(s), inputs not settled; fix them, then run the autopilot again): cuts {numbers_text(held_cuts)}")
     applied = [item for item in decisions if not item['undone_at']]
     by_kind = {}
     for item in applied:

@@ -7,7 +7,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from app import agent_log, db, job_kinds, media, review_decisions as rd, worker
+from app import agent_log, autopilot_profile, db, job_kinds, media, review_decisions as rd, worker
 from app.main import app
 
 # The fixture of frontend/tests/consistencyView.test.mjs: the Python port must write the same lines.
@@ -103,6 +103,8 @@ class ResolverJobTest(unittest.TestCase):
                 result(conn, f'r-{cut}', cut, {'summary': 's', 'clear': 'c', 'confusing': 'x', 'questions': QUESTIONS},
                        context={'pictures': {'sent': [{'kind': 'first', 'label': 'First frame', 'cut_id': cut, 'at': ['first']}]}})
             conn.execute("INSERT INTO cut_brief_instructions(cut_id,content) VALUES ('c2','- State: Standing')")  # the user answered q2 of c2
+            # off by default since D27; these tests exercise the resolver itself
+            autopilot_profile.save(conn, 'p', {'modes': {'review_answers': 'apply'}})
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -148,7 +150,7 @@ class ResolverJobTest(unittest.TestCase):
         self.assertEqual((again['job_ids'], again['skipped']['decided']), ([], [2]))
 
     def test_a_run_applies_rules_asks_claude_and_the_person_and_keeps_the_users_answers(self):
-        self.client.put('/api/projects/p/autopilot-profile', json={'profile': {
+        self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'review_answers': 'apply'},
             'topics': {'gaze': {'rule': 'Characters look at whoever speaks', 'when_unsure': 'evidence'}, 'state': {'rule': '', 'when_unsure': 'ask'}},
             'claude': {'enabled': True, 'max_items_per_run': 1}}})
         queued = self.client.post('/api/episodes/e/review-decisions', json={}).json()
@@ -193,7 +195,7 @@ class ResolverJobTest(unittest.TestCase):
             self.assertIsNotNone(conn.execute('SELECT overridden_at FROM agent_decisions WHERE id=?', (decision_id,)).fetchone()[0])
 
     def test_claude_unsure_moves_the_question_to_the_person_and_undo_restores_the_answers(self):
-        self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'topics': {'state': {'rule': '', 'when_unsure': 'recommended'}}}})
+        self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'review_answers': 'apply'}, 'topics': {'state': {'rule': '', 'when_unsure': 'recommended'}}}})
         self.client.post('/api/episodes/e/review-decisions', json={'from_cut': 1, 'to_cut': 1})
         self.run_jobs({'c1': {'q1': decision('b'), 'q2': decision(None, 'low')}})  # q2 has no recommendation: unsure → Claude
         with db.connect() as conn:

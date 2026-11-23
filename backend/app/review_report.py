@@ -9,7 +9,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from . import anime_bulk, db, media, runs, sequence_store, subtitle_store
+from . import anime_bulk, cut_readiness, db, media, runs, sequence_store, subtitle_store
 
 router = APIRouter(prefix='/api')
 
@@ -64,21 +64,7 @@ def _setup(conn, episode):
             'boxes': not anime_bulk.eligible_cuts(conn, episode['id'], 'full')}
 
 
-def _target_review(conn, cut):
-    """Flagged frames and unnamed people on the cut's current Target frames run (the TargetFrames tab's Needs review)."""
-    run = conn.execute('''SELECT id,frames_json FROM target_detection_runs WHERE cut_id=? AND cut_start=? AND cut_end=?
-                          ORDER BY rowid DESC LIMIT 1''', (cut['id'], cut['start_time'], cut['end_time'])).fetchone()
-    if not run:
-        return None
-    frames = []
-    for frame in _loads(run['frames_json'], []):
-        review = frame.get('review') if isinstance(frame, dict) else None
-        # frontend/src/targetView.ts frameNeedsReview
-        if isinstance(review, dict) and not review.get('reviewed') and review.get('flags'):
-            frames.append({'ordinal': frame.get('ordinal'), 'flags': sorted(review['flags'])})
-    unnamed = conn.execute('''SELECT COUNT(DISTINCT s.slot) FROM target_slots s JOIN target_detections t ON t.run_id=s.run_id AND t.slot=s.slot
-                              WHERE s.run_id=? AND s.ignored=0 AND s.character_context_id IS NULL''', (run['id'],)).fetchone()[0]
-    return {'frames': frames, 'unnamed_people': unnamed} if frames or unnamed else None
+_target_review = cut_readiness.target_review
 
 
 def _consistency(conn, cut_id):
@@ -137,6 +123,7 @@ def report(conn, episode_id, from_cut=None, to_cut=None):
     if to_cut is not None and to_cut < (from_cut or 1):
         raise HTTPException(422, 'to_cut must not be before from_cut')
     episode = dict(episode)
+    readiness_episode = cut_readiness.episode_speech(episode)
     first, last = max(0, (from_cut or 1) - 1), (to_cut - 1 if to_cut is not None else None)
     cuts = [dict(row) for row in conn.execute(f"""SELECT c.id,c.cut_index,c.start_time,c.end_time,c.analysis_enabled,c.no_characters,
         {CUT_FLAGS},
@@ -201,6 +188,14 @@ def report(conn, episode_id, from_cut=None, to_cut=None):
         for row in conn.execute("""SELECT title,stale_reason FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL
             AND stale_reason IS NOT NULL ORDER BY rowid""", (cut['id'],)):
             checks['stale_results'].append({'cut': number, 'cut_id': cut['id'], 'title': row['title'], 'reason': row['stale_reason']})
+    # Cuts whose inputs are not settled enough for a step (cut_readiness, D26): the autopilot never queues the step for them.
+    progress['held'] = {'target_frames': [], 'visual': [], 'beats': [], 'consistency': []}
+    enabled = [cut for cut in cuts if cut['analysis_enabled']]
+    for cut in enabled:
+        ready = cut_readiness.for_cut(conn, episode, cut, readiness_episode)
+        for step, reasons in ready['held'].items():
+            if reasons:
+                progress['held'][step].append({'cut': cut['cut_index'] + 1, 'cut_id': cut['id'], 'reasons': reasons})
     ranged = from_cut is not None or to_cut is not None
     start, end = (cuts[0]['start_time'], cuts[-1]['end_time']) if ranged and cuts else (None, None)
     if not ranged or cuts:

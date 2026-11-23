@@ -42,6 +42,7 @@ class ClassifyTest(unittest.TestCase):
             ('analyze', '1 of 1 cuts failed. cut 326: [vost#0:0/libx264 @ 0x57] Error submitting a packet to the muxer'): 'media_error',
             ('sequence', 'Local model returned an invalid analysis after 3 attempts: beat 3 ends at 3 s'): 'out_of_scope',
             ('subtitles', 'something nobody has seen'): 'unknown',
+            ('subtitles', '2 of 441 subtitle images could not be read (Subtitle reading failed: The subtitle answer did not follow the required shape). The others were saved'): 'subtitle_partial',
         }
         for (pipeline, error), cause in cases.items():
             self.assertEqual(diagnose.classify(pipeline, error)[0], cause, error)

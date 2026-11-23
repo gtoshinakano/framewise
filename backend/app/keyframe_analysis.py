@@ -361,6 +361,22 @@ def _load_run(run_id):
     return run, frames, pairs, windows
 
 
+def beats_wanted(conn, cut_run):
+    """Whether saving this cut's keyframes queues its first beats: the job's ``beats`` choice (``always`` by default, the
+    editor's flow; ``when_ready`` from the autopilot, only when ``cut_readiness`` says the cut's inputs are settled; ``off``)."""
+    try:
+        choice = json.loads(cut_run.job['payload_json'] or '{}').get('beats', 'always')
+    except (KeyError, IndexError, TypeError, ValueError):
+        choice = 'always'
+    if choice == 'off':
+        return False
+    if choice == 'when_ready':
+        from . import cut_readiness
+        ready = cut_readiness.cut(conn, cut_run.cut_id)
+        return bool(ready and ready['may_beats'])
+    return True
+
+
 def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None):
     """Run the keyframe analysis of one cut inside the job's ``keyframe_analysis`` stage and save its result.
 
@@ -521,7 +537,8 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
             conn.execute("UPDATE keyframe_analysis_runs SET phase='complete',result_id=?,timings_json=?,finished_at=CURRENT_TIMESTAMP WHERE id=?",
                          (result_id, json.dumps(timings), run_id))
             if not conn.execute("""SELECT 1 FROM analysis_results WHERE cut_id=? AND superseded_by IS NULL
-                AND json_extract(settings_json,'$.structured_type')='performance_beats'""", (cut_run.cut_id,)).fetchone():
+                AND json_extract(settings_json,'$.structured_type')='performance_beats'""", (cut_run.cut_id,)).fetchone() \
+                    and beats_wanted(conn, cut_run):
                 performance_beats.ensure_queued(conn, cut_run.episode['id'], cut_run.cut_id, cut_run.config)
 
         cut_run.save('keyframe_analysis', content, model.model_id, keyframe_prompts.SYSTEM, extra, after=finish)

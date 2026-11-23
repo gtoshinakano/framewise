@@ -104,13 +104,20 @@ def decisions(conn, *, episode_id=None, run_id=None, kind=None, cut_id=None, lim
     return [decision_view(row) for row in rows]
 
 
-def note_override(conn, target_table, target_id):
+def note_override(conn, target_table, target_id, now=None):
     """A person changed a target the agent had decided. Call it from user edit paths; it feeds the thresholds.
 
-    A decision that made new rows (the pieces of a split) names them in its ``after``; editing any of them counts too."""
-    conn.execute("""UPDATE agent_decisions SET overridden_at=CURRENT_TIMESTAMP
+    A decision that made new rows (the pieces of a split) names them in its ``after``; editing any of them counts too.
+    ``now``: the values the person saved; a decision whose ``after`` already holds them was confirmed, not overridden
+    (re-confirming the agent's label is not a correction)."""
+    rows = conn.execute("""SELECT id,after_json FROM agent_decisions
         WHERE target_table=? AND undone_at IS NULL AND overridden_at IS NULL AND (target_id=? OR instr(after_json, ?) > 0)""",
-                 (target_table, str(target_id), json.dumps(str(target_id))))
+                        (target_table, str(target_id), json.dumps(str(target_id)))).fetchall()
+    for row in rows:
+        after = _load(row['after_json'], {})
+        if now and isinstance(after, dict) and all(key in after and after[key] == value for key, value in now.items()):
+            continue
+        conn.execute('UPDATE agent_decisions SET overridden_at=CURRENT_TIMESTAMP WHERE id=?', (row['id'],))
 
 
 # --- undo --------------------------------------------------------------------------------------------------------------

@@ -837,6 +837,16 @@ def init_db():
                 db.execute(f'ALTER TABLE composition_compactions ADD COLUMN {column} {definition}')
         from . import episode_events
         episode_events.init_schema(db)
+        # 2026-11-23 (D27): "Your answers" and the Cut summary are off in the autopilot profile unless the user turns them on;
+        # the stored profiles held the old defaults, so switch both off once.
+        if not db.execute("SELECT 1 FROM app_flags WHERE name='autopilot-answers-summaries-off'").fetchone():
+            from . import autopilot_profile
+            autopilot_profile.answers_and_summaries_off(db)
+            # note_override used to mark a person re-confirming the agent's own label as an override; clear those once.
+            db.execute("""UPDATE agent_decisions SET overridden_at=NULL WHERE overridden_at IS NOT NULL AND target_table='character_detections'
+                AND json_valid(after_json) AND json_extract(after_json,'$.character_context_id') IS NOT NULL
+                AND json_extract(after_json,'$.character_context_id')=(SELECT d.character_context_id FROM character_detections d WHERE d.id=target_id)""")
+            db.execute("INSERT INTO app_flags(name) VALUES ('autopilot-answers-summaries-off')")
         db.commit()
 
 

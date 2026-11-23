@@ -5,6 +5,7 @@ import unittest
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
+from app import frame_model
 from app.frame_model import describe_frame
 
 PEOPLE = [{'ref': 'B1', 'detection_id': 'd1', 'character_context_id': 'hero', 'name': 'Hero', 'box': [10, 20, 300, 900]}]
@@ -87,9 +88,11 @@ class FrameAdapterTest(unittest.TestCase):
             image = Path(folder) / 'frame.jpg'
             image.write_bytes(b'image')
             cut = json.dumps({'choices': [{'finish_reason': 'length', 'message': {'content': '{'}}]}).encode()
-            with patch('urllib.request.urlopen', return_value=io.BytesIO(cut)):
+            with patch('urllib.request.urlopen', side_effect=lambda *args, **kwargs: io.BytesIO(cut)) as request:
                 with self.assertRaisesRegex(RuntimeError, 'truncated'):
                     describe_frame('http://localhost:1', image)
+            budgets = [json.loads(call.args[0].data)['max_tokens'] for call in request.call_args_list]
+            self.assertEqual(budgets, [frame_model.FRAME_MAX_TOKENS, frame_model.FRAME_RETRY_TOKENS])   # one retry with more room
 
     def test_reference_comparison_sends_target_and_labeled_reference_images(self):
         from app.frame_model import match_character

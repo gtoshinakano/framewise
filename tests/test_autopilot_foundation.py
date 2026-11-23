@@ -142,7 +142,8 @@ class AutopilotFoundationTest(unittest.TestCase):
     def test_the_profile_starts_from_the_harness_defaults(self):
         response = self.client.get('/api/projects/p/autopilot-profile').json()
         profile = response['profile']
-        self.assertEqual(set(profile['modes'].values()), {'apply'})
+        self.assertEqual({key for key, mode in profile['modes'].items() if mode != 'apply'}, set(autopilot_profile.OFF_BY_DEFAULT))
+        self.assertEqual({profile['modes'][key] for key in autopilot_profile.OFF_BY_DEFAULT}, {'off'})
         self.assertEqual(profile['claude'], {'enabled': True, 'max_items_per_run': autopilot_profile.DEFAULT_CLAUDE_ITEMS})
         self.assertEqual(set(profile['topics']), set(autopilot_profile.TOPICS))
         self.assertIsNone(response['updated_at'])

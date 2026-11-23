@@ -355,6 +355,22 @@ class SubtitleJobTest(unittest.TestCase):
         self.assertEqual(seen[0][0], [3])                       # only the image that failed
         self.assertEqual(self.client.get('/api/episodes/e/subtitles').json()['run']['line_count'], 2)
 
+    def test_a_triage_retry_accepts_a_run_with_a_handful_of_unreadable_images(self):
+        from app import main, subtitle_pipeline
+        self.prepare()
+        failing = {**SCRIPT, 3: (lambda event: ('error', 'bad shape'), '')}
+        first = self.queue()
+        self.run_job(reader=self.read_script(failing))
+        self.assertEqual(self.job(first)['status'], 'failed')
+        with db.connect() as conn:   # what triage.requeue queues for the 'subtitle_partial' cause
+            retry = main.queue_subtitles(conn, 'e', 'Portuguese', accept_unread=True)
+        self.run_job(reader=self.read_script(failing))
+        self.assertEqual(self.job(retry)['status'], 'done')      # 1 of 4 is within max(2, 1%)
+        run = self.client.get('/api/episodes/e/subtitles').json()['run']
+        self.assertEqual(run['line_count'], 1)                   # the unread image's line is missing, the rest is kept
+        self.assertEqual(len(json.loads(db.one('SELECT diagnostics_json FROM subtitle_runs WHERE id=?', (run['id'],))['diagnostics_json'])['unread']), 1)
+        self.assertEqual(subtitle_pipeline.unread_allowed(441), 4)
+
     def test_a_different_scan_discards_readings_made_for_other_events(self):
         self.prepare()
         self.queue()

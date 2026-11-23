@@ -2,7 +2,7 @@
 import unittest
 
 from app import agent_log, db
-import test_review_report as fixture
+from tests import test_review_report as fixture
 
 
 class CutNeedsTest(unittest.TestCase):

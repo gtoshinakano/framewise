@@ -16,6 +16,9 @@ from pathlib import Path
 from .visual_contracts import FRAME_INSTRUCTION, frame_schema, person_context, resolve_frame, series_note, subtitle_note
 
 FRAME_MAX_TOKENS = 3072  # detailed outfits make answers longer; the cap only stops a runaway
+# A crowded frame can need more: one retry with this budget before the cut fails (Episode 3 lost cuts 248 and 262 to
+# "Response was truncated"). It stays inside one 8192-token slot together with the picture and the prompt.
+FRAME_RETRY_TOKENS = 5120
 
 
 @contextmanager
@@ -129,12 +132,16 @@ def describe_frame(server_url, image_path, subtitle_regions=None, character_cont
         def ask(body):
             request = urllib.request.Request(server_url + '/v1/chat/completions', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'}, method='POST')
             return request_json(request, cancel_check, timeout=600)
-        try:
-            payload = ask(_chat_body(messages, schema, FRAME_MAX_TOKENS, thinking))
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (400, 422, 500):
-                raise
-            payload = ask(_chat_body(messages, None, FRAME_MAX_TOKENS, thinking))  # a server that cannot build the grammar still answers in plain JSON
+        def answer(budget):
+            try:
+                return ask(_chat_body(messages, schema, budget, thinking))
+            except urllib.error.HTTPError as exc:
+                if exc.code not in (400, 422, 500):
+                    raise
+                return ask(_chat_body(messages, None, budget, thinking))  # a server that cannot build the grammar still answers in plain JSON
+        payload = answer(FRAME_MAX_TOKENS)
+        if payload['choices'][0].get('finish_reason') == 'length':
+            payload = answer(FRAME_RETRY_TOKENS)
         if usage_out is not None and isinstance(payload.get('usage'), dict):
             for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
                 if isinstance(payload['usage'].get(key), int):

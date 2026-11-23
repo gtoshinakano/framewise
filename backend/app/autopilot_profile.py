@@ -28,9 +28,13 @@ DECISIONS = {
     'voices': 'Assign unknown voices to characters',
     'box_names': 'Box and name the characters that matter',
     'target_frames': 'Settle flagged target frames',
-    'review_answers': 'Answer the consistency review questions',
-    'stale_reruns': 'Re-run stale results up to the Cut summary',
+    'review_answers': 'Answer the consistency review questions ("Your answers")',
+    'cut_summaries': 'Write the Cut summary once the answers are saved',
+    'stale_reruns': 'Re-run stale results (visual analysis, beats, consistency; the Cut summary only when it is on)',
 }
+# Off unless the user turns them on (D27): both build on the consistency review, which the person's fixes after the
+# analysis phase usually make stale, so running them during that phase wastes GPU time. For these two, ``ask`` acts as off.
+OFF_BY_DEFAULT = ('review_answers', 'cut_summaries')
 TOPICS = consistency_summary.TOPICS
 WHEN_UNSURE = ('evidence', 'recommended', 'ask')
 RELEVANCE = ('auto', 'always', 'background')
@@ -43,7 +47,7 @@ DEFAULT_CLAUDE_ITEMS = 40
 def defaults():
     return {
         'version': VERSION,
-        'modes': {key: 'apply' for key in DECISIONS},
+        'modes': {key: 'off' if key in OFF_BY_DEFAULT else 'apply' for key in DECISIONS},
         'claude': {'enabled': True, 'max_items_per_run': DEFAULT_CLAUDE_ITEMS},
         'topics': {topic: {'rule': '', 'when_unsure': 'evidence'} for topic in TOPICS},
         'characters': {},
@@ -156,6 +160,20 @@ def save(conn, project_id, raw):
         ON CONFLICT(project_id) DO UPDATE SET profile_json=excluded.profile_json,updated_at=CURRENT_TIMESTAMP""",
                  (project_id, json.dumps(profile, ensure_ascii=False, sort_keys=True)))
     return profile
+
+
+def answers_and_summaries_off(conn):
+    """One-time change (D27): stored profiles held the old defaults saved from the dialog, which had review answers on."""
+    for row in conn.execute('SELECT project_id,profile_json FROM autopilot_profiles').fetchall():
+        try:
+            profile = json.loads(row['profile_json'] or '{}')
+        except (TypeError, ValueError):
+            continue
+        modes = profile.setdefault('modes', {})
+        for key in OFF_BY_DEFAULT:
+            modes[key] = 'off'
+        conn.execute('UPDATE autopilot_profiles SET profile_json=?,updated_at=CURRENT_TIMESTAMP WHERE project_id=?',
+                     (json.dumps(profile, ensure_ascii=False, sort_keys=True), row['project_id']))
 
 
 def _answered(answers, question):

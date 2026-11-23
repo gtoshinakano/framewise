@@ -3,7 +3,11 @@ import contextlib
 import io
 import unittest
 
-from tests.test_fw_cli import EPISODE, IDLE, FakeApi, fw, report
+from tests.test_fw_cli import CUTS, EPISODE, IDLE, FakeApi, fw, report
+
+
+def fw_cuts():
+    return CUTS
 
 
 class AutopilotApi(FakeApi):
@@ -258,21 +262,70 @@ class AutopilotPlanTest(unittest.TestCase):
 
     def test_review_questions_run_the_decider_and_hold_only_their_summaries(self):
         rep = report(gates__decisions=[{'cut': 3, 'questions': 2, 'draft': False}], progress__summary_missing=[1, 4])
-        self.assertEqual(self.plan(rep, done=self.ALL - {'review_decisions'})['resolver'], 'review_decisions')
-        decision = self.plan(rep, done=self.ALL)
+        on = {'review_answers': 'apply', 'cut_summaries': 'apply'}
+        self.assertEqual(self.plan(rep, done=self.ALL - {'review_decisions'}, modes=on)['resolver'], 'review_decisions')
+        decision = self.plan(rep, done=self.ALL, modes=on)
         self.assertEqual((decision['step'], decision['cuts']), ('summary', [1, 4]))
+
+    def test_answers_and_summaries_are_off_unless_the_profile_turns_them_on(self):
+        rep = report(gates__decisions=[{'cut': 3, 'questions': 2, 'draft': False}], progress__summary_missing=[1, 4])
+        decision = self.plan(rep, done=self.ALL - {'review_decisions'})
+        self.assertEqual(decision['action'], 'waiting')   # the questions stay the person's; no decider, no summaries
+        self.assertIn('decisions 1', decision['detail'])
+        self.assertEqual(self.plan(report(progress__summary_missing=[1]), done=self.ALL)['action'], 'done')
 
     def test_stale_sweep_goes_from_each_cuts_earliest_stage(self):
         stale = [{'cut': 1, 'title': 'Cut summary'}, {'cut': 1, 'title': 'Consistency summary'}, {'cut': 2, 'title': 'Performance beats'},
                  {'cut': 3, 'title': 'Cut summary'}, {'cut': 4, 'title': 'Subtitle OCR'}]
         rep = report(checks={'speaker_attribution_stale': None, 'stale_results': stale}, gates__decisions=[{'cut': 3, 'questions': 1, 'draft': True}])
         first = self.plan(rep, done=self.ALL)
-        self.assertEqual((first['step'], first['cuts']), ('stale:beats', [2]))
-        second = self.plan(rep, done=self.ALL, stuck={'stale:beats': {2}})
-        self.assertEqual((second['step'], second['cuts']), ('stale:consistency', [1]))
-        third = self.plan(rep, done=self.ALL, stuck={'stale:beats': {2}, 'stale:consistency': {1}})
+        self.assertEqual((first['step'], first['cuts']), ('beats', [2]))
+        second = self.plan(rep, done=self.ALL, stuck={'beats': {2}})
+        self.assertEqual((second['step'], second['cuts']), ('consistency', [1]))
+        third = self.plan(rep, done=self.ALL, stuck={'beats': {2}, 'consistency': {1}})
         self.assertEqual(third['action'], 'waiting')   # cut 3's summary waits for its answers; cut 4's OCR is left alone
         self.assertEqual(self.plan(rep, done=self.ALL, modes={'stale_reruns': 'off'})['action'], 'waiting')
+
+    def test_steps_run_only_for_cuts_whose_inputs_are_settled(self):
+        held = {'target_frames': [{'cut': 6, 'reasons': ['box 1 has no character']}],
+                'visual': [{'cut': 5, 'reasons': ['target frame F2 flagged (low_match)']}, {'cut': 6, 'reasons': ['box 1 has no character']}],
+                'beats': [{'cut': 4, 'reasons': ['line at 0:12.0 has no speaker']}], 'consistency': [{'cut': 7, 'reasons': ['performance beats missing']}]}
+        stale = [{'cut': 8, 'title': 'Keyframe analysis'}, {'cut': 8, 'title': 'Performance beats'}, {'cut': 7, 'title': 'Consistency summary'}]
+        rep = report(progress__held=held, progress__target_missing=[6, 9], progress__visual_missing=[1, 5, 6],
+                     progress__beats_missing=[4, 10], checks={'speaker_attribution_stale': None, 'stale_results': stale})
+        steps = []
+        stuck = {}
+        while (decision := self.plan(rep, done=self.ALL, stuck=stuck))['action'] == 'run':
+            steps.append((decision['step'], decision['cuts']))
+            stuck[decision['step']] = set(decision['cuts'])
+        self.assertEqual(steps, [('target-frames', [9]), ('visual', [1, 8]), ('beats', [10])])
+        self.assertEqual(decision['action'], 'waiting')
+        self.assertEqual({step: [item['cut'] for item in items] for step, items in decision['held'].items()},
+                         {'visual': [5, 6], 'beats': [4], 'consistency': [7]})
+        self.assertIn('visual held for 2 cut(s)', decision['detail'])
+
+    def test_cuts_without_boxes_for_their_boundaries_are_boxed_first(self):
+        decision = self.plan(report(progress__boxes_missing=[3, 4], progress__visual_missing=[3, 4]), done=self.ALL)
+        self.assertEqual((decision['step'], decision['cuts']), ('characters', [3, 4]))
+
+    def test_visual_is_queued_in_chunks_that_queue_beats_only_when_ready(self):
+        api = AutopilotApi()
+        api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {'job_ids': ['j']})[1]
+        ids = fw.autopilot_execute(api, EPISODE, {'action': 'run', 'step': 'visual', 'cuts': list(range(1, 41)) + [45]}, 'run1')
+        self.assertEqual(len(ids), 4)
+        spans = [(params['from_cut'], params['to_cut']) for _, params, _ in api.calls]
+        self.assertEqual(spans, [(1, 16), (17, 32), (33, 40), (45, 45)])
+        self.assertTrue(all(params['beats'] == 'when_ready' and params['only_missing'] for _, params, _ in api.calls))
+
+    def test_hand_off_lists_each_held_cut_with_its_reasons_and_place(self):
+        held = {'visual': [{'cut': 5, 'reasons': ['target frame F2 flagged (low_match)']}], 'beats': [{'cut': 4, 'reasons': ['line at 0:12.0 has no speaker']}]}
+        api = AutopilotApi()
+        api.get = lambda path, params=None: {'items': fw_cuts(), 'next_offset': None} if path.endswith('/cuts') else AutopilotApi.get(api, path, params)
+        lines = fw.handoff_lines(api, EPISODE, held)
+        self.assertIn('HELD FOR YOU (2 cut(s))', lines[0])
+        self.assertIn('cut 4 (before beats): line at 0:12.0 has no speaker', lines[1])
+        self.assertTrue(lines[2].strip().endswith('/analysis'))
+        self.assertTrue(lines[4].strip().endswith('/analysis/target-frames'))
 
     def test_runs_of_consecutive_cuts(self):
         self.assertEqual(fw.runs_of([5, 1, 2, 3, 7, 8]), [(1, 3), (5, 5), (7, 8)])

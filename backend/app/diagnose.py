@@ -44,6 +44,7 @@ ERROR_CHARS = 240
 
 # (cause, pattern). The first match wins, so the specific patterns come first.
 RULES = (
+    ('subtitle_partial', r'subtitle images could not be read'),
     ('prerequisite_missing', r'has no keyframe analysis|run Keyframes first'),
     ('prerequisite_stale', r'missing or older than (?:its|the) keyframe analysis'),
     ('gpu_memory', r'out of memory|failed to fit params|miopenStatus|hipError|HIP error|Local model failed to start|free device memory'),
@@ -62,6 +63,7 @@ CAUSES = {
     'context_overflow': 'the request was longer than the model can read',
     'provider': 'the text provider returned nothing usable',
     'stale_previews': 'the cut preview frames were out of date',
+    'subtitle_partial': 'a few subtitle images could not be read (the others were saved)',
     'validator_loop': 'the model answer failed validation on every attempt',
     'legacy_pipeline': 'it belongs to an older workflow',
     'code_error': 'a program error',
@@ -79,6 +81,7 @@ FIXES = {
     'gpu_memory': ('rerun_when_idle', 2, 'run it again once no GPU work is running'),
     'provider': ('requeue', 1, 'queue it again with the current text engine'),
     'stale_previews': ('requeue', 1, 'queue it again with the current workflow, which reads fresh frames'),
+    'subtitle_partial': ('requeue', 1, 'read the missing images once more and accept the run when at most 1% stays unread'),
     'validator_loop': ('rerun', 1, 'run it once more; a second failure goes to a person with the validator\'s message'),
     'legacy_pipeline': ('requeue', 1, 'queue it again with the current workflow'),
     'code_error': ('rerun', 1, 'run it once more (the code may have been fixed since)'),
@@ -89,7 +92,7 @@ FIXES = {
     'out_of_scope': ('leave', 0, 'leave it: sequences are out of the autopilot\'s scope'),
 }
 # Pipelines triage can queue again with the current settings (triage.requeue); the others only through their own retry.
-REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'review_decisions', 'regen', 'missed_cuts', 'line_splits', 'voice_resolver', 'character_decisions')
+REQUEUE = ('analyze', 'performance_beats', 'consistency_summary', 'review_answers', 'review_decisions', 'regen', 'missed_cuts', 'line_splits', 'voice_resolver', 'character_decisions', 'subtitles')
 OUT_OF_SCOPE = ('sequence', 'brief_export')
 
 

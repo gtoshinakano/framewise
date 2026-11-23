@@ -233,6 +233,9 @@ class Run:
         with db.connect() as conn:
             rows = subtitle_store.reading_rows(self.id, conn)
         errors = [row for row in rows if row['outcome'] == 'error']
+        unread = []
+        if errors and self.payload.get('accept_unread') and len(errors) <= unread_allowed(len(events)):
+            unread, errors = [{'time': row['rep_time'], 'detail': (row['detail'] or '')[:200]} for row in errors], []
         if errors:
             raise RuntimeError(f"{len(errors)} of {len(events)} subtitle images could not be read ({errors[0]['detail']}). The others were saved; run the extraction again to read only the missing ones.")
         readings = [{'start_time': row['start_time'], 'end_time': row['end_time'], 'text': row['text'], 'legible': row['legible']} for row in rows if row['outcome'] == 'text']
@@ -240,7 +243,8 @@ class Run:
         rejected = [{'time': row['rep_time'], 'reason': row['detail']} for row in rows if row['outcome'] == 'rejected']
         diagnostics = {**self.scan_diagnostics, 'events': len(events), 'readings': {outcome: sum(1 for row in rows if row['outcome'] == outcome) for outcome in ('text', 'empty', 'rejected')},
                        'lines': len(lines), 'rejected_examples': rejected[:20], 'timings': self.timings,
-                       **({'warning': 'No subtitle text was found. Check the language and the detected strip.'} if not lines else {})}
+                       **({'warning': 'No subtitle text was found. Check the language and the detected strip.'} if not lines else {}),
+                       **({'unread': unread} if unread else {})}
         with self.publish(invalidate=True) as conn:
             conn.execute('DELETE FROM subtitle_lines WHERE run_id=?', (self.id,))
             conn.executemany('INSERT INTO subtitle_lines(id,run_id,episode_id,line_index,start_time,end_time,text,confidence,readings) VALUES (?,?,?,?,?,?,?,?,?)',
@@ -250,6 +254,14 @@ class Run:
                          (f'Complete · {len(lines)} subtitle lines', self.job['id']))
             worker.sync_episode_status(conn, self.episode['id'])
         return len(lines)
+
+
+UNREAD_SHARE = 0.01  # a run queued with accept_unread completes while at most this share (or UNREAD_MIN images) stays unreadable
+UNREAD_MIN = 2
+
+
+def unread_allowed(events):
+    return max(UNREAD_MIN, int(events * UNREAD_SHARE))
 
 
 def validate(episode, original):
