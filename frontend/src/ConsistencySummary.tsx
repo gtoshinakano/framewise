@@ -163,7 +163,7 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
   // "All clear" is only said when the model explicitly found nothing to decide or check, never because a field is missing.
   const quiet = !!view && (view.format === 'questions' ? view.questions.length === 0 : view.sections.human_review.none && view.sections.recommended_checks.none)
   const allClear = !!view && quiet && !view.conflicts
-  return <StepPanel step={1} kind="consistency_summary" title="Review" subtitle="Consistency summary · read first" updated={result?.created_at ? formatAgo(result.created_at) : undefined} tag={status} actions={rerun}>
+  return <StepPanel step={1} kind="consistency_summary" title="Review" subtitle="Consistency summary · read first" updated={result?.created_at ? formatAgo(result.created_at) : undefined} tag={status} actions={rerun} stale={result?.stale_reason}>
     {!loaded ? <div className="space-y-3" aria-busy="true" aria-label="Loading consistency summary"><Skeleton className="h-9" /><Skeleton className="h-28" /><Skeleton className="h-28" /><Skeleton className="h-20" /></div>
       : !result || !view ? <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-10 text-center">
         <ScanSearch size={28} className="text-[#b496ff]" aria-hidden />

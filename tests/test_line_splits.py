@@ -160,6 +160,39 @@ class JobTest(unittest.TestCase):
             self.assertIsNotNone(conn.execute('SELECT overridden_at FROM agent_decisions WHERE id=?', (decision,)).fetchone()[0])
         self.assertEqual(self.client.post(f'/api/agent-decisions/{decision}/undo').status_code, 409)
 
+    def test_the_persons_last_word_is_never_split_again(self):
+        self.run_job()
+        with db.connect() as conn:
+            decision = conn.execute("SELECT id FROM agent_decisions WHERE kind='line_splits' AND summary LIKE 'Split%'").fetchone()[0]
+            conn.execute("UPDATE transcript_segments SET origin='manual_edit' WHERE id='c'")
+        self.assertEqual(self.client.post(f'/api/agent-decisions/{decision}/undo').json(), {'undone': True})
+        self.assertEqual(self.client.get('/api/episodes/e/line-splits').json()['counts'], {'by_person': 1})  # the undone split stays undone
+        result = self.run_job()
+        self.assertEqual((result['split'], result['by_person']), (0, 1))
+        self.assertEqual(self.current()[0][2], 'あの人、どういう人なんだろう。')
+
+    def test_a_leave_answer_is_remembered(self):
+        self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'line_splits': 'ask'}}})
+        self.run_job()
+        items = self.client.get('/api/episodes/e/escalations').json()['items']
+        for item in items:
+            self.assertEqual(self.client.post(f"/api/escalations/{item['id']}/line-split", json={'answer': 'leave'}).status_code, 200)
+        result = self.run_job()
+        self.assertEqual((result['asked'], result['by_person']), (0, 2))
+        self.assertEqual(self.client.get('/api/episodes/e/escalations').json()['items'], [])
+
+    def test_editing_the_line_closes_its_question(self):
+        self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'line_splits': 'ask'}}})
+        self.run_job()
+        with db.connect() as conn:
+            line = conn.execute("SELECT * FROM transcript_segments WHERE id='a'").fetchone()
+        response = self.client.post(f"/api/transcript-segments/{line['id']}/split", json={'at': 1.9, 'left': {'text': 'あの人、'}, 'right': {'text': 'どういう人なんだろう。'}})
+        self.assertEqual(response.status_code, 200, response.text)
+        with db.connect() as conn:
+            statuses = dict(conn.execute("SELECT group_key,status FROM agent_escalations WHERE kind='line_split'").fetchall())
+        self.assertEqual(statuses['line:a'], 'resolved')
+        self.assertEqual(statuses['line:b'], 'open')
+
     def test_sequences_ask_and_off(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO sequences(id,episode_id,title,first_cut_id,last_cut_id,cuts_json,start_time,end_time) VALUES ('s','e','S','c1','c2','[]',0,4.2)")

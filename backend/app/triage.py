@@ -206,6 +206,11 @@ def close_settled(conn, episode_id, failing):
     return closed
 
 
+def settle(conn, episode_id):
+    """``close_settled`` with the runs failing now (after a retry or dismiss in the queue drawer or the cut dialog)."""
+    return close_settled(conn, episode_id, {row['id'] for row in runs.attention_rows(conn, episode_id)})
+
+
 def mode_for(conn, episode_id, run_id=None):
     """The profile's mode for failed-run fixes: the run's snapshot when there is a run, else the project's profile."""
     if run_id:

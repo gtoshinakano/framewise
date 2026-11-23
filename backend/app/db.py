@@ -849,6 +849,12 @@ def init_db():
                 AND json_valid(after_json) AND json_extract(after_json,'$.character_context_id') IS NOT NULL
                 AND json_extract(after_json,'$.character_context_id')=(SELECT d.character_context_id FROM character_detections d WHERE d.id=target_id)""")
             db.execute("INSERT INTO app_flags(name) VALUES ('autopilot-answers-summaries-off')")
+        # 2026-11-24 (D32): consistency review questions are answered in the cut dialog, never in the inbox.
+        if not db.execute("SELECT 1 FROM app_flags WHERE name='inbox-no-review-questions'").fetchone():
+            db.execute("""UPDATE agent_escalations SET status='dismissed',resolved_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,
+                resolution_json='{"why": "review questions are answered in the cut dialog, not in the inbox"}'
+                WHERE kind='review_question' AND status='open'""")
+            db.execute("INSERT INTO app_flags(name) VALUES ('inbox-no-review-questions')")
         db.commit()
 
 

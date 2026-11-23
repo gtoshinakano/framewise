@@ -5,7 +5,7 @@ import { api, type ContextItem, type Job } from './api'
 import { cachedCharacters, cachedReferences, chosenCharacter, invalidateReferences, loadCharacters, loadReferences, type CharacterReference } from './runCache'
 import { CharacterOptions } from './CharacterOptions'
 import { isCard, NEW_CARD } from './unregisteredView'
-import { ActionButton, Elapsed, Skeleton, StatusChip } from './RunUi'
+import { ActionButton, Elapsed, Skeleton, StatusChip, StaleNote } from './RunUi'
 import type { CharacterSummary } from './runState'
 import { PoseDetailCard } from './PoseDetailCard'
 import { NewCharacterDialog, type NewCharacter, type NewCharacterResult } from './NewCharacterDialog'
@@ -121,7 +121,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     const named = firstFrameDetections.filter(item => item.character_context_id)
     // A cut marked "no characters" is settled: its boxes are ignored, so they raise no warnings.
     if (noChars) { onSummary?.({ boxes: 0, autoUnverified: 0, unknown: 0, stale: false, saving: saving > 0 || priorSaving }); return }
-    onSummary?.({ boxes: firstFrameDetections.length, autoUnverified: named.filter(item => item.label_source === 'auto').length, unknown: firstFrameDetections.length - named.length, stale: run.stale, saving: saving > 0 || priorSaving })
+    onSummary?.({ boxes: firstFrameDetections.length, autoUnverified: named.filter(item => item.label_source === 'auto').length, unknown: firstFrameDetections.filter(item => !item.character_context_id && item.label_source !== 'manual').length, stale: run.stale, saving: saving > 0 || priorSaving })
   }, [run, noChars, saving, priorSaving, onSummary])
   useEffect(() => () => onSummary?.(null), [onSummary])
 
@@ -135,7 +135,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
   /** Changes paint immediately; the queue preserves their order on the server. */
   function label(detectionId: string, characterId: string | null, knownName?: string) {
     const name = knownName ?? characters.find(item => item.id === characterId)?.title ?? null
-    setRun(value => value && { ...value, detections: value.detections.map(item => item.id === detectionId ? { ...item, character_context_id: characterId, character_name: name, label_source: characterId ? 'manual' : null, match_reason: null } : item) })
+    setRun(value => value && { ...value, detections: value.detections.map(item => item.id === detectionId ? { ...item, character_context_id: characterId, character_name: name, label_source: 'manual', match_reason: null } : item) })
     enqueueEdit(async () => { await api(`/character-detections/${savedId(detectionId)}`, { method: 'PUT', body: JSON.stringify({ character_context_id: characterId }) }) })
   }
   /** Creates a character from a box in the edit queue, so it waits for earlier edits and a just-drawn box's id. A refusal goes back to the dialog. */
@@ -317,7 +317,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     {job?.status === 'failed' && <p role="alert" className="flex items-start gap-2 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]"><XCircle size={14} className="mt-0.5 shrink-0" aria-hidden />{job.error || 'Character detection failed.'}</p>}
     {error && <p role="alert" className="text-xs text-[#ff9fa7]">{error}</p>}
     {notice && !active && <p role="status" className="muted text-xs">{notice}</p>}
-    {run?.stale && <p className="rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#e6c58b]">Cut timing changed. {hasOutdatedFrame ? 'Remove an outdated frame below or detect again' : 'Detect again'} before using these labels in analysis.</p>}
+    {run?.stale && <StaleNote reason={`Cut timing changed. ${hasOutdatedFrame ? 'Remove an outdated frame below or detect again' : 'Detect again'} before using these labels in analysis.`} />}
     {!loaded && !run && <div className="grid gap-3" aria-busy="true" aria-label="Loading character detections"><Skeleton className="aspect-video" /></div>}
     {loaded && !run && !active && <p className="muted rounded-lg border border-dashed hairline px-3 py-4 text-center text-xs">No characters detected yet. Press Detect characters.</p>}
     {run && <div className="grid gap-3">{run.frames.filter(frame => frame.position === 'first').map(frame => {
@@ -379,7 +379,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
             <div className="flex flex-wrap items-center gap-1.5"><span className="w-5 shrink-0 text-center font-semibold" style={{ color }}>{index + 1}</span>
               <select aria-label={`Character for box ${index + 1}`} className="field !w-auto min-w-32 flex-1 !px-2 !py-1.5 !text-xs" value={person.character_context_id || ''} disabled={locked || person.is_reference} onChange={event => { if (event.target.value === NEW_CHARACTER) setAdding(person.id); else labelWith(person.id, event.target.value) }}><option value="">Unknown</option><CharacterOptions characters={characters} /><option value={NEW_CHARACTER}>+ Add new character…</option></select>
               {person.label_source !== 'manual' && !person.is_reference && <ActionButton compact icon={<UserPlus size={13} />} disabled={locked} onClick={() => setAdding(person.id)} title="Create a new project character from this box and describe its features" aria-label={`Add new character from box ${index + 1}`} />}
-              {person.is_reference ? <StatusChip tone="blue" icon={<Bookmark size={11} />}>Reference</StatusChip> : person.label_source === 'auto' ? <StatusChip tone="amber" title={person.match_reason || 'Automatic match, not yet confirmed by you'}>Auto · unverified</StatusChip> : person.label_source === 'manual' ? <StatusChip tone="green" icon={<CheckCircle2 size={11} />}>Confirmed</StatusChip> : <StatusChip tone="grey">No name</StatusChip>}
+              {person.is_reference ? <StatusChip tone="blue" icon={<Bookmark size={11} />}>Reference</StatusChip> : person.label_source === 'auto' ? <StatusChip tone="amber" title={person.match_reason || 'Automatic match, not yet confirmed by you'}>Auto · unverified</StatusChip> : person.label_source === 'manual' && person.character_context_id ? <StatusChip tone="green" icon={<CheckCircle2 size={11} />}>Confirmed</StatusChip> : person.label_source === 'manual' ? <StatusChip tone="grey" title="You left this box without a name; nothing asks about it again">Left unnamed</StatusChip> : <StatusChip tone="grey">No name</StatusChip>}
               {person.label_source === 'auto' && <ActionButton compact icon={<CheckCircle2 size={13} />} disabled={locked} onClick={() => void label(person.id, person.character_context_id)} title="Mark this label as yours; it then helps recognize this character elsewhere">Confirm</ActionButton>}
               {person.character_context_id && !card && <ActionButton compact icon={person.is_reference ? <BookmarkMinus size={13} /> : <Bookmark size={13} />} disabled={locked || !!saving} onClick={() => void action(() => api(`/character-detections/${savedId(person.id)}/reference`, { method: person.is_reference ? 'DELETE' : 'POST' }), true)} title={person.is_reference ? 'Stop using this box as a saved reference' : 'Keep this box as a reference image for the whole project'} aria-label={person.is_reference ? 'Remove reference' : 'Save as reference'} />}
               <ActionButton compact variant="danger" icon={<Trash2 size={13} />} disabled={locked || person.is_reference} onClick={() => void removeBox(person.id)} title={person.is_reference ? 'Remove the reference first' : 'Remove this box'} aria-label={`Remove box ${index + 1}`} />
@@ -387,7 +387,7 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
             {person.label_source === 'auto' && person.match_reason && <p className="mt-1 text-[11px] text-[#e6c58b]">{person.match_reason}</p>}
             {!card && <Suggestions person={person} disabled={locked} onPick={id => void label(person.id, id)} />}
             {card && <p className="muted mt-1 text-[11px]">Unregistered: a minor person without a record. Use the same number for this person's lines; recognition never learns from it.</p>}
-            {person.label_source === 'manual' && !card && <MatchingUse person={person} disabled={locked} onChange={use => setMatchingUse(person.id, use)} />}
+            {person.label_source === 'manual' && person.character_context_id && !card && <MatchingUse person={person} disabled={locked} onChange={use => setMatchingUse(person.id, use)} />}
             {frame.position === 'first' && person.character_context_id && <PoseDetailCard cutId={cutId} person={person} frameBoxes={people} refreshKey={poseKey} disabled={locked} />}
           </div>
         })}

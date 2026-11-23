@@ -162,10 +162,9 @@ class DiagnoseTriageTest(unittest.TestCase):
         items = self.client.get('/api/episodes/e/escalations').json()['items']
         self.assertEqual([(item['kind'], item['group_key']) for item in items], [('failed_run', 'validator_loop:consistency_summary')])
         self.assertIn('questions must be a list', items[0]['question'])
-        self.client.post(f'/api/jobs/{requeued}/dismiss')  # the person deals with it
-        outcome = self.client.post('/api/episodes/e/triage', json={}).json()
-        self.assertEqual(outcome['closed_escalations'], 1)
+        self.client.post(f'/api/jobs/{requeued}/dismiss')  # the person deals with it: the question closes with the dismiss
         self.assertEqual(self.client.get('/api/episodes/e/escalations').json()['items'], [])
+        self.assertEqual(self.client.post('/api/episodes/e/triage', json={}).json()['closed_escalations'], 0)
 
     def test_obsolete_failures_are_dismissed_and_sequences_left_alone(self):
         with db.connect() as conn:

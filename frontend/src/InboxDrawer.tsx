@@ -9,7 +9,7 @@ import { useToast } from './Toasts'
 import { queueApi } from './queueApi'
 import { answerEscalation } from './inboxActions'
 import {
-  choicesFor, decisionCounts, DECISION_LABEL, flatOrder, groupByKind, kindLabel, placeFor, reviewProposal, reviewQuestions, sampleDecisions, sheetPath, TIER_LABEL,
+  choicesFor, decisionCounts, DECISION_LABEL, flatOrder, groupByKind, kindLabel, placeFor, sampleDecisions, sheetPath, TIER_LABEL,
   type AgentRun, type Choice, type Decision, type Escalation, type TriageItem,
 } from './inboxView'
 
@@ -146,7 +146,6 @@ export function InboxDrawer({ episodeId, onClose, onChanged }: { episodeId: stri
               <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#929aa9]">{group.label} <Count value={group.items.length} /></h3>
               <ul className="space-y-2">{group.items.map(item => <QuestionCard key={item.id} item={item} focused={shown[focus]?.id === item.id} working={working}
                 onFocus={() => setFocus(shown.findIndex(entry => entry.id === item.id))} onChoose={choice => void choose(item, choice)} onOpen={cutId => openCut(item, cutId)}
-                onReview={answers => void run(`${item.id}:answers`, () => api(`/escalations/${item.id}/review-answers`, { method: 'POST', body: JSON.stringify({ tier: 'human', answers }) }), 'Review answers saved')}
                 onBoxes={(confirm, reject) => void run(`${item.id}:boxes`, () => api(`/escalations/${item.id}/box-labels`, { method: 'POST', body: JSON.stringify({ tier: 'human', confirm, reject }) }), 'Box names saved')} />)}</ul>
             </section>)}
         </>}
@@ -207,15 +206,13 @@ export function InboxDrawer({ episodeId, onClose, onChanged }: { episodeId: stri
   </>
 }
 
-function QuestionCard({ item, focused, working, onFocus, onChoose, onOpen, onReview, onBoxes }: {
+function QuestionCard({ item, focused, working, onFocus, onChoose, onOpen, onBoxes }: {
   item: Escalation; focused: boolean; working: string | null
   onFocus: () => void; onChoose: (choice: Choice) => void; onOpen: (cutId?: string) => void
-  onReview: (answers: { question: string; option: string }[]) => void
   onBoxes: (confirm: string[], reject: string[]) => void
 }) {
   const choices = choicesFor(item)
   const sheet = sheetPath(item)
-  const [picks, setPicks] = useState<Record<string, string>>({})
   const [rejected, setRejected] = useState<Set<string>>(new Set())
   const evidence = item.evidence ?? {}
   const busy = !!working
@@ -233,14 +230,6 @@ function QuestionCard({ item, focused, working, onFocus, onChoose, onOpen, onRev
       <li key={box.id}><label className={`flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 ${rejected.has(box.id) ? 'border-[#63363e] text-[#ffb6bc] line-through' : 'hairline'}`}>
         <input type="checkbox" checked={!rejected.has(box.id)} onChange={() => setRejected(current => { const next = new Set(current); if (next.has(box.id)) next.delete(box.id); else next.add(box.id); return next })} />
         B{index + 1} · cut {box.cut}</label></li>)}</ul>}
-    {item.kind === 'review_question' && <ol className="mt-1.5 space-y-2">{reviewQuestions(item).map(question => {
-      const chosen = picks[question.id] ?? item.proposal?.[question.id] ?? question.proposal ?? question.recommended
-      return <li key={question.id}>
-        <p className="text-[#d5dbe5]">{question.topic ? <span className="muted">{question.topic}{question.character ? ` · ${question.character}` : ''}: </span> : null}{question.question}</p>
-        <div className="mt-1 flex flex-wrap gap-1">{question.options.map(option => <button key={option.id} type="button" onClick={() => setPicks(current => ({ ...current, [question.id]: option.id }))}
-          className={`rounded border px-1.5 py-0.5 text-left ${chosen === option.id ? 'border-[#7bdcb2] bg-[#16261f] text-white' : 'hairline text-[#c9ced8]'}`}>{option.text}{option.id === question.recommended ? ' ★' : ''}</button>)}</div>
-      </li>
-    })}</ol>}
     {sheet && <details className="mt-1.5" open={focused && (item.kind === 'missed_cut' || item.kind === 'box_label' || item.kind === 'new_person')}>
       <summary className="cursor-pointer text-[#c3aeff]"><ImageIcon size={12} className="mr-1 inline" aria-hidden />Sheet</summary>
       <img src={`/api${sheet}`} alt={`Sheet for: ${item.question}`} loading="lazy" className="mt-1 max-w-full rounded border hairline" />
@@ -248,12 +237,10 @@ function QuestionCard({ item, focused, working, onFocus, onChoose, onOpen, onRev
     <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5">
       {item.cut_ids.length > 0 && <button type="button" className={`${LINK} mr-auto`} onClick={() => onOpen()}>
         Open cut{item.cut_ids.length > 1 ? ` (1 of ${item.cut_ids.length})` : ''}</button>}
-      {item.kind === 'review_question' && <ActionButton compact variant="primary" pending={working === `${item.id}:answers`} disabled={busy}
-        onClick={() => onReview(reviewProposal(item, picks))}>Save answers</ActionButton>}
       {item.kind === 'box_label' && rejected.size > 0 && item.proposal?.character_context_id && <ActionButton compact variant="primary" pending={working === `${item.id}:boxes`} disabled={busy}
         onClick={() => { const boxes: string[] = (evidence.boxes ?? []).map((box: { id: string }) => box.id); onBoxes(boxes.filter(id => !rejected.has(id)), boxes.filter(id => rejected.has(id))) }}>
         Save ticked as {item.proposal.name}</ActionButton>}
-      {item.kind !== 'review_question' && choices.map((choice, index) => <ActionButton key={choice.key} compact variant={choice.tone === 'primary' ? 'primary' : choice.tone === 'danger' ? 'danger' : 'quiet'}
+      {choices.map((choice, index) => <ActionButton key={choice.key} compact variant={choice.tone === 'primary' ? 'primary' : choice.tone === 'danger' ? 'danger' : 'quiet'}
         title={`${choice.hint ?? ''}${index < 9 ? ` (key ${index + 1})` : ''}`.trim()} pending={working === `${item.id}:${choice.key}`} disabled={busy} onClick={() => onChoose(choice)}>
         {choice.proposed ? '★ ' : ''}{choice.label}</ActionButton>)}
     </div>

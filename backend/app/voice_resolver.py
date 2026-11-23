@@ -144,10 +144,14 @@ def gather(conn, job):
         WHERE c.project_id=? ORDER BY v.id""", (episode['project_id'],))]
     dismissed = sorted({row[0] for row in conn.execute("SELECT group_key FROM agent_escalations WHERE episode_id=? AND kind=? AND status='dismissed'",
                                                        (episode_id, ESCALATION))})
+    # Lines the person put back by undoing an agent's voice: never given to anyone by a rule again, only asked (HARNESS.md D32)
+    undone_rows = {item.get('id') for row in conn.execute("SELECT after_json FROM agent_decisions WHERE episode_id=? AND kind=? AND undone_at IS NOT NULL",
+                                                          (episode_id, KIND)) for item in (_load(row[0], {}) or {}).get('rows') or []}
+    undone = sorted(line['id'] for line in lines if line.get('parent_id') in undone_rows)
     return {'episode': episode, 'lines': lines, 'cuts': cuts, 'pictures': pictures, 'characters': characters,
             'glossary': [{key: row[key] for key in ('spelling', 'character_context_id', 'part')} for row in name_glossary.rows(conn, episode['project_id'], episode_id)],
             'subtitles': [{key: line[key] for key in ('start_time', 'end_time', 'text')} for line in subtitle_store.lines(episode_id, conn=conn)],
-            'references': references, 'sequences': sequence_ranges(conn, episode_id), 'dismissed': dismissed,
+            'references': references, 'sequences': sequence_ranges(conn, episode_id), 'dismissed': dismissed, 'undone_lines': undone,
             'cards_by_cut': cards_by_cut(conn, cuts)}
 
 
@@ -825,8 +829,9 @@ def publish(conn, job, payload, data, voice_scores=None, label_scores=None):
     close_settled(conn, episode_id)
     plan = resolve(data, voice_scores, label_scores)
     counts = Counter()
+    undone = set(data.get('undone_lines') or ())
     for unit in plan['applied']:
-        if policy['mode'] == 'ask':
+        if policy['mode'] == 'ask' or undone & set(unit['line_ids']):
             wide = unit['scope'] in ('label', 'consensus') and bool(unit['label'])
             group = {'group_key': f"voice:{unit['label']}" if wide else f"voice::line:{unit['line_ids'][0]}", 'label': unit['label'], 'label_wide': wide,
                      'phrases': unit['phrases'], 'candidates': [unit['character']], 'why': f"the agent would give it to {names.get(unit['character'])} ({unit['why']})",

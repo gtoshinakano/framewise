@@ -184,6 +184,14 @@ class JobTest(unittest.TestCase):
             decision = conn.execute("SELECT id FROM agent_decisions WHERE kind='voices'").fetchone()[0]
         self.assertEqual(self.client.post(f'/api/agent-decisions/{decision}/undo').json(), {'undone': True})
         self.assertEqual(self.speakers()['a1'][:2], (None, None))
+        self.run_job()  # the person undid it: the same signals never give it back by a rule, the voice is asked instead
+        self.assertEqual(self.speakers()['a1'][:2], (None, None))
+        with db.connect() as conn:
+            self.assertIsNone(conn.execute("SELECT id FROM agent_decisions WHERE kind='voices' AND undone_at IS NULL").fetchone())
+        asked = [item for item in self.client.get('/api/episodes/e/voice-decisions').json()['questions'] if item['reviewer'] == 'human']
+        self.assertTrue(asked)
+
+    def test_a_person_override_blocks_undo(self):
         self.run_job()
         with db.connect() as conn:
             decision = conn.execute("SELECT id FROM agent_decisions WHERE kind='voices' AND undone_at IS NULL").fetchone()[0]
@@ -194,6 +202,12 @@ class JobTest(unittest.TestCase):
         with db.connect() as conn:
             self.assertIsNotNone(conn.execute('SELECT overridden_at FROM agent_decisions WHERE id=?', (decision,)).fetchone()[0])
         self.assertEqual(self.client.post(f'/api/agent-decisions/{decision}/undo').status_code, 409)
+        # clearing the speaker is the person's last word too: settled unknown, never asked again
+        line = response.json()
+        cleared = self.client.put(f"/api/transcript-segments/{line['id']}", json={'start_time': 1.0, 'end_time': 1.5, 'text': 'ね',
+                                                                                 'speaker_label': 'SPEAKER_04', 'character_context_id': None}).json()
+        with db.connect() as conn:
+            self.assertEqual(conn.execute('SELECT speaker_source FROM transcript_segments WHERE id=?', (cleared['id'],)).fetchone()[0], 'left_unknown')
 
     def test_ask_mode_off_sequences_and_queue_order(self):
         with db.connect() as conn:

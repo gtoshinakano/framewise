@@ -172,3 +172,11 @@ input, textarea, select { outline: none; }
 }
 .need-pulse { animation: need-pulse .8s ease-in-out 3; }
 @media (prefers-reduced-motion: reduce) { .need-pulse { animation: none; outline: 2px solid #f0a64a; outline-offset: 2px; } }
+
+/* Stale outputs: an input changed after they were made (docs/autopilot/HARNESS.md D33). One colour everywhere, never amber
+   (amber is queued or unsaved): an orange edge, faint stripes and a dimmed body that comes back on hover or focus. */
+:root { --stale: #c9733e; --stale-stripe: rgba(201, 115, 62, 0.08); }
+.is-stale { border-color: var(--stale) !important; background-image: repeating-linear-gradient(135deg, var(--stale-stripe) 0 10px, transparent 10px 20px); }
+.is-stale .stale-body { opacity: 0.62; transition: opacity 120ms; }
+.is-stale .stale-body:hover, .is-stale .stale-body:focus-within { opacity: 1; }
+.stale-note { display: flex; align-items: flex-start; gap: 6px; border: 1px solid #9a5530; border-radius: 6px; background: #2a170d; color: #f2a877; padding: 4px 8px; font-size: 11px; line-height: 16px; }

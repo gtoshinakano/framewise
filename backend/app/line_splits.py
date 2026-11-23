@@ -241,15 +241,64 @@ def _invalidate(conn, episode_id, start, end):
     subtitle_store.invalidate_probes(conn, episode_id)
 
 
+PERSON_ORIGINS = ('manual_edit', 'assistant_edit')
+
+
+def settled_lines(conn, episode_id):
+    """Ids of lines the person already settled, so the splitter never touches them or their later revisions again (the
+    person's last word, HARNESS.md D32): a split or trim of the agent that was undone or overridden, and a question the
+    person answered or dismissed ("Leave it")."""
+    found = {row[0] for row in conn.execute("""SELECT target_id FROM agent_decisions WHERE episode_id=? AND kind=?
+        AND (undone_at IS NOT NULL OR overridden_at IS NOT NULL)""", (episode_id, KIND))}
+    found |= {row[0][len('line:'):] for row in conn.execute("""SELECT group_key FROM agent_escalations WHERE episode_id=? AND kind='line_split'
+        AND status<>'open' AND group_key LIKE 'line:%'""", (episode_id,))}
+    return found
+
+
+def _settled(row, settled, parents):
+    """Whether ``row`` or one of its earlier revisions is settled."""
+    seen, current = set(), row['id']
+    while current and current not in seen:
+        if current in settled:
+            return True
+        seen.add(current)
+        current = parents.get(current)
+    return False
+
+
+def open_crossings(conn, episode_id):
+    """``[(row, hard cut)]`` of the current lines the splitter would still plan (crossing a cut, outside every sequence,
+    not edited or settled by the person). Reads no audio: the dry run of ``stage_targets``."""
+    starts = cut_starts(conn, episode_id)
+    sequences = sequence_ranges(conn, episode_id)
+    settled = settled_lines(conn, episode_id)
+    parents = dict(conn.execute('SELECT id,parent_id FROM transcript_segments WHERE episode_id=? AND parent_id IS NOT NULL',
+                                (episode_id,)).fetchall()) if settled else {}
+    found = []
+    for row in current_lines(conn, episode_id):
+        crossed = crossings(row, starts)
+        if (crossed and row.get('origin') not in PERSON_ORIGINS and not (settled and _settled(row, settled, parents))
+                and not any(row['start_time'] < end and row['end_time'] > start for start, end in sequences)):
+            found.append((row, crossed[0]))
+    return found
+
+
 def plan_episode(conn, episode_id, lines=None, envelope_for=None):
-    """``[(row, cut, plan)]`` for every crossing of every current line (the first crossing of each line only)."""
+    """``[(row, cut, plan)]`` for every crossing of every current line (the first crossing of each line only). A line the
+    person edited (``PERSON_ORIGINS``) or settled (``settled_lines``) is left as it is."""
     starts = cut_starts(conn, episode_id)
     audio = audio_path(conn, episode_id)
     sequences = sequence_ranges(conn, episode_id)
+    settled = settled_lines(conn, episode_id)
+    parents = dict(conn.execute('SELECT id,parent_id FROM transcript_segments WHERE episode_id=? AND parent_id IS NOT NULL',
+                                (episode_id,)).fetchall()) if settled else {}
     plans = []
     for row in lines if lines is not None else current_lines(conn, episode_id):
         crossed = crossings(row, starts)
         if not crossed:
+            continue
+        if row.get('origin') in PERSON_ORIGINS or (settled and _settled(row, settled, parents)):
+            plans.append((row, crossed[0], {'action': 'leave', 'why': 'the person edited or settled this line', 'person': True}))
             continue
         if any(row['start_time'] < end and row['end_time'] > start for start, end in sequences):
             plans.append((row, crossed[0], {'action': 'leave', 'why': 'the line is inside a sequence (its dialogue is the user\'s)', 'sequence': True}))
@@ -313,10 +362,27 @@ def apply_plan(conn, row, cut, plan, *, run_id=None, tier='rules'):
     return made
 
 
+def close_settled(conn, episode_id):
+    """Close open line-split questions the person settled in the editor: the line was edited, split, merged or deleted, or
+    it no longer crosses a hard cut."""
+    starts = None
+    closed = 0
+    for item in agent_log.escalations(conn, episode_id, 'open', kind='line_split'):
+        line_id = item['group_key'][len('line:'):] if item['group_key'].startswith('line:') else None
+        row = conn.execute('SELECT * FROM transcript_segments WHERE id=?', (line_id,)).fetchone() if line_id else None
+        if row is None or row['superseded_by'] or row['deleted']:
+            closed += agent_log.close_escalation(conn, item['id'], 'resolved', {'by': 'settled elsewhere', 'why': 'the line was edited'})
+            continue
+        starts = starts if starts is not None else cut_starts(conn, episode_id)
+        if not crossings(dict(row), starts):
+            closed += agent_log.close_escalation(conn, item['id'], 'resolved', {'by': 'settled elsewhere', 'why': 'the line no longer crosses a hard cut'})
+    return closed
+
+
 def publish(conn, episode_id, payload):
     """Plan and apply every crossing (pieces that still cross another cut are planned again). Returns the outcome counts."""
     policy, run_id = payload.get('policy') or {'mode': 'apply'}, payload.get('run_id')
-    counts = {'split': 0, 'trim': 0, 'leave': 0, 'asked': 0, 'in_sequence': 0}
+    counts = {'split': 0, 'trim': 0, 'leave': 0, 'asked': 0, 'in_sequence': 0, 'by_person': 0}
     reasons = {}
     lines, fresh = current_lines(conn, episode_id), None
     for _ in range(MAX_PASSES):
@@ -324,7 +390,7 @@ def publish(conn, episode_id, payload):
         for row, cut, plan in plan_episode(conn, episode_id, lines):
             if plan['action'] == 'leave':
                 if fresh is None:  # a piece left as it is was already counted with its line
-                    counts['in_sequence' if plan.get('sequence') else 'leave'] += 1
+                    counts['in_sequence' if plan.get('sequence') else 'by_person' if plan.get('person') else 'leave'] += 1
                     reason = plan['why'].split(':')[0]
                     reasons[reason] = reasons.get(reason, 0) + 1
                 continue

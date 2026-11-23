@@ -115,6 +115,31 @@ class CutReadinessTest(unittest.TestCase):
         self.sql("UPDATE cuts SET end_time=1.5 WHERE id='c1'")
         self.assertEqual(self.ready()['held']['visual'], ['first-frame boxes not detected for the current cut'])
 
+    def test_open_inbox_items_hold_their_cut_from_their_step_on(self):
+        self.sql("UPDATE character_detections SET label_source='manual' WHERE id='d1'")
+        self.assertTrue(self.ready()['may_consistency'])
+        with db.connect() as conn:
+            split = agent_log.escalate(conn, episode_id='e', kind='line_split', group_key='line:l1', question='?', cut_ids=['c1'])
+        ready = self.ready()
+        self.assertEqual((ready['may_visual'], ready['may_beats']), (True, False))
+        self.assertEqual(ready['held']['beats'], ['inbox: a line across the hard cut'])
+        with db.connect() as conn:
+            agent_log.escalate(conn, episode_id='e', kind='missed_cut', group_key='peak:1', question='?', cut_ids=['c1'], reviewer='claude')
+        ready = self.ready()
+        self.assertFalse(ready['may_target_frames'])
+        self.assertEqual(ready['inbox'], ['line_split', 'missed_cut'])
+        with db.connect() as conn:
+            agent_log.close_escalation(conn, split, 'resolved')
+            conn.execute("UPDATE agent_escalations SET status='resolved' WHERE kind='missed_cut'")
+        self.assertTrue(self.ready()['may_consistency'])
+        with db.connect() as conn:  # a voice question holds every cut its lines touch
+            agent_log.escalate(conn, episode_id='e', kind='voice', group_key='voice:S', question='?', cut_ids=['c1'], evidence={'line_ids': ['l2']})
+        self.assertEqual(self.ready('c2')['held']['beats'][0], 'inbox: an unknown voice')
+
+    def test_a_box_the_person_left_unnamed_is_settled(self):
+        self.sql("UPDATE character_detections SET character_context_id=NULL,label_source='manual' WHERE id='d1'")
+        self.assertTrue(self.ready()['boxes'])
+
     def test_the_review_report_lists_the_held_cuts_per_step(self):
         held = TestClient(app).get('/api/episodes/e/review').json()['progress']['held']
         self.assertEqual([item['cut'] for item in held['visual']], [1])

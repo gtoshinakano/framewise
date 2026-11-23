@@ -228,107 +228,145 @@ class FwAutopilotTest(unittest.TestCase):
         self.assertEqual(api.calls[-1], ('/api/escalations/esc1/close', {}, {'status': 'resolved', 'resolution': {'character': 'mai'}}))
 
 
-class AutopilotPlanTest(unittest.TestCase):
-    """The M8 orchestrator's plan: resolvers at the gates, held cuts, the stale sweep (pure, no API)."""
+def targets(**changes):
+    """A /targets response: every stage, nothing to do, unless ``changes`` says so (stage__step=[cut numbers])."""
+    def step(cuts=(), held=(), mode=None):
+        return {'targets': [{'cut': n, 'cut_id': f'c{n}', 'why': 'missing'} for n in cuts],
+                'held': [{'cut': n, 'cut_id': f'c{n}', 'reasons': ['box 1 has no character']} for n in held], **({'mode': mode} if mode else {})}
+    names = ('media', 'hardcuts', 'missed_cuts', 'transcribe', 'subtitles', 'line_splits', 'voice_resolver', 'boxes', 'target_frames', 'character_decisions')
+    data = {'episode': {'id': EPISODE['id'], 'subtitle_language': 'Japanese'}, 'range': None, 'inbox': {}, 'failures': 0,
+            'prepare': {'done': None, 'steps': [{'step': name, 'done': True, 'targets': []} for name in names]},
+            'prepare_cuts': {'boxes': step(), 'target_frames': step()},
+            'lines': {'targets': [], 'mode': 'apply'},
+            'evaluate': {name: step() for name in ('visual', 'beats', 'consistency')},
+            'results': {'answers': step(mode='off'), 'summary': step(mode='off')}}
+    for key, value in changes.items():
+        stage, name = key.split('__')
+        if stage == 'prepare':
+            entry = next(item for item in data['prepare']['steps'] if item['step'] == name)
+            entry.update(value)
+        else:
+            data[stage][name] = value
+    return data
 
-    def plan(self, rep, done=(), stuck=None, triage=(), modes=None, queue_state=IDLE):
-        return fw.autopilot_plan(rep, queue_state, list(triage), modes or {}, set(done), stuck or {})
 
-    ALL = {'missed_cuts', 'line_splits', 'voices', 'cast', 'review_decisions', 'triage'}
+class StageApi(AutopilotApi):
+    def __init__(self, data):
+        super().__init__({'items': []})
+        self.data = data
 
-    def test_resolvers_run_in_flow_order_before_their_gates(self):
-        self.assertEqual(self.plan(report())['resolver'], 'missed_cuts')
-        self.assertEqual(self.plan(report(), done={'missed_cuts'})['resolver'], 'line_splits')
-        fixable = [{'action': 'requeue'}]
-        self.assertEqual(self.plan(report(), triage=fixable)['resolver'], 'triage')
-        self.assertEqual(self.plan(report(), done={'triage'}, triage=fixable)['resolver'], 'missed_cuts')
-        voices = report(gates__voices=[{'speaker_label': 'S1', 'lines': 4, 'first_time': 1.0}])
-        self.assertEqual(self.plan(voices, done={'missed_cuts', 'line_splits'})['resolver'], 'voices')
-        self.assertEqual(self.plan(report(), modes={'missed_cuts': 'off', 'line_splits': 'off'})['action'], 'done')
-        self.assertEqual(self.plan(report(), queue_state={'running': [{'label': 'x', 'status': 'running'}], 'waiting_total': 0})['action'], 'busy')
+    def get(self, path, params=None):
+        if path.endswith('/targets'):
+            self.calls.append((path, params or {}, None))
+            return self.data
+        if path.endswith('/triage'):
+            return {'items': []}
+        if path.endswith('/agent-decisions'):
+            return []
+        if path.endswith('/sequences'):
+            return []
+        return super().get(path, params)
 
-    def test_gated_cuts_are_held_back_and_the_rest_continue(self):
-        rep = report(gates__first_frame=[{'cut': 2, 'unlabeled_boxes': 1}], gates__target_frames=[{'cut': 4}],
-                     progress__target_missing=[1, 2], progress__visual_missing=[1, 2, 4, 5])
-        self.assertEqual(self.plan(rep, done=self.ALL - {'cast'})['resolver'], 'cast')
-        first = self.plan(rep, done=self.ALL)
-        self.assertEqual((first['step'], first['cuts']), ('target-frames', [1]))
-        rep['progress']['target_missing'] = [2]
-        second = self.plan(rep, done=self.ALL)
-        self.assertEqual((second['step'], second['cuts']), ('visual', [1, 5]))
-        stuck = self.plan(rep, done=self.ALL, stuck={'visual': {1, 5}})
-        self.assertEqual(stuck['action'], 'waiting')
-        self.assertIn('first frame 1', stuck['detail'])
 
-    def test_review_questions_run_the_decider_and_hold_only_their_summaries(self):
-        rep = report(gates__decisions=[{'cut': 3, 'questions': 2, 'draft': False}], progress__summary_missing=[1, 4])
-        on = {'review_answers': 'apply', 'cut_summaries': 'apply'}
-        self.assertEqual(self.plan(rep, done=self.ALL - {'review_decisions'}, modes=on)['resolver'], 'review_decisions')
-        decision = self.plan(rep, done=self.ALL, modes=on)
-        self.assertEqual((decision['step'], decision['cuts']), ('summary', [1, 4]))
+class StagePlanTest(unittest.TestCase):
+    """The stages (D31): each step once, on its target cuts only (pure, no API)."""
 
-    def test_answers_and_summaries_are_off_unless_the_profile_turns_them_on(self):
-        rep = report(gates__decisions=[{'cut': 3, 'questions': 2, 'draft': False}], progress__summary_missing=[1, 4])
-        decision = self.plan(rep, done=self.ALL - {'review_decisions'})
-        self.assertEqual(decision['action'], 'waiting')   # the questions stay the person's; no decider, no summaries
-        self.assertIn('decisions 1', decision['detail'])
-        self.assertEqual(self.plan(report(progress__summary_missing=[1]), done=self.ALL)['action'], 'done')
+    def test_prepare_order_and_resolvers_switched_off(self):
+        data = targets(prepare__media={'done': False}, prepare__missed_cuts={'done': False}, prepare__voice_resolver={'done': False, 'mode': 'off'},
+                       prepare__target_frames={'done': False, 'targets': [{'cut': 2}, {'cut': 3}]}, prepare__character_decisions={'done': False})
+        steps, done = [], set()
+        while action := fw.stage_next('prepare', data, done):
+            steps.append(action['step'])
+            done.add(action['step'])
+        self.assertEqual(steps, ['setup', 'missed_cuts', 'target-frames', 'cast'])
 
-    def test_stale_sweep_goes_from_each_cuts_earliest_stage(self):
-        stale = [{'cut': 1, 'title': 'Cut summary'}, {'cut': 1, 'title': 'Consistency summary'}, {'cut': 2, 'title': 'Performance beats'},
-                 {'cut': 3, 'title': 'Cut summary'}, {'cut': 4, 'title': 'Subtitle OCR'}]
-        rep = report(checks={'speaker_attribution_stale': None, 'stale_results': stale}, gates__decisions=[{'cut': 3, 'questions': 1, 'draft': True}])
-        first = self.plan(rep, done=self.ALL)
-        self.assertEqual((first['step'], first['cuts']), ('beats', [2]))
-        second = self.plan(rep, done=self.ALL, stuck={'beats': {2}})
-        self.assertEqual((second['step'], second['cuts']), ('consistency', [1]))
-        third = self.plan(rep, done=self.ALL, stuck={'beats': {2}, 'consistency': {1}})
-        self.assertEqual(third['action'], 'waiting')   # cut 3's summary waits for its answers; cut 4's OCR is left alone
-        self.assertEqual(self.plan(rep, done=self.ALL, modes={'stale_reruns': 'off'})['action'], 'waiting')
+    def test_evaluate_runs_each_step_once_on_its_targets(self):
+        data = targets(evaluate__visual={'targets': [{'cut': 1}, {'cut': 2}], 'held': [{'cut': 4}]}, evaluate__beats={'targets': [{'cut': 5}]})
+        first = fw.stage_next('evaluate', data, set())
+        self.assertEqual((first['step'], first['cuts']), ('visual', [1, 2]))
+        self.assertEqual(fw.stage_next('evaluate', data, {'visual'})['step'], 'beats')
+        self.assertIsNone(fw.stage_next('evaluate', data, {'visual', 'beats'}))
+        self.assertEqual(fw.stage_next('evaluate', data, set(), only='beats')['cuts'], [5])
 
-    def test_steps_run_only_for_cuts_whose_inputs_are_settled(self):
-        held = {'target_frames': [{'cut': 6, 'reasons': ['box 1 has no character']}],
-                'visual': [{'cut': 5, 'reasons': ['target frame F2 flagged (low_match)']}, {'cut': 6, 'reasons': ['box 1 has no character']}],
-                'beats': [{'cut': 4, 'reasons': ['line at 0:12.0 has no speaker']}], 'consistency': [{'cut': 7, 'reasons': ['performance beats missing']}]}
-        stale = [{'cut': 8, 'title': 'Keyframe analysis'}, {'cut': 8, 'title': 'Performance beats'}, {'cut': 7, 'title': 'Consistency summary'}]
-        rep = report(progress__held=held, progress__target_missing=[6, 9], progress__visual_missing=[1, 5, 6],
-                     progress__beats_missing=[4, 10], checks={'speaker_attribution_stale': None, 'stale_results': stale})
-        steps = []
-        stuck = {}
-        while (decision := self.plan(rep, done=self.ALL, stuck=stuck))['action'] == 'run':
-            steps.append((decision['step'], decision['cuts']))
-            stuck[decision['step']] = set(decision['cuts'])
-        self.assertEqual(steps, [('target-frames', [9]), ('visual', [1, 8]), ('beats', [10])])
-        self.assertEqual(decision['action'], 'waiting')
-        self.assertEqual({step: [item['cut'] for item in items] for step, items in decision['held'].items()},
-                         {'visual': [5, 6], 'beats': [4], 'consistency': [7]})
-        self.assertIn('visual held for 2 cut(s)', decision['detail'])
+    def test_prepare_cuts_runs_the_cast_resolver_only_after_it_changed_something(self):
+        self.assertIsNone(fw.stage_next('prepare_cuts', targets(), set()))
+        data = targets(prepare_cuts__target_frames={'targets': [{'cut': 3}]})
+        self.assertEqual(fw.stage_next('prepare_cuts', data, set())['step'], 'target-frames')
+        self.assertEqual(fw.stage_next('prepare_cuts', data, {'target-frames'})['step'], 'cast')
 
-    def test_cuts_without_boxes_for_their_boundaries_are_boxed_first(self):
-        decision = self.plan(report(progress__boxes_missing=[3, 4], progress__visual_missing=[3, 4]), done=self.ALL)
-        self.assertEqual((decision['step'], decision['cuts']), ('characters', [3, 4]))
+    def test_results_follow_the_profile(self):
+        data = targets(results__answers={'targets': [{'cut': 2}], 'mode': 'off'}, results__summary={'targets': [{'cut': 1}], 'mode': 'off'})
+        self.assertIsNone(fw.stage_next('results', data, set()))
+        data['results']['summary']['mode'] = 'apply'
+        self.assertEqual(fw.stage_next('results', data, set())['cuts'], [1])
+        data['results']['answers']['mode'] = 'apply'
+        self.assertEqual(fw.stage_next('results', data, set())['step'], 'review_decisions')
 
     def test_visual_is_queued_in_chunks_that_queue_beats_only_when_ready(self):
         api = AutopilotApi()
         api.post = lambda path, params=None, body=None: (api.calls.append((path, params, body)), {'job_ids': ['j']})[1]
-        ids = fw.autopilot_execute(api, EPISODE, {'action': 'run', 'step': 'visual', 'cuts': list(range(1, 41)) + [45]}, 'run1')
+        ids = fw.stage_execute(api, EPISODE, {'step': 'visual', 'cuts': list(range(1, 41)) + [45]}, 'run1')
         self.assertEqual(len(ids), 4)
         spans = [(params['from_cut'], params['to_cut']) for _, params, _ in api.calls]
         self.assertEqual(spans, [(1, 16), (17, 32), (33, 40), (45, 45)])
         self.assertTrue(all(params['beats'] == 'when_ready' and params['only_missing'] for _, params, _ in api.calls))
 
-    def test_hand_off_lists_each_held_cut_with_its_reasons_and_place(self):
-        held = {'visual': [{'cut': 5, 'reasons': ['target frame F2 flagged (low_match)']}], 'beats': [{'cut': 4, 'reasons': ['line at 0:12.0 has no speaker']}]}
-        api = AutopilotApi()
-        api.get = lambda path, params=None: {'items': fw_cuts(), 'next_offset': None} if path.endswith('/cuts') else AutopilotApi.get(api, path, params)
-        lines = fw.handoff_lines(api, EPISODE, held)
-        self.assertIn('HELD FOR YOU (2 cut(s))', lines[0])
-        self.assertIn('cut 4 (before beats): line at 0:12.0 has no speaker', lines[1])
-        self.assertTrue(lines[2].strip().endswith('/analysis'))
-        self.assertTrue(lines[4].strip().endswith('/analysis/target-frames'))
+    def test_a_held_cut_links_to_where_its_reason_is_fixed(self):
+        self.assertEqual(fw.held_place(['inbox: a line across the hard cut']), 'analysis')
+        self.assertEqual(fw.held_place(['inbox: box names']), 'characters')
+        self.assertEqual(fw.held_place(['target frame F2 flagged (low_match)']), 'target-frames')
+        self.assertEqual(fw.held_place(['2 unnamed person(s) on the target frames']), 'target-frames')
+        self.assertEqual(fw.held_place(['box 1 has no character']), 'characters')
 
     def test_runs_of_consecutive_cuts(self):
         self.assertEqual(fw.runs_of([5, 1, 2, 3, 7, 8]), [(1, 3), (5, 5), (7, 8)])
+
+
+class StageCommandTest(unittest.TestCase):
+    def test_dry_run_prints_targets_and_held_cuts_and_queues_nothing(self):
+        api = StageApi(targets(evaluate__visual={'targets': [{'cut': 1, 'why': 'stale'}], 'held': [{'cut': 4, 'reasons': ['inbox: a line across the hard cut']}]}))
+        code, out = run(api, 'evaluate', EPISODE['id'], '--dry-run')
+        self.assertEqual(code, fw.OK)
+        self.assertIn('next: visual · cuts 1', out)
+        self.assertIn('visual: 1 target cut(s): 1 (1 stale); 1 held for you', out)
+        self.assertIn('cut 4 (before visual): inbox: a line across the hard cut', out)
+        self.assertIn('/cut/c4/analysis\n', out)
+        self.assertFalse([call for call in api.calls if call[2] is not None])
+
+    def test_prepare_never_runs_twice(self):
+        data = targets()
+        data['prepare']['done'] = {'id': 'run-prep-1', 'finished_at': '2026-11-24 10:00:00'}
+        data['inbox'] = {'voice': {'human': 1, 'claude': 0}}
+        api = StageApi(data)
+        code, out = run(api, 'prepare', EPISODE['id'])
+        self.assertEqual(code, fw.BLOCKED)
+        self.assertIn('never runs again', out)
+        self.assertIn('inbox: voice 1 for you', out)
+        self.assertFalse([call for call in api.calls if call[2] is not None])
+
+    def test_evaluate_queues_only_target_cuts_then_finishes_its_run(self):
+        data = targets(evaluate__beats={'targets': [{'cut': 2}, {'cut': 4}]})
+        api = StageApi(data)
+        posted = []
+
+        def post(path, params=None, body=None):
+            posted.append(path)
+            if path.endswith('/performance-beats'):
+                data['evaluate']['beats'] = {'targets': [], 'held': []}
+                return {'job_ids': ['j']}
+            return AutopilotApi.post(api, path, params, body)
+        api.post = post
+        code, out = run(api, 'evaluate', EPISODE['id'])
+        self.assertEqual(code, fw.OK, out)
+        self.assertEqual([path for path in posted if 'performance-beats' in path], ['/api/cuts/c2/performance-beats', '/api/cuts/c4/performance-beats'])
+        self.assertTrue(any(path.endswith('/finish') for path in posted))
+
+    def test_autopilot_points_to_the_stages(self):
+        args = fw.parser().parse_args(['autopilot', 'Episode 1', '--go'])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(args.func(None, args), fw.ERROR)
+        self.assertIn('fw evaluate EP', err.getvalue())
 
 
 if __name__ == '__main__':

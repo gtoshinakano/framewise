@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import db, episode_events, runs, worker
+from . import agent_log, db, episode_events, runs, worker
 
 router = APIRouter(prefix='/api', tags=['queue'])
 
@@ -67,12 +67,14 @@ def cancel_episode_queue(episode_id: str, body: QueueCancelInput):
 @router.post('/jobs/{job_id}/dismiss', summary='Stop listing a failed run under Needs attention')
 def dismiss_job(job_id: str):
     with db.connect() as conn:
-        row = conn.execute('SELECT status FROM jobs WHERE id=?', (job_id,)).fetchone()
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT status,episode_id FROM jobs WHERE id=?', (job_id,)).fetchone()
         if not row:
             raise HTTPException(404, 'Run not found')
         if row['status'] != 'failed':
             raise HTTPException(409, 'Only failed runs can be dismissed')
         conn.execute('UPDATE jobs SET dismissed_at=CURRENT_TIMESTAMP WHERE id=? AND dismissed_at IS NULL', (job_id,))
+        agent_log.settle(conn, row['episode_id'])  # its failed-run question in the inbox
     return {'ok': True}
 
 
@@ -83,6 +85,7 @@ def dismiss_failures(episode_id: str):
         _episode(conn, episode_id)
         ids = [row['id'] for row in runs.attention_rows(conn, episode_id)]
         conn.executemany('UPDATE jobs SET dismissed_at=CURRENT_TIMESTAMP WHERE id=?', [(job_id,) for job_id in ids])
+        agent_log.settle(conn, episode_id)
     return {'dismissed': len(ids)}
 
 

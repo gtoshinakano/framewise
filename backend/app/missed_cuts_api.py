@@ -148,7 +148,8 @@ def preview_line_splits(episode_id: str):
             raise HTTPException(404, 'Episode not found')
         items, counts = [], {}
         for row, cut, plan in line_splits.plan_episode(conn, episode_id):
-            counts[plan['action']] = counts.get(plan['action'], 0) + 1
+            key = 'by_person' if plan.get('person') else plan['action']
+            counts[key] = counts.get(key, 0) + 1
             owner = conn.execute('SELECT id,cut_index FROM cuts WHERE episode_id=? AND active=1 AND start_time<=? AND end_time>? LIMIT 1',
                                  (episode_id, cut, cut)).fetchone()
             items.append({'line_id': row['id'], 'start_time': row['start_time'], 'end_time': row['end_time'], 'text': row['text'], 'hard_cut': cut,

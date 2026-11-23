@@ -2,7 +2,7 @@ import type { QueueSummary } from './queueView'
 import type { Revisions } from './episodeEvents'
 export type AnalysisConfig = { frame_mode: 'per_second' | 'endpoints' | 'uniform'; frame_count: number; video_width: number; video_height: number; video_fps: number; video_frame_budget: number | null; context_ids: string[]; detection_queries: string[]; additional_context: string; text_provider: 'local' | 'openrouter'; local_thinking: boolean; openrouter_model: string }
 export type Settings = { proxy_width: number; proxy_crf: number; proxy_preset: 'ultrafast' | 'superfast' | 'veryfast' | 'faster' | 'fast' | 'medium'; frame_interval: number; scene_threshold: number; chunk_duration: number }
-export type Cut = { id: string; cut_index: number; active: boolean; analysis_enabled: boolean; no_characters?: boolean; has_analysis_results?: boolean; has_summary?: boolean; has_boxes?: boolean; has_characters?: boolean; has_unlabeled_boxes?: boolean; has_target_boxes?: boolean; has_unlabeled_target_boxes?: boolean; has_visual_results?: boolean; has_consistency_summary?: boolean; last_job_failed?: boolean; start_time: number; end_time: number; first_frame_time: number; last_frame_time: number; title: string; description: string; notes: string; results: Record<string, unknown> }
+export type Cut = { id: string; cut_index: number; active: boolean; analysis_enabled: boolean; no_characters?: boolean; has_analysis_results?: boolean; has_summary?: boolean; has_boxes?: boolean; has_characters?: boolean; has_unlabeled_boxes?: boolean; has_target_boxes?: boolean; has_unlabeled_target_boxes?: boolean; has_visual_results?: boolean; has_consistency_summary?: boolean; has_stale_results?: boolean; last_job_failed?: boolean; start_time: number; end_time: number; first_frame_time: number; last_frame_time: number; title: string; description: string; notes: string; results: Record<string, unknown> }
 export type ResultKind = 'first_frame' | 'camera_movement' | 'composition' | 'last_frame' | 'cut_description' | 'audio_visual_match' | 'generation_prompt' | 'other'
 export type AnalysisResult = { id: string; cut_id: string; kind: ResultKind; title: string; content: string; origin: string; model_id: string | null; job_id: string | null; prompt: string | null; settings: Record<string, unknown>; context: Record<string, unknown>; parent_id: string | null; superseded_by: string | null; created_at: string; stale_reason?: string | null }
 export type EpisodeAudioRange = { id: string; start_time: number; end_time: number; kind: 'OP' | 'ED' | 'repeat' | 'manual'; source: 'fingerprint' | 'user'; matched_episodes: string[] }
@@ -87,7 +87,7 @@ export type KeyframeSegment = {
 export type KeyframeAnalysis = {
   id: string; contract: 'keyframes-v1'; method: 'hybrid' | 'qwen'; selection_key: string; summary: string
   frames: { label: string; ordinal: number; t: number; reason: string | null; characters: KeyframeCharacter[] }[]
-  segments: KeyframeSegment[]
+  segments: KeyframeSegment[]; stale_reason?: string | null
 }
 /** What the Target frames tab reads (GET /cuts/{id}/keyframe-analysis). */
 export type KeyframeAnalysisState = {

@@ -29,7 +29,7 @@ export const slotName = (slot: TargetSlot | undefined) => slot?.character_name |
 export function unknownSlots(run: TargetRun | null) {
   if (!run) return []
   const used = new Set(run.detections.map(item => item.slot))
-  return run.slots.filter(slot => !slot.ignored && used.has(slot.slot) && !slot.character_context_id)
+  return run.slots.filter(slot => !slot.ignored && used.has(slot.slot) && !slot.character_context_id && slot.label_source !== 'manual')
 }
 
 /** In how many evaluated frames each slot has a box. */
@@ -45,6 +45,7 @@ export type SlotChip = { tone: 'blue' | 'amber' | 'green' | 'grey'; text: string
 
 /** Where a slot's name came from, in the words the first-frame panel already uses. */
 export function slotChip(slot: TargetSlot): SlotChip {
+  if (!slot.character_context_id && slot.label_source === 'manual') return { tone: 'grey', text: 'Left unnamed', title: 'You left this colour without a name; nothing asks about it again' }
   if (!slot.character_context_id) return { tone: 'grey', text: 'No name', title: 'Nobody is assigned to this colour yet' }
   if (slot.label_source === 'manual') return { tone: 'green', text: 'Confirmed', title: 'You set this name' }
   if (slot.label_source === 'auto') return { tone: 'amber', text: 'Auto · unverified', title: 'Matched with your labelled boxes, not yet confirmed by you' }

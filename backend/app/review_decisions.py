@@ -10,11 +10,10 @@ This module decides them in three tiers:
 2. **Resolver** (``resolve``, pure): applies an answer when a standing rule decides it with high confidence, or when
    the decider agrees with the reviewer's recommended option with high confidence *and* that topic is trusted
    (``trust_table``: measured agreement with the user's own answers reaches ``TRUST``). Otherwise the topic's
-   "when unsure" setting decides: take the recommended option, ask the person, or follow the evidence, which sends the
-   cut to Claude (the second reviewer, ``reviewer='claude'``) while its budget lasts, else to the person.
-3. **Escalations**: one per cut and reviewer (``review_question``, group ``cut:<id>`` for the person,
-   ``cut:<id>:claude`` for Claude), answered through ``answer`` with option ids; Claude's ``unsure`` moves a question
-   to the person.
+   "when unsure" setting decides: take the recommended option, or leave the question to the person.
+3. **The cut dialog**, never the inbox (HARNESS.md D32, 2026-11-24): a question the agent does not answer stays open
+   in Results → Your answers. ``review_question`` escalations opened before that are dismissed once (``db.init_db``);
+   ``answer`` still answers one that is open.
 
 Answers the user wrote are never touched: a question whose line is already in "Your answers" is kept. Every applied
 answer is an ``agent_decisions`` row (kind ``review_answers``, target ``cut_brief_instructions``) with the content
@@ -518,12 +517,9 @@ def publish(conn, job, payload, values, decisions, provenance):
         topic = question.get('topic') or 'other'
         outcomes[question['id']] = resolve(question, decisions.get(question['id']), (policy.get('topics') or {}).get(topic),
                                            (trust.get(topic) or {}).get('rate'), policy.get('mode', 'apply'))
-    claude_left = claude_budget(conn, episode_id, payload.get('run_id'), policy) if not shadow else 0
-    wants_claude = any(outcome['action'] == 'claude' for outcome in outcomes.values())
-    if wants_claude and claude_left <= 0:
-        for outcome in outcomes.values():
-            if outcome['action'] == 'claude':
-                outcome.update(action='human', why=outcome['why'] + ('; Claude is off in your profile' if not policy.get('claude') else '; the Claude budget of this run is used up'))
+    for outcome in outcomes.values():
+        if outcome['action'] == 'claude':  # review questions are never sent to the inbox (D32): the person answers them in the cut dialog
+            outcome.update(action='human', why=outcome['why'] + '; left for you in the cut dialog')
     conn.execute("""INSERT INTO review_decisions(id,cut_id,episode_id,result_id,job_id,run_id,shadow,decisions_json,outcomes_json,model_id,provenance_json)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (str(uuid.uuid4()), cut_id, episode_id, values['result_id'], job['id'], payload.get('run_id'), int(shadow),
                                             json.dumps(decisions, ensure_ascii=False), json.dumps(outcomes, ensure_ascii=False), provenance.get('model'),
@@ -541,25 +537,10 @@ def publish(conn, job, payload, values, decisions, provenance):
         if chosen:
             apply_answers(conn, episode_id=episode_id, cut_id=cut_id, result_id=values['result_id'], questions=questions, picks=chosen, tier=tier,
                           run_id=payload.get('run_id'), model=provenance.get('model'))
-    for reviewer, action in (('claude', 'claude'), ('human', 'human')):
-        items = [{**_question_view(by_id[question_id]), 'proposal': outcome['option'], 'why_asked': outcome['why'],
-                  'decider': decisions.get(question_id)} for question_id, outcome in outcomes.items() if outcome['action'] == action]
-        if items:
-            escalate_questions(conn, episode_id, cut_id, values['result_id'], items, reviewer, payload.get('run_id'))
+    # Questions the agent does not answer stay open in the cut dialog (Results → Your answers), never in the inbox: a
+    # review has a few per cut and an episode hundreds (HARNESS.md D32). The outcome keeps what it would have proposed.
     close_settled(conn, episode_id, [cut_id])
     return counts
-
-
-def claude_budget(conn, episode_id, run_id, policy):
-    """How many more cuts this run (or, without a run, this episode) may hand to Claude."""
-    if not policy.get('claude'):
-        return 0
-    if run_id:
-        used = conn.execute("SELECT COUNT(*) FROM agent_escalations WHERE kind=? AND run_id=? AND group_key LIKE '%:claude'", (ESCALATION, run_id)).fetchone()[0]
-    else:
-        used = conn.execute("SELECT COUNT(*) FROM agent_escalations WHERE kind=? AND episode_id=? AND status='open' AND reviewer='claude'",
-                            (ESCALATION, episode_id)).fetchone()[0]
-    return int(policy.get('claude_items', 0)) - used
 
 
 def _question_view(question):

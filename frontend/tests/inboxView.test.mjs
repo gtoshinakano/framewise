@@ -1,14 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { choicesFor, decisionCounts, elsewhereText, flatOrder, groupByKind, mineCount, placeFor, reviewProposal, sampleDecisions, sheetPath } from '../src/inboxView.ts'
+import { choicesFor, decisionCounts, elsewhereText, flatOrder, groupByKind, mineCount, placeFor, sampleDecisions, sheetPath } from '../src/inboxView.ts'
 
 const item = (kind, extra = {}) => ({ id: `${kind}-1`, episode_id: 'e', run_id: null, kind, group_key: 'g', question: 'Q', status: 'open', reviewer: 'human',
   created_at: '', updated_at: '', cut_ids: ['c1'], options: [], proposal: null, evidence: {}, ...extra })
 
 test('questions are grouped in the order of the episode flow', () => {
-  const items = [item('review_question'), item('mystery'), item('missed_cut'), item('voice'), item('box_label')]
-  assert.deepEqual(groupByKind(items).map(group => group.kind), ['missed_cut', 'voice', 'box_label', 'review_question', 'mystery'])
-  assert.deepEqual(flatOrder(items).map(entry => entry.kind), ['missed_cut', 'voice', 'box_label', 'review_question', 'mystery'])
+  const items = [item('target_frame'), item('mystery'), item('missed_cut'), item('voice'), item('box_label')]
+  assert.deepEqual(groupByKind(items).map(group => group.kind), ['missed_cut', 'voice', 'box_label', 'target_frame', 'mystery'])
+  assert.deepEqual(flatOrder(items).map(entry => entry.kind), ['missed_cut', 'voice', 'box_label', 'target_frame', 'mystery'])
   assert.equal(groupByKind([item('mystery_kind')])[0].label, 'Mystery kind')
 })
 
@@ -35,16 +35,6 @@ test('one-click answers per kind carry the request the backend expects', () => {
   const failed = choicesFor(item('failed_run', { evidence: { jobs: [{ job_id: 'j1' }, { job_id: 'j2' }] } }))
   assert.deepEqual(failed.map(choice => [choice.label, choice.retry ?? choice.dismiss]), [['Retry 2', ['j1', 'j2']], ['Dismiss', ['j1', 'j2']]])
   assert.deepEqual(choicesFor(item('something_else')).map(choice => choice.close), ['resolved', 'dismissed'])
-})
-
-test('review proposals take the agent pick, then the recommended option, and the person overrides', () => {
-  const review = item('review_question', { proposal: { q1: 'b' }, evidence: { questions: [
-    { id: 'q1', question: 'A?', options: [{ id: 'a', text: 'x' }, { id: 'b', text: 'y' }], recommended: 'a' },
-    { id: 'q2', question: 'B?', options: [{ id: 'a', text: 'x' }], recommended: 'a' },
-    { id: 'q3', question: 'C?', options: [{ id: 'a', text: 'x' }] }] } })
-  assert.deepEqual(reviewProposal(review), [{ question: 'q1', option: 'b' }, { question: 'q2', option: 'a' }])
-  assert.deepEqual(reviewProposal(review, { q3: 'a' }).map(pick => pick.question), ['q1', 'q2', 'q3'])
-  assert.equal(choicesFor(review)[0].label, 'Take the 2 proposed answers')
 })
 
 test('sheets and places', () => {

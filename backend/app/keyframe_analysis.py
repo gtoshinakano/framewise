@@ -581,7 +581,8 @@ def state(cut_id):
                     ORDER BY j.rowid DESC LIMIT 1""", (cut_id,))
     status = 'missing' if not current else 'current' if key and content.get('selection_key') == key else 'stale'
     return {'status': status, 'selection_key': key,
-            'result': {'id': current['id'], 'origin': current['origin'], 'created_at': current['created_at'], **content} if current else None,
+            'result': {'id': current['id'], 'origin': current['origin'], 'created_at': current['created_at'], 'stale_reason': current.get('stale_reason'),
+                       **content} if current else None,
             'run': {'id': run['id'], 'phase': run['phase'], 'method': run['method'], 'roster_source': run['roster_source'], 'target_run_id': run['target_run_id'],
                     'model': run_model(run), 'roster': json.loads(run['roster_json']), 'timings': json.loads(run['timings_json'] or '{}')} if run else None,
             'job': job}

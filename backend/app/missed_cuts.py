@@ -314,6 +314,7 @@ def check_cut(proxy: Path, times, scores, start: float, end: float, size=None, s
 KIND = 'missed_cuts'          # agent_decisions.kind and the Autopilot profile's decision kind
 ESCALATION = 'missed_cut'     # agent_escalations.kind, one per grey peak
 TOLERANCE = 1e-6
+PEAK_MATCH = 0.06             # a boundary this close to a peak is that peak (check_cut's skip window)
 
 
 def proxy_path(conn, episode_id) -> Path:
@@ -336,9 +337,13 @@ def sequenced_cuts(conn, episode_id) -> set[str]:
 
 
 def asked_times(conn, episode_id) -> list[float]:
-    """Peaks already put to a reviewer (open, answered or dismissed): never asked again."""
-    return sorted(row[0] for row in conn.execute("""SELECT json_extract(evidence_json,'$.time') FROM agent_escalations
-        WHERE episode_id=? AND kind=? AND json_extract(evidence_json,'$.time') IS NOT NULL""", (episode_id, ESCALATION)))
+    """Peaks already settled once: put to a reviewer (open, answered or dismissed) or split by the agent (kept, undone or
+    merged back by the person). Never asked or split again: the person's last word stands (HARNESS.md D31)."""
+    asked = [row[0] for row in conn.execute("""SELECT json_extract(evidence_json,'$.time') FROM agent_escalations
+        WHERE episode_id=? AND kind=? AND json_extract(evidence_json,'$.time') IS NOT NULL""", (episode_id, ESCALATION))]
+    split = [row[0] for row in conn.execute("""SELECT json_extract(after_json,'$.left.end_time') FROM agent_decisions
+        WHERE episode_id=? AND kind=? AND json_extract(after_json,'$.left.end_time') IS NOT NULL""", (episode_id, KIND))]
+    return sorted(asked + split)
 
 
 def policy_for(conn, episode_id, run_id=None) -> dict:
@@ -526,6 +531,23 @@ def process(job_id, owner):
         worker.sync_episode_status(conn, job['episode_id'])
     worker.after_cancel(cancelled)
     worker.wake_event.set()
+
+
+def close_settled(conn, episode_id):
+    """Close open missed-cut questions the person settled in the editor: a boundary now sits at the peak (resolved), or the
+    cut the question is about was split, merged or deleted another way (dismissed: their edit is the last word)."""
+    closed = 0
+    for item in agent_log.escalations(conn, episode_id, 'open', kind=ESCALATION):
+        moment = (item['evidence'] or {}).get('time')
+        if moment is None:
+            continue
+        if conn.execute('SELECT 1 FROM cuts WHERE episode_id=? AND active=1 AND ABS(start_time-?)<=? LIMIT 1',
+                        (episode_id, moment, PEAK_MATCH)).fetchone():
+            closed += agent_log.close_escalation(conn, item['id'], 'resolved', {'by': 'settled elsewhere', 'why': 'a hard cut now sits there'})
+        elif item['cut_ids'] and not conn.execute(f"SELECT 1 FROM cuts WHERE active=1 AND id IN ({','.join('?' for _ in item['cut_ids'])}) LIMIT 1",
+                                                  item['cut_ids']).fetchone():
+            closed += agent_log.close_escalation(conn, item['id'], 'dismissed', {'by': 'settled elsewhere', 'why': 'the cut was changed by hand'})
+    return closed
 
 
 # --- answers and undo ------------------------------------------------------------------------------------------------

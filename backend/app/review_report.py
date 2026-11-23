@@ -9,7 +9,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from . import anime_bulk, cut_readiness, db, media, runs, sequence_store, subtitle_store
+from . import anime_bulk, cut_readiness, db, media, review_decisions, runs, sequence_store, subtitle_store
 
 router = APIRouter(prefix='/api')
 
@@ -18,10 +18,10 @@ CUT_FLAGS = """EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.title='Cut summary' AND a.superseded_by IS NULL) AS has_summary,
         EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_boxes,
         EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.character_context_id IS NOT NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_characters,
-        EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.character_context_id IS NULL AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_boxes,
+        EXISTS(SELECT 1 FROM character_detections d WHERE d.position='first' AND d.character_context_id IS NULL AND COALESCE(d.label_source,'')<>'manual' AND d.run_id=(SELECT r.id FROM character_detection_runs r WHERE r.cut_id=c.id ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_boxes,
         EXISTS(SELECT 1 FROM target_detections t JOIN target_slots s ON s.run_id=t.run_id AND s.slot=t.slot WHERE s.ignored=0
                AND t.run_id=(SELECT r.id FROM target_detection_runs r WHERE r.cut_id=c.id AND r.cut_start=c.start_time AND r.cut_end=c.end_time ORDER BY r.rowid DESC LIMIT 1)) AS has_target_boxes,
-        EXISTS(SELECT 1 FROM target_detections t JOIN target_slots s ON s.run_id=t.run_id AND s.slot=t.slot WHERE s.character_context_id IS NULL AND s.ignored=0
+        EXISTS(SELECT 1 FROM target_detections t JOIN target_slots s ON s.run_id=t.run_id AND s.slot=t.slot WHERE s.character_context_id IS NULL AND COALESCE(s.label_source,'')<>'manual' AND s.ignored=0
                AND t.run_id=(SELECT r.id FROM target_detection_runs r WHERE r.cut_id=c.id AND r.cut_start=c.start_time AND r.cut_end=c.end_time ORDER BY r.rowid DESC LIMIT 1)) AS has_unlabeled_target_boxes,
         -- Ready for review: a first frame and the motion, i.e. performance beats built from the current keyframe analysis, or for a
         -- cut analysed before keyframes existed its video analysis (summary_queue.missing_evidence).
@@ -31,6 +31,9 @@ CUT_FLAGS = """EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a
               OR (NOT EXISTS(SELECT 1 FROM analysis_results k WHERE k.cut_id=c.id AND k.superseded_by IS NULL AND json_extract(k.settings_json,'$.structured_type')='keyframe_analysis')
                   AND EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='video_analysis')))) AS has_visual_results,
         EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND json_extract(a.settings_json,'$.structured_type')='consistency_summary') AS has_consistency_summary,
+        -- an output an input changed after it was made (the titles the current flow makes again; stage_targets.STALE_TITLES)
+        EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL AND a.stale_reason IS NOT NULL
+               AND a.title IN ('Initial frame description','Keyframe analysis','Video analysis','Performance beats','Consistency summary','Cut summary')) AS has_stale_results,
         -- Newest job by rowid, which is creation order (created_at never goes backwards in rowid order). Ordering by
         -- created_at made SQLite read every candidate job's row past its payload_json, megabytes per cut.
         COALESCE((SELECT j.status='failed' FROM analysis_job_cuts jc JOIN jobs j ON j.id=jc.job_id WHERE jc.cut_id=c.id ORDER BY j.rowid DESC LIMIT 1),0) AS last_job_failed"""
@@ -76,11 +79,15 @@ def _consistency(conn, cut_id):
     content = _loads(row['content'], {})
     questions = [item for item in content.get('questions') or [] if isinstance(item, dict)]
     answers = conn.execute('SELECT updated_at,content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,)).fetchone()
-    answered = bool(answers and answers['content'].strip() and answers['updated_at'] >= row['created_at'])
+    # A question the saved answers already cover (same topic and character, or one of its options) stays answered after the
+    # review is written again: the person's answer is their last word (HARNESS.md D32).
+    text = answers['content'] if answers else ''
+    open_questions = [item for item in questions if review_decisions.selection(text, item, questions) is None]
+    answered = not open_questions or bool(answers and text.strip() and answers['updated_at'] >= row['created_at'])
     contradictions = [{'character': item.get('character'), 'picture': item.get('picture'), 'claim': item.get('claim')}
                       for item in content.get('visual_check') or [] if isinstance(item, dict) and item.get('verdict') == 'contradicts']
     draft = bool(conn.execute('SELECT 1 FROM cut_review_drafts WHERE cut_id=?', (cut_id,)).fetchone())
-    return {'questions': len(questions), 'answered': answered, 'draft': draft, 'contradictions': contradictions}
+    return {'questions': len(open_questions) if not answered else 0, 'answered': answered, 'draft': draft, 'contradictions': contradictions}
 
 
 def _voices(conn, episode_id, start, end):
@@ -163,6 +170,7 @@ def report(conn, episode_id, from_cut=None, to_cut=None):
                 checks['no_boxes'].append(number)
             if cut['has_unlabeled_boxes']:
                 unlabeled = conn.execute("""SELECT COUNT(*) FROM character_detections WHERE position='first' AND character_context_id IS NULL
+                    AND COALESCE(label_source,'')<>'manual'
                     AND run_id=(SELECT id FROM character_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1)""", (cut['id'],)).fetchone()[0]
                 gates['first_frame'].append({'cut': number, 'cut_id': cut['id'], 'unlabeled_boxes': unlabeled})
             auto = conn.execute("""SELECT COUNT(*) FROM character_detections WHERE position='first' AND label_source='auto'
@@ -196,8 +204,9 @@ def report(conn, episode_id, from_cut=None, to_cut=None):
     # Cuts whose inputs are not settled enough for a step (cut_readiness, D26): the autopilot never queues the step for them.
     progress['held'] = {'target_frames': [], 'visual': [], 'beats': [], 'consistency': []}
     enabled = [cut for cut in cuts if cut['analysis_enabled']]
+    inbox = cut_readiness.inbox(conn, episode_id, enabled)
     for cut in enabled:
-        ready = cut_readiness.for_cut(conn, episode, cut, readiness_episode)
+        ready = cut_readiness.for_cut(conn, episode, cut, readiness_episode, inbox.get(cut['id'], set()))
         for step, reasons in ready['held'].items():
             if reasons:
                 progress['held'][step].append({'cut': cut['cut_index'] + 1, 'cut_id': cut['id'], 'reasons': reasons})

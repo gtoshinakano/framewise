@@ -10,7 +10,7 @@ import { CharacterOptions } from './CharacterOptions'
 import { NEW_CARD } from './unregisteredView'
 import { detectAt, NOTHING_FOUND, type Point } from './pointDetect'
 import { useToast } from './Toasts'
-import { ActionButton, StaleChip, StatusChip } from './RunUi'
+import { ActionButton, StaleChip, StatusChip, StaleNote, staleClass } from './RunUi'
 import { boxesInFrame, canDraw, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, REVIEW_LABELS, slotChip, slotName, type Box, type TargetBox, type TargetCandidate, type TargetDetections, type TargetFrameInfo, type TargetRun } from './targetView'
 
 /** One selected frame; `reason: 'manual'` when the user added it. */
@@ -219,7 +219,7 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
       frame?.scrollIntoView({ block: 'nearest' }); frame?.focus({ preventScroll: true })
     })
   }
-  return <section aria-label="Target frames" className="space-y-3 rounded-xl border hairline bg-[#171c25] p-3">
+  return <section aria-label="Target frames" className={`space-y-3 rounded-xl border hairline bg-[#171c25] p-3 ${run?.stale ? 'is-stale' : ''}`}>
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="flex items-center gap-2"><h3 className="text-sm font-semibold">Target frames</h3>{run?.stale_reason && <StaleChip reason={run.stale_reason} />}</div>
       <div className="flex flex-wrap items-center gap-2">
@@ -241,9 +241,11 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
       {selection.result.coverage_limited && <p className="text-xs text-[#e6c58b]">Some detected changes may not be represented in the selected frames. Add frames between two cards to cover them.</p>}
       {selection.result.edits && <p className="muted text-xs">{[selection.result.edits.added.length && `${selection.result.edits.added.length} added`, selection.result.edits.removed.length && `${selection.result.edits.removed.length} removed`].filter(Boolean).join(' · ')} by you. They stay when the cut is evaluated again.</p>}
       {data?.job?.status === 'failed' && <p role="alert" className="flex items-start gap-2 rounded-lg border border-[#63363e] bg-[#2b191f] px-3 py-2 text-xs text-[#ffb6bc]"><XCircle size={14} className="mt-0.5 shrink-0" aria-hidden />{data.job.error || 'Detection failed.'}</p>}
-      {run?.stale && <p className="rounded-lg border border-[#6b5a2f] bg-[#2a2314] px-3 py-2 text-xs text-[#e6c58b]">{run.stale_reason === 'Frames were added; detect again'
+      {run?.stale && <StaleNote reason={run.stale_reason === 'Frames were added; detect again'
         ? 'You added frames since these people were found. Detect again to find them on the new frames; your boxes and names on the other frames stay.'
-        : "The cut's timing or evaluation changed since these people were found. Detect characters again; evaluating different frames removes them."}</p>}
+        : run.stale_reason === 'First-frame boxes changed; detect again'
+          ? 'The first-frame boxes changed since these people were found. Detect again: your boxes and names here stay as anchors.'
+          : "The cut's timing or evaluation changed since these people were found. Detect characters again; evaluating different frames removes them."} />}
       {!run && !active && data && <p className="muted rounded-lg border border-dashed hairline px-3 py-3 text-center text-xs">No people found on these frames yet. Press Detect characters. The first frame's boxes set the order and the colours.</p>}
       {live && <div className="space-y-1.5 rounded-lg border hairline p-2" role="group" aria-label="People in this cut">
         <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-xs text-[#d5dbe5]">People · {visibleSlots.length}</strong>
@@ -336,12 +338,14 @@ function Filmstrip({ run, cutId, revision, flagged, filtered, onPick }: {
 function KeyframeHeader({ state, analysis }: { state: KeyframeAnalysisState; analysis: KeyframeAnalysis }) {
   const model = state.run?.model || 'Vision model'
   const method = analysis.method === 'hybrid' ? `${model} + DWPose keypoints` : `${model} only (DWPose not installed)`
-  return <div className="space-y-1 rounded-lg border hairline px-3 py-2 text-xs">
+  const stale = state.status === 'stale' ? 'The frames were evaluated again after this analysis; run Keyframes again' : state.result?.stale_reason
+  return <div className={`space-y-1 rounded-lg border hairline px-3 py-2 text-xs ${staleClass(stale)}`}>
     <div className="flex flex-wrap items-center gap-1.5"><strong className="text-[#d5dbe5]">Keyframe analysis</strong><StatusChip tone="grey" title="How the body changes were found">{method}</StatusChip>
       {state.run?.roster_source && <StatusChip tone="grey" title="Where the names came from">{state.run.roster_source === 'target_slots' ? 'Names from these frames' : state.run.roster_source === 'first_frame' ? 'Names from the first frame' : 'No names'}</StatusChip>}
-      {state.status === 'stale' && <StatusChip tone="amber" title="The frames were evaluated again after this analysis; run Keyframes again">Stale</StatusChip>}</div>
-    {analysis.summary && <p className="muted">{analysis.summary}</p>}
-    {state.status === 'stale' && <p className="text-[#e6c58b]">These frames changed since the analysis; its states and changes are hidden until Keyframes runs again.</p>}
+      {stale && <StaleChip reason={stale} />}</div>
+    {state.status === 'stale' ? <StaleNote reason="These frames changed since the analysis; its states and changes are hidden until Keyframes runs again." />
+      : stale && <StaleNote reason={`${stale}. Run the visual analysis again for current states and changes.`} />}
+    {analysis.summary && <p className={`muted ${stale ? 'stale-body' : ''}`}>{analysis.summary}</p>}
   </div>
 }
 

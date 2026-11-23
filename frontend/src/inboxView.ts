@@ -67,8 +67,9 @@ export type TriageItem = {
 
 export type InboxCounts = { episodes: { episode_id: string; title: string; project_title: string; for_person: number; for_claude: number }[] }
 
-/** The order questions appear in: the order of an episode's flow (a cut change first, the review answers last). */
-export const KIND_ORDER = ['failed_run', 'missed_cut', 'line_split', 'voice', 'new_person', 'box_label', 'target_frame', 'review_question']
+/** The order questions appear in: the order of an episode's flow (a cut change first). Review questions are never inbox
+ * items: they are answered in the cut dialog (docs/autopilot/HARNESS.md D32). */
+export const KIND_ORDER = ['failed_run', 'missed_cut', 'line_split', 'voice', 'new_person', 'box_label', 'target_frame']
 
 export const KIND_LABEL: Record<string, string> = {
   failed_run: 'Failed runs',
@@ -78,7 +79,6 @@ export const KIND_LABEL: Record<string, string> = {
   new_person: 'Unknown people',
   box_label: 'Box names',
   target_frame: 'Target frames',
-  review_question: 'Review questions',
 }
 
 export const DECISION_LABEL: Record<string, string> = {
@@ -186,11 +186,6 @@ export function choicesFor(item: Escalation): Choice[] {
       return [{ key: 'ok', label: frames.length === 1 ? 'The frame is right' : `All ${frames.length} frames are right`, tone: 'primary',
         request: post(id, 'target-frames', { frames: Object.fromEntries(frames.map(frame => [String(frame.ordinal), 'ok'])) }) }]
     }
-    case 'review_question': {
-      const answers = reviewProposal(item)
-      return answers.length ? [{ key: 'accept', label: `Take the ${answers.length} proposed answer${answers.length === 1 ? '' : 's'}`, tone: 'primary', proposed: true,
-        request: post(id, 'review-answers', { answers }) }] : []
-    }
     case 'failed_run': {
       const jobs: string[] = (evidence.jobs ?? []).map((job: { job_id: string }) => job.job_id)
       return [
@@ -203,25 +198,10 @@ export function choicesFor(item: Escalation): Choice[] {
   }
 }
 
-/** A review question as the drawer shows it. */
-export type ReviewQuestion = { id: string; topic?: string; character?: string; question: string; options: { id: string; text: string }[]; recommended?: string; proposal?: string | null; why_asked?: string }
-
-export function reviewQuestions(item: Escalation): ReviewQuestion[] {
-  return (item.evidence?.questions ?? []) as ReviewQuestion[]
-}
-
-/** `[{question, option}]` for the questions that have a proposal (the agent's pick, else the reviewer's recommended option). */
-export function reviewProposal(item: Escalation, picks: Record<string, string> = {}) {
-  return reviewQuestions(item)
-    .map(question => ({ question: question.id, option: picks[question.id] ?? (item.proposal?.[question.id] || question.proposal || question.recommended || null) }))
-    .filter((pick): pick is { question: string; option: string } => !!pick.option)
-}
-
 /** A sheet image the question has, if any (relative to /api). */
 export function sheetPath(item: Escalation): string | null {
   const evidence = item.evidence ?? {}
   if (item.kind === 'missed_cut' && evidence.strip) return String(evidence.strip).replace(/^\/api/, '')
-  if (item.kind === 'review_question' && evidence.sheet) return String(evidence.sheet).replace(/^\/api/, '')
   if (item.kind === 'voice') return `/escalations/${item.id}/voice-sheet`
   if (item.kind === 'box_label' || item.kind === 'new_person') return `/escalations/${item.id}/box-sheet`
   if (item.kind === 'target_frame') return `/escalations/${item.id}/target-sheet`

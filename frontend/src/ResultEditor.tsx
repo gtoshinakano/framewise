@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AlignLeft, AudioLines, BoxSelect, Captions, Drama, FileText, GalleryHorizontal, History, Image as ImageIcon, Layers3, LayoutTemplate, ListTree, Plus, RotateCcw, Save, Sparkles, StickyNote, Trash2, Video, WandSparkles, X, type LucideIcon } from 'lucide-react'
 import { api, type AnalysisContext, type AnalysisResult, type ResultKind } from './api'
-import { resultAccent, StaleChip } from './RunUi'
+import { resultAccent, StaleChip, staleClass } from './RunUi'
 import { formatAgo } from './queueView'
 
 const kinds: { value: ResultKind; label: string }[] = [
@@ -112,7 +112,7 @@ export default function ResultEditor({ cutId, refreshKey, onLoaded, onChanged, e
       const Icon = look.icon
       const name = result.title || look.label
       const selected = draft?.id === result.id
-      return <li key={result.id} className="group flex items-center gap-0.5">
+      return <li key={result.id} className={`group flex items-center gap-0.5 rounded-md border border-transparent ${!result.superseded_by ? staleClass(result.stale_reason) : ''}`}>
         <button type="button" onClick={() => setDraft(result)} title={`${name} · ${look.label}${result.superseded_by ? ' · earlier revision' : ''}`} aria-current={selected || undefined} className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-xs ${selected ? 'bg-[#322a48] ring-1 ring-[#a58ae8]' : 'hover:bg-[#262d3a]'} ${result.superseded_by ? 'opacity-60' : ''}`}>
           <Icon size={14} style={{ color: look.color }} className="shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate">{name}</span>

@@ -116,6 +116,17 @@ class ReviewReportTest(unittest.TestCase):
             conn.execute("INSERT INTO cut_brief_instructions(cut_id,content,updated_at) VALUES ('c3','old','2026-11-20 09:00:00')")
         self.assertEqual(self.get()['gates']['decisions'][0]['cut'], 3)
 
+    def test_old_answers_that_cover_every_question_still_count(self):
+        with db.connect() as conn:
+            conn.execute("""UPDATE analysis_results SET content=? WHERE id='k3'""", (json.dumps({'questions': [
+                {'id': 'q1', 'topic': 'smile', 'options': [{'id': 'a', 'text': 'Yes'}]},
+                {'id': 'q2', 'topic': 'pose', 'character': 'Ann', 'options': [{'id': 'b', 'text': 'Sits'}]}]}),))
+            conn.execute("INSERT INTO cut_brief_instructions(cut_id,content,updated_at) VALUES ('c3','- Smile: yes','2026-11-20 09:00:00')")
+        self.assertEqual(self.get()['gates']['decisions'][0]['questions'], 1)  # only the uncovered question is open
+        with db.connect() as conn:
+            conn.execute("UPDATE cut_brief_instructions SET content='- Smile: yes\n- Pose (Ann): Sits' WHERE cut_id='c3'")
+        self.assertEqual(self.get()['gates']['decisions'], [])
+
     def test_range_limits_cuts_and_voices(self):
         report = self.get('?from_cut=3&to_cut=4')
         self.assertEqual(report['gates']['first_frame'], [])
@@ -131,6 +142,7 @@ class ReviewReportTest(unittest.TestCase):
         self.assertTrue(cuts['c2']['has_unlabeled_target_boxes'])
         self.assertTrue(cuts['c3']['has_visual_results'])
         self.assertTrue(cuts['c3']['has_consistency_summary'])
+        self.assertEqual((cuts['c3']['has_stale_results'], cuts['c1']['has_stale_results']), (True, False))  # c3's beats are stale
 
 
 if __name__ == '__main__':

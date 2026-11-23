@@ -18,7 +18,7 @@ def serialize_cut(cut: dict):
     cut["active"] = bool(cut["active"])
     cut["analysis_enabled"] = bool(cut["analysis_enabled"])
     cut["no_characters"] = bool(cut.get("no_characters"))
-    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters", "has_unlabeled_boxes", "has_target_boxes", "has_unlabeled_target_boxes", "has_visual_results", "has_consistency_summary", "last_job_failed"):
+    for flag in ("has_analysis_results", "has_summary", "has_boxes", "has_characters", "has_unlabeled_boxes", "has_target_boxes", "has_unlabeled_target_boxes", "has_visual_results", "has_consistency_summary", "has_stale_results", "last_job_failed"):
         if flag in cut:
             cut[flag] = bool(cut[flag])
     fallback_first, fallback_last = media.cut_frame_times(cut["start_time"], cut["end_time"])

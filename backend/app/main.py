@@ -1417,6 +1417,7 @@ def create_transcript_segment(episode_id: str, body: TranscriptInput):
                      (segment_id, episode_id, body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id))
         structured_results.invalidate_transcript(conn, episode_id, body.start_time, body.end_time)
         subtitle_store.invalidate_probes(conn, episode_id)
+        agent_log.settle(conn, episode_id)
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (segment_id,)))
 
 
@@ -1432,6 +1433,9 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
     if body.left_unknown:
         # The line editor's "Unknown – don't ask again": settled with or without a character (cut_readiness.speaker_open).
         metadata = (metadata[0], cut_readiness.LEFT_UNKNOWN, None, metadata[3])
+    elif segment['character_context_id'] and not body.character_context_id:
+        # The person cleared the speaker: their last word, never asked again (HARNESS.md D32)
+        metadata = (metadata[0], cut_readiness.LEFT_UNKNOWN, None, metadata[3])
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         current = conn.execute("SELECT superseded_by,deleted FROM transcript_segments WHERE id=?", (segment_id,)).fetchone()
@@ -1441,9 +1445,7 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
                      (new_id, segment["episode_id"], body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id, "manual_edit", segment["model_id"], segment["job_id"], segment_id, *metadata))
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
         agent_log.note_override(conn, 'transcript_segments', segment_id)
-        if (body.character_context_id and not segment['character_context_id']) or metadata[1] in cut_readiness.DECIDED_SPEAKERS:
-            from . import voice_resolver
-            voice_resolver.close_settled(conn, episode['id'])
+        agent_log.settle(conn, episode['id'])  # a voice or line-split question this line settles closes (cut dialog, Audio tab)
         structured_results.invalidate_transcript(conn, episode['id'], segment['start_time'], segment['end_time'])
         if (segment['start_time'], segment['end_time']) != (body.start_time, body.end_time):
             structured_results.invalidate_transcript(conn, episode['id'], body.start_time, body.end_time)
@@ -1473,6 +1475,7 @@ def confirm_transcript_speakers(episode_id: str, body: SpeakerConfirmInput):
                           old["model_id"], old["job_id"], segment_id, old["words_json"], "manual", None, old["evidence_json"]))
             conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
             confirmed.append(new_id)
+        agent_log.settle(conn, episode_id)
     return {"confirmed": len(confirmed), "skipped": skipped}
 
 
@@ -1492,6 +1495,7 @@ def delete_transcript_segment(segment_id: str):
         agent_log.note_override(conn, 'transcript_segments', segment_id)
         structured_results.invalidate_transcript(conn, old['episode_id'], old['start_time'], old['end_time'])
         subtitle_store.invalidate_probes(conn, old['episode_id'])
+        agent_log.settle(conn, old['episode_id'])
     return {"ok": True}
 
 
@@ -1508,6 +1512,7 @@ def merge_transcript_segments(episode_id: str, body: TranscriptMergeInput):
             raise HTTPException(exc.status, exc.message)
         for segment_id in body.segment_ids:
             agent_log.note_override(conn, 'transcript_segments', segment_id)
+        agent_log.settle(conn, episode_id)
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
 
 
@@ -1520,7 +1525,9 @@ def correct_transcript(episode_id: str, body: TranscriptCorrections):
     episode = require_episode(episode_id)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        return transcript_corrections.apply(conn, episode, body.source.model_dump(), [item.model_dump() for item in body.corrections])
+        outcome = transcript_corrections.apply(conn, episode, body.source.model_dump(), [item.model_dump() for item in body.corrections])
+        agent_log.settle(conn, episode_id)
+        return outcome
 
 
 @app.post("/api/transcript-segments/{segment_id}/split")
@@ -1533,6 +1540,7 @@ def split_transcript_segment(segment_id: str, body: TranscriptSplitInput):
         except line_edit.LineEditError as exc:
             raise HTTPException(exc.status, exc.message)
         agent_log.note_override(conn, 'transcript_segments', segment_id)
+        agent_log.settle(conn, conn.execute('SELECT episode_id FROM transcript_segments WHERE id=?', (left_id,)).fetchone()[0])
     return [serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (item,))) for item in (left_id, right_id)]
 
 
@@ -1751,6 +1759,7 @@ def remove_stale_character_frame(run_id: str, position: Literal['first', 'last']
                      (json.dumps(frames), run_id))
         episode = conn.execute('SELECT project_id FROM episodes WHERE id=?', (run['episode_id'],)).fetchone()
         pending = worker.pending_jobs(conn, run['episode_id'], ('character_detect',), [run['cut_id']])
+        character_decisions.close_settled(conn, run['episode_id'])
     cache_dir = db.DATA_DIR / 'projects' / episode['project_id'] / 'episodes' / run['episode_id'] / 'character-frames'
     if not pending and not cache_dir.is_symlink():
         frame_path = cache_dir / f"{run['cut_id']}-{position}.jpg"
@@ -1784,7 +1793,7 @@ def label_character_detection(detection_id: str, body: CharacterDetectionLabelIn
             raise HTTPException(400, 'Choose a character from this project')
         if conn.execute('SELECT 1 FROM character_image_references WHERE detection_id=?', (detection_id,)).fetchone():
             raise HTTPException(409, 'Remove the saved reference before changing this label')
-        conn.execute("UPDATE character_detections SET character_context_id=?,label_source=?,match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (body.character_context_id, 'manual' if body.character_context_id else None, detection_id))
+        conn.execute("UPDATE character_detections SET character_context_id=?,label_source=?,match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (body.character_context_id, 'manual', detection_id))
         structured_results.opening_box_edited(conn, row['run_id'], row['position'])
         agent_log.note_override(conn, 'character_detections', detection_id, now={'character_context_id': body.character_context_id})
         character_decisions.close_settled(conn, row_episode(conn, row['run_id']))
@@ -1861,6 +1870,7 @@ def save_character_reference(detection_id: str):
                         SELECT ?,model_id,model_revision,preprocessing,dimensions,embedding
                         FROM character_detection_embeddings WHERE detection_id=?''', (ref_id, detection_id))
         conn.execute("UPDATE character_detections SET label_source='manual' WHERE id=?", (detection_id,))
+        character_decisions.close_settled(conn, row_episode(conn, detection_id=detection_id))
     return {'id': ref_id}
 
 
@@ -3039,7 +3049,9 @@ def retry_visual_job(conn, job, payload):
 def retry_analysis(job_id: str):
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        return {'job_id': retry_job(conn, job_id)}
+        retry_id = retry_job(conn, job_id)
+        agent_log.settle(conn, conn.execute('SELECT episode_id FROM jobs WHERE id=?', (job_id,)).fetchone()[0])  # its failed-run question
+        return {'job_id': retry_id}
 
 
 def retry_job(conn, job_id):

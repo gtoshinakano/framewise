@@ -420,7 +420,7 @@ def set_label(conn, box, character_id, source, *, kind=KIND_BOXES, tier='rules',
     reason = f'Agent ({tier}): {why}'[:2000] if character_id else None
     cursor = conn.execute("""UPDATE character_detections SET character_context_id=?,label_source=?,match_reason=?
         WHERE id=? AND character_context_id IS ? AND label_source IS ?""",
-                          (character_id, source if character_id else None, reason, box['id'], box['character_context_id'], box['label_source']))
+                          (character_id, source if character_id or source == 'manual' else None, reason, box['id'], box['character_context_id'], box['label_source']))
     if not cursor.rowcount:
         return None
     if before['character_context_id'] != character_id:
@@ -430,7 +430,7 @@ def set_label(conn, box, character_id, source, *, kind=KIND_BOXES, tier='rules',
     cut = conn.execute('SELECT cut_id FROM character_detection_runs WHERE id=?', (box['run_id'],)).fetchone()
     return agent_log.record(conn, episode_id=episode_id, run_id=run_id, cut_id=cut['cut_id'] if cut else None, kind=kind, tier=tier,
                             target_table='character_detections', target_id=box['id'], before=before,
-                            after={'character_context_id': character_id, 'label_source': source if character_id else None, 'match_reason': reason},
+                            after={'character_context_id': character_id, 'label_source': source if character_id or source == 'manual' else None, 'match_reason': reason},
                             evidence=evidence or {}, confidence=confidence, summary=f'{verb} a box as {name}: {why}'[:500])
 
 
@@ -479,7 +479,7 @@ def asked_boxes(conn, episode_id):
 def ask_labels(conn, episode_id, character_id, chunk, reviewer, purpose, names, counts, run_id):
     """One ``box_label`` question for up to ``SHEET_ROWS`` boxes proposed as one character."""
     name = names.get(character_id, 'someone')
-    key = f"{purpose}:{character_id}:{chunk[0]['id']}" + (':claude' if reviewer == 'claude' else '')
+    key = _question_key(conn, episode_id, ESC_LABELS, f"{purpose}:{character_id}:{chunk[0]['id']}", reviewer)
     question = f'Are these {len(chunk)} box(es) {name}?' if character_id != 'unknown' else f'Who are these {len(chunk)} box(es)?'
     agent_log.escalate(conn, episode_id=episode_id, kind=ESC_LABELS, group_key=key, run_id=run_id, reviewer=reviewer, question=question,
                        cut_ids=[item['cut_id'] for item in chunk], options=['confirm', 'reject'],
@@ -557,7 +557,7 @@ def publish_boxes(conn, episode_id, payload, counts, names):
         reviewer = 'claude' if weight == 'borderline' and budget > 0 and mode != 'ask' else 'human'
         if reviewer == 'claude':
             budget -= 1
-        key = f"person:{representative['id']}" + (':claude' if reviewer == 'claude' else '')
+        key = _question_key(conn, episode_id, ESC_PERSON, f"person:{representative['id']}", reviewer)
         cuts_seen = sorted({box['cut_index'] + 1 for box in members})
         agent_log.escalate(conn, episode_id=episode_id, kind=ESC_PERSON, group_key=key, run_id=run_id, reviewer=reviewer,
                            question=(f'Unknown person in {len(cuts_seen)} cut(s) ({why}). Who is it?' if weight != 'background'
@@ -623,7 +623,7 @@ def publish_targets(conn, episode_id, payload, counts, names):
             asks.append({'ordinal': frame['ordinal'], 'frame': f'F{number}', 'flags': sorted((frame.get('review') or {}).get('flags') or {}),
                          'score': (frame.get('review') or {}).get('score'), 'why': decision['why'],
                          'proposal': 'reviewed' if decision['action'] == 'reviewed' else None})
-        unnamed = [number for number, slot in slots.items() if not slot['ignored'] and not slot['character_context_id']
+        unnamed = [number for number, slot in slots.items() if not slot['ignored'] and not slot['character_context_id'] and slot.get('label_source') != 'manual'
                    and any(number in found for found in item['here'].values())]
         if not asks and not unnamed:
             continue
@@ -631,7 +631,7 @@ def publish_targets(conn, episode_id, payload, counts, names):
         if reviewer == 'claude':
             budget -= 1
         cut = item['cut']
-        key = f"cut:{cut['id']}" + (':claude' if reviewer == 'claude' else '')
+        key = _question_key(conn, episode_id, ESC_TARGET, f"cut:{cut['id']}", reviewer)
         parts = [f'{len(asks)} flagged frame(s)'] if asks else []
         if unnamed:
             parts.append(f'{len(unnamed)} unnamed colour(s)')
@@ -642,10 +642,18 @@ def publish_targets(conn, episode_id, payload, counts, names):
         counts['asked_target_cuts'] += 1
 
 
+def _question_key(conn, episode_id, kind, base, reviewer):
+    """The group key of a question: ``base`` (``:claude`` added for Claude, which the budget counts), or the key of the open
+    question about the same thing, so a question Claude handed to the person is updated, never asked a second time."""
+    found = conn.execute("SELECT group_key FROM agent_escalations WHERE episode_id=? AND kind=? AND status='open' AND group_key IN (?,?)",
+                         (episode_id, kind, base, f'{base}:claude')).fetchone()
+    return found[0] if found else base + (':claude' if reviewer == 'claude' else '')
+
+
 def visible_target_state(conn, run):
     """The run's frames with the flags the Target frames tab shows (edits applied) and its slots by number."""
     from . import target_reviews
-    slot_rows = [dict(row) for row in conn.execute('SELECT slot,character_context_id,ignored FROM target_slots WHERE run_id=? ORDER BY slot', (run['id'],))]
+    slot_rows = [dict(row) for row in conn.execute('SELECT slot,character_context_id,label_source,ignored FROM target_slots WHERE run_id=? ORDER BY slot', (run['id'],))]
     boxes = [target_reviews.box_row(row) for row in conn.execute(
         'SELECT d.* FROM target_detections d JOIN target_slots s ON s.run_id=d.run_id AND s.slot=d.slot WHERE d.run_id=? AND s.ignored=0 ORDER BY d.rowid', (run['id'],))]
     frames = target_reviews.visible_reviews(_load(run['frames_json'], []), slot_rows, boxes, _load(run['candidates_json'], []))
@@ -657,7 +665,8 @@ def unnamed_left(slots, colours):
     """The listed colours (1-based) that are still shown, have boxes and have no character. A colour with no boxes left has
     nothing to name."""
     return [colour for colour in colours or [] if (slots.get(colour - 1) or {}).get('ignored') is not None
-            and not slots[colour - 1]['ignored'] and not slots[colour - 1]['character_context_id'] and slots[colour - 1].get('boxes')]
+            and not slots[colour - 1]['ignored'] and not slots[colour - 1]['character_context_id'] and slots[colour - 1].get('label_source') != 'manual'
+            and slots[colour - 1].get('boxes')]
 
 
 def target_settled(conn, evidence):
@@ -784,7 +793,7 @@ def answer_labels(conn, escalation_id, *, confirm=(), reject=(), character_id=No
     for box_id in reject:
         box = _box_state(conn, box_id)
         if box and box['label_source'] in (None, 'auto', agent_log.AGENT) and box['character_context_id']:
-            done.append(set_label(conn, box, None, None, tier=tier, run_id=run_id, episode_id=episode_id,
+            done.append(set_label(conn, box, None, 'manual' if tier == 'human' else None, tier=tier, run_id=run_id, episode_id=episode_id,
                                   why=f'{tier} said it is not {names.get(box["character_context_id"])}', evidence={'escalation': escalation_id}, names=names))
     rest = listed - set(confirm) - set(reject)
     if rest and tier == 'claude':
@@ -855,7 +864,14 @@ def answer_person(conn, escalation_id, *, choice, character_id=None, title=None,
         for box_id in chosen:
             done.append(remove_box(conn, box_id, tier=tier, run_id=run_id, episode_id=episode_id, why=f'{tier} called the person background',
                                    evidence={'escalation': escalation_id}))
-    elif choice != 'leave':
+    elif choice == 'leave':
+        if tier == 'human':  # the person left them unnamed: their last word, never grouped and asked again (HARNESS.md D32)
+            for box_id in chosen:
+                box = _box_state(conn, box_id)
+                if box and box['label_source'] != 'manual' and not box['character_context_id']:
+                    done.append(set_label(conn, box, None, 'manual', tier=tier, run_id=run_id, episode_id=episode_id,
+                                          why='the person left the box unnamed', evidence={'escalation': escalation_id}, names=names))
+    else:
         raise Refused('Unknown answer')
     remaining = [box_id for box_id in listed if box_id not in chosen]
     if remaining:

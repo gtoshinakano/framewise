@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ChevronDown, Drama, RotateCcw } from 'lucide-react'
 import { api, type AnalysisResult, type Job, type PerformanceBeats as Beats } from './api'
-import { ActionButton, StaleChip, StatusChip } from './RunUi'
+import { ActionButton, StaleChip, StatusChip, StaleNote, staleClass } from './RunUi'
 import { formatAgo } from './queueView'
 
 const DELIVERY: Record<string, string> = { on_screen: 'lip-synced', off_screen: 'off screen', inner_voice: 'inner voice', narrative: 'narration' }
@@ -28,10 +28,12 @@ export function PerformanceBeats({ cutId, results, jobs, disabled, onStarted }: 
   const status = pending ? <StatusChip tone={pending.status === 'running' ? 'purple' : 'amber'}>{pending.status === 'running' ? 'Writing' : 'Queued'}</StatusChip>
     : staleReason ? <StaleChip reason={staleReason} />
     : beats ? <StatusChip tone="green">Current</StatusChip> : <StatusChip tone="grey">Not written</StatusChip>
-  return <details open className="group shrink-0 rounded-lg border hairline bg-[#171c25] text-xs">
+  return <details open className={`group shrink-0 rounded-lg border hairline bg-[#171c25] text-xs ${staleClass(staleReason)}`}>
     <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 font-semibold text-[#d5dbe5]"><ChevronDown size={14} className="-rotate-90 transition-transform group-open:rotate-0" aria-hidden />
       <Drama size={14} className="text-[#f08a5d]" aria-hidden />Performance beats{result?.created_at && <span className="font-normal text-[10px] text-[#9aa0a8]">{formatAgo(result.created_at)}</span>}<span className="ml-auto">{status}</span></summary>
     <div className="space-y-2 border-t hairline p-3">
+      {staleReason && <StaleNote reason={staleReason} />}
+      <div className={`space-y-2 ${staleReason ? 'stale-body' : ''}`}>
       {beats?.summary && <p className="text-[#d5dbe5]">{beats.summary}</p>}
       {!beats && <p className="muted">The keyframes have no beats yet. They are written after the keyframe analysis, or with the button below.</p>}
       {beats && <ol className="space-y-2">{beats.beats.map((beat, index) => <li key={index} className="rounded border hairline p-2">
@@ -42,6 +44,7 @@ export function PerformanceBeats({ cutId, results, jobs, disabled, onStarted }: 
         {beat.speech.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{beat.speech.map(line => <span key={line.line} className="rounded bg-[#2a3140] px-1.5 py-0.5 text-[10px]" title={`${line.start.toFixed(2)}–${line.end.toFixed(2)}s`}>
           {line.line} · {line.speaker} · {DELIVERY[line.delivery] ?? line.delivery}</span>)}</div>}
       </li>)}</ol>}
+      </div>
       {error && <p role="alert" className="text-[#ff9fa7]">{error}</p>}
       {(keyframes || visual) && <ActionButton compact icon={<RotateCcw size={13} />} pending={queueing} disabled={disabled} title="Queue beats from the current keyframe analysis" onClick={() => void rewrite()}>{beats ? 'Write beats again' : 'Write beats'}</ActionButton>}
     </div>

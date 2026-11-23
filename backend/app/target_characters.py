@@ -17,6 +17,7 @@ Runs as a ``character_detect`` job with ``workflow: 'target_frames_v1'`` in the 
 again keeps what the user did on this tab: slot labels they set, and boxes they drew or moved. It saves
 everything in one transaction at the end, so an interrupted job leaves the previous result alone.
 """
+import hashlib
 import json
 import logging
 import os
@@ -72,6 +73,36 @@ def frame_capacity(slots, locked=False):
     return max(MAX_BOXES, opening) if locked else MAX_BOXES
 
 
+def opening_signature(boxes):
+    """What a run took from the first frame: each first-frame box with its place and name. Detection mirrors them into the
+    opening frame and starts its colours from them, so a run built from other boxes must be detected again."""
+    rows = sorted([str(box['id']), str(box['box_json']), box['character_context_id'] or ''] for box in boxes)
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16]
+
+
+def current_opening(cut_id, conn=None):
+    """The first-frame boxes of the cut's latest detection run (``anime_bulk.cut_evidence``'s choice)."""
+    run = db.one("""SELECT id,frames_json FROM character_detection_runs WHERE cut_id=? ORDER BY rowid DESC LIMIT 1""", (cut_id,), conn=conn)
+    if not run or not any(frame.get('position') == 'first' for frame in json.loads(run['frames_json'] or '[]')):
+        return []
+    return db.all_rows("""SELECT id,box_json,character_context_id FROM character_detections WHERE run_id=? AND position='first'
+        ORDER BY rowid""", (run['id'],), conn=conn)
+
+
+def opening_changed(run, cut_id, conn=None):
+    """Whether the first-frame boxes changed since ``run`` was detected (older runs stored only the box ids)."""
+    try:
+        provenance = json.loads(run['input_json'] or '{}')
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(provenance, dict) or 'opening_boxes' not in provenance:
+        return False
+    boxes = current_opening(cut_id, conn)
+    if provenance.get('opening'):
+        return provenance['opening'] != opening_signature(boxes)
+    return sorted(provenance['opening_boxes']) != sorted(box['id'] for box in boxes)
+
+
 def state(cut_id, conn=None):
     """What the Target frames tab shows: the evaluation, the latest run with its slots and boxes, and the job."""
     cut, _, key, selection = current_selection(cut_id, conn)
@@ -95,6 +126,8 @@ def state(cut_id, conn=None):
         stale_reason = 'Cut timing or target frame selection changed' if stale else None
         if not stale and uncovered(run['frames_json'], selection):
             stale, stale_reason = True, 'Frames were added; detect again'
+        if not stale and opening_changed(run, cut_id, conn):
+            stale, stale_reason = True, 'First-frame boxes changed; detect again'
         if not stale and bool(run['cast_locked']) != locked:
             stale_reason = 'Opening cast setting changed'
         result['run'] = {
@@ -382,7 +415,8 @@ def gather(conn, job, payload):
     existing = run_for(cut_id, key, conn) if key else None
     slots, boxes, removed, rejected = [], [], {}, {}
     if existing:
-        existing = {key: existing[key] for key in ('id', 'frames_json', 'cut_start', 'cut_end', 'cast_locked', 'review_version')}
+        existing = {**{key: existing[key] for key in ('id', 'frames_json', 'cut_start', 'cut_end', 'cast_locked', 'review_version')},
+                    'opening_changed': opening_changed(existing, cut_id, conn)}
         slots = db.all_rows('SELECT * FROM target_slots WHERE run_id=? ORDER BY slot', (existing['id'],), conn=conn)
         boxes = db.all_rows('SELECT * FROM target_detections WHERE run_id=? ORDER BY rowid', (existing['id'],), conn=conn)
         removed, rejected = target_reviews.decisions(conn, existing['id'])
@@ -434,7 +468,7 @@ def process(job_id, owner, runtime):
             raise RuntimeError('No target frames could be evaluated for this cut')
         existing = data['existing']
         if payload.get('only_missing') and existing and existing['review_version'] == REVIEW_VERSION and bool(existing['cast_locked']) == data['locked'] \
-                and not uncovered(existing['frames_json'], result):
+                and not uncovered(existing['frames_json'], result) and not existing.get('opening_changed'):
             with inputs.publish(invalidate=False) as conn:
                 anime_bulk.finish(conn, job, 'Skipped · Target detections are current')
             return
@@ -539,6 +573,7 @@ def _save(inputs, frames, slots, stored, renumbered, revision, mirror_ordinal, c
             conn.execute('INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json,source,scores_json) VALUES (?,?,?,?,?,?,?)',
                          (str(uuid.uuid4()), run_id, ordinal, slot, json.dumps(list(box)), 'auto', json.dumps(scores) if scores else None))
         provenance = {'fingerprint': inputs.stamp, 'selection_key': key, 'opening_boxes': [box['id'] for box in inputs.data['boxes']],
+                      'opening': opening_signature(inputs.data['boxes']),
                       'target_box_ids': [box['id'] for box in inputs.data['target_boxes']], 'cast_locked': locked,
                       'exemplars': [row['id'] for row in inputs.data['gallery'][0]]}
         conn.execute('UPDATE target_detection_runs SET input_json=? WHERE id=?', (json.dumps(provenance), run_id))

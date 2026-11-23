@@ -3,7 +3,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from . import cut_history, db, job_inputs, job_kinds, media, structured_results, worker
+from . import agent_log, cut_history, db, job_inputs, job_kinds, media, structured_results, worker
 
 
 def gather(conn, job):
@@ -138,4 +138,5 @@ def after_timeline_edit(conn, episode, changed, removed=(), *, rebuilding=()):
         worker.insert_job(conn, episode['id'], 'cutframes',
                           {'settings': json.loads(episode['settings_json']), 'cut_ids': sorted(rebuild)})
     worker.sync_episode_status(conn, episode['id'])
+    agent_log.settle(conn, episode['id'])  # a missed-cut question about a cut the person just changed is settled
     return cancelled

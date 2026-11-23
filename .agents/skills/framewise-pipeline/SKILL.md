@@ -22,9 +22,10 @@ and lives in fw itself; do not invent another one:
 
 Failed runs are also a checkpoint: the flow stops until each one is retried or dismissed.
 
-**Unattended instead:** `fw autopilot EP --go` (skill `framewise-autopilot`) runs the same order but settles each
-checkpoint with its resolver agent first, holds back only the cuts that still wait for a person, re-runs stale results
-and triages failures. Use `drive` when the user wants to settle the checkpoints themselves.
+**Stages instead:** `fw prepare EP` (once), `fw evaluate EP` and `fw results EP` (skills `framewise-prepare`,
+`framewise-evaluate`, `framewise-results`) settle the checkpoints with their resolver agents, run each step only on its
+target cuts and hold back the cuts that still wait for a person. Use `drive` when the user wants to settle the
+checkpoints themselves.
 
 ## Final report: the links to open
 

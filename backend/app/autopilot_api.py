@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from . import agent_log, autopilot_profile, db, diagnose, triage, worker
+from . import agent_log, autopilot_profile, db, diagnose, stage_targets, triage, worker
 
 router = APIRouter()
 
@@ -156,6 +156,17 @@ def apply_triage(episode_id: str, body: TriageApply):
     return outcome
 
 
+# --- stage targets (HARNESS.md D31) ------------------------------------------------------------------------------------
+
+@router.get('/api/episodes/{episode_id}/targets', summary='Per stage and step: the cuts it would run on now, and the cuts held for a person')
+def stage_target_cuts(episode_id: str, stage: Literal['prepare', 'prepare_cuts', 'lines', 'evaluate', 'results'] | None = None, from_cut: int | None = None, to_cut: int | None = None):
+    """The dry run of the stage commands (``fw prepare|prepare-cuts|lines|evaluate|results --dry-run``, ``fw targets``)."""
+    with db.connect() as conn:
+        conn.execute('BEGIN')
+        require_episode(conn, episode_id)
+        return stage_targets.targets(conn, episode_id, stage, from_cut, to_cut)
+
+
 # --- escalations -------------------------------------------------------------------------------------------------------
 
 class EscalationInput(BaseModel):
@@ -179,6 +190,10 @@ def list_escalations(episode_id: str, status: str = 'open', kind: str | None = N
     """``reviewer=claude`` is the second reviewer's queue; ``human`` the person's inbox."""
     with db.connect() as conn:
         require_episode(conn, episode_id)
+        if status in ('open', 'all'):
+            # the safety net: questions the person settled by an edit no route told the inbox about close before they are listed
+            conn.execute('BEGIN IMMEDIATE')
+            agent_log.settle(conn, episode_id)
         return {'items': agent_log.escalations(conn, episode_id, status, kind, reviewer=reviewer), 'counts': agent_log.counts(conn, episode_id)}
 
 

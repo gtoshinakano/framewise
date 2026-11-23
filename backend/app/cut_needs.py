@@ -32,26 +32,12 @@ def _lines_by_cut(conn, episode_id, cuts, where):
     return counts
 
 
-def _escalation_cuts(conn, item, cuts):
-    """The cuts an escalation is about: its own ``cut_ids``, and for a voice question every cut its lines touch (it lists only
-    a few sample cuts, but one answer settles all of them, so none of them should flag the same voice again)."""
-    found = list(item['cut_ids'])
-    line_ids = (item.get('evidence') or {}).get('line_ids') if item['kind'] == 'voice' else None
-    if line_ids:
-        marks = ','.join('?' for _ in line_ids)
-        for line in conn.execute(f'SELECT start_time,end_time FROM transcript_segments WHERE id IN ({marks})', list(line_ids)):
-            for cut in cuts:
-                if cut['id'] not in found and line['end_time'] > cut['start_time'] and line['start_time'] < cut['end_time']:
-                    found.append(cut['id'])
-    return found
-
-
 def needs(conn, episode_id):
     report = review_report.report(conn, episode_id)
     cuts = [dict(row) for row in conn.execute('SELECT id,cut_index,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 ORDER BY cut_index',
                                               (episode_id,))]
     by_number = {cut['cut_index'] + 1: cut['id'] for cut in cuts}
-    entries = {cut['id']: {'steps': [], 'people': {}, 'claude': [], 'answered_by': [], 'analysis_off': False} for cut in cuts}
+    entries = {cut['id']: {'steps': [], 'people': {}, 'claude': [], 'answered_by': [], 'analysis_off': False, 'stale': []} for cut in cuts}
 
     def person(cut_id, key, count=1, escalation_id=None):
         if cut_id not in entries:
@@ -70,6 +56,9 @@ def needs(conn, episode_id):
         if number in by_number:
             entries[by_number[number]]['analysis_off'] = True
     gates, checks = report['gates'], report['checks']
+    for item in checks['stale_results']:  # outputs an input changed after they were made: the next Evaluate re-runs them
+        if item['cut_id'] in entries:
+            entries[item['cut_id']]['stale'].append({'title': item['title'], 'reason': item['reason']})
     for item in gates['first_frame']:
         person(item['cut_id'], 'box_names', item['unlabeled_boxes'])
     for item in gates['target_frames']:
@@ -95,7 +84,7 @@ def needs(conn, episode_id):
     claude_keys = {}
     for item in agent_log.escalations(conn, episode_id, 'open', limit=5000):
         key = ESCALATION_NEED.get(item['kind'])
-        for cut_id in _escalation_cuts(conn, item, analysed):
+        for cut_id in cut_readiness.escalation_cuts(conn, item, analysed):
             if cut_id not in entries:
                 continue
             if item['reviewer'] == 'claude':

@@ -48,6 +48,13 @@ episode: http://chopper.local:8080/#/episode/<id>
 Only lines that have something are printed. Cut numbers are grouped into ranges (`140-146, 149-150`). Cuts with
 analysis switched off are listed once and left out of every line below them.
 
+## What would run, and what is pending
+
+`scripts/fw targets EP [RANGE]` (read-only) is the dry run of every stage (`prepare`, `prepare-cuts`, `lines`,
+`evaluate`, `results`): per step the target cuts it would run on now, the cuts held for the person with their reasons
+and a link each, and the inbox counts. When the user asks what is pending or what would run, summarize that output:
+targets per stage, then the person's pending actions grouped by reason with the links.
+
 ## Report it
 
 Give the user the status in this shape and keep the wording of the lines: *Needs … : cuts …*. Then:

@@ -54,6 +54,10 @@ export function CutNeedsBar({ needs, escalations, decisions, onJump, onChanged }
         {claudeKinds.map(kind => <StatusChip key={kind} tone="purple" icon={<Bot size={11} aria-hidden />} title="Claude (the second reviewer) answers these next; you see them only if Claude is unsure">{kindLabel(kind)}</StatusChip>)}
       </>}
     </div>
+    {needs.stale?.length ? <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-[11px] font-bold uppercase tracking-[.1em] text-[#f2a877]">Out of date</span>
+      {needs.stale.map(item => <StatusChip key={item.title} tone="stale" title={`${item.reason}. The next Evaluate (fw evaluate) writes it again from the current inputs.`}>{item.title}</StatusChip>)}
+    </div> : null}
     {unsure.map(item => <p key={item.id} className="flex items-start gap-1.5 text-[12px] leading-5 text-[#d6c9ff]"><Bot size={13} className="mt-1 shrink-0" aria-hidden />
       <span className="min-w-0"><span className="font-semibold">Claude was unsure</span> ({kindLabel(item.kind)}): {String(item.evidence.claude_note)}</span></p>)}
     {applied.length > 0 && <Disclosure label={`What agents did here (${applied.length})`}>

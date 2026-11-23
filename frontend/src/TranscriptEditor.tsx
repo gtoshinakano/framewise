@@ -231,7 +231,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, playh
       ]} />
     </div>
     {error && <p role="alert" className="mx-4 mt-3 flex items-start justify-between gap-2 text-xs text-[#ff9fa7]">{error}<button onClick={() => setError('')} aria-label="Dismiss"><X size={13} /></button></p>}
-    {(transcriptStale || attributionStale) && <div className="space-y-1 border-b hairline px-4 py-2 text-xs text-[#f5c678]">
+    {(transcriptStale || attributionStale) && <div className="is-stale space-y-1 border-b px-4 py-2 text-xs text-[#f2a877]">
       {transcriptStale && <div className="flex flex-wrap items-center justify-between gap-1"><span>{transcriptStale}</span><button type="button" className="btn btn-quiet !py-1 !text-xs" disabled={busy || !!transcribing} onClick={() => void queueAudio('/transcribe')}>Transcribe again</button></div>}
       {attributionStale && <div className="flex flex-wrap items-center justify-between gap-1"><span>{attributionStale}</span><button type="button" className="btn btn-quiet !py-1 !text-xs" disabled={busy || attributing} onClick={() => void queueAudio('/speaker-attribution')}>Attribute speakers again</button></div>}
     </div>}

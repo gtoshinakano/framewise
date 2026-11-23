@@ -346,6 +346,21 @@ class TargetCharactersTest(unittest.TestCase):
         self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job_id,))['stage'], 'Skipped · Target detections are current')
         self.assertEqual(self.client.post('/api/episodes/e/target-detection?only_missing=false').json()['queued'], 2)
 
+    def test_a_first_frame_box_edit_makes_the_run_stale_and_only_missing_detects_it_again(self):
+        run = self.detected()
+        self.assertFalse(run['stale'])
+        self.assertEqual(self.client.put('/api/character-detections/fd-c1-0', json={'character_context_id': None}).status_code, 200)
+        run = self.state()['run']
+        self.assertEqual((run['stale'], run['stale_reason']), (True, 'First-frame boxes changed; detect again'))
+        self.client.post('/api/episodes/e/target-detection')
+        job_id, owner = worker.claim_job(('character_detect',))
+        with patch.object(target_characters, '_extract_frames', side_effect=RuntimeError('detects again')):
+            try:
+                target_characters.process(job_id, owner, Runtime({}))
+            except RuntimeError as exc:
+                self.assertEqual(str(exc), 'detects again')
+        self.assertNotEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job_id,))['stage'], 'Skipped · Target detections are current')
+
     def test_other_episode_work_allows_queueing(self):
         self.evaluate()
         with db.connect() as conn:

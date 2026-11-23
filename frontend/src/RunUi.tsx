@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, Circle, Clock, Info, Loader2, X, XCircle }
 import { STATE_TEXT, stateTone, type StepState } from './runState'
 import { formatRunTime } from './queueView'
 
-export type Tone = 'green' | 'purple' | 'amber' | 'red' | 'grey' | 'blue'
+export type Tone = 'green' | 'purple' | 'amber' | 'red' | 'grey' | 'blue' | 'stale'
 
 const TONES: Record<Tone, string> = {
   green: 'border-[#2f6b55] bg-[#12261f] text-[#7bdcb2]',
@@ -12,6 +12,8 @@ const TONES: Record<Tone, string> = {
   red: 'border-[#63363e] bg-[#2b191f] text-[#ff9fa7]',
   grey: 'border-[#353c48] bg-[#1b202a] text-[#929aa9]',
   blue: 'border-[#2f4a72] bg-[#141f33] text-[#8cbcff]',
+  // An output whose inputs changed since it was made (style.css .is-stale): never amber, which means queued or unsaved
+  stale: 'border-[#9a5530] bg-[#2a170d] text-[#f2a877]',
 }
 
 export function StatusChip({ tone, icon, children, title, className = '' }: { tone: Tone; icon?: ReactNode; children: ReactNode; title?: string; className?: string }) {
@@ -19,7 +21,17 @@ export function StatusChip({ tone, icon, children, title, className = '' }: { to
 }
 
 export function StaleChip({ reason }: { reason: string }) {
-  return <StatusChip tone="amber" title={reason}>Stale<span className="sr-only">. {reason}</span></StatusChip>
+  return <StatusChip tone="stale" title={reason}>Stale<span className="sr-only">. {reason}</span></StatusChip>
+}
+
+/** The line at the top of a stale output: why it is out of date. The output below it is dimmed (style.css .is-stale). */
+export function StaleNote({ reason, children }: { reason: string; children?: ReactNode }) {
+  return <p className="stale-note"><AlertTriangle size={12} className="shrink-0" aria-hidden /><span><strong>Out of date</strong> · {reason}{children}</span></p>
+}
+
+/** The class of a card or row that shows an output; stale ones get the stale colour and stripes. */
+export function staleClass(reason: string | null | undefined) {
+  return reason ? 'is-stale' : ''
 }
 
 const STATE_ICON: Record<StepState, ReactNode> = {

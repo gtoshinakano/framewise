@@ -5,6 +5,7 @@ import { ResultMetrics } from './ResultMetrics'
 import { ActionButton, StaleChip, StatusChip } from './RunUi'
 import { useEpisodeRevision } from './episodeEvents'
 import { Disclosure, StepPanel } from './ReviewUi'
+import { answersStale } from './staleView'
 import type { AnswersApi } from './ConsistencySummary'
 import { Markdown } from './Markdown'
 import { formatAgo } from './queueView'
@@ -40,7 +41,7 @@ function visibleSummary(result?: AnalysisResult) {
  * The Results workbench: the Review column handed in as `review`, then the answers and the Cut summary. All three share
  * this component's state because the summary is written from the saved answers.
  */
-export function CutSummaryPanel({ cutId, review, editorSlot, otherDecisions, current, loaded, jobs, disabled, onStarted, onSaved }: { cutId: string; review: ReactNode | ((answers: AnswersApi) => ReactNode); editorSlot: ReactNode; otherDecisions?: ReactNode; current?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; onStarted: () => Promise<void>; onSaved: (result: AnalysisResult) => void }) {
+export function CutSummaryPanel({ cutId, review, editorSlot, otherDecisions, current, consistency, loaded, jobs, disabled, onStarted, onSaved }: { cutId: string; review: ReactNode | ((answers: AnswersApi) => ReactNode); editorSlot: ReactNode; otherDecisions?: ReactNode; current?: AnalysisResult; consistency?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; onStarted: () => Promise<void>; onSaved: (result: AnalysisResult) => void }) {
   const [working, setWorking] = useState(false)
   const [savingInstructions, setSavingInstructions] = useState(false)
   const [instructionsError, setInstructionsError] = useState('')
@@ -179,6 +180,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, otherDecisions, cur
   const reading = view === 'read' && draft.content.trim() !== ''
   const readable = useMemo(() => timelineMarks(draft.content), [draft.content])
 
+  const savedStale = instructionsLoaded ? answersStale(savedInstructions, savedUpdatedAt, consistency) : null
   const answersChip = !instructionsLoaded ? null
     : previousAnswers !== null && answersDirty ? <StatusChip tone="purple" icon={<Wand2 size={11} aria-hidden />} title="The draft replaced your previous text. Check it, edit it, then save.">AI draft · review and save</StatusChip>
       : answersDirty ? <StatusChip tone="amber" icon={<Circle size={11} aria-hidden />} title="The summary is written from the saved answers">Unsaved changes</StatusChip>
@@ -201,7 +203,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, otherDecisions, cur
   return <div role="group" aria-label="Review, answers and Cut summary" className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] gap-4 pt-3 lg:grid-cols-2 lg:grid-rows-[minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
     <div className="grid min-h-0 grid-rows-[minmax(0,1fr)] lg:col-start-1 lg:row-start-1">{typeof review === 'function' ? review({ text: humanInstructions, onChange: setHumanInstructions, ready: instructionsLoaded && !savingInstructions }) : review}</div>
     <div className="scrollbar flex flex-col gap-4 lg:col-start-2 lg:row-start-1 lg:-mt-3 lg:min-h-0 lg:overflow-y-auto lg:pt-3 2xl:contents">
-      <StepPanel className="2xl:col-start-2 2xl:row-start-1" step={2} kind="review_answers" title="Your answers" subtitle="Decisions and checks" updated={savedUpdatedAt ? `last saved ${formatAgo(savedUpdatedAt)}` : undefined} tag={answersChip}
+      <StepPanel className="2xl:col-start-2 2xl:row-start-1" step={2} kind="review_answers" title="Your answers" subtitle="Decisions and checks" updated={savedUpdatedAt ? `last saved ${formatAgo(savedUpdatedAt)}` : undefined} tag={answersChip} stale={!answersDirty ? savedStale : null}
         footer={<div className="space-y-2">
           {activeJob && <div className="flex flex-wrap items-center justify-between gap-2"><p role="status" className="text-xs text-[#c3aeff]">{activeJob.status === 'queued' ? 'Cut summary queued' : activeJob.stage || 'Writing the Cut summary'}…</p><ActionButton compact disabled={working} onClick={cancelSummary}>Cancel summary</ActionButton></div>}
           {(error || failure) && <p role="alert" className="text-xs text-[#ff9fa7]">{error || failure}</p>}
@@ -223,7 +225,7 @@ export function CutSummaryPanel({ cutId, review, editorSlot, otherDecisions, cur
         </div>
       </StepPanel>
 
-      <StepPanel className="2xl:col-start-3 2xl:row-start-1" step={3} kind="cut_summary" title="Cut summary" subtitle="Final production brief" updated={current?.created_at ? formatAgo(current.created_at) : undefined} tag={summaryChip}
+      <StepPanel className="2xl:col-start-3 2xl:row-start-1" step={3} kind="cut_summary" title="Cut summary" subtitle="Final production brief" updated={current?.created_at ? formatAgo(current.created_at) : undefined} tag={summaryChip} stale={current?.stale_reason}
         actions={<>
           <div role="group" aria-label="Summary view" className="flex rounded-lg border hairline p-0.5 text-[11px] font-semibold">
             <button type="button" aria-pressed={reading} disabled={!draft.content.trim()} onClick={() => chooseView('read')} title={draft.content.trim() ? 'Read the summary formatted' : 'Nothing to read yet'} className={`inline-flex items-center gap-1 rounded-md px-2 py-1 ${reading ? 'bg-[#322a48] text-white' : 'text-[#aeb5c1] hover:text-white'}`}><BookOpen size={12} aria-hidden /> Read</button>

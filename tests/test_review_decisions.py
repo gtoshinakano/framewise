@@ -149,43 +149,25 @@ class ResolverJobTest(unittest.TestCase):
         again = self.client.post('/api/episodes/e/review-decisions', json={'shadow': True}).json()
         self.assertEqual((again['job_ids'], again['skipped']['decided']), ([], [2]))
 
-    def test_a_run_applies_rules_asks_claude_and_the_person_and_keeps_the_users_answers(self):
+    def test_a_run_applies_rules_leaves_the_rest_to_the_cut_dialog_and_keeps_the_users_answers(self):
         self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'review_answers': 'apply'},
             'topics': {'gaze': {'rule': 'Characters look at whoever speaks', 'when_unsure': 'evidence'}, 'state': {'rule': '', 'when_unsure': 'ask'}},
             'claude': {'enabled': True, 'max_items_per_run': 1}}})
         queued = self.client.post('/api/episodes/e/review-decisions', json={}).json()
         self.assertEqual(len(queued['job_ids']), 3)
-        ran = self.run_jobs({'c1': {'q1': decision('b', rule=True), 'q2': decision('a', 'low')},   # rule applies q1; q2 asks the person
-                             'c2': {'q1': decision('b'), 'q2': decision('a')},                     # q1 disagrees: Claude; q2 is the user's
-                             'c3': {'q1': decision(None, 'low'), 'q2': decision('a', 'low')}})     # Claude's budget (1) is used: the person
+        ran = self.run_jobs({'c1': {'q1': decision('b', rule=True), 'q2': decision('a', 'low')},   # rule applies q1; q2 stays open
+                             'c2': {'q1': decision('b'), 'q2': decision('a')},                     # q1 disagrees: open; q2 is the user's
+                             'c3': {'q1': decision(None, 'low'), 'q2': decision('a', 'low')}})
         self.assertEqual([item['status'] for item in ran], ['done'] * 3, ran)
         self.assertEqual(self.answers('c1'), '- Gaze (Mai): Down at the cup')
         self.assertEqual(self.answers('c2'), '- State: Standing')
         report = self.client.get('/api/episodes/e/review-decisions').json()
-        self.assertEqual(report['counts'], {'apply': 1, 'claude': 1, 'human': 3, 'keep': 1})
-        by_group = {item['group_key']: item for item in report['questions']}
-        self.assertEqual(set(by_group), {'cut:c1', 'cut:c2:claude', 'cut:c3'})
-        self.assertEqual([q['id'] for q in by_group['cut:c3']['evidence']['questions']], ['q1', 'q2'])
-        self.assertIn('budget', by_group['cut:c3']['evidence']['questions'][0]['why_asked'])
-        self.assertEqual(by_group['cut:c2:claude']['evidence']['questions'][0]['pictures'], ['First frame'])
+        self.assertEqual(report['counts'], {'apply': 1, 'human': 4, 'keep': 1})
+        self.assertEqual(report['questions'], [])  # review questions never go to the inbox (D32): the cut dialog has them
+        with db.connect() as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM agent_escalations').fetchone()[0], 0)
         applied = report['applied'][0]
         self.assertEqual((applied['tier'], applied['after']['lines'][0]['question']), ('local', 'q1'))
-
-        # Claude answers c2 with option a for q1; it cannot answer the person's questions.
-        claude = by_group['cut:c2:claude']
-        refused = self.client.post(f"/api/escalations/{by_group['cut:c1']['id']}/review-answers", json={'answers': [{'question': 'q2', 'option': 'a'}], 'tier': 'claude'})
-        self.assertEqual(refused.status_code, 409)
-        done = self.client.post(f"/api/escalations/{claude['id']}/review-answers", json={'answers': [{'question': 'q1', 'option': 'a'}], 'tier': 'claude', 'note': 'F1 shows it'}).json()
-        self.assertEqual(done['status'], 'resolved')
-        self.assertEqual(self.answers('c2'), '- State: Standing\n- Gaze (Mai): At Rio')
-
-        # The person answers c3's q1 in the app: its escalation stays open for q2, then closes when q2 is saved too.
-        self.client.put('/api/cuts/c3/brief-instructions', json={'content': '- Gaze (Mai): At Rio'})
-        with db.connect() as conn:
-            self.assertEqual([item['group_key'] for item in agent_log.escalations(conn, 'e', 'open', rd.ESCALATION)], ['cut:c1', 'cut:c3'])
-        self.client.put('/api/cuts/c3/brief-instructions', json={'content': '- Gaze (Mai): At Rio\n- State: Walking'})
-        with db.connect() as conn:
-            self.assertEqual([item['group_key'] for item in agent_log.escalations(conn, 'e', 'open', rd.ESCALATION)], ['cut:c1'])
 
         # A person's edit of an agent answer is an override; undo then refuses instead of overwriting it.
         self.client.put('/api/cuts/c1/brief-instructions', json={'content': '- Gaze (Mai): At Rio'})
@@ -194,24 +176,16 @@ class ResolverJobTest(unittest.TestCase):
         with db.connect() as conn:
             self.assertIsNotNone(conn.execute('SELECT overridden_at FROM agent_decisions WHERE id=?', (decision_id,)).fetchone()[0])
 
-    def test_claude_unsure_moves_the_question_to_the_person_and_undo_restores_the_answers(self):
+    def test_an_open_question_left_from_before_can_still_be_answered_and_undo_restores_the_answers(self):
         self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'review_answers': 'apply'}, 'topics': {'state': {'rule': '', 'when_unsure': 'recommended'}}}})
         self.client.post('/api/episodes/e/review-decisions', json={'from_cut': 1, 'to_cut': 1})
-        self.run_jobs({'c1': {'q1': decision('b'), 'q2': decision(None, 'low')}})  # q2 has no recommendation: unsure → Claude
-        with db.connect() as conn:
-            claude = agent_log.escalations(conn, 'e', 'open', rd.ESCALATION, reviewer='claude')[0]
-        self.assertEqual([q['id'] for q in claude['evidence']['questions']], ['q1', 'q2'])
-        reply = self.client.post(f"/api/escalations/{claude['id']}/review-answers",
-                                 json={'answers': [{'question': 'q1', 'option': 'b'}], 'unsure': ['q2'], 'tier': 'claude', 'note': 'Rio is hidden'}).json()
-        self.assertEqual(reply['status'], 'handed_to_person')
-        with db.connect() as conn:
-            person = agent_log.escalations(conn, 'e', 'open', rd.ESCALATION, reviewer='human')
-        self.assertEqual([(item['group_key'], [q['id'] for q in item['evidence']['questions']]) for item in person], [('cut:c1', ['q2'])])
-        self.assertIn('Rio is hidden', person[0]['evidence']['questions'][0]['why_asked'])
-        self.assertEqual(self.answers('c1'), '- Gaze (Mai): Down at the cup')
-        # The person answers with their own words; then the whole run is undone, newest first.
+        self.run_jobs({'c1': {'q1': decision('b'), 'q2': decision(None, 'low')}})  # q1 disagrees, q2 has no recommendation: both left open
+        self.assertEqual(self.answers('c1'), '')
+        with db.connect() as conn:  # a question escalated before D32
+            rd.escalate_questions(conn, 'e', 'c1', 'r-c1', [{**rd._question_view(QUESTIONS[1]), 'proposal': None, 'why_asked': 'older run'}], 'human')
+            person = agent_log.escalations(conn, 'e', 'open', rd.ESCALATION)
         self.client.post(f"/api/escalations/{person[0]['id']}/review-answers", json={'answers': [{'question': 'q2', 'text': 'Kneeling by the bag'}]})
-        self.assertEqual(self.answers('c1'), '- Gaze (Mai): Down at the cup\n- State: Kneeling by the bag')
+        self.assertEqual(self.answers('c1'), '- State: Kneeling by the bag')
         with db.connect() as conn:
             ids = [row[0] for row in conn.execute("SELECT id FROM agent_decisions ORDER BY rowid DESC")]
             for decision_id in ids:
@@ -219,9 +193,8 @@ class ResolverJobTest(unittest.TestCase):
         self.assertEqual(self.answers('c1'), '')
 
     def test_a_new_review_closes_the_old_questions_and_trust_counts_only_the_users_answers(self):
-        self.client.post('/api/episodes/e/review-decisions', json={'from_cut': 1, 'to_cut': 1})
-        self.run_jobs({'c1': {'q1': decision('b'), 'q2': decision('a')}})
-        with db.connect() as conn:
+        with db.connect() as conn:  # a question escalated before D32
+            rd.escalate_questions(conn, 'e', 'c1', 'r-c1', [{**rd._question_view(QUESTIONS[0]), 'proposal': None, 'why_asked': 'older run'}], 'human')
             conn.execute("UPDATE analysis_results SET superseded_by='new' WHERE id='r-c1'")
             result(conn, 'new', 'c1', {'summary': 's', 'questions': QUESTIONS[:1]})
             self.assertEqual(rd.close_settled(conn, 'e'), 1)

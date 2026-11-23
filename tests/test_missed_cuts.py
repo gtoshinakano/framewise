@@ -178,6 +178,23 @@ class JobTest(unittest.TestCase):
             self.assertIsNotNone(conn.execute('SELECT overridden_at FROM agent_decisions WHERE id=?', (decision,)).fetchone()[0])
         self.assertEqual(self.client.post(f'/api/agent-decisions/{decision}/undo').status_code, 409)
 
+    def test_a_split_the_person_undid_is_never_split_again(self):
+        self.run_job({0: {'verdict': 'apply', 'split_at': [2.0], 'grey': []}})
+        with db.connect() as conn:
+            decision = conn.execute("SELECT id FROM agent_decisions WHERE kind='missed_cuts'").fetchone()[0]
+        self.assertEqual(self.client.post(f'/api/agent-decisions/{decision}/undo').json(), {'undone': True})
+        _, checked = self.run_job({}, {'redo': True})
+        skips = [call.kwargs.get('skip') for call in checked.call_args_list]
+        self.assertTrue(skips and all(2.0 in skip for skip in skips))
+
+    def test_splitting_the_cut_by_hand_closes_its_question(self):
+        self.run_job({4: {'verdict': 'grey', 'split_at': [], 'grey': [6.0]}})
+        self.assertEqual(len(self.client.get('/api/episodes/e/escalations').json()['items']), 1)
+        self.assertEqual(self.client.post('/api/cuts/c2/split', json={'time': 6.0}).status_code, 200)
+        self.assertEqual(self.client.get('/api/episodes/e/escalations').json()['items'], [])
+        with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT status FROM agent_escalations WHERE kind='missed_cut'").fetchone()[0], 'resolved')
+
     def test_sequenced_cuts_and_ask_mode_go_to_a_person(self):
         with db.connect() as conn:
             conn.execute("""INSERT INTO sequences(id,episode_id,title,first_cut_id,last_cut_id,cuts_json,start_time,end_time)

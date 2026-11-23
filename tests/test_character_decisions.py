@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app import agent_log, character_decisions as cd, db, media
+from app import agent_log, character_decisions as cd, cut_readiness, db, media
 from app.main import app
 
 MAI, SAKUTA, RIO = 'ch-mai', 'ch-sakuta', 'ch-rio'
@@ -185,6 +185,24 @@ class JobTest(unittest.TestCase):
         with db.connect() as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM jobs WHERE pipeline='character_profile'").fetchone()[0], 1)
 
+    def test_the_persons_reject_and_leave_are_never_asked_again(self):
+        self.run_job()
+        items = {item['kind']: item for item in self.client.get('/api/episodes/e/escalations').json()['items']}
+        rejected = self.client.post(f"/api/escalations/{items['box_label']['id']}/box-labels", json={'reject': ['d-auto']})
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(self.label('d-auto'), (None, 'manual'))  # "not Mai": recognition and the agent leave it alone
+        left = self.client.post(f"/api/escalations/{items['new_person']['id']}/person", json={'choice': 'leave'})
+        self.assertEqual(left.status_code, 200, left.text)
+        self.assertEqual({self.label('d-unk1'), self.label('d-unk2')}, {(None, 'manual')})
+        again = self.run_job()
+        self.assertEqual(again.get('asked_labels', 0) + again.get('asked_people', 0), 0)
+        self.assertEqual(self.client.get('/api/episodes/e/escalations').json()['items'], [])
+        self.assertEqual(self.client.put('/api/character-detections/d-name', json={'character_context_id': None}).status_code, 200)
+        self.assertEqual(self.label('d-name'), (None, 'manual'))
+        with db.connect() as conn:
+            ready = cut_readiness.cut(conn, 'c3')
+        self.assertTrue(ready['boxes'], ready['held'])
+
     def test_a_person_relabelling_an_agent_box_counts_as_an_override_and_closes_the_question(self):
         self.run_job()
         response = self.client.put('/api/character-detections/d-name', json={'character_context_id': MAI})
@@ -200,8 +218,8 @@ class JobTest(unittest.TestCase):
             frames = [{'ordinal': 1, 'time': 10.0, 'image_size': [1280, 720], 'mirror': True, 'review': {'score': 1, 'flags': {}}},
                       {'ordinal': 2, 'time': 11.0, 'image_size': [1280, 720], 'review': {'score': 0.85, 'flags': {'count_changed': {'first': 1, 'here': 0}}}},
                       {'ordinal': 3, 'time': 12.0, 'image_size': [1280, 720], 'review': {'score': 0.7, 'flags': {'suspected_merge': ['k']}}}]
-            conn.execute("""INSERT INTO target_detection_runs(id,cut_id,selection_key,cut_start,cut_end,frames_json) VALUES ('t3','c3','k',10,15,?)""",
-                         (json.dumps(frames),))
+            conn.execute("""INSERT INTO target_detection_runs(id,cut_id,selection_key,cut_start,cut_end,frames_json,candidates_json) VALUES ('t3','c3','k',10,15,?,?)""",
+                         (json.dumps(frames), json.dumps([{'id': 'k', 'frame_ordinal': 3, 'tag': 'merge', 'box': [600, 100, 900, 600]}])))
             conn.execute("INSERT INTO target_slots(run_id,slot,origin,character_context_id,label_source) VALUES ('t3',0,'first_frame',?, 'inherited')", (MAI,))
             conn.execute("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json) VALUES ('td1','t3',1,0,'[600,100,900,600]'),('td3','t3',3,0,'[600,100,900,600]')")
             conn.execute("""INSERT INTO keyframe_analysis_runs(id,cut_id,selection_key,cut_start,cut_end,input_hash,phase,method,roster_source,provenance_json)

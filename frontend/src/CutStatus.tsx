@@ -1,10 +1,11 @@
-import { BoxSelect, Circle, CircleCheck, Clock3, FileText, FileX, LoaderCircle, ScanFace, UserCheck, UserRound, UserX } from 'lucide-react'
+import { BoxSelect, Circle, CircleCheck, Clock3, FileText, FileX, History, LoaderCircle, ScanFace, UserCheck, UserRound, UserX } from 'lucide-react'
 import type { Cut } from './api'
 import type { AnalysisQueueState } from './analysisQueueStates'
 
 /** The legend for CutStatusIcons, shown in the timeline's help popover. */
 export const CUT_STATUS_LEGEND = [
   { icon: CircleCheck, color: '#7bdcb2', label: 'Has analysis results' },
+  { icon: History, color: '#c9733e', label: 'Some results are out of date (an input changed)' },
   { icon: Circle, color: '#c5cad3', label: 'No analysis results' },
   { icon: BoxSelect, color: '#4cc9f0', label: 'Character boxes detected' },
   { icon: UserCheck, color: '#7bdcb2', label: 'Character recognized' },
@@ -20,7 +21,8 @@ export const CUT_STATUS_LEGEND = [
 /** One row of small icons that tell what a cut has and what is still missing. Same icons everywhere a cut appears. */
 export function CutStatusIcons({ cut, queueState, size = 12 }: { cut: Cut; queueState?: AnalysisQueueState; size?: number }) {
   return <span className="inline-flex shrink-0 items-center gap-1">
-    {cut.has_analysis_results ? <CircleCheck size={size} className="shrink-0 text-[#7bdcb2]" aria-label="Has analysis results" /> : <Circle size={size} className="shrink-0 text-[#c5cad3]" aria-label="No analysis results" />}
+    {cut.has_stale_results ? <History size={size} className="shrink-0 text-[#c9733e]" aria-label="Some results are out of date" />
+      : cut.has_analysis_results ? <CircleCheck size={size} className="shrink-0 text-[#7bdcb2]" aria-label="Has analysis results" /> : <Circle size={size} className="shrink-0 text-[#c5cad3]" aria-label="No analysis results" />}
     {cut.has_boxes ? <BoxSelect size={size} className="shrink-0 text-[#4cc9f0]" aria-label="Boxes detected" /> : null}
     {cut.no_characters ? <UserX size={size} className="shrink-0 text-[#c5cad3]" aria-label="No characters" />
       : cut.has_characters ? <UserCheck size={size} className="shrink-0 text-[#7bdcb2]" aria-label="Character detected" />

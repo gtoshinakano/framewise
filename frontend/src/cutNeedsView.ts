@@ -7,7 +7,7 @@ import type { DialogTab, RunSection } from './cutRoute'
 export type NeedKey = 'missed_cut' | 'line_split' | 'voice' | 'speaker_unsure' | 'box_names' | 'target_frames' | 'decisions' | 'picture_check' | 'lines_to_check' | 'failed_run'
 export type StepKey = 'boxes' | 'target' | 'first_frame' | 'keyframes' | 'beats' | 'consistency' | 'summary'
 export type PersonNeed = { key: NeedKey; count: number; escalation_ids: string[] }
-export type CutNeeds = { steps: StepKey[]; people: PersonNeed[]; claude: { kind: string; escalation_id: string }[]; answered_by: string[]; analysis_off: boolean }
+export type CutNeeds = { steps: StepKey[]; people: PersonNeed[]; claude: { kind: string; escalation_id: string }[]; answered_by: string[]; analysis_off: boolean; stale?: { title: string; reason: string }[] }
 export type NeedsMap = ReadonlyMap<string, CutNeeds>
 
 export const EMPTY_NEEDS: NeedsMap = new Map()
