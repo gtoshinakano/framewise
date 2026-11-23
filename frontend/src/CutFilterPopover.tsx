@@ -1,19 +1,22 @@
-import { BoxSelect, ClipboardCheck, Eye, EyeOff, FileText, Filter, ScanEye, ScanFace, Timer, TriangleAlert, UserRound, X, type LucideIcon } from 'lucide-react'
+import { AudioLines, Bot, BoxSelect, CircleAlert, ClipboardCheck, Eye, EyeOff, FileText, Filter, ImageOff, MessageCircleQuestion, ScanEye, ScanFace, Scissors, SplitSquareHorizontal, Timer, TriangleAlert, UserRound, UserRoundCheck, X, type LucideIcon } from 'lucide-react'
 import type { Cut } from './api'
 import { CUT_FILTERS, groupFilters, matchesAnyFilter, type CutFilterKey, type FilterDisplay } from './cutFilters'
+import { EMPTY_NEEDS, type NeedsMap } from './cutNeedsView'
 import { SegmentedControl } from './EditorUi'
 import { Popover } from './Popover'
 
 /** Icons per filter. A filter added later without an entry here gets the generic filter icon. */
 const FILTER_ICONS: Partial<Record<CutFilterKey, LucideIcon>> = {
-  needs_analysis: ScanEye, no_boxes: BoxSelect, unknown_characters: UserRound, unknown_target_characters: ScanFace, needs_consistency: ClipboardCheck,
-  needs_summary: FileText, job_failed: TriangleAlert, long_cut: Timer,
+  missed_cut: Scissors, line_split: SplitSquareHorizontal, voice: AudioLines, box_names: UserRound, target_frames: ScanFace, decisions: MessageCircleQuestion,
+  picture_check: ImageOff, lines_to_check: CircleAlert, failed_run: TriangleAlert, claude_pending: Bot, agent_answered: UserRoundCheck,
+  needs_analysis: ScanEye, no_boxes: BoxSelect, needs_consistency: ClipboardCheck, needs_summary: FileText, job_failed: TriangleAlert, long_cut: Timer,
 }
 export const filterIcon = (key: CutFilterKey) => FILTER_ICONS[key] || Filter
 
 /** The Filters button of the timeline toolbar and its popover: every filter by group, with counts and the Dim/Hide switch. */
-export function CutFilterPopover({ cuts, active, display, onToggle, onClear, onDisplay, open, onOpenChange }: {
+export function CutFilterPopover({ cuts, needs = EMPTY_NEEDS, active, display, onToggle, onClear, onDisplay, open, onOpenChange }: {
   cuts: Cut[]
+  needs?: NeedsMap
   active: ReadonlySet<CutFilterKey>
   display: FilterDisplay
   onToggle: (key: CutFilterKey) => void
@@ -22,7 +25,7 @@ export function CutFilterPopover({ cuts, active, display, onToggle, onClear, onD
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const shown = active.size ? cuts.filter(cut => matchesAnyFilter(cut, active)).length : cuts.length
+  const shown = active.size ? cuts.filter(cut => matchesAnyFilter(cut, active, needs)).length : cuts.length
   return <Popover label="Filter cuts" side="top" align="end" open={open} onOpenChange={onOpenChange} panelClassName="w-[340px] p-0"
     trigger={props => <button type="button" {...props} className="icon-btn icon-btn-sm icon-btn-text" title="Filter cuts (F)" aria-pressed={active.size > 0}>
       <Filter size={14} aria-hidden className={active.size ? 'text-[#bca7ff]' : undefined} /><span>Filters</span>{active.size > 0 && <span className="badge">{active.size}</span>}
@@ -36,7 +39,7 @@ export function CutFilterPopover({ cuts, active, display, onToggle, onClear, onD
         <legend className="px-1.5 pb-1 pt-1 text-[10px] font-bold uppercase tracking-[.12em] text-[#7e8797]">{group}</legend>
         {filters.map(filter => {
           const on = active.has(filter.key)
-          const count = cuts.filter(filter.matches).length
+          const count = cuts.filter(cut => filter.matches(cut, needs.get(cut.id))).length
           const Icon = filterIcon(filter.key)
           return <label key={filter.key} className={`flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 hover:bg-[#222835] ${on ? 'bg-[#1f2330]' : ''}`}>
             <input type="checkbox" className="mt-1 accent-[#a58ae8]" checked={on} onChange={() => onToggle(filter.key)} />

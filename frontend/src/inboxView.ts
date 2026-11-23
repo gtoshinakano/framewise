@@ -33,6 +33,9 @@ export type Decision = {
   created_at: string
   undone_at: string | null
   overridden_at: string | null
+  before?: any
+  after?: any
+  evidence?: any
 }
 
 export type AgentRun = {

@@ -103,6 +103,8 @@ from .point_detect_api import first_frame_spec, router as point_detect_router
 app.include_router(point_detect_router)
 from .review_report import CUT_FLAGS, router as review_router
 app.include_router(review_router)
+from .cut_needs import router as cut_needs_router
+app.include_router(cut_needs_router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
 

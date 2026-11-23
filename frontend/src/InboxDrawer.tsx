@@ -7,6 +7,7 @@ import { SegmentedControl } from './EditorUi'
 import { useEpisodeEvents } from './episodeEvents'
 import { useToast } from './Toasts'
 import { queueApi } from './queueApi'
+import { answerEscalation } from './inboxActions'
 import {
   choicesFor, decisionCounts, DECISION_LABEL, flatOrder, groupByKind, kindLabel, placeFor, reviewProposal, reviewQuestions, sampleDecisions, sheetPath, TIER_LABEL,
   type AgentRun, type Choice, type Decision, type Escalation, type TriageItem,
@@ -74,7 +75,8 @@ export function InboxDrawer({ episodeId, onClose, onChanged }: { episodeId: stri
   async function run(key: string, action: () => Promise<unknown>, message: string) {
     setWorking(key)
     try {
-      await action()
+      // An action that returns false was cancelled by the person (no name for a new character): nothing changed.
+      if (await action() === false) return
       toast({ message })
       await reload()
       onChanged()
@@ -87,20 +89,7 @@ export function InboxDrawer({ episodeId, onClose, onChanged }: { episodeId: stri
 
   async function choose(item: Escalation, choice: Choice) {
     if (choice.key === 'open') return openCut(item)
-    let request = choice.request
-    if (choice.input === 'title') {
-      const title = window.prompt('Name of the new character (created from the clearest box; every box of this person follows):')
-      if (!title?.trim()) return
-      request = { path: `/escalations/${item.id}/person`, body: { choice: 'new', title: title.trim() } }
-    }
-    await run(`${item.id}:${choice.key}`, async () => {
-      if (request) await api(request.path, { method: 'POST', body: JSON.stringify({ tier: 'human', ...(request.body as object) }) })
-      if (choice.retry) { for (const job of choice.retry) await queueApi.retry(job).catch(() => undefined) }
-      if (choice.dismiss) { for (const job of choice.dismiss) await queueApi.dismiss(job).catch(() => undefined) }
-      if (choice.retry || choice.dismiss || choice.close) {
-        await api(`/escalations/${item.id}/close`, { method: 'POST', body: JSON.stringify({ status: choice.close ?? (choice.retry ? 'resolved' : 'dismissed'), resolution: { by: 'inbox', choice: choice.key } }) })
-      }
-    }, `${kindLabel(item.kind)}: ${choice.label}`)
+    await run(`${item.id}:${choice.key}`, () => answerEscalation(item, choice), `${kindLabel(item.kind)}: ${choice.label}`)
   }
 
   useEffect(() => {

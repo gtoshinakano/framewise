@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 
-export type ShortcutAction = 'playPause' | 'split' | 'undo' | 'redo' | 'previous' | 'next' | 'nextNeeding' | 'filters'
+export type ShortcutAction = 'playPause' | 'split' | 'undo' | 'redo' | 'previous' | 'next' | 'nextNeeding' | 'filters' | 'clearSelection'
 
 const TYPING = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
 
@@ -31,6 +31,7 @@ export function useEditorShortcuts(enabled: boolean, actions: Partial<Record<Sho
       else if (event.key === ']') action = 'next'
       else if (key === 'n') action = 'nextNeeding'
       else if (key === 'f') action = 'filters'
+      else if (event.key === 'Escape') action = 'clearSelection'
       const run = action && latest.current[action]
       if (run) { event.preventDefault(); run() }
     }

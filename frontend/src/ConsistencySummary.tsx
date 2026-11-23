@@ -1,11 +1,17 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react'
-import { Check, CircleCheck, Eye, EyeOff, FileText, ListChecks, RefreshCw, ScanSearch, ShieldCheck, TriangleAlert, UserRoundCheck, X } from 'lucide-react'
+import { Bot, Check, CircleCheck, Eye, EyeOff, FileText, ListChecks, RefreshCw, ScanSearch, ShieldCheck, TriangleAlert, UserRoundCheck, X } from 'lucide-react'
 import { api, type AnalysisResult, type Job } from './api'
 import { ResultMetrics } from './ResultMetrics'
 import { ActionButton, Skeleton, StatusChip, WarningLine } from './RunUi'
 import { Disclosure, StepPanel } from './ReviewUi'
 import { answerLabel, parseConsistency, selection, setAnswer, timeParts, topicLabel, type ConsistencyKey, type ConsistencySection, type Question, type VisualCheck } from './consistencyView'
 import { formatAgo } from './queueView'
+import { DecisionStrip } from './AgentNotes'
+import { answerFor } from './cutNeedsView'
+import type { Decision } from './inboxView'
+
+/** What the agents did with this cut's questions: their applied answers, and which questions wait for Claude. */
+export type AgentMarks = { decisions: Decision[]; claudeQuestions: ReadonlySet<string>; onChanged: () => void }
 
 // What the user works from comes first. Each field keeps its stored name's wording and gets its own colour and icon,
 // matching the tones used on the Run settings tab; the label and icon always carry the meaning, never colour alone.
@@ -54,16 +60,21 @@ function Field({ section }: { section: ConsistencySection }) {
 /** What the review column needs of "Your answers": the text, a way to change it (unsaved) and whether it may be changed now. */
 export type AnswersApi = { text: string; onChange: (next: string) => void; ready: boolean }
 
-function QuestionCard({ number, question, all, answers }: { number: number; question: Question; all: Question[]; answers: AnswersApi }) {
+function QuestionCard({ number, question, all, answers, agent }: { number: number; question: Question; all: Question[]; answers: AnswersApi; agent?: AgentMarks }) {
   const [own, setOwn] = useState('')
   const picked = selection(answers.text, question, all)
   const look = LOOK.human_review
   const locked = !answers.ready
   const choose = (text: string | null) => answers.onChange(setAnswer(answers.text, question, text, all))
-  return <li className="flex gap-2.5">
+  const answered = agent ? answerFor(agent.decisions, question.id) : null
+  const forClaude = !picked && !!agent?.claudeQuestions.has(question.id)
+  const open = !picked && !forClaude
+  return <li className={`flex gap-2.5 ${open ? '-ml-2 rounded-md border-l-2 border-[#f0a64a] pl-1.5' : ''}`}>
     <span style={{ background: look.accent }} className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-[#11111a]" aria-hidden>{number}</span>
     <div className="min-w-0 flex-1 space-y-2">
-      <div className="flex flex-wrap items-center gap-1.5"><StatusChip tone="amber">{topicLabel(question.topic)}</StatusChip>{question.character && <StatusChip tone="blue">{question.character}</StatusChip>}</div>
+      <div className="flex flex-wrap items-center gap-1.5"><StatusChip tone="amber">{topicLabel(question.topic)}</StatusChip>{question.character && <StatusChip tone="blue">{question.character}</StatusChip>}
+        {open && <StatusChip tone="amber" icon={<UserRoundCheck size={11} aria-hidden />} className="ml-auto" title="No answer to this question is written in Your answers yet">Needs your answer</StatusChip>}
+        {forClaude && <StatusChip tone="purple" icon={<Bot size={11} aria-hidden />} className="ml-auto" title="Claude (the second reviewer) answers this next; it comes back to you only if Claude is unsure">Claude will review</StatusChip>}</div>
       <p id={`question-${question.id}`} className="break-words text-[13px] font-medium leading-[1.55] text-[#f2f4f8]">{question.question}</p>
       <div role="radiogroup" aria-labelledby={`question-${question.id}`} className="grid gap-1.5">
         {question.options.map(option => {
@@ -77,6 +88,7 @@ function QuestionCard({ number, question, all, answers }: { number: number; ques
           </button>
         })}
       </div>
+      {answered && <DecisionStrip decision={answered.decision} note={answered.note} onChanged={agent!.onChanged}>answered {answered.option ? <b>{answered.option}</b> : null} — ‘{answered.text}’</DecisionStrip>}
       {picked?.custom && <p className="flex items-start gap-1.5 rounded-lg border border-[#4a4363] bg-[#221c33] px-2.5 py-1.5 text-[12px] text-[#d6c9ff]"><span className="min-w-0 flex-1 break-words">Your own answer: {picked.custom}</span><button type="button" onClick={() => choose(null)} disabled={locked} className="shrink-0 text-[#c3aeff] hover:text-white" aria-label={`Clear your answer to ${answerLabel(question)}`}><X size={13} aria-hidden /></button></p>}
       <form className="flex gap-1.5" onSubmit={event => { event.preventDefault(); if (own.trim()) { choose(own); setOwn('') } }}>
         <input className="field min-w-0 flex-1 !px-2 !py-1 !text-[12px]" value={own} maxLength={400} disabled={locked} onChange={event => setOwn(event.target.value)} aria-label={`Your own answer to: ${question.question}`} placeholder="None of these? Write your own answer" />
@@ -106,7 +118,9 @@ function VisualChecks({ checks }: { checks: VisualCheck[] }) {
     {check.claim && <p className="break-words text-[12.5px] leading-5 text-[#aeb5c1]"><span className="font-semibold text-[#929aa9]">Stored: </span>{check.claim}</p>}
     {check.seen && <p className="break-words text-[12.5px] leading-5 text-[#e8ebf1]"><span className="font-semibold text-[#b4d2ff]">Seen: </span>{check.seen}</p>}
   </li>
-  return <section aria-label="Checked against the pictures" className="rounded-lg border-l-[3px] border-l-[#6aa8ff] bg-[#141f33] px-3.5 py-3">
+  // A contradiction is something for the person to look at: it gets the amber edge the other open items have.
+  const disagrees = checks.some(check => check.verdict === 'contradicts')
+  return <section data-need="picture-check" aria-label="Checked against the pictures" className={`rounded-lg border-l-[3px] bg-[#141f33] px-3.5 py-3 ${disagrees ? 'border-l-[#f0a64a] ring-1 ring-inset ring-[#6b5a2f]' : 'border-l-[#6aa8ff]'}`}>
     <h4 className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[.1em] text-[#b4d2ff]"><Eye size={14} aria-hidden />Checked against the pictures
       <StatusChip tone={flagged.some(check => check.verdict === 'contradicts') ? 'red' : 'green'} className="ml-auto normal-case tracking-normal">{flagged.length ? `${flagged.length} flagged` : 'All agree'}</StatusChip></h4>
     {checks.length === 0 ? <p className="muted text-[12px]">No picture showed a face, pose or mouth the evidence describes.</p>
@@ -115,18 +129,18 @@ function VisualChecks({ checks }: { checks: VisualCheck[] }) {
   </section>
 }
 
-function Decisions({ questions, answers }: { questions: Question[]; answers: AnswersApi }) {
+function Decisions({ questions, answers, agent }: { questions: Question[]; answers: AnswersApi; agent?: AgentMarks }) {
   const look = LOOK.human_review
   const answered = questions.filter(question => selection(answers.text, question, questions)).length
-  return <section aria-label="Decisions" style={{ borderLeftColor: look.accent, background: look.tint }} className="rounded-lg border-l-[3px] px-3.5 py-3">
+  return <section data-need="decisions" aria-label="Decisions" style={{ borderLeftColor: look.accent, background: look.tint }} className="rounded-lg border-l-[3px] px-3.5 py-3">
     <h4 style={{ color: look.ink }} className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[.1em]"><UserRoundCheck size={14} aria-hidden />Decisions
       <StatusChip tone={answered === questions.length ? 'green' : 'amber'} className="ml-auto normal-case tracking-normal">{answered}/{questions.length} answered</StatusChip></h4>
     <p className="muted mb-3 text-[11.5px] leading-4">Pick an answer and it is written into Your answers (unsaved until you save there). Nothing is decided for you.</p>
-    <ol className="space-y-4">{questions.map((question, index) => <QuestionCard key={question.id} number={index + 1} question={question} all={questions} answers={answers} />)}</ol>
+    <ol className="space-y-4">{questions.map((question, index) => <QuestionCard key={question.id} number={index + 1} question={question} all={questions} answers={answers} agent={agent} />)}</ol>
   </section>
 }
 
-export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onStarted, lead, extra, answers }: { cutId: string; result?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; onStarted: () => Promise<void>; lead?: ReactNode; extra?: ReactNode; answers?: AnswersApi }) {
+export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onStarted, lead, extra, answers, agent }: { cutId: string; result?: AnalysisResult; loaded: boolean; jobs: Job[]; disabled: boolean; onStarted: () => Promise<void>; lead?: ReactNode; extra?: ReactNode; answers?: AnswersApi; agent?: AgentMarks }) {
   const [working, setWorking] = useState(false)
   const [message, setMessage] = useState('')
   const view = useMemo(() => result ? parseConsistency(result.content) : null, [result?.content])
@@ -170,8 +184,9 @@ export function ConsistencySummary({ cutId, result, loaded, jobs, disabled, onSt
             {view.conflicts && <StatusChip tone="red" icon={<TriangleAlert size={11} aria-hidden />}>Conflicts found</StatusChip>}
             {quiet && <StatusChip tone="green" icon={<CircleCheck size={11} aria-hidden />}>No decisions needed</StatusChip>}
           </div>}
+        {/* What the person decides comes first; the picture check is the evidence behind it. */}
+        {view.format === 'questions' && view.questions.length > 0 && <Decisions questions={view.questions} answers={answers ?? { text: '', onChange: () => {}, ready: false }} agent={agent} />}
         {view.visualChecks && <VisualChecks checks={view.visualChecks} />}
-        {view.format === 'questions' && view.questions.length > 0 && <Decisions questions={view.questions} answers={answers ?? { text: '', onChange: () => {}, ready: false }} />}
         {(view.format === 'questions' ? QUESTION_ORDER : ORDER).map(key => <Field key={key} section={view.sections[key]} />)}
         <Disclosure label="Generation details"><ResultMetrics result={result} /></Disclosure>
         <p className="muted text-[11px] leading-4">To edit this result or see earlier versions, use Analysis fields below.</p>

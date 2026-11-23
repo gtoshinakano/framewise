@@ -9,8 +9,8 @@ import { PANEL_ACCENT } from './InspectorRail'
 const LIMIT_SECONDS = 180
 
 /** The Sequences tab of the episode inspector: the episode's sequences and a form to create one from a range of cuts. */
-export function SequencePanel({ episodeId, cuts, selectedCut, sequences, onChanged, onOpen }: {
-  episodeId: string; cuts: Cut[]; selectedCut?: Cut; sequences: SequenceSummary[]; onChanged: () => Promise<void> | void; onOpen: (sequenceId: string) => void
+export function SequencePanel({ episodeId, cuts, selectedCut, draft, sequences, onChanged, onOpen }: {
+  episodeId: string; cuts: Cut[]; selectedCut?: Cut; draft?: { from: number; to: number; key: number } | null; sequences: SequenceSummary[]; onChanged: () => Promise<void> | void; onOpen: (sequenceId: string) => void
 }) {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -23,6 +23,8 @@ export function SequencePanel({ episodeId, cuts, selectedCut, sequences, onChang
   const selectedNumber = selectedCut?.active ? selectedCut.cut_index + 1 : null
   // An empty form starts at the selected cut, so "select the first cut, then the last" is all it takes.
   useEffect(() => { if (selectedNumber && !from && !to) { setFrom(String(selectedNumber)); setTo(String(selectedNumber)) } }, [selectedNumber])
+  // "Create sequence" on a timeline range opens the form with that range filled in.
+  useEffect(() => { if (draft) { setFrom(String(draft.from)); setTo(String(draft.to)); setCreating(true) } }, [draft?.key])
   const first = Number(from), last = Number(to)
   const valid = Number.isInteger(first) && Number.isInteger(last) && from.trim() !== '' && to.trim() !== ''
   const seconds = valid ? rangeSeconds(cuts, first, last) : null

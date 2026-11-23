@@ -3,7 +3,10 @@ import { LocalModelControl } from './LocalModelControl'
 import { VisualEngineControl } from './VisualEngineControl'
 import Storage from './Storage'
 import AnalysisDialog from './AnalysisDialog'
-import { adjacentCut, nextNeedingAction, useCutFilters } from './cutFilters'
+import { adjacentCut, isNeedKey, nextNeedingAction, useCutFilters } from './cutFilters'
+import { useCutNeeds } from './cutNeeds'
+import { firstNeed, NEED_ORDER, placeForNeed, type NeedKey } from './cutNeedsView'
+import { RangeInspector } from './RangeInspector'
 import { analysisQueueStates } from './analysisQueueStates'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { limitPlayback } from './playbackLimit'
@@ -206,6 +209,7 @@ function PlayheadClock({ playhead, duration }: { playhead: PlayheadStore; durati
 }
 
 const NO_JOBS: Job[] = []
+const NO_RANGE: ReadonlySet<string> = new Set()
 const DEFAULT_CUTS_WIDTH = 260
 const MIN_TIMELINE = 160
 // What an editor reload fetches: the episode (with its sequences and waveform) and the transcript, which can run to megabytes.
@@ -237,6 +241,9 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const [audioView, setAudioView] = useState<AudioView>('lines')
   const [sequences, setSequences] = useState<SequenceSummary[]>([])
   const [sequenceOpen, setSequenceOpen] = useState<string | null>(null)
+  // The other end of a Shift+click range on the timeline; the selected cut is the anchor.
+  const [rangeToId, setRangeToId] = useState<string | null>(null)
+  const [sequenceDraft, setSequenceDraft] = useState<{ from: number; to: number; key: number } | null>(null)
   const closeSequence = useCallback(() => setSequenceOpen(null), [])
   const refreshSequences = useCallback(() => { void sequenceApi.list(id).then(setSequences).catch(() => {}) }, [id])
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -340,18 +347,41 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   // Cut Assistance edits the transcript outside this editor; reload it as soon as a proposal is applied.
   useEffect(() => { const reload = () => { void load({ episode: false, transcript: true }) }; window.addEventListener('framewise:transcript-changed', reload); return () => window.removeEventListener('framewise:transcript-changed', reload) }, [load])
   useEffect(() => { if (episode) api<Project>(`/projects/${episode.project_id}`).then(setProject).catch(() => {}) }, [episode?.project_id])
-  useEffect(() => { setSelectedId(null); setSelectedChunkId(null); setSelectedTranscriptId(null); setAudioSelection(null); setWaveform(null); setTranscript([]); setSequences([]); setSequenceOpen(null); playhead.set(0); playbackEnd.current = null }, [id, playhead])
+  useEffect(() => { setSelectedId(null); setSelectedChunkId(null); setSelectedTranscriptId(null); setAudioSelection(null); setWaveform(null); setTranscript([]); setSequences([]); setSequenceOpen(null); setRangeToId(null); setSequenceDraft(null); playhead.set(0); playbackEnd.current = null }, [id, playhead])
   const selected = [...(episode?.cuts || []), ...(episode?.archived_cuts || [])].find(cut => cut.id === selectedId)
   const selectedChunk = episode?.chunks.find(chunk => chunk.id === selectedChunkId)
   const cutDetectionJob = cutDetection?.cutId === selectedId ? episode?.jobs.find(job => job.id === cutDetection.jobId) : undefined
   const duration = episode?.duration || 0
   const cutFilters = useCutFilters()
+  const needs = useCutNeeds(episode ? id : null)
+  // What "the next human action" means in the analysis dialog: the active Needs-you filters, else every kind of need.
+  const focusKeys = useMemo(() => { const keys = [...cutFilters.active].filter(isNeedKey); return new Set<NeedKey>(keys.length ? keys : NEED_ORDER) }, [cutFilters.active])
+  const range = useMemo(() => {
+    if (!episode || !rangeToId || !selectedId || rangeToId === selectedId) return null
+    const from = episode.cuts.findIndex(cut => cut.id === selectedId), to = episode.cuts.findIndex(cut => cut.id === rangeToId)
+    if (from < 0 || to < 0) return null
+    const low = Math.min(from, to), high = Math.max(from, to)
+    return { from: low, to: high, ids: new Set(episode.cuts.slice(low, high + 1).map(cut => cut.id)) as ReadonlySet<string> }
+  }, [episode?.cuts, rangeToId, selectedId])
   // Handlers that memoized children receive keep one identity (useEvent) and still see the current state.
   const seek = useEvent((value: number) => { const target = Math.max(0, Math.min(duration, value)); playbackEnd.current = null; if (video.current) video.current.currentTime = target; playhead.seek(target) })
-  const openAnalysis = useEvent((cut: Cut) => { if (!analysisOpen) setDialogPlace({ tab: defaultTab(cut), section: 'characters' }); setAnalysisOpen(true) })
+  // A cut that waits for the person opens where that is settled (the dialog then points at it).
+  const openAnalysis = useEvent((cut: Cut) => {
+    if (!analysisOpen) {
+      const need = firstNeed(needs.get(cut.id), focusKeys)
+      const place = need && placeForNeed(need.key)
+      setDialogPlace(place ? { tab: place.tab, section: place.section ?? 'characters' } : { tab: defaultTab(cut), section: 'characters' })
+    }
+    setAnalysisOpen(true)
+  })
   const openCutAnalysis = useEvent((cut: Cut) => { selectCut(cut, true); setActiveTab('cut'); openAnalysis(cut) })
-  const selectCut = useEvent((cut: Cut, keepAnalysisOpen = false) => { if (!keepAnalysisOpen) setAnalysisOpen(false); video.current?.pause(); setSelectedId(cut.id); setActiveTab(current => current === 'sequences' ? current : 'cut'); seek(cut.first_frame_time) })
+  const selectCut = useEvent((cut: Cut, keepAnalysisOpen = false) => { setRangeToId(null); if (!keepAnalysisOpen) setAnalysisOpen(false); video.current?.pause(); setSelectedId(cut.id); setActiveTab(current => current === 'sequences' ? current : 'cut'); seek(cut.first_frame_time) })
   const navigateCut = useEvent((cut: Cut) => selectCut(cut, true))
+  const extendSelection = useEvent((cut: Cut) => {
+    if (!selectedId || !episode?.cuts.some(item => item.id === selectedId)) { selectCut(cut); return }
+    setRangeToId(cut.id === selectedId ? null : cut.id); setActiveTab('cut')
+  })
+  const createSequenceFromRange = useEvent((from: number, to: number) => { setSequenceDraft(current => ({ from, to, key: (current?.key ?? 0) + 1 })); setActiveTab('sequences') })
   const collapseCuts = useEvent(() => setCutsCollapsed(true))
   // The address and the editor follow each other. A link (route) wins when it changes: it selects its cut and opens the dialog
   // where it says. Afterwards every cut and dialog change rewrites the address, so the address bar always holds a shareable link.
@@ -454,7 +484,8 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const step = (direction: 1 | -1) => { if (!activeSelected || !episode) return; const target = episode.cuts[activeSelected.cut_index + direction]; if (target) selectCut(target) }
   useEditorShortcuts(!!episode && !analysisOpen && !sequenceOpen && !settingsOpen && !glossaryOpen && !outfitsOpen && !autopilotOpen && !inboxOpen && !audioRange && !prepareOpen && !queueOpen, {
     playPause: togglePlay, split, undo, redo, previous: () => step(-1), next: () => step(1),
-    nextNeeding: () => { if (!episode) return; const next = nextNeedingAction(episode.cuts, selectedId, cutFilters.active); if (next) selectCut(next) },
+    nextNeeding: () => { if (!episode) return; const next = nextNeedingAction(episode.cuts, selectedId, cutFilters.active, needs); if (next) selectCut(next) },
+    clearSelection: range ? () => setRangeToId(null) : undefined,
     filters: () => setFiltersOpen(true),
   })
   const editTools = <>
@@ -496,14 +527,15 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
         </div>
       </main>
       <aside id="inspector-panel" className="editor-inspector bg-[#131720]" role="tabpanel" aria-labelledby={`inspector-tab-${activeTab}`}>
-        {activeTab === 'cut' ? selected ? <CutInspector cut={selected} cuts={episode.cuts} queueState={cutQueueStates.get(selected.id)} playhead={playhead} duration={duration} frameVersion={frameVersion}
+        {activeTab === 'cut' ? range ? <RangeInspector cuts={episode.cuts} needs={needs} from={range.from} to={range.to} onSelect={selectCut} onOpenAnalysis={openCutAnalysis} onClear={() => setRangeToId(null)} onCreateSequence={createSequenceFromRange} />
+          : selected ? <CutInspector cut={selected} cuts={episode.cuts} queueState={cutQueueStates.get(selected.id)} playhead={playhead} duration={duration} frameVersion={frameVersion}
           sceneThreshold={episode.settings.scene_threshold ?? 0.32} detectionJob={cutDetectionJob} onSelect={selectCut} onPlay={playRange} onSeek={seek} onOpenAnalysis={() => { if (selected) openAnalysis(selected) }}
           onToggleAnalysis={() => void toggleAnalysis()} onSaveNotes={saveNotes} onApplyTiming={(start, end) => void cutEdits.edit('timing', selected.id, { start, end })} onDetectWithin={threshold => void detectWithin(threshold)}
           onCopy={text => { void navigator.clipboard?.writeText(text).then(() => toast({ message: `Copied ${text}`, duration: 2000 })).catch(() => {}) }} />
           : <div className="p-8 text-center"><div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[#282438] text-[#bca7ff]"><Scissors size={21} /></div><h2 className="text-sm font-semibold">Select a cut</h2><p className="muted mt-2 text-xs leading-5">Choose a segment in the timeline or the cut list to see its notes, frames and timing.</p></div>
         : activeTab === 'chunk' ? <ChunkInspector chunk={selectedChunk} onPlay={playRange} onSave={saveChunk} />
         : activeTab === 'audio' ? <TranscriptEditor transcriptStale={episode.transcript_stale_reason} attributionStale={episode.speaker_attribution_stale_reason} hasAudio={episode.has_audio} subtitleLanguage={episode.subtitle_language} subtitleRun={episode.subtitles.run} jobs={jobs} episodeId={id} projectId={episode.project_id} duration={duration} playhead={playhead} segments={transcript} selectedId={selectedTranscriptId} onSelect={setSelectedTranscriptId} onSaved={refresh} playRange={playRange} audioSelection={audioSelection} onAudioSelection={selectAudio} view={audioView} onViewChange={setAudioView} />
-        : <SequencePanel episodeId={id} cuts={episode.cuts} selectedCut={selected} sequences={sequences} onChanged={refresh} onOpen={setSequenceOpen} />}
+        : <SequencePanel episodeId={id} cuts={episode.cuts} selectedCut={selected} draft={sequenceDraft} sequences={sequences} onChanged={refresh} onOpen={setSequenceOpen} />}
       </aside>
       <nav className="editor-rail" aria-label="Inspector">
         <InspectorRail value={activeTab} onChange={setActiveTab} busy={{ audio: audioBusy, sequences: sequences.some(sequence => sequence.pending_jobs > 0) }} counts={{ sequences: sequences.length }} />
@@ -517,11 +549,11 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
         <div className="scrollbar min-h-0 flex-1 overflow-auto">
           <Timeline key={id} activeFilters={cutFilters.active} filterDisplay={cutFilters.display} onToggleFilter={cutFilters.toggle} onClearFilters={cutFilters.clear} onFilterDisplay={cutFilters.setDisplay} filtersOpen={filtersOpen} onFiltersOpenChange={setFiltersOpen} editTools={editTools}
             audioRanges={episode.audio_ranges} onEditAudioRange={editAudioRange}
-            duration={duration} waveform={waveform} hasAudio={episode.has_audio} preparing={jobs.some(job => job.pipeline === 'prepare' && active(job))} chunks={episode.chunks} cuts={episode.cuts} cutQueueStates={cutQueueStates} transcript={transcript} playhead={playhead} selectedCutId={selectedId} selectedChunkId={selectedChunkId} selectedTranscriptId={selectedTranscriptId} onSeek={seek} onSelectCut={selectCut} onOpenCutAnalysis={openCutAnalysis} onSelectChunk={selectChunk} onSelectTranscript={selectTranscript} audioSelection={audioSelection} onSelectAudio={selectAudio} sequences={sequences} onOpenSequence={setSequenceOpen} />
+            duration={duration} waveform={waveform} hasAudio={episode.has_audio} preparing={jobs.some(job => job.pipeline === 'prepare' && active(job))} chunks={episode.chunks} cuts={episode.cuts} cutQueueStates={cutQueueStates} transcript={transcript} playhead={playhead} selectedCutId={selectedId} selectedChunkId={selectedChunkId} selectedTranscriptId={selectedTranscriptId} onSeek={seek} onSelectCut={selectCut} onExtendSelection={extendSelection} rangeIds={range?.ids ?? NO_RANGE} needs={needs} onOpenCutAnalysis={openCutAnalysis} onSelectChunk={selectChunk} onSelectTranscript={selectTranscript} audioSelection={audioSelection} onSelectAudio={selectAudio} sequences={sequences} onOpenSequence={setSequenceOpen} />
         </div>
       </div>
     </div>}
-    {episode && analysisOpen && selected && <AnalysisDialog key={dialogKey} initialTab={dialogPlace.tab} initialSection={dialogPlace.section} onPlace={reportPlace} cut={selected} cuts={episode.cuts} previousCut={selected.active ? adjacentCut(episode.cuts, selected, -1, cutFilters.active) : undefined} nextCut={selected.active ? adjacentCut(episode.cuts, selected, 1, cutFilters.active) : undefined} onNavigate={navigateCut} episodeId={id} projectId={episode.project_id} proxyReady={episode.proxy_ready} waveform={waveform} transcript={transcript} hasAudio={episode.has_audio} preparingAudio={jobs.some(job => job.pipeline === 'prepare' && active(job))} busy={analysisBusy} jobs={jobs} jobsKey={jobsKey} frameVersion={frameVersion} onStarted={refresh} onClose={closeAnalysis} />}
+    {episode && analysisOpen && selected && <AnalysisDialog key={dialogKey} initialTab={dialogPlace.tab} initialSection={dialogPlace.section} onPlace={reportPlace} cut={selected} cuts={episode.cuts} previousCut={selected.active ? adjacentCut(episode.cuts, selected, -1, cutFilters.active, needs) : undefined} nextCut={selected.active ? adjacentCut(episode.cuts, selected, 1, cutFilters.active, needs) : undefined} needs={needs.get(selected.id)} focusKeys={focusKeys} onNavigate={navigateCut} episodeId={id} projectId={episode.project_id} proxyReady={episode.proxy_ready} waveform={waveform} transcript={transcript} hasAudio={episode.has_audio} preparingAudio={jobs.some(job => job.pipeline === 'prepare' && active(job))} busy={analysisBusy} jobs={jobs} jobsKey={jobsKey} frameVersion={frameVersion} onStarted={refresh} onClose={closeAnalysis} />}
     {episode && sequenceOpen && <SequenceDialog key={sequenceOpen} sequenceId={sequenceOpen} episodeId={id} proxyReady={episode.proxy_ready} onClose={closeSequence} onChanged={refreshSequences} />}
     {episode && queueOpen && <QueueDrawer episodeId={id} focus={queueOpen === 'attention' ? 'attention' : null} onClose={closeQueue} onChanged={refresh} onSummary={setQueueSummary}
       onOpenCut={cutId => { const cut = [...episode.cuts, ...episode.archived_cuts].find(item => item.id === cutId); if (cut) openCutAnalysis(cut); else toast({ tone: 'error', message: 'That cut no longer exists.' }) }}

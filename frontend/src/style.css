@@ -164,3 +164,11 @@ input, textarea, select { outline: none; }
 /* Opens over the answers and summary columns (the Review column keeps its field list in view) while an Analysis field is edited; hidden whenever nothing is in it. */
 .editor-overlay:empty { display: none; }
 @media (min-width: 1024px) { .editor-overlay { grid-column: 2 / -1; grid-row: 1; z-index: 30; display: flex; flex-direction: column; min-height: 0; margin-top: -12px; padding-top: 12px; overflow-y: auto; background: #131720; } }
+
+/* The analysis dialog points at what the person must settle (AnalysisDialog pointAt, data-need anchors). */
+@keyframes need-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(240, 166, 74, 0); }
+  35% { box-shadow: 0 0 0 4px rgba(240, 166, 74, .7); }
+}
+.need-pulse { animation: need-pulse .8s ease-in-out 3; }
+@media (prefers-reduced-motion: reduce) { .need-pulse { animation: none; outline: 2px solid #f0a64a; outline-offset: 2px; } }
