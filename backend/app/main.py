@@ -1871,13 +1871,50 @@ def list_character_references(project_id: str):
     return rows
 
 
+class MatcherUpdate(BaseModel):
+    ids: list[str] = Field(min_length=1)
+    use: bool | None = None
+
+
+@app.get('/api/projects/{project_id}/character-matcher')
+def character_matcher(project_id: str):
+    from . import anime_gallery
+    require_project(project_id)
+    rows = anime_gallery.exemplar_rows(project_id)
+    episodes = {r['id']: r['title'] for r in db.all_rows('SELECT id,title FROM episodes WHERE project_id=?', (project_id,))}
+    cuts = {r['id']: r['cut_index'] for r in db.all_rows('SELECT c.id,c.cut_index FROM cuts c JOIN episodes e ON e.id=c.episode_id WHERE e.project_id=?', (project_id,))}
+    for row in rows:
+        frame = next((f for f in json.loads(row.pop('frames_json')) if f['position'] == row['position']), None)
+        box = json.loads(row.pop('box_json'))
+        automatic = row['gallery_status'] in ('small', 'atypical') or (row['recognition_use'] is None and not row['is_reference'] and frame and anime_gallery.box_problem(box, frame['image_size']) == 'small')
+        row['state'] = 'disabled' if row['recognition_use'] == 0 else 'automatic' if automatic and row['recognition_use'] != 1 else 'active'
+        row['episode_title'] = episodes.get(row['episode_id'], '')
+        row['cut_index'] = cuts.get(row['cut_id'])
+    return rows
+
+
+@app.put('/api/projects/{project_id}/character-matcher')
+def update_character_matcher(project_id: str, body: MatcherUpdate):
+    from . import anime_gallery
+    require_project(project_id)
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        allowed = {row['id'] for row in anime_gallery.exemplar_rows(project_id, conn)}
+        if not set(body.ids) <= allowed:
+            raise HTTPException(404, 'Matcher image not found in this project')
+        value = None if body.use is None else int(body.use)
+        conn.executemany('UPDATE character_detections SET recognition_use=?,gallery_status=NULL,gallery_note=NULL WHERE id=?', [(value, id) for id in set(body.ids)])
+    return {'ok': True}
+
+
+@app.get('/api/character-matcher/{reference_id}/image', response_class=Response)
 @app.get('/api/character-references/{reference_id}/image', response_class=Response)
 async def character_reference_image(reference_id: str, request: Request):
     """The reference's box alone, at most 240 px high: the references list shows these instead of whole 1280 px frames."""
     row = db.one('''SELECT d.position,d.box_json,r.frames_json,r.cut_start,r.cut_end,e.id AS episode_id,e.project_id,e.original_ext
-                    FROM character_image_references ref JOIN character_detections d ON d.id=ref.detection_id
+                    FROM character_detections d
                     JOIN character_detection_runs r ON r.id=d.run_id JOIN cuts c ON c.id=r.cut_id JOIN episodes e ON e.id=c.episode_id
-                    WHERE ref.id=?''', (reference_id,))
+                    WHERE d.id=? OR d.id=(SELECT detection_id FROM character_image_references WHERE id=?)''', (reference_id, reference_id))
     if not row:
         raise HTTPException(404, 'Reference not found')
     frame = next((frame for frame in json.loads(row['frames_json']) if frame['position'] == row['position']), None)

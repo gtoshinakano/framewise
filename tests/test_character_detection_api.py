@@ -23,6 +23,25 @@ class CharacterDetectionAPITest(unittest.TestCase):
             conn.execute("INSERT INTO jobs(id,episode_id,pipeline,payload_json) VALUES (?,?,?,?)", (job_id, cut['episode_id'], 'character_detect', json.dumps(payload)))
         return job_id
 
+    def test_matcher_store_bulk_override_and_saved_reference(self):
+        from app import character_detection
+        frames = [{'position': 'first', 'time': 0, 'image_size': [100, 80]}]
+        with db.connect() as conn:
+            conn.execute("INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id) VALUES ('matcher','c1',0,2,?,'test')", (json.dumps(frames),))
+            conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES ('matcher-box','matcher','first','[5,4,80,70]','ctx','manual')")
+            conn.execute("INSERT INTO character_image_references(id,character_context_id,detection_id) VALUES ('matcher-ref','ctx','matcher-box')")
+        url = '/api/projects/p/character-matcher'
+        self.assertEqual(self.client.get(url).json()[0]['state'], 'active')
+        self.assertEqual(self.client.put(url, json={'ids': ['matcher-box', 'missing'], 'use': False}).status_code, 404)
+        self.assertEqual(self.client.get(url).json()[0]['state'], 'active')
+        self.assertEqual(self.client.put(url, json={'ids': ['matcher-box'], 'use': False}).status_code, 200)
+        self.assertEqual(self.client.get(url).json()[0]['state'], 'disabled')
+        with db.connect() as conn:
+            self.assertEqual(character_detection.reference_snapshots(conn, 'p', matching_only=True), [])
+            self.assertEqual(len(character_detection.reference_snapshots(conn, 'p')), 1)
+        self.client.put(url, json={'ids': ['matcher-box'], 'use': None})
+        self.assertEqual(self.client.get(url).json()[0]['state'], 'active')
+
     def test_database_upgrade_adds_detection_provenance_columns(self):
         with db.connect() as conn:
             conn.execute('ALTER TABLE character_detection_runs DROP COLUMN model_revision')

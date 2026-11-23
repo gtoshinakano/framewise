@@ -269,7 +269,7 @@ def gather(conn, job, payload):
         detected = db.all_rows("""SELECT id,position,box_json,label_source,character_context_id
             FROM character_detections WHERE run_id=? ORDER BY rowid""", (saved['id'],), conn=conn) if saved else []
         return {**data, 'saved': saved, 'detected': detected,
-                'references': character_detection.reference_snapshots(conn, data['episode']['project_id'])}
+                'references': character_detection.reference_snapshots(conn, data['episode']['project_id'], matching_only=True)}
     phase = payload.get('phase', 'full')
     data['mode'] = 'full' if payload.get('rerun') and not data['run'] else phase
     if phase != 'boxes':

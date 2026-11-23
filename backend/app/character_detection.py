@@ -43,7 +43,7 @@ def detect_boundary_people(original, cut, scratch, model, on_frame=None):
     return frames
 
 
-def reference_snapshots(conn, project_id, per_character_limit=2):
+def reference_snapshots(conn, project_id, per_character_limit=2, matching_only=False):
     """Read references and their source coordinates from the caller's snapshot."""
     import json
     rows = conn.execute('''SELECT r.id,r.character_context_id,ci.title,d.position,d.box_json,
@@ -51,7 +51,7 @@ def reference_snapshots(conn, project_id, per_character_limit=2):
                           FROM character_image_references r JOIN context_items ci ON ci.id=r.character_context_id
                           JOIN character_detections d ON d.id=r.detection_id
                           JOIN character_detection_runs run ON run.id=d.run_id JOIN cuts c ON c.id=run.cut_id
-                          JOIN episodes e ON e.id=c.episode_id WHERE ci.project_id=? AND ci.kind='character' ORDER BY r.created_at DESC,r.rowid DESC''', (project_id,)).fetchall()
+                          JOIN episodes e ON e.id=c.episode_id WHERE ci.project_id=? AND ci.kind='character' AND (?=0 OR d.recognition_use IS NOT 0) ORDER BY r.created_at DESC,r.rowid DESC''', (project_id, int(matching_only))).fetchall()
     result, counts = [], {}
     for row in rows:
         item = dict(row)

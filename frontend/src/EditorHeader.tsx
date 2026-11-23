@@ -9,7 +9,7 @@ export type CharacterStep = 'character-boxes' | 'character-detection' | 'charact
 const go = (path: string) => { window.location.hash = path }
 
 /** The episode editor's top bar: where you are, the episode-wide actions grouped in menus, and the queue. */
-export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, inbox, onOpenInbox, onOpenSettings, onOpenGlossary, onOpenOutfits, onOpenAutopilot, onDeleteEpisode }: {
+export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, inbox, onOpenInbox, onOpenSettings, onOpenGlossary, onOpenOutfits, onOpenMatcher, onOpenAutopilot, onDeleteEpisode }: {
   projectId?: string
   projectTitle?: string
   episodeTitle?: string
@@ -35,6 +35,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   onOpenSettings: () => void
   onOpenGlossary: () => void
   onOpenOutfits: () => void
+  onOpenMatcher: () => void
   onOpenAutopilot: () => void
   onDeleteEpisode: () => void
 }) {
@@ -47,6 +48,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
     { key: 'rerun', icon: RotateCcw, tone: 'caution', title: 'Redo automatic labels…', hint: 'Recognizes every cut again using your confirmed labels as examples. Manual labels and drawn boxes stay as they are.', disabled: !!characterBlock, disabledReason: characterBlock, onSelect: () => onCharacterStep('character-detection-rerun') },
     'separator',
     { key: 'glossary', icon: BookOpen, title: 'Name glossary…', disabled: !projectId, onSelect: onOpenGlossary },
+    { key: 'matcher', icon: UserSearch, title: 'Character matcher store…', hint: 'Manage matching images from all episodes.', disabled: !projectId, onSelect: onOpenMatcher },
     { key: 'outfits', icon: Shirt, title: 'Outfits…', hint: 'What each character wears, shared by every episode. The Sequence director fills it.', disabled: !projectId, onSelect: onOpenOutfits },
   ]
   const cutItems: MenuEntry[] = [
