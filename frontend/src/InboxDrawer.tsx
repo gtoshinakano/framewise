@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Bot, CheckCircle2, ExternalLink, Image as ImageIcon, Inbox, RotateCcw, Undo2, Wrench, X } from 'lucide-react'
+import { AlertTriangle, Bot, CheckCheck, CheckCircle2, ExternalLink, Image as ImageIcon, Inbox, RotateCcw, Undo2, Wrench, X } from 'lucide-react'
 import { api } from './api'
 import { editorPath } from './cutRoute'
 import { ActionButton } from './RunUi'
@@ -87,6 +87,18 @@ export function InboxDrawer({ episodeId, onClose, onChanged }: { episodeId: stri
     }
   }
 
+  /** Close every question waiting for Claude as dismissed (the person says they are already settled). Nothing in the data changes. */
+  async function dismissAllForClaude() {
+    if (!forClaude.length || !window.confirm(`Dismiss all ${forClaude.length} questions waiting for Claude? Nothing else changes; a later agent run can ask again if something is still unsettled.`)) return
+    await run('dismiss-claude', async () => {
+      const results = await Promise.allSettled(forClaude.map(item => api(`/escalations/${item.id}/close`, {
+        method: 'POST', body: JSON.stringify({ status: 'dismissed', resolution: { by: 'inbox', choice: 'dismiss_all_claude' } }),
+      })))
+      const failed = results.filter(result => result.status === 'rejected').length
+      if (failed) throw new Error(`${failed} of ${results.length} could not be dismissed (already closed?). The rest were.`)
+    }, 'Dismissed every question for Claude')
+  }
+
   async function choose(item: Escalation, choice: Choice) {
     if (choice.key === 'open') return openCut(item)
     await run(`${item.id}:${choice.key}`, () => answerEscalation(item, choice), `${kindLabel(item.kind)}: ${choice.label}`)
@@ -140,7 +152,10 @@ export function InboxDrawer({ episodeId, onClose, onChanged }: { episodeId: stri
 
       <div className="scrollbar min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-3 text-xs">
         {items === null ? <p className="muted">Loading…</p> : (view === 'mine' || view === 'claude') && <>
-          {view === 'claude' && <p className="muted mb-2">These wait for Claude, the second reviewer (a Claude Code session running the autopilot answers them). You can answer them yourself too.</p>}
+          {view === 'claude' && <div className="mb-2 flex items-start justify-between gap-2">
+            <p className="muted">These wait for Claude, the second reviewer (a Claude Code session running the autopilot answers them). You can answer them yourself too.</p>
+            {forClaude.length > 0 && <ActionButton compact icon={<CheckCheck size={13} />} pending={working === 'dismiss-claude'} disabled={working !== null} onClick={() => void dismissAllForClaude()}>Dismiss all</ActionButton>}
+          </div>}
           {shown.length === 0 ? <p className="muted flex items-center gap-1.5"><CheckCircle2 size={14} className="text-[#7bdcb2]" aria-hidden />{view === 'mine' ? 'Nothing waits for you in this episode.' : 'Nothing waits for Claude.'}</p> :
             groupByKind(shown).map(group => <section key={group.kind} className="mb-4">
               <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#929aa9]">{group.label} <Count value={group.items.length} /></h3>
