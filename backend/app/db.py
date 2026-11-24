@@ -55,6 +55,27 @@ def migrate_queue_dependencies(conn):
     conn.execute('INSERT INTO app_flags(name) VALUES (?)', (flag,))
 
 
+# 2026-11-24: only a change of a cut's boundaries makes its first-frame description stale, and audio-side work (subtitles)
+# never makes a picture result stale. Marks the older rules left behind are cleared once.
+PICTURE_STALE_REASONS = {
+    'initial_frame': ('Episode subtitles changed', 'First-frame detections changed', 'First-frame boxes or labels were edited',
+                      'The cut’s character setting changed'),
+    'keyframe_analysis': ('Episode subtitles changed',),
+}
+
+
+def clear_picture_stale_marks(conn):
+    flag = 'picture-stale-rules-v1'
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    if conn.execute('SELECT 1 FROM app_flags WHERE name=?', (flag,)).fetchone():
+        return
+    for kind, reasons in PICTURE_STALE_REASONS.items():
+        conn.execute(f"""UPDATE analysis_results SET stale_reason=NULL WHERE superseded_by IS NULL
+            AND json_extract(settings_json,'$.structured_type')=? AND stale_reason IN ({','.join('?' for _ in reasons)})""", (kind, *reasons))
+    conn.execute('INSERT INTO app_flags(name) VALUES (?)', (flag,))
+
+
 def init_db():
     with connect() as db:
         db.execute("PRAGMA journal_mode=WAL")
@@ -673,6 +694,7 @@ def init_db():
         from . import outfit_library
         outfit_library.seed(db)
         migrate_queue_dependencies(db)
+        clear_picture_stale_marks(db)
         checkpoint_columns = {row['name'] for row in db.execute('PRAGMA table_info(analysis_job_cuts)')}
         if 'source_cut_json' not in checkpoint_columns:
             db.execute('ALTER TABLE analysis_job_cuts ADD COLUMN source_cut_json TEXT')

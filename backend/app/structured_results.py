@@ -82,11 +82,12 @@ def invalidate_text(conn, cut_id, evidence):
 
 
 def invalidate_detections(conn, cut_id, *, target=False, reason=None):
-    """Existing analyses of changed people remain available with a stale reason."""
+    """Existing analyses of changed people remain available with a stale reason.
+
+    The first-frame description is never one of them: only a change of the cut's boundaries makes it stale
+    (``invalidate_cut_timing``), not a box, a name or a re-detection."""
     reason = reason or ('Target frame detections changed' if target else 'First-frame detections changed')
     types = ('keyframe_analysis', 'performance_beats', 'consistency_summary')
-    if not target:
-        types = ('initial_frame', *types)
     marks = ','.join('?' for _ in types)
     conn.execute(f"""UPDATE analysis_results SET stale_reason=? WHERE cut_id=? AND superseded_by IS NULL
         AND (json_extract(settings_json,'$.structured_type') IN ({marks}) OR title='Cut summary')""", (reason, cut_id, *types))

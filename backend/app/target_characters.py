@@ -34,6 +34,7 @@ WORKFLOW = 'target_frames_v1'
 FRAME_WIDTH = 1280
 MAX_BOXES = target_tracking.MAX_BOXES
 REVIEW_VERSION = 1
+OPENING_IOU = .7  # a first-frame box that moved less than this (and kept its character) leaves the Target frames current
 
 
 def is_target_job(payload):
@@ -89,8 +90,30 @@ def current_opening(cut_id, conn=None):
         ORDER BY rowid""", (run['id'],), conn=conn)
 
 
+def opening_layout(boxes):
+    """The first-frame boxes as places and characters, without their ids: a re-detection that finds the same people in
+    the same places has the same layout."""
+    return sorted([[round(float(value), 1) for value in json.loads(box['box_json'])[:4]], box['character_context_id'] or '']
+                  for box in boxes)
+
+
+def same_layout(old, new):
+    """Whether two opening layouts hold the same people: as many boxes, each paired with one of the same character
+    that overlaps it by at least ``OPENING_IOU``."""
+    if len(old) != len(new):
+        return False
+    free = [list(item) for item in new]
+    for box, character in old:
+        match = next((item for item in free if item[1] == character and target_tracking.iou(box, item[0]) >= OPENING_IOU), None)
+        if match is None:
+            return False
+        free.remove(match)
+    return True
+
+
 def opening_changed(run, cut_id, conn=None):
-    """Whether the first-frame boxes changed since ``run`` was detected (older runs stored only the box ids)."""
+    """Whether the first-frame boxes really changed since ``run`` was detected: a box added, removed, moved or given
+    another character. New ids for the same boxes (the cut's first frame detected again) are no change."""
     try:
         provenance = json.loads(run['input_json'] or '{}')
     except (TypeError, ValueError):
@@ -98,9 +121,15 @@ def opening_changed(run, cut_id, conn=None):
     if not isinstance(provenance, dict) or 'opening_boxes' not in provenance:
         return False
     boxes = current_opening(cut_id, conn)
-    if provenance.get('opening'):
-        return provenance['opening'] != opening_signature(boxes)
-    return sorted(provenance['opening_boxes']) != sorted(box['id'] for box in boxes)
+    if 'opening_layout' in provenance:
+        return not same_layout(provenance['opening_layout'], opening_layout(boxes))
+    if sorted(provenance['opening_boxes']) == sorted(box['id'] for box in boxes):
+        return bool(provenance.get('opening')) and provenance['opening'] != opening_signature(boxes)
+    # Older runs stored only the ids: compare with those boxes as they are stored now.
+    ids = provenance['opening_boxes']
+    old = db.all_rows(f"SELECT id,box_json,character_context_id FROM character_detections WHERE id IN ({','.join('?' for _ in ids)})",
+                      tuple(ids), conn=conn) if ids else []
+    return len(old) != len(ids) or not same_layout(opening_layout(old), opening_layout(boxes))
 
 
 def state(cut_id, conn=None):
@@ -573,7 +602,7 @@ def _save(inputs, frames, slots, stored, renumbered, revision, mirror_ordinal, c
             conn.execute('INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json,source,scores_json) VALUES (?,?,?,?,?,?,?)',
                          (str(uuid.uuid4()), run_id, ordinal, slot, json.dumps(list(box)), 'auto', json.dumps(scores) if scores else None))
         provenance = {'fingerprint': inputs.stamp, 'selection_key': key, 'opening_boxes': [box['id'] for box in inputs.data['boxes']],
-                      'opening': opening_signature(inputs.data['boxes']),
+                      'opening': opening_signature(inputs.data['boxes']), 'opening_layout': opening_layout(inputs.data['boxes']),
                       'target_box_ids': [box['id'] for box in inputs.data['target_boxes']], 'cast_locked': locked,
                       'exemplars': [row['id'] for row in inputs.data['gallery'][0]]}
         conn.execute('UPDATE target_detection_runs SET input_json=? WHERE id=?', (json.dumps(provenance), run_id))

@@ -56,12 +56,37 @@ def speech_spans(rows):
 
 
 def invalidate(conn, job):
+    """A new subtitle run makes the text built from subtitles stale, and only on cuts whose lines differ from the run
+    before it (a retry that reads the same lines changes nothing). Pictures never depend on the subtitles: the first
+    frame, the keyframe selection, the Target frames and the keyframe analysis stay current."""
     from .speaker_attribution import mark_stale
-    mark_stale(conn, job['episode_id'], 'Episode subtitles changed')
-    conn.execute("""UPDATE analysis_results SET stale_reason='Episode subtitles changed' WHERE superseded_by IS NULL
-        AND cut_id IN (SELECT id FROM cuts WHERE episode_id=? AND active=1)
-        AND (json_extract(settings_json,'$.structured_type') IN ('initial_frame','keyframe_analysis','performance_beats','consistency_summary')
-             OR title='Cut summary')""", (job['episode_id'],))
+    from .structured_results import invalidate_notes
+    cut_ids = changed_cuts(conn, job['episode_id'])
+    if cut_ids:
+        mark_stale(conn, job['episode_id'], 'Episode subtitles changed')
+        invalidate_notes(conn, cut_ids, 'Episode subtitles changed')
+
+
+def changed_cuts(conn, episode_id):
+    """Active cuts whose overlapping subtitle lines differ between the current complete run and the one before it."""
+    runs = [row['id'] for row in conn.execute("""SELECT id FROM subtitle_runs WHERE episode_id=? AND status='complete'
+        ORDER BY rowid DESC LIMIT 2""", (episode_id,))]
+
+    def lines(run_id):
+        return [(round(row['start_time'], 2), round(row['end_time'], 2), row['text']) for row in conn.execute(
+            'SELECT start_time,end_time,text FROM subtitle_lines WHERE run_id=? ORDER BY start_time,end_time,line_index', (run_id,))]
+
+    new = lines(runs[0]) if runs else []
+    old = lines(runs[1]) if len(runs) > 1 else []
+    if new == old:
+        return []
+    changed = []
+    for cut in conn.execute('SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 ORDER BY start_time', (episode_id,)):
+        def overlapping(rows):
+            return [row for row in rows if row[1] > cut['start_time'] and row[0] < cut['end_time']]
+        if overlapping(new) != overlapping(old):
+            changed.append(cut['id'])
+    return changed
 
 
 def read_parallel():

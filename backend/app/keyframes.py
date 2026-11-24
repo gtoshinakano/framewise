@@ -59,6 +59,36 @@ def mask_for(episode_id, settings, conn=None):
     return {'top': settings['mask_top'], 'bottom': settings['mask_bottom'], 'source': 'fallback', 'subtitle_run_id': None}
 
 
+def stored_key(conn, episode_id, cut, source, settings):
+    """The cache key of the cut's selection for its boundaries and settings: the saved one when there is one, else the
+    key a new selection would get (with today's subtitle mask). Raises ``OSError`` when the original is unreadable.
+
+    Only a change of the cut's boundaries (or of the selector's settings) gives a cut a new selection. The subtitle
+    band shapes a cut's first selection only: a later subtitle run must never make the frames, the Target frames and
+    their reviews out of date, so a saved selection of these boundaries and settings is found without the mask. When
+    several match, the one the cut's Target frames run uses wins, then the newest.
+    """
+    key = cache_key(source, cut, settings, mask_for(episode_id, settings, conn))
+    if conn.execute('SELECT 1 FROM keyframe_results WHERE cache_key=?', (key,)).fetchone():
+        return key
+    matches = []
+    for row in conn.execute('SELECT cache_key,result_json FROM keyframe_results WHERE cut_id=? ORDER BY rowid DESC', (cut['id'],)):
+        result = json.loads(row['result_json'])
+        if (result.get('start_timestamp_seconds') == cut['start_time'] and result.get('end_timestamp_seconds') == cut['end_time']
+                and result.get('input_settings') == settings):
+            matches.append((row['cache_key'], result))
+    if not matches:
+        return key
+    used = {row['selection_key'] for row in conn.execute('SELECT selection_key FROM target_detection_runs WHERE cut_id=? AND cut_start=? AND cut_end=?',
+                                                          (cut['id'], cut['start_time'], cut['end_time']))}
+    if used:
+        edits = edits_for(cut, conn)
+        for match, result in matches:
+            if apply_edits(match, result, edits)[0] in used:
+                return match
+    return matches[0][0]
+
+
 def latest_job(conn, episode_id, cut_id):
     """The newest ``keyframes`` job that covers the cut (any status), or None."""
     return conn.execute('''SELECT j.id,j.status,j.error,j.payload_json FROM jobs j WHERE j.episode_id=? AND j.pipeline='keyframes'
@@ -72,8 +102,8 @@ def current_selection(cut_id, conn=None):
     """``(cut, source path, key, result)`` of the cut's latest selection; key and result are None when it is missing or stale.
 
     The cut is None when it does not exist or is not active. The result includes the frames the user added or
-    removed (``apply_edits``); the key is the ``keyframe_results`` cache key (the settings of the cut's latest
-    selection job with today's subtitle mask, so extracting subtitles makes it stale), changed by those edits.
+    removed (``apply_edits``); the key is the ``keyframe_results`` cache key (``stored_key``: the saved selection of the
+    cut's boundaries and the settings of its latest selection job; a subtitle run never changes it), changed by those edits.
     """
     from . import db
     if conn is None:
@@ -99,7 +129,7 @@ def base_selection(cut_id, conn):
         return cut, source, None, None
     settings = json.loads(job['payload_json'])['keyframe_settings']
     try:
-        key = cache_key(source, cut, settings, mask_for(cut['episode_id'], settings, conn))
+        key = stored_key(conn, cut['episode_id'], cut, source, settings)
     except OSError:
         return cut, source, None, None
     row = db.one('SELECT result_json FROM keyframe_results WHERE cache_key=?', (key,), conn=conn)
@@ -129,9 +159,8 @@ def ensure_selection(conn, episode_id, cut_ids):
             waits.append(job['id'])
             continue
         settings = json.loads(job['payload_json'])['keyframe_settings'] if job else config({})
-        band = mask_for(episode_id, settings, conn)
         try:
-            key = cache_key(source, cut, settings, band)
+            key = stored_key(conn, episode_id, cut, source, settings)
         except OSError:
             key = None
         if key and conn.execute('SELECT 1 FROM keyframe_results WHERE cache_key=?', (key,)).fetchone():
@@ -248,7 +277,6 @@ def edit_frames(conn, cut_id, add=None, remove=None):
     dependants are marked stale and the Target frames run is re-keyed to the new selection, so the boxes the
     user reviewed on the other frames stay (a removed frame's boxes are kept in the correction log).
     """
-    from . import target_reviews
     cut, source, key, result = current_selection(cut_id, conn)
     if not cut:
         raise LookupError('Active cut not found')
@@ -291,21 +319,43 @@ def edit_frames(conn, cut_id, add=None, remove=None):
     if new_key == key:
         return new_result
     mark_stale(conn, cut_id, 'Target frames edited')
-    target_reviews.archive_selection(conn, cut_id, key)
-    conn.execute('DELETE FROM target_detection_runs WHERE cut_id=? AND selection_key!=?', (cut_id, key))
-    run = conn.execute('SELECT id,cut_id,selection_key,frames_json,candidates_json FROM target_detection_runs WHERE cut_id=? AND selection_key=?', (cut_id, key)).fetchone()
-    if run:
-        frames_json, candidates = json.loads(run['frames_json']), json.loads(run['candidates_json'])
-        if remove is not None:
-            boxes = [target_reviews.box_row(row) for row in conn.execute('SELECT * FROM target_detections WHERE run_id=? AND frame_ordinal=?', (run['id'], remove))]
-            if boxes:
-                target_reviews.record(conn, run, 'frame_removed', boxes, frame_ordinal=remove)
-            conn.execute('DELETE FROM target_detections WHERE run_id=? AND frame_ordinal=?', (run['id'], remove))
-            frames_json = [item for item in frames_json if item['ordinal'] != remove]
-            candidates = [item for item in candidates if item.get('frame_ordinal') != remove]
-        conn.execute('UPDATE target_detection_runs SET selection_key=?,frames_json=?,candidates_json=? WHERE id=?',
-                     (new_key, json.dumps(frames_json), json.dumps(candidates), run['id']))
+    carry_runs(conn, cut, new_key, new_result, prefer=key)
     return new_result
+
+
+def carry_runs(conn, cut, key, result, prefer=None):
+    """Move the cut's Target frames run onto the selection ``key`` instead of losing it (in the caller's transaction).
+
+    A run made for the cut's current boundaries keeps its colours, names, boxes and frame reviews on every frame the
+    new selection still has: the boxes of frames it lost go to the correction log (``frame_removed``) and frames it
+    gained make it stale (``target_characters.uncovered``) until Detect again. The run on ``prefer`` (else the newest)
+    is the one carried. Other runs, and every run of other boundaries (a hard-cut change), are archived and deleted.
+    """
+    from . import target_reviews
+    keep = {item['source_frame_index'] for item in result['selected_frames']}
+    runs = conn.execute('SELECT * FROM target_detection_runs WHERE cut_id=? ORDER BY rowid DESC', (cut['id'],)).fetchall()
+    if any(run['selection_key'] == key for run in runs):
+        carried = None
+    else:
+        same = [run for run in runs if run['cut_start'] == cut['start_time'] and run['cut_end'] == cut['end_time']]
+        carried = next((run for run in same if run['selection_key'] == prefer), same[0] if same else None)
+    for run in runs:
+        if run['selection_key'] == key:
+            continue
+        if carried is None or run['id'] != carried['id']:
+            target_reviews.archive_run(conn, run)
+            conn.execute('DELETE FROM target_detection_runs WHERE id=?', (run['id'],))
+            continue
+        frames_json, candidates = json.loads(run['frames_json']), json.loads(run['candidates_json'])
+        for ordinal in sorted({item['ordinal'] for item in frames_json} - keep):
+            boxes = [target_reviews.box_row(row) for row in conn.execute('SELECT * FROM target_detections WHERE run_id=? AND frame_ordinal=?', (run['id'], ordinal))]
+            if boxes:
+                target_reviews.record(conn, run, 'frame_removed', boxes, frame_ordinal=ordinal)
+            conn.execute('DELETE FROM target_detections WHERE run_id=? AND frame_ordinal=?', (run['id'], ordinal))
+        frames_json = [item for item in frames_json if item['ordinal'] in keep]
+        candidates = [item for item in candidates if item.get('frame_ordinal') is None or item.get('frame_ordinal') in keep]
+        conn.execute('UPDATE target_detection_runs SET selection_key=?,frames_json=?,candidates_json=? WHERE id=?',
+                     (key, json.dumps(frames_json), json.dumps(candidates), run['id']))
 
 
 def decoded(source, width, height, edge):
@@ -529,7 +579,7 @@ def gather(conn, job):
     settings = payload['keyframe_settings']
     band = mask_for(job['episode_id'], settings, conn)
     try:
-        key = cache_key(source, cut, settings, band)
+        key = stored_key(conn, job['episode_id'], cut, source, settings)
     except OSError:
         return {'skip': 'Original video unavailable'}
     return {'cut': cut, 'mask': band, 'cache_key': key}
@@ -553,7 +603,7 @@ def invalidate(conn, job):
 
 
 def process(job, owner, episode, payload, source):
-    from . import db, job_inputs, media, target_reviews, worker
+    from . import db, job_inputs, media, worker
     settings = payload['keyframe_settings']
     with db.connect() as conn:
         conn.execute('BEGIN')
@@ -580,10 +630,9 @@ def process(job, owner, episode, payload, source):
             conn.execute('INSERT INTO keyframe_results(cache_key,episode_id,cut_id,result_json) VALUES (?,?,?,?)',
                          (key, episode['id'], cut_id, json.dumps(result)))
             # The user's added and removed frames apply to the new selection too.
-            key, _ = apply_edits(key, result, edits_for(unit.data['cut'], conn))
-            # Preserve the reviews of frames that no longer belong to the current selection.
-            target_reviews.archive_selection(conn, cut_id, key)
-            conn.execute('DELETE FROM target_detection_runs WHERE cut_id=? AND selection_key!=?', (cut_id, key))
+            key, selection = apply_edits(key, result, edits_for(unit.data['cut'], conn))
+            # The Target frames run of these boundaries moves onto the new selection with the user's work.
+            carry_runs(conn, unit.data['cut'], key, selection)
 
     for ordinal, timestamp, frame in decoded(source, info['width'], info['height'], settings['longest_edge']):
         if ordinal % 128 == 0:

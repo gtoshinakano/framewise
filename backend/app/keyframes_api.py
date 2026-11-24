@@ -28,13 +28,12 @@ def get_selection(episode_id: str):
     job = db.one("SELECT id,status,error,payload_json FROM jobs WHERE episode_id=? AND pipeline='keyframes' ORDER BY rowid DESC LIMIT 1", (episode_id,))
     if not job: return {'status': 'missing', 'results': []}
     payload = json.loads(job['payload_json']); settings = payload['keyframe_settings']
-    band = keyframes.mask_for(episode_id, settings)
     source = media.episode_dir(episode['project_id'], episode_id) / f"original{episode['original_ext']}"
     results = []
     with db.connect() as conn:
         conn.execute('BEGIN')
         for cut in db.all_rows('SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 ORDER BY start_time', (episode_id,), conn=conn):
-            try: key = keyframes.cache_key(source, cut, settings, band)
+            try: key = keyframes.stored_key(conn, episode_id, cut, source, settings)
             except OSError: key = ''
             row = db.one('SELECT result_json FROM keyframe_results WHERE cache_key=?', (key,), conn=conn)
             result = keyframes.apply_edits(key, json.loads(row['result_json']), keyframes.edits_for(cut, conn))[1] if row else None

@@ -203,11 +203,11 @@ def visual_fingerprint(conn, job):
     context = item.get('context')
     if not context:
         return fingerprint(item)
-    # The visual prompts use only the cut, marked people and the subtitle strip.
-    # Fresh neighboring results and transcript content stay available to text jobs.
+    # The visual prompts use only the cut and the marked people. They are also told the subtitle strip, but a subtitle
+    # run is audio-side work and never restarts or stales a picture result. Fresh neighboring results and transcript
+    # content stay available to text jobs.
     cut = {key: context['cut'].get(key) for key in ('id', 'start_time', 'end_time', 'analysis_enabled', 'no_characters')}
-    subtitle = {key: context['subtitles'].get(key) for key in ('strip', 'language')}
-    return fingerprint({'cut': cut, 'subtitles': subtitle, 'detections': context.get('character_detections'),
+    return fingerprint({'cut': cut, 'detections': context.get('character_detections'),
                         'context_items': context['context_items'], 'references': item['character_references'],
                         'base_ids': {stage: item['base_result_ids'].get(stage) for stage in item['stages']},
                         'selection': item['selection_key'], 'target_run': item['target_run']})

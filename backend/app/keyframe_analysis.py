@@ -396,7 +396,7 @@ def analyze(cut_run, server_url, scratch, model, pose, pose_provenance, ask=None
         else:
             _, source, key, result = keyframes.current_selection(cut_run.cut_id)
         if key is None:
-            raise RuntimeError('This cut has no current keyframe selection (it failed, or the cut or its subtitles changed); '
+            raise RuntimeError('This cut has no current keyframe selection (it failed, or the cut boundaries changed); '
                                'open Target frames and evaluate the cut, then run Keyframes again')
         frames = frames_of(result)
         windows = keyframe_schema.make_windows(frames, WINDOW)

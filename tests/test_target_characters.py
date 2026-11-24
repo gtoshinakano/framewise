@@ -374,6 +374,42 @@ class TargetCharactersTest(unittest.TestCase):
         self.assertEqual(self.detect([[(A, RED), (B, BLUE)]] * 3, first=[(A, RED), (B, BLUE)])['status'], 'done')
         return self.state()['run']
 
+    def redetect_first_frame(self, people):
+        """The cut's first frame detected again: a newer run with new box ids."""
+        with db.connect() as conn:
+            conn.execute("""INSERT INTO character_detection_runs(id,cut_id,cut_start,cut_end,frames_json,model_id)
+                SELECT 'fr-again',cut_id,cut_start,cut_end,frames_json,model_id FROM character_detection_runs WHERE id='fr-c1'""")
+            for number, (box, character_id, source) in enumerate(people):
+                conn.execute("INSERT INTO character_detections(id,run_id,position,box_json,character_context_id,label_source) VALUES (?,'fr-again','first',?,?,?)",
+                             (f'again-{number}', json.dumps(box), character_id, source))
+
+    def test_the_same_first_frame_boxes_with_new_ids_keep_the_target_frames_current(self):
+        self.detected()
+        self.redetect_first_frame([(A, 'ctx', 'manual'), ([66, 5, 115, 76], None, None)])
+        self.assertFalse(self.state()['run']['stale'])
+
+    def test_a_moved_added_or_renamed_first_frame_box_makes_the_target_frames_stale(self):
+        for people in ([(A, 'ctx', 'manual'), (C, None, None)], [(A, 'ctx', 'manual'), (B, None, None), (C, None, None)],
+                       [(A, 'ctx2', 'manual'), (B, None, None)]):
+            with self.subTest(people=people):
+                self.detected()
+                self.redetect_first_frame(people)
+                self.assertEqual(self.state()['run']['stale_reason'], 'First-frame boxes changed; detect again')
+                self.tearDown()
+                self.setUp()
+
+    def test_runs_that_stored_only_the_box_ids_compare_those_boxes_too(self):
+        run = self.detected()
+        with db.connect() as conn:
+            provenance = json.loads(conn.execute('SELECT input_json FROM target_detection_runs WHERE id=?', (run['id'],)).fetchone()['input_json'])
+            provenance.pop('opening_layout')
+            conn.execute('UPDATE target_detection_runs SET input_json=? WHERE id=?', (json.dumps(provenance), run['id']))
+        self.redetect_first_frame([(A, 'ctx', 'manual'), (B, None, None)])
+        self.assertFalse(self.state()['run']['stale'])
+        with db.connect() as conn:
+            conn.execute("UPDATE character_detections SET character_context_id='ctx2' WHERE id='again-0'")
+        self.assertTrue(self.state()['run']['stale'])
+
     def test_labelling_a_slot_labels_every_box_of_that_colour(self):
         run = self.detected()
         self.assertEqual(self.client.put(f"/api/target-slots/{run['id']}/1", json={'character_context_id': 'ctx2'}).status_code, 200)
@@ -653,6 +689,66 @@ class SelectionChangeTest(unittest.TestCase):
             conn.execute("UPDATE cuts SET end_time=1.4 WHERE id='c1'")
         self.assertNotEqual(evaluate(), first)
         self.assertEqual([db.one(f'SELECT count(*) AS n FROM {table}')['n'] for table in ('target_detection_runs', 'target_slots', 'target_detections')], [0, 0, 0])
+
+    def test_a_new_subtitle_run_keeps_the_selection_and_the_people_found_on_it(self):
+        source, settings, evaluate = self.selector()
+        first = evaluate(settings)
+        self.add_run(first)
+        with db.connect() as conn:  # the subtitles are extracted again and find another band
+            conn.execute("""INSERT INTO subtitle_runs(id,episode_id,language,status,band_json)
+                VALUES ('subs','e','Japanese','complete','{"top": 0.7, "bottom": 0.95}')""")
+        self.assertEqual(keyframes.current_selection('c1')[2], first)
+        with db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            self.assertEqual(keyframes.ensure_selection(conn, 'e', ['c1']), [])
+        evaluate(settings)  # an explicit selection job finds the saved selection and selects nothing
+        self.assertEqual(db.one('SELECT count(*) AS n FROM keyframe_results')['n'], 1)
+        self.assertEqual(db.one("SELECT selection_key FROM target_detection_runs WHERE id='run'")['selection_key'], first)
+        self.assertEqual(db.one('SELECT count(*) AS n FROM target_detections')['n'], 2)
+        self.assertFalse(target_characters.state('c1')['run']['stale'], target_characters.state('c1')['run']['stale_reason'])
+
+    def test_a_new_selection_of_the_same_boundaries_carries_the_run_with_its_reviews(self):
+        source, settings, evaluate = self.selector()
+        first = evaluate(settings)
+        self.add_run(first)
+        second = evaluate(keyframes.config({'budget': 2}))
+        self.assertNotEqual(second, first)
+        run = db.one("SELECT selection_key,frames_json FROM target_detection_runs WHERE id='run'")
+        self.assertEqual(run['selection_key'], second)
+        frames = json.loads(run['frames_json'])
+        kept = {item['source_frame_index'] for item in keyframes.current_selection('c1')[3]['selected_frames']}
+        self.assertEqual({frame['ordinal'] for frame in frames}, kept & {frame['ordinal'] for frame in self.frames})
+        self.assertIn(0, kept)
+        self.assertTrue(all(frame['review']['reviewed'] for frame in frames))
+        self.assertEqual([row['id'] for row in db.all_rows('SELECT id FROM target_detections')], ['box'])
+        self.assertEqual(db.one("SELECT name FROM (SELECT action AS name FROM target_corrections)")['name'], 'frame_removed')
+        self.assertEqual(db.one("SELECT character_context_id FROM target_slots WHERE run_id='run'")['character_context_id'], 'ctx')
+
+    def selector(self):
+        source = media.episode_dir('p', 'e') / 'original.mp4'
+        source.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=96x64:rate=5:duration=2', '-c:v', 'mpeg4', str(source)], check=True)
+
+        def evaluate(settings):
+            cut = db.one("SELECT id,start_time,end_time FROM cuts WHERE id='c1'")
+            job_id = worker.enqueue('e', 'keyframes', {'keyframe_settings': settings, 'cuts': [cut]})
+            with db.connect() as conn:
+                conn.execute("UPDATE jobs SET status='running',lease_owner='test',lease_until=9999999999 WHERE id=?", (job_id,))
+            worker.process(job_id, 'test')
+            self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job_id,))['status'], 'done')
+            return keyframes.current_selection('c1')[2]
+        return source, keyframes.config({}), evaluate
+
+    def add_run(self, key):
+        """A reviewed run on every selected frame and on a frame no selection has (99), with boxes on frames 0 and 99."""
+        ordinals = [item['source_frame_index'] for item in keyframes.current_selection('c1')[3]['selected_frames']]
+        self.frames = frames = [{'ordinal': ordinal, 'review': {'score': None, 'flags': {}, 'reviewed': True}} for ordinal in [*ordinals, 99]]
+        with db.connect() as conn:
+            conn.execute("INSERT INTO target_detection_runs(id,cut_id,selection_key,cut_start,cut_end,frames_json) VALUES ('run','c1',?,0,2,?)",
+                         (key, json.dumps(frames)))
+            conn.execute("INSERT INTO target_slots(run_id,slot,origin,character_context_id,label_source) VALUES ('run',0,'appeared','ctx','manual')")
+            conn.execute("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json,source) VALUES ('box','run',0,0,'[1,1,9,9]','manual')")
+            conn.execute("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json) VALUES ('gone','run',99,0,'[1,1,9,9]')")
 
 
 if __name__ == '__main__':

@@ -33,13 +33,12 @@ def note_frame_override(conn, run_id, ordinals):
             AND undone_at IS NULL AND overridden_at IS NULL AND json_extract(after_json,'$.ordinal')=?""", (run_id, ordinal))
 
 
-def archive_selection(conn, cut_id, current_key):
-    """Keep the user's old boxes and slot decisions when replacing the frame selection."""
-    for run in conn.execute('SELECT id,cut_id,selection_key FROM target_detection_runs WHERE cut_id=? AND selection_key!=?', (cut_id, current_key)):
-        boxes = [box_row(row) for row in conn.execute("SELECT * FROM target_detections WHERE run_id=? AND source='manual'", (run['id'],))]
-        slots = [dict(row) for row in conn.execute("SELECT * FROM target_slots WHERE run_id=? AND (label_source='manual' OR ignored=1)", (run['id'],))]
-        if boxes or slots:
-            record(conn, run, 'selection_replaced', boxes, slots=slots)
+def archive_run(conn, run):
+    """Keep one run's manual boxes and slot decisions in the correction log before the run is deleted."""
+    boxes = [box_row(row) for row in conn.execute("SELECT * FROM target_detections WHERE run_id=? AND source='manual'", (run['id'],))]
+    slots = [dict(row) for row in conn.execute("SELECT * FROM target_slots WHERE run_id=? AND (label_source='manual' OR ignored=1)", (run['id'],))]
+    if boxes or slots:
+        record(conn, run, 'selection_replaced', boxes, slots=slots)
 
 
 def decisions(conn, run_id):
