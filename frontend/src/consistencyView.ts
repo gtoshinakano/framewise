@@ -30,7 +30,16 @@ export type Question = {
   /** The option the evidence favours, or null when it is open. */
   recommended: string | null
   why: string
+  /** Set on a correction the reviewer settled itself (pose, gaze, state, position): what settled it. The app writes its
+   * answer; it is never the person's to answer, though they may change it. */
+  settled?: string
 }
+
+/** The questions a review asks the person: the corrections it settled itself are left out. */
+export const asked = (questions: Question[]) => questions.filter(question => !question.settled)
+
+/** How a settled correction reads: "the pictures", "the measured keypoints", "the gaze rule". */
+export const settledBy = (basis: string) => ({ picture: 'the pictures', keypoints: 'the measured keypoints', gaze_rule: 'the gaze rule' } as Record<string, string>)[basis] ?? basis.replace(/_/g, ' ')
 
 /** One comparison of a stored reading with a picture of the cut (results written by a reviewer that could see). */
 export type VisualCheck = {
@@ -164,7 +173,7 @@ export function parseQuestions(value: unknown): Question[] {
     if (!question || options.length < 2) continue
     const recommended = text(item.recommended)
     found.push({ id: text(item.id) || `q${found.length + 1}`, topic: text(item.topic).toLowerCase() || 'other', character: text(item.character), question, options,
-      recommended: options.some(option => option.id === recommended) ? recommended : null, why: text(item.why) })
+      recommended: options.some(option => option.id === recommended) ? recommended : null, why: text(item.why), ...(text(item.settled) ? { settled: text(item.settled) } : {}) })
   }
   return found
 }
@@ -265,7 +274,7 @@ export function parseConsistency(content: string): ConsistencyView {
   const questions = format === 'questions' ? parseQuestions(data?.questions) : []
   return {
     valid: data !== null, sections, format, questions, visualChecks: parseVisualChecks(data?.visual_check),
-    decisions: format === 'questions' ? questions.length : sections.human_review.items.length,
+    decisions: format === 'questions' ? asked(questions).length : sections.human_review.items.length,
     checks: sections.recommended_checks.items.length,
     conflicts: sections.confusing.present && !sections.confusing.none,
   }

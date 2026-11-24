@@ -166,3 +166,16 @@ test('a line that copies an option word for word is found whatever its label say
   assert.deepEqual(selection('- gaze (mai): Down at the cup', QUESTIONS[0], QUESTIONS), { option: 'b', custom: '' })
   assert.equal(selection('- Camera: static', QUESTIONS[0], QUESTIONS), null)
 })
+
+test('settled corrections are parsed, kept apart from what the person decides and not counted', async () => {
+  const { asked, settledBy } = await import('../src/consistencyView.ts')
+  const questions = parseQuestions([
+    { id: 'q1', topic: 'emotion', character: 'Mai', question: 'How does Mai feel?', options: ['calm', 'irritated'], recommended: 'a' },
+    { id: 'q2', topic: 'gaze', character: 'Mai', question: 'Gaze of Mai, settled by the gaze rule.', options: ['Looks past the camera at Rio', 'At the camera'], recommended: 'a', settled: 'gaze_rule' },
+  ])
+  assert.equal(questions[1].settled, 'gaze_rule')
+  assert.equal('settled' in questions[0], false)
+  assert.deepEqual(asked(questions).map(question => question.id), ['q1'])
+  assert.equal(settledBy('gaze_rule'), 'the gaze rule')
+  assert.equal(parseConsistency(JSON.stringify({ summary: 's', questions })).decisions, 1)
+})

@@ -14,13 +14,12 @@ BEATS = {'contract': 'beats-v1', 'duration': 2.0, 'summary': 'Hero greets Mia.',
 class ViewTest(unittest.TestCase):
     def test_review_view_has_states_and_tagged_changes_without_ids(self):
         view = prompt_context.keyframe_view(KEYFRAMES, 'review')
-        self.assertEqual(view['frames'][0], {'frame': 'F1', 't': 0.0, 'characters': [{'name': 'Hero', 'state': 'standing, mouth closed'}]})
+        self.assertEqual(view['frames'][0], {'frame': 'F1', 't': 0.0, 'characters': [{'name': 'Hero', 'state': 'standing, mouth closed', 'body_measured': 'standing upright'}]})
         first = view['changes'][0]
         self.assertEqual((first['pair'], first['at'], first['camera']), ('F1→F2', '0.00-0.80s', 'static'))
         self.assertEqual(first['characters'][0]['changes'], ['head: turns toward screen-right (vision model)', 'arms: right arm raised to shoulder height (keypoints)'])
         self.assertEqual(first['characters'][0]['visible'], 'speaking')
         self.assertNotIn('character_context_id', str(view))
-        self.assertNotIn('body_measured', str(view))
 
     def test_beats_view_adds_the_measured_body_and_brief_view_only_the_changes(self):
         self.assertEqual(prompt_context.keyframe_view(KEYFRAMES, 'beats')['frames'][0]['characters'][0]['body_measured'], 'standing upright')

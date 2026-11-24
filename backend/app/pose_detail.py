@@ -365,6 +365,9 @@ def brief(pose):
 
 # -- prompt block and grammar ---------------------------------------------------------------------------------------
 
+# The user's rule (2026-11-24): a reading "looks at the camera" was almost always wrong and cost a question per cut.
+GAZE_RULE = '''Gaze rule: characters in a scene almost never look into the camera. They look at someone or something (the person they talk to or listen to, an object, something outside the frame) or at nothing in particular. Looking into the camera is real only in a point-of-view shot, where the camera stands for another character's eyes; in any other shot, eyes aimed straight out of the picture look just past the camera at someone or something off screen.'''
+
 POSE_RULES = '''pose_detail: an object that measures this one character in the still, with exactly the keys body_pose, body_yaw, head_yaw, head_pitch, eye_gaze, gaze_target and gaze_object. Judge only what the pixels show.
 Conventions: left and right are always the image's left and right as the viewer sees it, never the character's own side. Angles are whole degrees. Yaw 0 means facing the camera, a positive yaw means turned toward the image's right, a negative yaw toward the image's left, plus or minus 90 is profile and 180 is the back toward the camera. Pitch 0 is level, positive is looking up, negative is looking down.
 - body_pose: the state the still shows, chosen from standing, walking, running, sitting, lying, crouching, kneeling, leaning, jumping, other. A figure caught mid-stride is walking or running; an upright figure whose legs are planted is standing; unclear when the body is not visible.
@@ -372,7 +375,7 @@ Conventions: left and right are always the image's left and right as the viewer 
 - head_yaw: the direction the face points; null when the head is not visible. Back of the head toward the camera is 180.
 - head_pitch: how far the head tips up or down; null when the head is not visible.
 - eye_gaze: the line of sight as seen in the image, combining head turn and eye position, chosen from up_left, up, up_right, left, center, right, down_left, down, down_right; closed when the eyes are shut; not_visible when the eyes are hidden, covered or turned away; unclear when too small to tell. center means straight out of the screen.
-- gaze_target: what the line of sight is aimed at: the handle of another marked character, camera, off_screen (something outside the frame), object (a visible thing, named in gaze_object), none (nothing in particular, or the eyes are closed), or unclear. Never the character's own handle. gaze_object is the noun of the object, otherwise an empty string.
+- gaze_target: what the line of sight is aimed at: the handle of another marked character, off_screen (something outside the frame, including eyes aimed straight out of the picture), object (a visible thing, named in gaze_object), none (nothing in particular, or the eyes are closed), camera (only in a point-of-view shot, see the gaze rule; one still almost never shows one), or unclear. Never the character's own handle. gaze_object is the noun of the object, otherwise an empty string.
 Do not force a value: choose not_visible, unclear or null when the feature is hidden, cropped, turned away or too small to judge. Every key is always present.'''
 
 

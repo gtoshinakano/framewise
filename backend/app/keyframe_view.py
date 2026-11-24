@@ -49,8 +49,8 @@ def _changes(person, with_source):
 def keyframe_view(content, level='review'):
     """A keyframe analysis as a prompt reads it.
 
-    ``review`` (consistency summary, assistant) and ``beats`` (the performance beats) carry each frame's states
-    and every pair's changes; ``beats`` adds the body state DWPose measured. ``brief`` (the Cut summary) carries
+    ``review`` (consistency summary, assistant) and ``beats`` (the performance beats) carry each frame's states,
+    the body state DWPose measured and every pair's changes. ``brief`` (the Cut summary) carries
     only the changes. Anything that is not a keyframe analysis is returned as it is.
     """
     if not is_keyframes(content):
@@ -60,7 +60,7 @@ def keyframe_view(content, level='review'):
         for frame in content.get('frames') or []:
             people = []
             for person in frame.get('characters') or []:
-                body = person.get('pose') if level == 'beats' else None
+                body = person.get('pose')  # DWPose's measured body: the review settles body state and sides with it
                 people.append(_present(name=person.get('name'), state=person.get('state'), body_measured=body))
             frames.append(_present(frame=frame.get('label'), t=frame.get('t'), characters=[p for p in people if p.get('state') or p.get('body_measured')]))
     pairs = []

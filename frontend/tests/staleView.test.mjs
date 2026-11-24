@@ -13,3 +13,8 @@ test('answers are stale when their review is, or when a newer review asks what t
   assert.equal(answersStale('- Pose: Standing\n- Gaze (Mai): Down', '2026-11-24 09:00:00', review([pose, gaze])), null)  // older but covering
   assert.equal(answersStale('- Pose: Standing', '2026-11-24 09:00:00', review([pose, gaze])), 'the review was written again after these answers; 1 question has no answer')
 })
+
+test('a correction the reviewer settled itself never makes the answers stale', () => {
+  const settled = { ...gaze, settled: 'gaze_rule', recommended: 'a' }
+  assert.equal(answersStale('- Pose: Standing', '2026-11-24 09:00:00', review([pose, settled])), null)
+})

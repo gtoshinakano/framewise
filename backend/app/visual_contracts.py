@@ -53,7 +53,7 @@ Return one JSON object with exactly these keys, in this order:
   - pose: posture, hands, and legs/feet only when visible.
   - expression: the face as drawn: eyes, brows, mouth (open or closed), blush, sweat or tears.
   - emotion: the feeling that face and body read as, with its strength, in 1 to 4 words (for example "mild worry", "furious", "shy happiness", "calm, neutral"); "not readable" when the face is hidden.
-  - gaze: where the eyes look, naming the marked character or object looked at (for example "at Mai Sakurajima", "down at the box", "at the camera"); "not visible" when the eyes are hidden.
+  - gaze: where the eyes look, naming the marked character or object looked at (for example "at Mai Sakurajima", "down at the box", "just past the camera, at someone off screen"); "not visible" when the eyes are hidden. Follow the gaze rule below.
   - action: starts with the activity the still shows, chosen from standing, sitting, crouching, kneeling, lying, walking, running, jumping, leaning, or another single verb, then what they are doing, holding or reacting to and with whom (for example "sitting, talking to Mai Sakurajima across the desk").
   - {POSE_RULES}
 - background_people: EVERY person who is not in the marked list, wherever they are, including someone prominent or in the foreground (the key name is historical). One item per person or similar group separated by semicolons: count, position in frame, outfit (garment types, colours, patterns, accessories), hair, and what they do. Describe outfits as carefully as for marked characters, but skip expression and pose nuance. "none" only when the marked characters are the only people in the image.
@@ -61,6 +61,8 @@ Return one JSON object with exactly these keys, in this order:
 - notes: only material details the fields above cannot hold (visual effects, art-style traits), otherwise "none".
 
 {TRUST_RULE}
+
+{pose_detail.GAZE_RULE}
 
 {NAME_RULE}
 

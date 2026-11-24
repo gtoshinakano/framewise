@@ -79,11 +79,11 @@ class ReviewerTest(unittest.TestCase):
         for missing in ('## PICTURES', 'visual_check', 'line strip'):
             self.assertNotIn(missing, text)
         for expected in ('## PICTURES', '## LOOKING AT THE PICTURES', '**visual_check:** Written first', 'raised brows with widened eyes', 'Reference: <name>',
-                         'inner_voice the speaker in the picture with a still mouth', 'A contradiction you saw in a picture is a question'):
+                         'inner_voice the speaker in the picture with a still mouth', 'A contradiction you saw in a picture about an emotion, a voice or who is in the picture is a question'):
             self.assertIn(expected, seen)
         for both in (text, seen):
             self.assertIn('episode: the rest of the episode', both)
-            self.assertIn('3. Voices: who speaks each turn', both)
+            self.assertIn('2. Voices: who speaks each turn', both)
 
     def test_the_grammar_starts_with_visual_check_naming_the_offered_pictures(self):
         plain = consistency_summary.question_format()['json_schema']['schema']

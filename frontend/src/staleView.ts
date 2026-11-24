@@ -1,4 +1,4 @@
-import { parseQuestions, selection } from './consistencyView.ts'
+import { asked, parseQuestions, selection } from './consistencyView.ts'
 
 /** What `answersStale` needs of the current consistency review. */
 export type ReviewRow = { content: string; created_at: string; stale_reason?: string | null }
@@ -14,6 +14,6 @@ export function answersStale(answers: string, savedAt: string | undefined, revie
   if (!savedAt || savedAt >= review.created_at) return null
   let questions: ReturnType<typeof parseQuestions> = []
   try { questions = parseQuestions((JSON.parse(review.content) as { questions?: unknown }).questions) } catch { return null }
-  const open = questions.filter(question => !selection(answers, question, questions)).length
+  const open = asked(questions).filter(question => !selection(answers, question, questions)).length
   return open ? `the review was written again after these answers; ${open} question${open === 1 ? ' has' : 's have'} no answer` : null
 }

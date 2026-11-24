@@ -258,6 +258,11 @@ def resolve(question, decision, topic_policy=None, trust=None, mode='apply'):
 
 # --- trust: how often each topic's agreed answer matches the user -------------------------------------------------------
 
+def asked(questions):
+    """The questions a review asks: the corrections it settled itself (``settled``) are never decided or measured here."""
+    return [question for question in questions if isinstance(question, dict) and not question.get('settled')] if isinstance(questions, list) else []
+
+
 def _current_reviews(conn, project_id=None, cut_ids=None):
     """``{cut_id: (result id, questions)}`` of current consistency reviews that ask questions."""
     clauses, args = ["r.title='Consistency summary'", 'r.superseded_by IS NULL', 'c.active=1'], []
@@ -276,8 +281,8 @@ def _current_reviews(conn, project_id=None, cut_ids=None):
             content = json.loads(row['content'])
         except (TypeError, ValueError):
             continue
-        questions = content.get('questions') if isinstance(content, dict) else None
-        if isinstance(questions, list) and questions:
+        questions = asked(content.get('questions')) if isinstance(content, dict) else None
+        if questions:
             found[row['cut_id']] = (row['id'], questions)
     return found
 
@@ -288,7 +293,17 @@ def agent_held(conn, cut_ids):
         return set()
     marks = ','.join('?' for _ in cut_ids)
     return {row[0] for row in conn.execute(f"""SELECT DISTINCT target_id FROM agent_decisions WHERE kind=? AND undone_at IS NULL AND overridden_at IS NULL
-        AND target_id IN ({marks})""", [KIND, *cut_ids])}
+        AND json_extract(evidence_json,'$.settled') IS NULL AND target_id IN ({marks})""", [KIND, *cut_ids])}
+
+
+def agent_wrote(conn, cut_id, text):
+    """True when the cut's saved answers are exactly what a live agent decision wrote: nobody saved them since."""
+    row = conn.execute("""SELECT after_json FROM agent_decisions WHERE kind=? AND target_id=? AND undone_at IS NULL AND overridden_at IS NULL
+        ORDER BY rowid DESC LIMIT 1""", (KIND, cut_id)).fetchone()
+    try:
+        return bool(row) and (json.loads(row['after_json'] or '{}').get('content') or '') == (text or '')
+    except (TypeError, ValueError):
+        return False
 
 
 def trust_table(conn, project_id):
@@ -426,8 +441,8 @@ def gather(conn, job):
     if not context or not context['cut']['active']:
         return {'skip': 'Cut archived or removed'}
     review = _review(conn, cut_id)
-    questions = (review or {}).get('content', {}).get('questions') or []
-    if not review or not isinstance(questions, list) or not questions:
+    questions = asked((review or {}).get('content', {}).get('questions'))
+    if not review or not questions:
         return {'skip': 'No review questions'}
     if review['stale_reason'] and not payload.get('shadow'):
         return {'skip': 'The consistency review is stale; write it again first'}
@@ -549,7 +564,7 @@ def _question_view(question):
 
 # --- applying answers ---------------------------------------------------------------------------------------------------
 
-def apply_answers(conn, *, episode_id, cut_id, result_id, questions, picks, tier, run_id=None, model=None, note=None, escalation_id=None):
+def apply_answers(conn, *, episode_id, cut_id, result_id, questions, picks, tier, run_id=None, model=None, note=None, escalation_id=None, settled=False):
     """Write one line per pick into the cut's answers and log it as one decision. Picks whose question the user answered
     meanwhile are skipped. ``pick``: ``{question, option, text?, why?, decider?}``. Returns the decision id or None."""
     before = review_answers.saved_answers(conn, cut_id)
@@ -573,8 +588,22 @@ def apply_answers(conn, *, episode_id, cut_id, result_id, questions, picks, tier
     return agent_log.record(conn, episode_id=episode_id, run_id=run_id, cut_id=cut_id, kind=KIND, tier=tier,
                             target_table='cut_brief_instructions', target_id=cut_id, before={'content': before}, after={'content': content, 'lines': lines},
                             evidence={'result_id': result_id, 'model': model, **({'note': str(note)[:1000]} if note else {}),
-                                      **({'escalation_id': escalation_id} if escalation_id else {})},
-                            confidence=None, summary=f"Answered {len(lines)} review question(s) ({', '.join(topics)}; {agreed} recommended) [{tier}]")
+                                      **({'escalation_id': escalation_id} if escalation_id else {}), **({'settled': True} if settled else {})},
+                            confidence=None, summary=(f"Settled {len(lines)} reading(s) from the review ({', '.join(topics)})" if settled
+                                                      else f"Answered {len(lines)} review question(s) ({', '.join(topics)}; {agreed} recommended) [{tier}]"))
+
+
+def apply_settled(conn, *, episode_id, cut_id, result_id, questions, model=None):
+    """Write the corrections the consistency reviewer settled itself (pose, gaze, state, position: questions with
+    ``settled``) into the cut's answers, in the transaction that saves the review. One undoable decision; a correction
+    whose topic and character the person (or an earlier agent answer) already covers is left alone. Runs whatever the
+    Autopilot profile says: these are never questions for the person (the user's rule, 2026-11-24)."""
+    picks = [{'question': question, 'option': question.get('recommended') or 'a', 'why': f"settled by {question['settled']}" + (f": {question['why']}" if question.get('why') else '')}
+             for question in (questions if isinstance(questions, list) else []) if isinstance(question, dict) and question.get('settled')]
+    if not picks:
+        return None
+    return apply_answers(conn, episode_id=episode_id, cut_id=cut_id, result_id=result_id, questions=questions, picks=picks, tier='local', model=model,
+                         note='settled by the consistency review', settled=True)
 
 
 def undo(conn, decision):

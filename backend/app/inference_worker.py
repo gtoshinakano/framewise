@@ -735,7 +735,7 @@ def consistency_inputs(job_id, owner, episode_id, snapshot, cancel_check):
 
 
 def process_consistency_summary(job_id, owner):
-    from . import job_inputs, structured_results, consistency_summary
+    from . import job_inputs, review_decisions, structured_results, consistency_summary
     job = db.one("SELECT * FROM jobs WHERE id=? AND status='running' AND lease_owner=?", (job_id, owner))
     if not job:
         return
@@ -788,9 +788,11 @@ def process_consistency_summary(job_id, owner):
             elapsed = time.monotonic() - started
             vision = bool(rendered) and 'visual_check' in output
             with snapshot.publish() as conn:
-                structured_results.save_generated(conn, cut_id, job_id, owner, 'consistency_summary', output, actual_model,
+                result_id = structured_results.save_generated(conn, cut_id, job_id, owner, 'consistency_summary', output, actual_model,
                     consistency_summary.system(vision), {'source_result_ids': values['source_result_ids'], 'provider': payload['config'].get('text_provider', 'openrouter'), 'model_revision': local_text_runtime.revision_for(telemetry.get('model_variant')) if payload['config'].get('text_provider') == 'local' else None, 'thinking': payload['config'].get('local_thinking', False) if payload['config'].get('text_provider') == 'local' else None, 'thinking_budget_tokens': int(os.environ.get('QWEN36_THINKING_BUDGET', '2048')) if payload['config'].get('text_provider') == 'local' and payload['config'].get('local_thinking') else None, 'summary_generation_seconds': elapsed, 'usage': telemetry,
                     'vision': vision, 'pictures': len(rendered) if vision else 0}, {**evidence, 'inputs': provenance, **({'pictures': sent} if vision else {})})
+                # The pose, gaze, state and position the reviewer settled go into the answers, never to the person.
+                review_decisions.apply_settled(conn, episode_id=job['episode_id'], cut_id=cut_id, result_id=result_id, questions=output.get('questions') or [], model=actual_model)
         with db.connect() as conn:
             worker.require_lease(conn, job_id, owner)
             conn.execute("UPDATE jobs SET status='done',stage='Complete',error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))

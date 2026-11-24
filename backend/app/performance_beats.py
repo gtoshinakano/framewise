@@ -23,7 +23,7 @@ import logging
 import os
 import time
 
-from . import db, job_inputs, keyframe_view, prompt_context, structured_results, unregistered, worker
+from . import db, job_inputs, keyframe_view, pose_detail, prompt_context, structured_results, unregistered, worker
 
 log = logging.getLogger('framewise.performance_beats')
 
@@ -51,6 +51,7 @@ SYSTEM = '''You are the performance director for one cut of an anime episode tha
 - Beats tile the whole cut: the first starts at 0, each next one starts where the previous one ended, the last ends at the cut's duration. Every edge between two beats must be one of the anchors (keyframe times and line edges). Use at most max_beats beats.
 - Start a new beat where the acting changes: a pose or gesture, a gaze shift, an expression, a line starting or ending, a camera move. Merge stretches where nothing changes; a cut where nothing changes is one beat.
 - For every character visible in the beat, by exact name: body (pose and what the body, arms and legs do), face (expression and how it changes), gaze (whom or what the eyes and head are directed at; left and right are the viewer's), mouth (speaking, closed, open, not_visible or unclear). Write not visible for a part the picture does not show. Describe only what the evidence supports; never invent motion.
+- ''' + pose_detail.GAZE_RULE + ''' A reading that says a character looks at the camera or the viewer becomes, in gaze, looking just past the camera at the most likely target: the character they talk to or listen to, else something off screen.
 - camera: the measured move of the pairs inside the beat (static when they are all static), with a short detail.
 - intent: a short phrase on what the beat does dramatically (a reaction, a decision, a reveal). Never the content of what is said.
 

@@ -1,12 +1,13 @@
 """Build the detached summary's evidence without confusing audio with video."""
 import functools
 import json
+import re
 
-from . import prompt_context, unregistered
+from . import pose_detail, prompt_context, unregistered
 
 INTRO = '''You are an evidence reviewer for a pipeline that re-creates an anime episode shot by shot with AI. Each cut becomes one generated shot, made in three steps: (1) a still image of the opening frame, (2) the dialogue audio, (3) a video that animates the still.
 
-Your task: for ONE cut, find the few points where the supplied evidence is unsure, contradicts itself or {doubt} in a way that would make the still, the audio or the motion come out wrong, and turn each into a multiple-choice question for a person. Expressions and emotions, poses and gaze, and voices (who speaks each line, and whether it is lip-synced, an inner voice, off screen or narration) need the most care. {looking} Every observation, detection, transcript line, speaker link and subtitle reading was produced by another system and may contain errors.'''
+Your task: for ONE cut, find the few points where the supplied evidence is unsure, contradicts itself or {doubt} in a way that would make the still, the audio or the motion come out wrong. You settle the body yourself: pose, gaze, body state and position are never questions; you correct them (SETTLING) or leave the evidence as it is. A person answers multiple-choice questions only about expressions and emotions, voices (who speaks each line, and whether it is lip-synced, an inner voice, off screen or narration), and the few other points you cannot settle. {looking} Every observation, detection, transcript line, speaker link and subtitle reading was produced by another system and may contain errors.'''
 DOUBT = {False: 'does not fit the scene', True: 'is contradicted by the pictures'}
 LOOKING = {False: 'You are not looking at the video or the audio. No pictures were supplied for this review, so judge from the text evidence alone.',
            True: 'You see pictures of the cut (described under PICTURES), not the video, and you do not hear the audio.'}
@@ -14,10 +15,10 @@ LOOKING = {False: 'You are not looking at the video or the audio. No pictures we
 EVIDENCE = '''## EVIDENCE
 
 - First frame: a large vision model's description of the opening still at full resolution: composition, setting, lighting, mood, props, and for each marked character the appearance, position, pose, expression, emotion, gaze and action, plus pose_detail: state (standing, sitting ...), torso and head facing (as a view of the camera with the image side it turns toward), eyes, looking_at (a character, the camera, off screen, an object or none) and check, a list of disagreements the app calculated inside that block. It is the best source for everything static at the start of the cut.
-- Keyframes: the same large vision model looked at the cut's keyframes (frames picked where the picture changes, labelled F1, F2 ... with seconds from the first frame) and wrote each visible character's state at each keyframe; "changes" lists what changed between two consecutive keyframes, per character (walking, speaking and blinking when visible, then each changed part) plus other changes in the picture. Body changes marked "keypoints" were measured from body keypoints, the others ("vision model") were read from the images. The camera of each pair was measured from the background pixels and is not a guess. A change happened somewhere inside its pair: nothing between two keyframes was seen. It is the source for change over time.
+- Keyframes: the same large vision model looked at the cut's keyframes (frames picked where the picture changes, labelled F1, F2 ... with seconds from the first frame) and wrote each visible character's state at each keyframe; "changes" lists what changed between two consecutive keyframes, per character (walking, speaking and blinking when visible, then each changed part) plus other changes in the picture. A frame's body_measured and the body changes marked "keypoints" were measured from body keypoints (DWPose); the others ("vision model") were read from the images. The camera of each pair was measured from the background pixels and is not a guess. A change happened somewhere inside its pair: nothing between two keyframes was seen. It is the source for change over time.
 - Performance beats: a text model's timed acting plan built from the first frame, the keyframes and the transcript timing (it never saw the words): beats that tile the cut with the camera, each visible character's body, face, gaze and mouth, and the beat's intent; and each transcript line's delivery: on_screen (lip-synced), off_screen, inner_voice (visible, mouth still) or narrative. Where the beats disagree with the keyframes, the keyframes win.
 - End of cut: each character's state at the last keyframe, or "leaves the frame" in its changes. Cuts analysed before keyframes report it in their video analysis; older saved motion directions may also mark "in last frame: True" when a last-frame character box confirmed presence; that historical flag is positive evidence, while its absence proves nothing.
-- app_checks: leads the app calculated (pose flags, state differences, transcript lines against visible speaking, deliveries against the mouth, beats older than the keyframes). They are leads, not verdicts: ask about one only when the rules below say it matters.
+- app_checks: leads the app calculated (readings that have a character look into the camera, pose flags, state differences, transcript lines against visible speaking, deliveries against the mouth, beats older than the keyframes). They are leads, not verdicts: settle or ask about one only when the rules below say it matters.
 - series: background (synopsis, scene notes, world and object notes) for context only. It is not evidence of what is visible in this cut.
 - episode: the rest of the episode around this cut. neighbours are the previous and next cut (their own review's summary and what it found clear, or how their opening frame read each character's expression and emotion; for the previous cut also each character's state at its end). dialogue_around is the transcript just before and after this cut, with episode times. voices lists, for each voice label heard in this cut, how many lines of the whole episode are linked to each character and how many are unlinked; a label linked mostly to one character is probably that character here too. All of it tells what is plausible (a character who has just been scolded is unlikely to grin; an emotion rarely flips between two cuts without a cause). None of it shows what this cut looks like, and a neighbour's review is a model's reading, not a confirmation.
 - Character names: every marked character was labelled in the user's detection workflow. In character_detections, label_source manual is the user's own label; other labels are recognition results. Names in the first frame and the keyframes come from those boxes; "unknown person N" in the keyframes is someone nobody named.
@@ -40,7 +41,7 @@ Fill visual_check before anything else, from the pictures:
 - For each character visible in the first frame, and in every keyframe whose expression, eyes, mouth or head the evidence describes or changes, compare the stored reading (first-frame expression, emotion and pose_detail, the keyframe state, the beat's face, gaze and mouth) with the picture of that moment.
 - Write what you see as visible cues first (brows, eyelids and eye shape, mouth shape and whether the teeth show, head tilt, tears, sweat, blush, shading over the eyes, hands), then the expression they add up to.
 - Read anime faces from all their cues together, never from one feature. An open mouth is a smile only with raised cheeks or upward-curved eyes; raised brows with widened eyes and an open mouth are surprise or shock; lowered, drawn-together brows are anger, effort or worry depending on the mouth; closed, upward-curved eyes are a smile; shading over the eyes with a flat mouth is tension. A character's resting face, as their reference shows it, is not an emotion.
-- Pose and gaze: compare the body state, which way the torso and the head face, and where the eyes look with pose_detail and the keyframe states.
+- Pose and gaze: compare the body state, which way the torso and the head face, and where the eyes look with pose_detail and the keyframe states. A difference that matters becomes a settled entry (SETTLING), never a question.
 - Mouths and voices: in a line strip, a mouth whose shape changes between tiles is speaking; the same shape in all four is not. on_screen needs the speaker in the picture with a moving mouth, inner_voice the speaker in the picture with a still mouth, off_screen a speaker who is not in the picture, narrative a face too small or too far for lip sync. A face turned away or hidden cannot be lip-synced. A moving mouth that belongs to someone else than the line's speaker is a speaker lead.
 - verdict is agrees, contradicts or unclear (too small, blurred, hidden or turned away). Up to 12 checks, contradictions first. Never check colours, outfits or small accessories.'''
 
@@ -54,29 +55,57 @@ RULES = '''## RULES
 
 MATTERS = '''## WHAT MATTERS, IN THIS ORDER
 
-1. The opening still: each character's state, which way the torso and head face, where the eyes look and at whom or what, expression and emotion{seen}, position in the frame, who is in the picture at all, and an object a character holds or uses.
-2. Expression and emotion through the cut: each character's emotion at the first frame and wherever the keyframes or the beats change it. It has to fit the meaning of the words spoken in and around the cut and what the neighbouring cuts show. A reading that does not fit (a broad smile while the character is being scolded, joy right after a shock in the previous cut with nothing in between){fit}.
-3. Voices: who speaks each turn and how it is delivered. Who: the transcript's character link, the voice label's links across the episode, and the one visible character whose mouth moves. A turn with an unlinked speaker label while exactly one visible character's mouth moves is a likely link. A turn whose speaker is a named character with no box in this cut, while an unknown or unmarked person's mouth moves, probably means that person is that character and is missing a box. How: each turn's delivery in the beats against the mouth its character shows{mouth}. on_screen with a mouth that never moves (it is probably an inner voice or narration, or the keyframes missed the mouth), or inner_voice with a moving mouth, is a lead. A turn whose speaker is not in frame is an off-screen voice and not a problem. For older cuts, the video analysis' speaking value plays this part.
-4. The motion: the states and changes the keyframes report, gaze shifts, travel, objects handled, the end state, and whether the beats follow the keyframes (a beat that has a character walk where no keyframe pair shows it, or a character who leaves the frame and is still acting in a later beat, is a real problem). A character who is absent from the historical end-of-cut confirmation is not thereby gone.'''
-MATTERS_TEXT = {'seen': '', 'fit': ' is a question when the evidence cannot settle it', 'mouth': ' at the keyframes'}
-MATTERS_SEEN = {'seen': ' as the pictures show them', 'fit': ' is a reason to look at that picture again; it is a question when the picture does not settle it', 'mouth': ' in its line strip and at the keyframes'}
+1. Expression and emotion: each character's emotion at the first frame and wherever the keyframes or the beats change it (EMOTION QUESTIONS). It has to fit the meaning of the words spoken in and around the cut and what the neighbouring cuts show. A reading that does not fit (a broad smile while the character is being scolded, joy right after a shock in the previous cut with nothing in between){fit}.
+2. Voices: who speaks each turn and how it is delivered. Who: the transcript's character link, the voice label's links across the episode, and the one visible character whose mouth moves. A turn with an unlinked speaker label while exactly one visible character's mouth moves is a likely link. A turn whose speaker is a named character with no box in this cut, while an unknown or unmarked person's mouth moves, probably means that person is that character and is missing a box. How: each turn's delivery in the beats against the mouth its character shows{mouth}. on_screen with a mouth that never moves (it is probably an inner voice or narration, or the keyframes missed the mouth), or inner_voice with a moving mouth, is a lead. A turn whose speaker is not in frame is an off-screen voice and not a problem. For older cuts, the video analysis' speaking value plays this part.
+3. The opening still: each character's state, which way the torso and head face, where the eyes look and at whom or what{seen}, position in the frame, who is in the picture at all, and an object a character holds or uses. Pose, gaze, state and position are settled (SETTLING); who is in the picture and a held object can be questions.
+4. The motion: the states and changes the keyframes report, gaze shifts, travel, objects handled, the end state, and whether the beats follow the keyframes (a beat that has a character walk where no keyframe pair shows it, or a character who leaves the frame and is still acting in a later beat, is a real problem). Settle it like the still. A character who is absent from the historical end-of-cut confirmation is not thereby gone.'''
+MATTERS_TEXT = {'seen': '', 'fit': ' is a reason to offer the fitting reading as an option', 'mouth': ' at the keyframes'}
+MATTERS_SEEN = {'seen': ' as the pictures show them', 'fit': ' is a reason to look at that picture again and to offer the fitting reading as an option', 'mouth': ' in its line strip and at the keyframes'}
+
+SETTLING = '''## SETTLING POSE, GAZE, STATE AND POSITION
+
+Pose (body state, torso and head facing at the start), gaze, state (what the body does during the clip) and position are never questions for the person. For each of them:
+- When a stored reading (first frame, keyframes, beats) is wrong in a way that changes the still or the motion, and something below settles it, write one settled entry: the stored reading, the corrected reading and what settled it. The corrected reading is a complete statement in the evidence's words that could be pasted into the production brief as a fact.
+- What settles it, strongest first: keypoints (body_measured in the keyframe states and changes marked "keypoints" were measured from body keypoints: for the body state, such as standing, sitting, crouching, lying or walking, and for which arm or leg does what, they outrank every description{over_pictures}); {by_picture}the gaze rule below.
+- When nothing settles it, the source rule stands (the first frame decides the start, the keyframes decide what changes afterwards) and you write nothing: no settled entry and no question.
+- Never settle which side (left or right) an arm, a leg or a hand is on from a picture alone: pictures are easily read mirrored. Only keypoints settle a side.
+- At most 4 settled entries, the ones that change the still first. A difference listed under NOT A QUESTION is not settled either: leave it.
+
+## THE GAZE RULE
+
+''' + pose_detail.GAZE_RULE + ''' A point-of-view shot shows itself: the camera moves like a person's head (handheld sway, following someone's attention), or a speaker addresses the character whose view we share and that character is never shown. When a stored reading (pose_detail looking_at or eye direction, the keyframe states, the beats' gaze) says a character looks at the camera, at the viewer, into the lens or straight out of the picture, and the cut is not such a shot, it is wrong: settle it (basis gaze_rule) as looking just past the camera at the most likely target, which is the character they speak with or listen to (the transcript, dialogue_around and the neighbouring cuts tell who), else something off screen on the side the eyes point to, else nothing in particular. In a point-of-view shot it is the other way round: eyes aimed straight out of the picture look into the camera, and a reading that says otherwise is settled. Never ask about it.'''
+SETTLING_TEXT = {'over_pictures': '', 'by_picture': ''}
+SETTLING_SEEN = {'over_pictures': ' and your reading of a picture',
+                 'by_picture': 'the picture of that moment (for which way the torso and the head face, where the eyes look, what the hands hold and who is in the picture; it outranks the descriptions, but not keypoints); '}
+
+EMOTION = '''## EMOTION QUESTIONS
+
+Expressions and emotions are the person's decision, because every description of a face comes from a vision model{emotion_source}.
+- Ask about the emotion at the opening still of each named character who speaks in the cut or, when no visible character speaks, of the largest visible character: at most two characters, the speakers first. Ask even when the evidence agrees with itself{agree}.
+- Ask also where the keyframes or the beats change a character's emotion during the cut and the change matters to the acting. At most three emotion questions in all.
+- Skip a face that cannot be read: turned away, hidden, cut off or too small{unclear}. Skip a person the evidence calls unknown or Unregistered.
+- Options: 3 or 4 readings a person can tell apart, each naming the visible cues and the emotion they add up to (brows, eyes, mouth, then the feeling and its strength): the reading the evidence supports, a milder one, a stronger one, and a different emotion that the words or the neighbouring cuts make plausible. recommended is the one the evidence supports. topic is emotion.'''
+EMOTION_TEXT = {'emotion_source': ' and you only have its words', 'agree': '', 'unclear': ''}
+EMOTION_SEEN = {'emotion_source': '. Your own reading of a picture is the same kind of reading, so a picture that agrees confirms nothing', 'agree': ' and when the pictures agree with it',
+                'unclear': ' (your visual check of it says unclear)'}
 
 NOT_A_QUESTION = '''## NOT A QUESTION
 
+- Pose, gaze, body state and position: settle them or leave them (SETTLING).
 - Colour shades or tones of hair, eyes or clothes, small accessories, and any difference of wording or of detail between two sources.
 - Angles that differ by less than a quarter turn, or a gaze that differs by one sector.
 - A state or gaze that the keyframes show changing after the first frame. The first frame decides how the cut starts, the keyframes (for older cuts, the video analysis) decide what changes afterwards, so a difference between them is movement, not a contradiction. For older cuts, state_correction means the still caught a mid-motion pose and read it as static: the video's activity is the character's state during the clip, decided by this rule.
 - A transcript line from someone who is not in frame; characters who speak while stationary; a change dated to its pair of keyframes rather than to an exact second; a delivery that differs from the app's suggestion when the keyframes support it.{pictures}
-- Anything that would not change the generated picture, motion or lip sync. When in doubt, leave it out. An empty questions list is the right answer for a cut whose evidence agrees.'''
-NOT_A_QUESTION_SEEN = '\n- A reading the pictures confirm, and a difference no picture can settle (too small, blurred, hidden).'
+- Anything that would not change the generated picture, motion or lip sync. When in doubt, leave it out. Apart from the emotion questions, an empty questions list is the right answer for a cut whose evidence agrees.'''
+NOT_A_QUESTION_SEEN = '\n- A reading the pictures confirm (except an emotion: EMOTION QUESTIONS), and a difference no picture can settle (too small, blurred, hidden).'
 
 QUESTIONS = '''## QUESTIONS
 
-- Ask at most 5, most important first: the still, then expression and emotion, then voices, then the motion. Merge points about the same decision. Fewer is better.
+- Ask at most 5, most important first: expression and emotion, then voices, then anything else you cannot settle. Merge points about the same decision. Fewer is better, but never leave out an emotion question EMOTION QUESTIONS asks for.
 - One decision per question, written as one sentence that names the character. Give 2 to 4 options. Each option is a complete statement that could be pasted into the production brief as a fact, in the same words the evidence uses, and each option is something the evidence supports or at least allows. Never offer "unknown", "other" or "not sure": the person can always type their own answer.{seen}
 - recommended is the id of the option the evidence favours (the source rule above decides ties), or null when it is really open. why is one short sentence naming the sources that disagree (first frame, keyframes, performance beats, video analysis, transcript, app check, episode{why}).
-- topic is one of: pose (torso, head, body state at the start), gaze, state (what the body does during the clip), speaking, emotion, position, identity, camera, objects, other. character is the exact name, or an empty string when the question is about the whole shot.'''
-QUESTIONS_SEEN = {'seen': ' A contradiction you saw in a picture is a question: one option states what the picture shows, in the evidence\'s words, and is the recommended one; another states the stored reading.', 'why': ', and the picture label such as F3 or the line strip'}
+- topic is one of: emotion, speaking, identity (who a person is, who is in the picture), camera, objects, other. Never pose, gaze, state or position: those are settled entries. character is the exact name, or an empty string when the question is about the whole shot.'''
+QUESTIONS_SEEN = {'seen': ' A contradiction you saw in a picture about an emotion, a voice or who is in the picture is a question: one option states what the picture shows, in the evidence\'s words, and is the recommended one; another states the stored reading. One about pose, gaze, state or position is a settled entry instead.', 'why': ', and the picture label such as F3 or the line strip'}
 
 OUTPUT = '''## OUTPUT FIELDS
 
@@ -84,13 +113,15 @@ Return exactly one JSON object with these fields:
 {check}
 **summary:** What the cut shows, in at most three sentences: who is on screen and where, what happens (motion and camera), and who speaks. Use the character names.
 
-**clear:** What can be used for generation as it is. Three short parts in this order: "Still:" (the opening image, with each character's expression and emotion), "Motion:" (camera, each character's state, travel, gaze, objects, emotion change and end state, beat by beat when the beats hold), "Speech:" (each turn's speaker, whether they are on screen and its delivery). Use the character names.
+**clear:** What can be used for generation as it is. Three short parts in this order: "Still:" (the opening image, with each character's expression and emotion), "Motion:" (camera, each character's state, travel, gaze, objects, emotion change and end state, beat by beat when the beats hold), "Speech:" (each turn's speaker, whether they are on screen and its delivery). Use the character names, and the corrected reading wherever you settled one.
 
 **confusing:** Only material contradictions or evidence gaps that would change the still, the audio or the motion, naming the sources, claims and timestamps. If none exist, return "None identified."
 
+**settled:** The entries described under SETTLING, [] when nothing needs correcting. Each is {{"topic": "pose|gaze|state|position", "character": "...", "stored": "the stored reading, in a few words", "corrected": "the corrected reading, a complete statement", "basis": "{bases}", "why": "one short sentence naming the sources{why}"}}.
+
 **questions:** The array described above, [] when nothing needs a decision. Each question is {{"id": "q1", "topic": "...", "character": "...", "question": "...", "options": [{{"id": "a", "text": "..."}}, {{"id": "b", "text": "..."}}], "recommended": "a", "why": "..."}}.
 
-Before returning, check that every question concerns a genuine disagreement or gap that affects generation, that no option merely restates another, and that the JSON is syntactically valid.
+Before returning, check that every question concerns a genuine disagreement or gap that affects generation, or is an emotion question EMOTION QUESTIONS asks for; that no question is about pose, gaze, state or position; that no option merely restates another; and that the JSON is syntactically valid.
 
 Return JSON only. No Markdown, explanations, or additional fields.'''
 OUTPUT_CHECK = '''
@@ -104,17 +135,32 @@ def system(vision=False):
     parts = [INTRO.format(doubt=DOUBT[vision], looking=LOOKING[vision]), EVIDENCE]
     if vision:
         parts.append(PICTURES)
-    parts += [RULES, MATTERS.format(**words), NOT_A_QUESTION.format(pictures=NOT_A_QUESTION_SEEN if vision else ''),
-              QUESTIONS.format(**(QUESTIONS_SEEN if vision else {'seen': '', 'why': ''})), OUTPUT.format(check=OUTPUT_CHECK if vision else '')]
+    seen = QUESTIONS_SEEN if vision else {'seen': '', 'why': ''}
+    parts += [RULES, MATTERS.format(**words), SETTLING.format(**(SETTLING_SEEN if vision else SETTLING_TEXT)), EMOTION.format(**(EMOTION_SEEN if vision else EMOTION_TEXT)),
+              NOT_A_QUESTION.format(pictures=NOT_A_QUESTION_SEEN if vision else ''), QUESTIONS.format(**seen),
+              OUTPUT.format(check=OUTPUT_CHECK if vision else '', bases='|'.join(bases(vision)), why=seen['why'])]
     return '\n\n'.join(parts)
 
 
-SYSTEM = system(False)
-FIELDS = ['summary', 'clear', 'confusing', 'questions']
+FIELDS = ['summary', 'clear', 'confusing', 'settled', 'questions']
 CHECK_FIELDS = ['visual_check', *FIELDS]
 LEGACY_FIELDS = ['summary', 'clear', 'confusing', 'human_review', 'recommended_checks']
 TOPICS = ('pose', 'gaze', 'state', 'speaking', 'emotion', 'position', 'identity', 'camera', 'objects', 'other')
+# The reviewer settles these itself (the user's rule, 2026-11-24): they are stored as answered questions, never asked.
+SETTLED_TOPICS = ('pose', 'gaze', 'state', 'position')
+ASKED_TOPICS = tuple(topic for topic in TOPICS if topic not in SETTLED_TOPICS)
 MAX_QUESTIONS = 5
+MAX_SETTLED = 4
+BASES = ('keypoints', 'picture', 'gaze_rule')  # what settled an entry, strongest first
+SETTLED_BY = {'keypoints': 'the measured keypoints', 'picture': 'the pictures', 'gaze_rule': 'the gaze rule'}
+
+
+def bases(vision=False):
+    """What may settle an entry: a review without pictures has only the keypoints and the gaze rule."""
+    return BASES if vision else tuple(basis for basis in BASES if basis != 'picture')
+
+
+SYSTEM = system(False)
 MAX_CHECKS = 12
 CHECK_SOURCES = ('first_frame', 'keyframes', 'beats', 'transcript')
 VERDICTS = ('contradicts', 'unclear', 'agrees')  # the stored order
@@ -127,7 +173,8 @@ _TOPIC_ALIASES = {'facing': 'pose', 'orientation': 'pose', 'head': 'pose', 'tors
 
 
 def question_format(labels=None):
-    """``response_format`` (a llama.cpp grammar) for the consistency summary: three strings and at most five questions.
+    """``response_format`` (a llama.cpp grammar) for the consistency summary: three strings, at most four settled
+    corrections and at most five questions for the person.
 
     With picture ``labels`` the answer starts with ``visual_check``, so the model writes what it sees before it
     summarizes or asks; each check names one of those pictures.
@@ -135,10 +182,14 @@ def question_format(labels=None):
     string = {'type': 'string'}
     option = {'type': 'object', 'additionalProperties': False, 'required': ['id', 'text'], 'properties': {'id': {'enum': list(OPTION_IDS)}, 'text': string}}
     question = {'type': 'object', 'additionalProperties': False, 'required': ['id', 'topic', 'character', 'question', 'options', 'recommended', 'why'],
-                'properties': {'id': string, 'topic': {'enum': list(TOPICS)}, 'character': string, 'question': string,
+                'properties': {'id': string, 'topic': {'enum': list(ASKED_TOPICS)}, 'character': string, 'question': string,
                                'options': {'type': 'array', 'items': option, 'minItems': 2, 'maxItems': MAX_OPTIONS},
                                'recommended': {'type': ['string', 'null'], 'enum': [*OPTION_IDS, None]}, 'why': string}}
-    properties = {'summary': string, 'clear': string, 'confusing': string, 'questions': {'type': 'array', 'items': question, 'maxItems': MAX_QUESTIONS}}
+    settled = {'type': 'object', 'additionalProperties': False, 'required': ['topic', 'character', 'stored', 'corrected', 'basis', 'why'],
+               'properties': {'topic': {'enum': list(SETTLED_TOPICS)}, 'character': string, 'stored': string, 'corrected': string,
+                              'basis': {'enum': list(bases(bool(labels)))}, 'why': string}}
+    properties = {'summary': string, 'clear': string, 'confusing': string, 'settled': {'type': 'array', 'items': settled, 'maxItems': MAX_SETTLED},
+                  'questions': {'type': 'array', 'items': question, 'maxItems': MAX_QUESTIONS}}
     required = FIELDS
     if labels:
         check = {'type': 'object', 'additionalProperties': False, 'required': ['character', 'picture', 'source', 'claim', 'seen', 'verdict'],
@@ -153,15 +204,20 @@ def _clean(value, limit):
     return ' '.join(value.split())[:limit] if isinstance(value, str) else ''
 
 
-def normalize_questions(items):
+def normalize_questions(items, topics=TOPICS):
     """The model's questions as stored: at most five, each with two to four distinct options and ids that follow the order.
 
     Never raises for a malformed entry; it is dropped (a question with fewer than two usable options cannot be answered
-    by choosing). ``recommended`` may be an option id, its position or its text, and becomes an id or None.
+    by choosing). ``recommended`` may be an option id, its position or its text, and becomes an id or None. A question
+    whose topic is not in ``topics`` is dropped too (the reviewer settles pose, gaze, state and position itself).
     """
     found = []
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict) or len(found) >= MAX_QUESTIONS:
+            continue
+        topic = _clean(item.get('topic'), 30).lower()
+        topic = topic if topic in TOPICS else _TOPIC_ALIASES.get(topic, 'other')
+        if topic not in topics:
             continue
         text = _clean(item.get('question'), 300)
         raw = item.get('options') if isinstance(item.get('options'), list) else []
@@ -180,10 +236,35 @@ def normalize_questions(items):
             if wanted is not None and (wanted == old_id or wanted == index or (isinstance(wanted, str) and (wanted.strip().casefold() == label.casefold() or wanted.strip().lower() == new['id']))):
                 recommended = new['id']
                 break
-        topic = _clean(item.get('topic'), 30).lower()
-        topic = topic if topic in TOPICS else _TOPIC_ALIASES.get(topic, 'other')
         found.append({'id': f'q{len(found) + 1}', 'topic': topic, 'character': _clean(item.get('character'), 80), 'question': text, 'options': options,
                       'recommended': recommended, 'why': _clean(item.get('why'), 240)})
+    return found
+
+
+def normalize_settled(items, allowed=BASES, first=1):
+    """The reviewer's own corrections as stored: answered questions (``settled``: what settled it), numbered from ``first``.
+
+    Each becomes a question whose recommended option ``a`` is the corrected reading and ``b`` the stored one, so the app
+    writes it into the saved answers like any agent answer (``review_decisions.apply_settled``) and the person sees it,
+    and can change it, among the questions. An entry that corrects nothing, or names no character, is dropped.
+    """
+    found, covered = [], set()
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or len(found) >= MAX_SETTLED:
+            continue
+        topic, basis = _clean(item.get('topic'), 30).lower(), _clean(item.get('basis'), 30).lower()
+        topic = topic if topic in TOPICS else _TOPIC_ALIASES.get(topic, '')
+        character, stored, corrected = _clean(item.get('character'), 80), _clean(item.get('stored'), 240), _clean(item.get('corrected'), 240)
+        if (topic not in SETTLED_TOPICS or basis not in allowed or not character or not corrected or corrected.casefold() == stored.casefold()
+                or (topic, character.casefold()) in covered):  # one answer line per topic and character
+            continue
+        covered.add((topic, character.casefold()))
+        options = [{'id': 'a', 'text': corrected}, *([{'id': 'b', 'text': stored}] if stored else [])]
+        if len(options) < 2:
+            continue
+        found.append({'id': f'q{first + len(found)}', 'topic': topic, 'character': character,
+                      'question': f"{topic.capitalize()} of {character}, settled by {SETTLED_BY[basis]}.", 'options': options, 'recommended': 'a',
+                      'why': _clean(item.get('why'), 240), 'settled': basis})
     return found
 
 
@@ -216,8 +297,10 @@ def validate(output, labels=None):
         raise ValueError('summary must be a non-empty string')
     if not isinstance(output.get('questions'), list):
         raise ValueError('questions must be an array of questions (use [] when nothing needs a decision)')
+    questions = normalize_questions(output['questions'], ASKED_TOPICS)
+    questions += normalize_settled(output.get('settled'), bases(bool(labels)), len(questions) + 1)
     stored = {'summary': summary, 'clear': _clean(output.get('clear'), 6000), 'confusing': _clean(output.get('confusing'), 6000) or 'None identified.',
-              'questions': normalize_questions(output['questions'])}
+              'questions': questions}
     if labels:
         if not isinstance(output.get('visual_check'), list):
             raise ValueError('visual_check must be an array of checks (use [] when no picture shows what the evidence describes)')
@@ -257,13 +340,16 @@ def app_checks(result_map, segments):
     speaking of its character (from the keyframes, else the video analysis); a beat line's delivery is set
     against the mouth the keyframes show. Nothing here is a verdict.
     """
-    checks = []
     frame = (result_map.get('initial_frame') or {}).get('content')
+    checks = camera_gaze(frame, (result_map.get('keyframe_analysis') or {}).get('content'),
+                         (result_map.get('performance_beats') or {}).get('content') if prompt_context.beats_current(result_map) else None)
     source = prompt_context.motion_source(result_map)
     video = source['content'] if source else None
     for person in (frame.get('visible_characters') if isinstance(frame, dict) else None) or []:
         pose = person.get('pose_detail') if isinstance(person, dict) else None
         for flag in (pose.get('flags') if isinstance(pose, dict) else None) or []:
+            if isinstance(flag, dict) and flag.get('code') == 'camera_gaze':
+                continue  # the camera_gaze lead below already names it
             if isinstance(flag, dict) and flag.get('text'):
                 checks.append({'kind': 'pose_' + str(flag.get('code')), 'detail': flag['text']})
     beats = (result_map.get('performance_beats') or {}).get('content')
@@ -295,6 +381,38 @@ def app_checks(result_map, segments):
             reported.add(('unlinked', at))
             checks.append({'kind': 'unlinked_speaker_may_be', 'character': speaking_yes[0], 'at': at})
     return checks[:8]
+
+
+_AT_CAMERA = re.compile(r'\b(?:at|into|toward|towards|to)\s+(?:the\s+)?(?:camera|viewer|lens|audience)\b|\bdirectly\s+out\s+of\s+the\s+(?:screen|picture|frame)\b', re.I)
+CAMERA_GAZE_RULE = 'the gaze rule: unless this is a point-of-view shot, settle it as looking just past the camera at the likely target; never a question'
+
+
+def camera_gaze(frame, keyframes=None, beats=None):
+    """Leads for every stored reading that has a character look into the camera (the gaze rule decides them)."""
+    found, seen = [], set()
+
+    def lead(name, where, said):
+        if name and (name, where) not in seen and len(found) < 4:
+            seen.add((name, where))
+            found.append({'kind': 'camera_gaze', 'character': name, 'where': where, 'reading': said[:160], 'rule': CAMERA_GAZE_RULE})
+    for person in (frame.get('visible_characters') if isinstance(frame, dict) else None) or []:
+        if not isinstance(person, dict):
+            continue
+        pose = person.get('pose_detail') if isinstance(person.get('pose_detail'), dict) else {}
+        gaze = person.get('gaze') if isinstance(person.get('gaze'), str) else ''
+        if pose.get('gaze_target') == 'camera' or _AT_CAMERA.search(gaze):
+            lead(person.get('character'), 'first frame', gaze or 'looking at the camera')
+    for item in (keyframes.get('frames') if isinstance(keyframes, dict) else None) or []:
+        for person in (item.get('characters') if isinstance(item, dict) else None) or []:
+            state = person.get('state') if isinstance(person, dict) and isinstance(person.get('state'), str) else ''
+            if _AT_CAMERA.search(state):
+                lead(person.get('name'), f"keyframe {item.get('label')}", state)
+    for beat in (beats.get('beats') if isinstance(beats, dict) else None) or []:
+        for person in (beat.get('characters') if isinstance(beat, dict) else None) or []:
+            gaze = person.get('gaze') if isinstance(person, dict) and isinstance(person.get('gaze'), str) else ''
+            if _AT_CAMERA.search(gaze):
+                lead(person.get('character'), 'beats', gaze)
+    return found
 
 
 def delivery_checks(line, motion):

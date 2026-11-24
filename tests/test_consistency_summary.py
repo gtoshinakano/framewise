@@ -160,7 +160,11 @@ class QuestionsTest(unittest.TestCase):
         question = schema['properties']['questions']
         self.assertEqual(question['maxItems'], 5)
         self.assertEqual((question['items']['properties']['options']['minItems'], question['items']['properties']['options']['maxItems']), (2, 4))
-        self.assertIn('gaze', question['items']['properties']['topic']['enum'])
+        self.assertNotIn('gaze', question['items']['properties']['topic']['enum'])  # settled by the reviewer, never asked
+        self.assertIn('emotion', question['items']['properties']['topic']['enum'])
+        settled = schema['properties']['settled']['items']['properties']
+        self.assertEqual(settled['topic']['enum'], ['pose', 'gaze', 'state', 'position'])
+        self.assertEqual(settled['basis']['enum'], ['keypoints', 'gaze_rule'])  # no picture without pictures
 
     def test_the_app_hands_the_reviewer_its_own_leads(self):
         frame = {'composition': 'MS', 'visible_characters': [{'character': 'Mai', 'pose_detail': {'body_pose': 'standing', 'body_yaw': 0, 'head_yaw': -60, 'eye_gaze': 'left', 'gaze_target': 'Rio',

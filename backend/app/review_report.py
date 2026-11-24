@@ -80,10 +80,14 @@ def _consistency(conn, cut_id):
     questions = [item for item in content.get('questions') or [] if isinstance(item, dict)]
     answers = conn.execute('SELECT updated_at,content FROM cut_brief_instructions WHERE cut_id=?', (cut_id,)).fetchone()
     # A question the saved answers already cover (same topic and character, or one of its options) stays answered after the
-    # review is written again: the person's answer is their last word (HARNESS.md D32).
+    # review is written again: the person's answer is their last word (HARNESS.md D32). Corrections the reviewer settled
+    # itself are never the person's to answer.
     text = answers['content'] if answers else ''
-    open_questions = [item for item in questions if review_decisions.selection(text, item, questions) is None]
-    answered = not open_questions or bool(answers and text.strip() and answers['updated_at'] >= row['created_at'])
+    open_questions = [item for item in review_decisions.asked(questions) if review_decisions.selection(text, item, questions) is None]
+    # Answers saved after the review count as the person's reply to all of it, unless an agent wrote them (the settled
+    # corrections are written in the same transaction as the review).
+    saved_since = bool(answers and text.strip() and answers['updated_at'] >= row['created_at'] and not review_decisions.agent_wrote(conn, cut_id, text))
+    answered = not open_questions or saved_since
     contradictions = [{'character': item.get('character'), 'picture': item.get('picture'), 'claim': item.get('claim')}
                       for item in content.get('visual_check') or [] if isinstance(item, dict) and item.get('verdict') == 'contradicts']
     draft = bool(conn.execute('SELECT 1 FROM cut_review_drafts WHERE cut_id=?', (cut_id,)).fetchone())

@@ -4,7 +4,7 @@ import { api, type AnalysisResult, type Job } from './api'
 import { ResultMetrics } from './ResultMetrics'
 import { ActionButton, Skeleton, StatusChip, WarningLine } from './RunUi'
 import { Disclosure, StepPanel } from './ReviewUi'
-import { answerLabel, parseConsistency, selection, setAnswer, timeParts, topicLabel, type ConsistencyKey, type ConsistencySection, type Question, type VisualCheck } from './consistencyView'
+import { answerLabel, asked, parseConsistency, selection, setAnswer, settledBy, timeParts, topicLabel, type ConsistencyKey, type ConsistencySection, type Question, type VisualCheck } from './consistencyView'
 import { formatAgo } from './queueView'
 import { DecisionStrip } from './AgentNotes'
 import { answerFor } from './cutNeedsView'
@@ -67,14 +67,15 @@ function QuestionCard({ number, question, all, answers, agent }: { number: numbe
   const locked = !answers.ready
   const choose = (text: string | null) => answers.onChange(setAnswer(answers.text, question, text, all))
   const answered = agent ? answerFor(agent.decisions, question.id) : null
-  const forClaude = !picked && !!agent?.claudeQuestions.has(question.id)
-  const open = !picked && !forClaude
+  const forClaude = !picked && !question.settled && !!agent?.claudeQuestions.has(question.id)
+  const open = !picked && !forClaude && !question.settled
   return <li className={`flex gap-2.5 ${open ? '-ml-2 rounded-md border-l-2 border-[#f0a64a] pl-1.5' : ''}`}>
     <span style={{ background: look.accent }} className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-[#11111a]" aria-hidden>{number}</span>
     <div className="min-w-0 flex-1 space-y-2">
       <div className="flex flex-wrap items-center gap-1.5"><StatusChip tone="amber">{topicLabel(question.topic)}</StatusChip>{question.character && <StatusChip tone="blue">{question.character}</StatusChip>}
         {open && <StatusChip tone="amber" icon={<UserRoundCheck size={11} aria-hidden />} className="ml-auto" title="No answer to this question is written in Your answers yet">Needs your answer</StatusChip>}
-        {forClaude && <StatusChip tone="purple" icon={<Bot size={11} aria-hidden />} className="ml-auto" title="Claude (the second reviewer) answers this next; it comes back to you only if Claude is unsure">Claude will review</StatusChip>}</div>
+        {forClaude && <StatusChip tone="purple" icon={<Bot size={11} aria-hidden />} className="ml-auto" title="Claude (the second reviewer) answers this next; it comes back to you only if Claude is unsure">Claude will review</StatusChip>}
+        {question.settled && <StatusChip tone="green" icon={<ShieldCheck size={11} aria-hidden />} className="ml-auto" title="The reviewer corrected this reading itself and wrote it into Your answers; pick the other option or write your own to change it">Settled by {settledBy(question.settled)}</StatusChip>}</div>
       <p id={`question-${question.id}`} className="break-words text-[13px] font-medium leading-[1.55] text-[#f2f4f8]">{question.question}</p>
       <div role="radiogroup" aria-labelledby={`question-${question.id}`} className="grid gap-1.5">
         {question.options.map(option => {
@@ -131,12 +132,18 @@ function VisualChecks({ checks }: { checks: VisualCheck[] }) {
 
 function Decisions({ questions, answers, agent }: { questions: Question[]; answers: AnswersApi; agent?: AgentMarks }) {
   const look = LOOK.human_review
-  const answered = questions.filter(question => selection(answers.text, question, questions)).length
+  const mine = asked(questions)
+  const settled = questions.filter(question => question.settled)
+  const answered = mine.filter(question => selection(answers.text, question, questions)).length
   return <section data-need="decisions" aria-label="Decisions" style={{ borderLeftColor: look.accent, background: look.tint }} className="rounded-lg border-l-[3px] px-3.5 py-3">
     <h4 style={{ color: look.ink }} className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[.1em]"><UserRoundCheck size={14} aria-hidden />Decisions
-      <StatusChip tone={answered === questions.length ? 'green' : 'amber'} className="ml-auto normal-case tracking-normal">{answered}/{questions.length} answered</StatusChip></h4>
-    <p className="muted mb-3 text-[11.5px] leading-4">Pick an answer and it is written into Your answers (unsaved until you save there). Nothing is decided for you.</p>
-    <ol className="space-y-4">{questions.map((question, index) => <QuestionCard key={question.id} number={index + 1} question={question} all={questions} answers={answers} agent={agent} />)}</ol>
+      <StatusChip tone={answered === mine.length ? 'green' : 'amber'} className="ml-auto normal-case tracking-normal">{mine.length ? `${answered}/${mine.length} answered` : 'Nothing to answer'}</StatusChip></h4>
+    {mine.length > 0 && <>
+      <p className="muted mb-3 text-[11.5px] leading-4">Pick an answer and it is written into Your answers (unsaved until you save there).</p>
+      <ol className="space-y-4">{mine.map((question, index) => <QuestionCard key={question.id} number={index + 1} question={question} all={questions} answers={answers} agent={agent} />)}</ol></>}
+    {settled.length > 0 && <div className={mine.length ? 'mt-4' : ''}><Disclosure label={`${settled.length} reading${settled.length === 1 ? '' : 's'} the reviewer settled (pose, gaze, state, position)`}>
+      <ol className="space-y-4">{settled.map((question, index) => <QuestionCard key={question.id} number={mine.length + index + 1} question={question} all={questions} answers={answers} agent={agent} />)}</ol>
+    </Disclosure></div>}
   </section>
 }
 
