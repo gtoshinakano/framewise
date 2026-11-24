@@ -151,7 +151,6 @@ const AnalysisDialogContent = memo(function AnalysisDialogContent({ cut, cuts, n
   const video = useMemo(() => ({ current: player.element }), [player])
   const [editorTarget, setEditorTarget] = useState<HTMLElement | null>(null)
   const [framesOpen, setFramesOpen] = useState(false)
-  const [runVideoOpen, setRunVideoOpen] = useState(false)
   // The video plays this cut only: it pauses on the last frame (frame by frame) and Play from there starts the cut again.
   // Arriving at a cut stops what was playing and puts the playhead at the cut's start; a timing edit only moves it when it falls outside.
   const arriving = useRef(true)
@@ -166,9 +165,10 @@ const AnalysisDialogContent = memo(function AnalysisDialogContent({ cut, cuts, n
     element.addEventListener('loadedmetadata', toStart)
     return () => element.removeEventListener('loadedmetadata', toStart)
   }, [player, cut.start_time, cut.end_time])
-  // The proxy is requested the first time a video is shown (the Run tab waits for the "Load video preview" button).
-  const showsVideo = tab === 'results' || runVideoOpen
-  useEffect(() => { if (proxyReady && showsVideo) player.load(mediaUrl(episodeId, 'proxy')) }, [player, proxyReady, showsVideo, episodeId])
+  // The video and the spoken lines sit in the left column of Results and Run settings. The proxy is requested the first time a tab shows them.
+  const [videoWanted, setVideoWanted] = useState(tab !== 'assistant')
+  useEffect(() => { if (tab !== 'assistant') setVideoWanted(true) }, [tab])
+  useEffect(() => { if (proxyReady && videoWanted) player.load(mediaUrl(episodeId, 'proxy')) }, [player, proxyReady, videoWanted, episodeId])
   const [charactersTarget, setCharactersTarget] = useState<HTMLElement | null>(null)
   const prefetchIds = useMemo(() => [previousId, nextId], [previousId, nextId])
   // The episode's job list is bounded; the cut's own history comes from its endpoint and is read ahead for the neighbours.
@@ -198,8 +198,15 @@ const AnalysisDialogContent = memo(function AnalysisDialogContent({ cut, cuts, n
   useLayoutEffect(pinTop, [pinTop])
   return <>
     {assistantMounted && <CutAssistant cut={cut} active={tab === 'assistant'} onResultsChanged={resultsChanged} />}
-    <div ref={grid} onScroll={pinTop} className={`${tab === 'assistant' ? 'hidden' : 'grid'} min-h-0 flex-1 gap-5 overflow-y-auto p-5 lg:overflow-hidden ${tab === 'run' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(400px,460px)]' : 'lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)] 2xl:grid-cols-[19rem_minmax(0,1fr)]'}`}>
-      <div ref={resultsColumn} onScroll={pinTop} className={`scrollbar flex flex-col gap-3 ${tab === 'run' ? 'lg:order-2 lg:min-h-0 lg:overflow-y-auto lg:pr-1' : 'order-2 min-h-0 lg:overflow-hidden'}`}>
+    <div ref={grid} onScroll={pinTop} className={`${tab === 'assistant' ? 'hidden' : 'grid'} min-h-0 flex-1 gap-5 overflow-y-auto p-5 lg:overflow-hidden ${tab === 'run' ? 'lg:grid-cols-[16rem_minmax(0,1fr)_minmax(400px,460px)] xl:grid-cols-[18rem_minmax(0,1fr)_minmax(400px,460px)] 2xl:grid-cols-[19rem_minmax(0,1fr)_minmax(400px,460px)]' : 'lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)] 2xl:grid-cols-[19rem_minmax(0,1fr)]'}`}>
+      <div className="scrollbar flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1">
+        {proxyReady
+          ? <div className="mx-auto w-full max-w-sm shrink-0 lg:max-w-none"><PlayerSlot className="aspect-video"><PlayheadReadout start={cut.start_time} end={cut.end_time} /><FrameTools cut={cut} results={results} frameVersion={frameVersion} onPreview={() => setFramesOpen(true)} /></PlayerSlot></div>
+          : <div className="relative aspect-video shrink-0 overflow-hidden rounded-xl border hairline bg-black"><div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div></div>}
+        <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} canPlay={proxyReady} projectId={projectId} episodeId={episodeId} onChanged={onStarted} marks={{ voice: hasNeed(needs, 'voice'), lines: hasNeed(needs, 'lines_to_check') || hasNeed(needs, 'speaker_unsure') }} />
+      </div>
+      <div ref={setCharactersTarget} className={tab === 'run' ? 'scrollbar min-h-0 lg:overflow-y-auto lg:pr-1' : 'hidden'} />
+      <div ref={resultsColumn} onScroll={pinTop} className={`scrollbar flex flex-col gap-3 ${tab === 'run' ? 'lg:min-h-0 lg:overflow-y-auto lg:pr-1' : 'min-h-0 lg:overflow-hidden'}`}>
         {/* Both stay mounted so unsaved settings and drafts survive a tab switch. */}
         <div className={tab === 'results' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
           <CutNeedsBar needs={needs} escalations={agentWork.escalations} decisions={agentWork.decisions} onJump={onJump} onChanged={agentMarks.onChanged} />
@@ -208,14 +215,6 @@ const AnalysisDialogContent = memo(function AnalysisDialogContent({ cut, cuts, n
         <div hidden={tab !== 'run'} data-need={section === 'targets' ? 'targets' : 'characters'}>{cut.active
           ? <AnalysisControls jobs={cutJobs} cut={cut} cuts={cuts} episodeId={episodeId} busy={busy} enabled={cut.analysis_enabled} results={results} stages={stages} prefetchIds={prefetchIds} charactersTarget={charactersTarget} section={section} onSection={onSection} onStarted={onStarted} onConfigChange={setConfig} onPrevious={onPrevious} onNext={onNext}><CutRunHistory cutId={cut.id} jobs={cutJobs} loaded={jobsLoaded} stages={stages} onChanged={onStarted} /></AnalysisControls>
           : <div className="space-y-4"><p className="muted text-xs">Archived cuts can be reviewed but not analyzed.</p><CutRunHistory cutId={cut.id} jobs={cutJobs} loaded={jobsLoaded} stages={stages} onChanged={onStarted} /></div>}</div>
-      </div>
-      <div className={`scrollbar flex flex-col gap-3 lg:overflow-y-auto lg:pr-1 ${tab === 'run' ? 'lg:order-1 lg:min-h-0' : 'order-1 min-h-0'}`}>
-        <div ref={setCharactersTarget} className={tab === 'run' ? 'block' : 'hidden'} />
-        {tab === 'run' && <button type="button" className="btn btn-quiet self-start" onClick={() => setRunVideoOpen(value => !value)}>{runVideoOpen ? 'Hide video preview' : 'Load video preview'}</button>}
-        {showsVideo && <div className={`shrink-0 ${tab === 'run' ? 'mx-auto w-full lg:max-w-[82vh]' : 'mx-auto w-full max-w-sm lg:max-w-none'}`}>{proxyReady
-          ? <PlayerSlot className="aspect-video"><PlayheadReadout start={cut.start_time} end={cut.end_time} />{tab === 'results' && <FrameTools cut={cut} results={results} frameVersion={frameVersion} onPreview={() => setFramesOpen(true)} />}</PlayerSlot>
-          : <div className="relative aspect-video overflow-hidden rounded-xl border hairline bg-black"><div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div></div>}</div>}
-        {tab === 'results' && <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} canPlay={proxyReady} projectId={projectId} episodeId={episodeId} onChanged={onStarted} marks={{ voice: hasNeed(needs, 'voice'), lines: hasNeed(needs, 'lines_to_check') || hasNeed(needs, 'speaker_unsure') }} />}
       </div>
     </div>
     {framesOpen && <FramesDialog cut={cut} results={results} frameVersion={frameVersion} onClose={() => setFramesOpen(false)} />}

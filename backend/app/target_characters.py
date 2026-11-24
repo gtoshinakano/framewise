@@ -69,9 +69,11 @@ def run_for(cut_id, key, conn=None):
 
 
 def frame_capacity(slots, locked=False):
-    """Keep the open-cast cap, with room for every reviewed opening colour on a locked cut."""
+    """How many boxes a person may keep in one frame: the open-cast cap, but never fewer than the opening frame's own
+    people. The opening frame mirrors every first-frame box, so a cut with four people there needs room to draw the fourth
+    on a later frame, locked or not (``locked`` only widens what the *tracker* places by itself, see ``process``)."""
     opening = sum(slot['origin'] == 'first_frame' and not slot.get('ignored') for slot in slots)
-    return max(MAX_BOXES, opening) if locked else MAX_BOXES
+    return max(MAX_BOXES, opening)
 
 
 def opening_signature(boxes):

@@ -753,3 +753,18 @@ class SelectionChangeTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class FrameCapacityTest(unittest.TestCase):
+    def slots(self, opening, other=0, ignored=0):
+        return ([{'origin': 'first_frame', 'ignored': 0}] * opening + [{'origin': 'first_frame', 'ignored': 1}] * ignored
+                + [{'origin': 'tracked', 'ignored': 0}] * other)
+
+    def test_a_frame_always_has_room_for_every_person_of_the_opening_frame(self):
+        # four people in the opening frame: the fourth must be drawable on a later frame without locking the cast
+        self.assertEqual(target_characters.frame_capacity(self.slots(4)), 4)
+        self.assertEqual(target_characters.frame_capacity(self.slots(4), locked=True), 4)
+
+    def test_the_open_cap_stays_three_for_smaller_openings(self):
+        self.assertEqual(target_characters.frame_capacity(self.slots(2, other=3)), target_characters.MAX_BOXES)
+        self.assertEqual(target_characters.frame_capacity(self.slots(2, ignored=3)), target_characters.MAX_BOXES)
