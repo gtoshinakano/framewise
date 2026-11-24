@@ -68,12 +68,23 @@ class CutReadinessTest(unittest.TestCase):
         self.assertTrue(self.ready()['may_beats'])
         self.assertEqual(cut_readiness.strong_match('bob', [{'character_id': 'ann', 'score': 0.99}]), (False, 0.99, 0.99))
 
+    def test_a_frame_whose_extra_boxes_the_person_removed_no_longer_holds_the_cut(self):
+        self.sql("UPDATE character_detections SET label_source='manual' WHERE id='d1'")
+        self.sql("UPDATE target_detection_runs SET frames_json=? WHERE id='t1'", (json.dumps([
+            {'ordinal': 1, 'review': {'flags': {}}},
+            {'ordinal': 40, 'review': {'flags': {'count_changed': {'first': 1, 'here': 2}}, 'reviewed': False}}]),))
+        self.sql("INSERT INTO target_slots(run_id,slot,origin,character_context_id) VALUES ('t1',1,'opening','ann')")
+        self.sql("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json) VALUES ('x1','t1',1,1,'{}'),('x40','t1',40,1,'{}')")
+        self.assertEqual(self.ready()['held']['visual'], [])
+
     def test_unnamed_boxes_and_flagged_target_frames_hold_the_visual_step(self):
         self.sql("UPDATE character_detections SET label_source='manual' WHERE id='d1'")
         self.sql("INSERT INTO character_detections(id,run_id,position,box_json) VALUES ('d2','r1','first','{}')")
         self.assertEqual(self.ready()['held']['visual'], ['box 2 has no character'])
         self.sql("DELETE FROM character_detections WHERE id='d2'")
         self.sql("UPDATE target_detection_runs SET frames_json=? WHERE id='t1'", (json.dumps([{'ordinal': 1, 'review': {'flags': {}}}, {'ordinal': 40, 'review': {'flags': {'low_match': [1]}}}]),))
+        self.sql("INSERT INTO target_slots(run_id,slot,origin,character_context_id) VALUES ('t1',1,'opening','ann')")
+        self.sql("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json) VALUES ('x1','t1',1,1,'{}'),('x40','t1',40,1,'{}')")
         ready = self.ready()
         self.assertEqual(ready['held']['visual'], ['target frame F2 flagged (low_match)'])
         self.assertEqual(ready['held']['target_frames'], [])   # target frames themselves may run: the boxes are settled

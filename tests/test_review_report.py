@@ -42,7 +42,7 @@ class ReviewReportTest(unittest.TestCase):
             conn.execute("INSERT INTO target_detection_runs(id,cut_id,selection_key,cut_start,cut_end,frames_json) VALUES ('t2','c2','k',2,4,?)",
                          (json.dumps(frames),))
             conn.execute("INSERT INTO target_slots(run_id,slot,origin,character_context_id) VALUES ('t2',1,'first',NULL)")
-            conn.execute("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json) VALUES ('td','t2',1,1,'{}')")
+            conn.execute("INSERT INTO target_detections(id,run_id,frame_ordinal,slot,box_json) VALUES ('td','t2',1,1,'{}'),('td2','t2',2,1,'{}')")
             # c3 is analysed and reviewed with two open questions and a contradicted picture check.
             result(conn, 'f3', 'c3', 'initial_frame', {})
             result(conn, 'v3', 'c3', 'video_analysis', {})

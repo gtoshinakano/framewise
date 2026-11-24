@@ -43,12 +43,14 @@ def _loads(text, default):
 def target_review(conn, cut, positions=False):
     """Flagged frames and unnamed people on the cut's current Target frames run (the TargetFrames tab's Needs review).
     ``positions``: also give each flagged frame its place among the run's frames (``position``, the tab's F1…Fn)."""
-    run = conn.execute('''SELECT id,frames_json FROM target_detection_runs WHERE cut_id=? AND cut_start=? AND cut_end=?
+    run = conn.execute('''SELECT id,frames_json,candidates_json FROM target_detection_runs WHERE cut_id=? AND cut_start=? AND cut_end=?
                           ORDER BY rowid DESC LIMIT 1''', (cut['id'], cut['start_time'], cut['end_time'])).fetchone()
     if not run:
         return None
+    from . import character_decisions  # the flags the tab shows: boxes the person removed no longer count
+    shown, _ = character_decisions.visible_target_state(conn, run)
     frames = []
-    for position, frame in enumerate(_loads(run['frames_json'], []), 1):
+    for position, frame in enumerate(shown, 1):
         review = frame.get('review') if isinstance(frame, dict) else None
         # frontend/src/targetView.ts frameNeedsReview
         if isinstance(review, dict) and not review.get('reviewed') and review.get('flags'):
