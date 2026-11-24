@@ -114,7 +114,7 @@ export default function SequenceDialog({ projectId, sequenceId, episodeId, proxy
   }
 
   return <PlayerProvider player={player}><div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
-    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Sequence ${info?.title || ''}`} className="flex h-[94vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden rounded-2xl border hairline bg-[#131720] shadow-2xl outline-none">
+    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" data-shortcut-view={tab === 'dialogue' ? 'sequence:dialogue' : 'sequence'} aria-label={`Sequence ${info?.title || ''}`} className="flex h-[94vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden rounded-2xl border hairline bg-[#131720] shadow-2xl outline-none">
       <header className="grid grid-cols-[1fr_auto] items-center gap-3 border-b hairline px-5 py-3 lg:grid-cols-[1fr_auto_1fr]">
         <div className="min-w-0"><div className="flex min-w-0 items-center gap-2"><p className="shrink-0 text-[11px] font-semibold uppercase tracking-[.14em] text-[#e0a96d]">{label}</p><CopyId id={sequenceId} /></div><h2 className="truncate text-base font-semibold">{info?.title || 'Loading…'}</h2></div>
         <div className="order-3 col-span-2 flex justify-center lg:order-none lg:col-span-1"><div className="flex gap-1 rounded-lg border hairline p-1" role="tablist">

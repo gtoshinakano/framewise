@@ -376,20 +376,11 @@ function LaneLabel({ icon, label }: { icon: ReactNode; label: string }) {
   return <div className="flex items-center justify-center text-[#98a1af]" title={label} aria-label={label} role="img">{icon}</div>
 }
 
-const SHORTCUTS: [string, string][] = [
-  ['Space', 'Play or pause'], ['S', 'Split the cut under the playhead'], ['Ctrl+Z', 'Undo the last cut edit'], ['Ctrl+Shift+Z', 'Redo'],
-  ['[ / ]', 'Previous / next cut'], ['N', 'Next cut that needs you (or matches the filters)'], ['F', 'Filters'], ['Shift+click', 'Select a range of cuts'], ['Esc', 'Clear the range'], ['Ctrl+S', 'Save the cut notes'],
-]
-
-/** Icon legend, mouse gestures and keyboard shortcuts, out of the way until asked for. */
 function TimelineHelp() {
   return <Popover label="Timeline help" side="top" align="end" panelClassName="w-[320px] p-3 text-xs"
-    trigger={props => <button type="button" {...props} className="icon-btn icon-btn-sm ghost" aria-label="Timeline help" title="Legend and shortcuts"><CircleHelp size={15} aria-hidden /></button>}>
+    trigger={props => <button type="button" {...props} className="icon-btn icon-btn-sm ghost" aria-label="Timeline help" title="Cut icon legend"><CircleHelp size={15} aria-hidden /></button>}>
     <h3 className="mb-2 text-[10px] font-bold uppercase tracking-[.12em] text-[#7e8797]">Cut icons</h3>
     <ul className="grid grid-cols-2 gap-x-3 gap-y-1.5">{CUT_STATUS_LEGEND.map(item => <li key={item.label} className="flex items-center gap-1.5"><item.icon size={13} style={{ color: item.color }} aria-hidden />{item.label}</li>)}</ul>
-    <h3 className="mb-2 mt-4 text-[10px] font-bold uppercase tracking-[.12em] text-[#7e8797]">Mouse</h3>
-    <ul className="muted space-y-1"><li>Scroll over the timeline to zoom; middle-drag to move it.</li><li>Drag the waveform to seek; Shift-drag it to choose audio to transcribe again.</li><li>Double-click a cut to open its analysis; Shift+click another cut to select the range between them.</li><li>Drag the top edge of the timeline to resize it.</li></ul>
-    <h3 className="mb-2 mt-4 text-[10px] font-bold uppercase tracking-[.12em] text-[#7e8797]">Keyboard</h3>
-    <dl className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-1.5">{SHORTCUTS.map(([key, text]) => <div key={key} className="contents"><dt><kbd className="kbd">{key}</kbd></dt><dd className="muted">{text}</dd></div>)}</dl>
+
   </Popover>
 }

@@ -1,3 +1,4 @@
+import ShortcutsPanel from './ShortcutsPanel'
 import { EpisodeEventsContext, useEpisodeEvents, type Revisions } from './episodeEvents'
 import { LocalModelControl } from './LocalModelControl'
 import { VisualEngineControl } from './VisualEngineControl'
@@ -504,7 +505,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const clampHeight = (value: number) => Math.round(Math.max(MIN_TIMELINE, Math.min(window.innerHeight * 0.6, value)))
   const workspaceStyle = { '--cuts-w': cutsCollapsed ? '0px' : `${DEFAULT_CUTS_WIDTH}px`, ...(timelineHeight ? { '--timeline-h': `${timelineHeight}px` } : {}) } as CSSProperties
   const audioBusy = jobs.some(job => ['transcribe', 'voice_sample', 'subtitles', 'speaker_attribution'].includes(job.pipeline) && active(job))
-  return <EpisodeEventsContext.Provider value={id}><div className="editor-shell bg-[#0d1016]">
+  return <EpisodeEventsContext.Provider value={id}><ShortcutsPanel /><div className="editor-shell bg-[#0d1016]">
     <EditorHeader projectId={episode?.project_id} projectTitle={project?.title} episodeTitle={episode?.title} status={episode?.status || 'queued'} stage={episode?.stage}
       hasCuts={!!episode?.cuts.length} mediaBlocked={mediaRequest ? 'Queuing…' : ''} characterBlock={characterBlock} onCharacterStep={step => void queueCharacterStep(step)}
       onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}

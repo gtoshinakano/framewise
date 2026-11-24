@@ -134,7 +134,7 @@ export function InboxDrawer({ episodeId, onClose, onChanged }: { episodeId: stri
 
   return <>
     <div className="drawer-backdrop" onMouseDown={onClose} aria-hidden />
-    <div ref={panel} role="dialog" aria-modal="true" aria-labelledby="inbox-title" tabIndex={-1} className="drawer outline-none">
+    <div ref={panel} role="dialog" aria-modal="true" data-shortcut-view={view === 'mine' || view === 'claude' ? 'inbox' : 'inbox:other'} aria-labelledby="inbox-title" tabIndex={-1} className="drawer outline-none">
       <header className="shrink-0 border-b hairline px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <h2 id="inbox-title" className="flex items-center gap-2 text-sm font-semibold"><Inbox size={16} className="text-[#7bdcb2]" aria-hidden /> Autopilot inbox</h2>
