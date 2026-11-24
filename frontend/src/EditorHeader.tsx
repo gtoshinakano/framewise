@@ -1,3 +1,4 @@
+import { WebSearchSources } from './WebSearchSources'
 import { AlertTriangle, BookOpen, Bot, Inbox, Shirt, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
 import { LocalModelControl } from './LocalModelControl'
 import { VisualEngineControl } from './VisualEngineControl'
@@ -9,7 +10,7 @@ export type CharacterStep = 'character-boxes' | 'character-detection' | 'charact
 const go = (path: string) => { window.location.hash = path }
 
 /** The episode editor's top bar: where you are, the episode-wide actions grouped in menus, and the queue. */
-export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, inbox, onOpenInbox, onOpenSettings, onOpenGlossary, onOpenOutfits, onOpenMatcher, onOpenAutopilot, onDeleteEpisode }: {
+export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, inbox, onOpenInbox, onOpenSettings, onOpenGlossary, onOpenOutfits, onOpenMatcher, onEditCharacter, onOpenAutopilot, onDeleteEpisode }: {
   projectId?: string
   projectTitle?: string
   episodeTitle?: string
@@ -36,6 +37,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   onOpenGlossary: () => void
   onOpenOutfits: () => void
   onOpenMatcher: () => void
+  onEditCharacter: () => void
   onOpenAutopilot: () => void
   onDeleteEpisode: () => void
 }) {
@@ -47,6 +49,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
     'separator',
     { key: 'rerun', icon: RotateCcw, tone: 'caution', title: 'Redo automatic labels…', hint: 'Recognizes every cut again using your confirmed labels as examples. Manual labels and drawn boxes stay as they are.', disabled: !!characterBlock, disabledReason: characterBlock, onSelect: () => onCharacterStep('character-detection-rerun') },
     'separator',
+    { key: 'edit', icon: Users, title: 'Edit character…', disabled: !projectId, onSelect: onEditCharacter },
     { key: 'glossary', icon: BookOpen, title: 'Name glossary…', disabled: !projectId, onSelect: onOpenGlossary },
     { key: 'matcher', icon: UserSearch, title: 'Character matcher store…', hint: 'Manage matching images from all episodes.', disabled: !projectId, onSelect: onOpenMatcher },
     { key: 'outfits', icon: Shirt, title: 'Outfits…', hint: 'What each character wears, shared by every episode. The Sequence director fills it.', disabled: !projectId, onSelect: onOpenOutfits },
@@ -100,6 +103,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
         {inbox.mine > 0 && <span className="font-mono tabular-nums text-[#f5c678]">{inbox.mine}</span>}
         {!inbox.mine && inbox.elsewhere && <i className="h-1.5 w-1.5 rounded-full bg-[#f5c678]" aria-hidden />}
       </button>
+      <WebSearchSources compact />
       <VisualEngineControl compact />
       <LocalModelControl compact />
       <Menu label="Episode" items={episodeItems} align="end" width="w-72" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md" aria-label="Episode menu" title="Episode menu"><MoreHorizontal size={16} aria-hidden /></button>} />

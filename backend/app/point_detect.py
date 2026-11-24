@@ -120,7 +120,8 @@ def claim():
 def frame_image(row):
     from PIL import Image
     spec = json.loads(row['spec_json'])
-    with Image.open(io.BytesIO(frame_cache.render(spec))) as source:
+    picture = spec['registration_image'] if row['surface'] == 'registration' else io.BytesIO(frame_cache.render(spec))
+    with Image.open(picture) as source:
         image = source.convert('RGB')
     size = tuple(json.loads(row['image_size_json']))
     # Boxes are stored in the frame's detection size; a rounding difference in the render must not shift them.

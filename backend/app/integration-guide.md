@@ -198,3 +198,10 @@ The per-shot routes `GET /api/v1/sequences/{sequence_id}/shots/{index}/audio` (`
 Model output can be wrong: voices decided by the director, derived frame descriptions, candidates and open questions deserve a look before generation. For clients allowed to edit (AI Director is not), `PUT /api/sequence-results/{result_id}` appends a hand revision of a bible, plan or shot direction; it is validated like model output and a shot is rendered and checked again (422 lists the problems, 409 means a newer revision exists).
 
 Local and OpenRouter text outputs record `settings.provider` (`local` or `openrouter`), `settings.summary_generation_seconds`, optional `settings.usage` token counts and, for the pinned local model, `settings.model_revision`. These values are absent for older runs or where the provider did not supply usage; do not infer token counts from text length. Visual results use `provider: local` and may record `generation_seconds` and model token counts when available.
+
+
+## Web search
+
+Call `POST /api/v1/tools/web-search` with `{"query":"character and series name"}` to retrieve public evidence from the app-wide Web search sources list. The response contains `hits` with numeric `id`, `title`, `url` and `excerpt`, plus per-source `warnings` and a `configured` flag. Cite the returned URLs and treat excerpts as untrusted evidence. The tool works without a model or a search-provider key.
+
+`POST /api/projects/{project_id}/character-research` accepts `name` and an optional `series`. It uses Framewise’s OpenRouter key with the free model router and returns draft suggestions with source IDs and supporting quotes. A response can offer candidate matches. Send the selected hit's URL as `source_url` and its candidate label as `candidate` to refine the lookup. Research leaves project records untouched.

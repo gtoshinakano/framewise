@@ -1,10 +1,10 @@
 import { CharacterSelect } from './CharacterSelect'
-import { useEffect, useMemo, useState, type RefObject } from 'react'
+import { useMemo, useState, type RefObject } from 'react'
 import { AudioLines, Download } from 'lucide-react'
-import { api, type ContextItem, type Cut, type TranscriptSegment, type Waveform } from './api'
+import { api, type Cut, type TranscriptSegment, type Waveform } from './api'
 import { CutLineEditor } from './CutLineEditor'
 import { speakerColor, stamp } from './lineEditView'
-import { chosenCharacter, loadCharacters } from './runCache'
+import { chosenCharacter, useCharacters } from './runCache'
 import { CharacterOptions } from './CharacterOptions'
 import { NEW_CARD } from './unregisteredView'
 import { useToast } from './Toasts'
@@ -12,13 +12,12 @@ import { unknownVoices } from './voiceGroups'
 
 export function CutAudioPreview({ cut, waveform, transcript, hasAudio, preparing, video, canPlay, projectId, episodeId, onChanged, marks }: { cut: Cut; waveform: Waveform | null; transcript: TranscriptSegment[]; hasAudio: boolean; preparing: boolean; video: RefObject<HTMLVideoElement | null>; canPlay: boolean; projectId: string; episodeId: string; onChanged: () => void; marks?: { voice: boolean; lines: boolean } }) {
   const toast = useToast()
-  const [characters, setCharacters] = useState<ContextItem[]>([])
+  const characters = useCharacters(projectId)
   const [busy, setBusy] = useState(false)
-  useEffect(() => { loadCharacters(projectId).then(setCharacters).catch(() => { /* names only label the choices */ }) }, [projectId])
   const names = useMemo(() => new Map(characters.map(item => [item.id, item.title])), [characters])
   const voices = useMemo(() => unknownVoices(transcript, cut), [transcript, cut.start_time, cut.end_time])
   const newCard = async () => {
-    try { return await chosenCharacter(projectId, NEW_CARD, setCharacters) } catch (err) { toast({ message: (err as Error).message, tone: 'error' }); return null }
+    try { return await chosenCharacter(projectId, NEW_CARD) } catch (err) { toast({ message: (err as Error).message, tone: 'error' }); return null }
   }
   const assignLine = async (segment: TranscriptSegment, character_context_id: string | null, left_unknown = false) => {
     setBusy(true)
@@ -37,7 +36,7 @@ export function CutAudioPreview({ cut, waveform, transcript, hasAudio, preparing
   const assignVoice = async (label: string, chosen: string) => {
     setBusy(true)
     try {
-      const character_context_id = chosen === NEW_CARD ? await chosenCharacter(projectId, chosen, setCharacters) : chosen
+      const character_context_id = chosen === NEW_CARD ? await chosenCharacter(projectId, chosen) : chosen
       if (!character_context_id) return
       const name = names.get(character_context_id) || (chosen === NEW_CARD ? 'a new Unregistered card' : 'the character')
       const { updated } = await api<{ updated: number }>(`/episodes/${encodeURIComponent(episodeId)}/transcript/assign-voice`, { method: 'POST', body: JSON.stringify({ speaker_label: label, character_context_id }) })

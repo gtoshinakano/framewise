@@ -2,11 +2,11 @@ import { CharacterSelect } from './CharacterSelect'
 import { useEpisodeEvents } from './episodeEvents'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, ImageMinus, Loader2, PencilLine, ScanFace, Trash2, XCircle } from 'lucide-react'
-import { api, keyframeFrameUrl, type ContextItem, type KeyframeAnalysis, type KeyframeAnalysisState, type KeyframeSegment } from './api'
+import { api, keyframeFrameUrl, type KeyframeAnalysis, type KeyframeAnalysisState, type KeyframeSegment } from './api'
 import { BetweenFrames } from './BetweenFrames'
 import { BoxEditor, type EditorBox } from './BoxEditor'
 import { boxColor } from './boxColors'
-import { cachedCharacters, chosenCharacter, loadCharacters } from './runCache'
+import { chosenCharacter, useCharacters } from './runCache'
 import { CharacterOptions } from './CharacterOptions'
 import { NEW_CARD } from './unregisteredView'
 import { detectAt, NOTHING_FOUND, type Point } from './pointDetect'
@@ -126,7 +126,7 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
   detections: TargetDetectionState; onChanged: () => void
 }) {
   const { data, error: loadError, reload, setData } = detections
-  const [characters, setCharacters] = useState<ContextItem[]>(() => cachedCharacters(projectId) ?? [])
+  const characters = useCharacters(projectId)
   const [editError, setEditError] = useState('')
   const [saving, setSaving] = useState(0)
   const [queueing, setQueueing] = useState(false)
@@ -136,7 +136,6 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
   const [picking, setPicking] = useState<{ ordinal: number; point: Point } | null>(null)
   const toast = useToast()
   const chain = useRef<Promise<void>>(Promise.resolve())
-  useEffect(() => { void loadCharacters(projectId).then(setCharacters).catch(() => {}) }, [projectId])
   useEffect(() => { setOnlyFlagged(true); setSelectedBox(undefined); setDrawing(null) }, [cutId, selection?.revision])
 
   const run = data?.run || null
@@ -166,7 +165,7 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
   const labelWith = (slot: number, value: string) => {
     if (value !== NEW_CARD) { label(slot, value || null); return }
     let items = characters
-    void chosenCharacter(projectId, value, next => { items = next; setCharacters(next) }).then(id => { if (id) label(slot, id, items) })
+    void chosenCharacter(projectId, value, next => { items = next }).then(id => { if (id) label(slot, id, items) })
   }
   const move = (id: string, box: Box) => edit(
     () => api(`/target-detections/${id}/box`, { method: 'PUT', body: JSON.stringify({ box }) }),

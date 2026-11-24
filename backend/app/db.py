@@ -124,6 +124,7 @@ def init_db():
         );
         INSERT OR IGNORE INTO visual_model_state(id) VALUES (1);
         -- One-time data changes that must not repeat (a flag row says the change was made).
+        CREATE TABLE IF NOT EXISTS web_search_settings (id INTEGER PRIMARY KEY CHECK(id=1), sources_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS app_flags (name TEXT PRIMARY KEY, set_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         -- A llama.cpp server on another PC that takes local-provider text jobs (remote_text.py).
         CREATE TABLE IF NOT EXISTS remote_text_server (

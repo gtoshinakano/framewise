@@ -2,13 +2,15 @@
 import asyncio
 import json
 import time
+import tempfile
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
-from . import db, media
+from . import db, media, registration_images
 from .target_characters_api import _frame as target_frame, _frame_boxes, _slots
 
 router = APIRouter()
@@ -68,31 +70,52 @@ def _request(conn, body):
 async def detect_at_point(body: PointDetection):
     """Find the person under ``point`` (frame pixels). Returns ``{box, score, pass}``, ``box`` null when nobody is there.
     Nothing is saved: the caller adds the box through the run's ordinary add-box endpoint."""
+    with db.connect() as conn:
+        frame_key, spec, size, existing = _request(conn, body)
+    return await queue_point(body.surface, body.run_id, frame_key, {**spec, 'source': str(spec['source'])}, size, existing, body.point)
+
+
+@router.post('/api/episodes/{episode_id}/registration-point')
+async def detect_registration_point(episode_id: str, x: float = Form(), y: float = Form(), frame: UploadFile = File()):
+    if not db.one('SELECT id FROM episodes WHERE id=?', (episode_id,)):
+        raise HTTPException(404, 'Episode not found')
+    data, size = await run_in_threadpool(registration_images.read_image, frame)
+    # The worker reads this same still. A new seek cannot move the bounding box to a different frame.
+    directory = db.DATA_DIR / 'tmp'
+    directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(suffix='.jpg', prefix='registration-point-', dir=directory) as image:
+        image.write(data)
+        image.flush()
+        return await queue_point('registration', episode_id, 'still', {'registration_image': image.name}, size, [], (x, y))
+
+
+async def queue_point(surface, run_id, frame_key, spec, size, existing, point):
     now = time.time()
     request_id = str(uuid.uuid4())
+    x, y = point
+    if not (0 <= x <= size[0] and 0 <= y <= size[1]):
+        raise HTTPException(400, 'The point is outside the frame')
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         state = conn.execute('SELECT heartbeat FROM point_detection_state WHERE id=1').fetchone()
         if not state or now - state['heartbeat'] > STALE_HEARTBEAT:
             raise HTTPException(503, 'The inference worker is not running, so the box cannot be found; draw it instead')
-        frame_key, spec, size, existing = _request(conn, body)
-        x, y = body.point
-        if not (0 <= x <= size[0] and 0 <= y <= size[1]):
-            raise HTTPException(400, 'The point is outside the frame')
         conn.execute("DELETE FROM point_detection_requests WHERE status IN ('done','failed') AND finished_at<?", (now - KEEP_SECONDS,))
-        conn.execute('''INSERT INTO point_detection_requests(id,surface,run_id,frame_key,point_json,spec_json,image_size_json,existing_json,created_at)
-                        VALUES (?,?,?,?,?,?,?,?,?)''',
-                     (request_id, body.surface, body.run_id, frame_key, json.dumps([x, y]), json.dumps({**spec, 'source': str(spec['source'])}),
+        conn.execute("""INSERT INTO point_detection_requests(id,surface,run_id,frame_key,point_json,spec_json,image_size_json,existing_json,created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?)""",
+                     (request_id, surface, run_id, frame_key, json.dumps([x, y]), json.dumps(spec),
                       json.dumps(size), json.dumps(existing), now))
     deadline = time.monotonic() + WAIT_SECONDS
-    while time.monotonic() < deadline:
-        await asyncio.sleep(.1)
-        row = db.one('SELECT status,box_json,score,pass,error FROM point_detection_requests WHERE id=?', (request_id,))
-        if row['status'] == 'done':
-            return {'box': json.loads(row['box_json']) if row['box_json'] else None, 'score': row['score'], 'pass': row['pass']}
-        if row['status'] == 'failed':
-            raise HTTPException(502, row['error'] or 'Detection failed')
-    with db.connect() as conn:
-        conn.execute("UPDATE point_detection_requests SET status='failed',error='Timed out',lease_owner=NULL,finished_at=? WHERE id=? AND status IN ('queued','running')",
-                     (time.time(), request_id))
-    raise HTTPException(504, 'The detector did not answer in time; draw the box instead')
+    try:
+        while time.monotonic() < deadline:
+            await asyncio.sleep(.1)
+            row = db.one('SELECT status,box_json,score,pass,error FROM point_detection_requests WHERE id=?', (request_id,))
+            if row['status'] == 'done':
+                return {'box': json.loads(row['box_json']) if row['box_json'] else None, 'score': row['score'], 'pass': row['pass']}
+            if row['status'] == 'failed':
+                raise HTTPException(502, row['error'] or 'Detection failed')
+        raise HTTPException(504, 'The detector did not answer in time; draw the box instead')
+    finally:
+        with db.connect() as conn:
+            conn.execute("UPDATE point_detection_requests SET status='failed',error='Request ended',lease_owner=NULL,finished_at=? WHERE id=? AND status IN ('queued','running')",
+                         (time.time(), request_id))

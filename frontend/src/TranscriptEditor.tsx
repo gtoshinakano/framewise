@@ -1,3 +1,4 @@
+import { useCharacters } from './runCache'
 import { CharacterSelect } from './CharacterSelect'
 import { useEpisodeEvents } from './episodeEvents'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
@@ -110,7 +111,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, playh
   onViewChange: (view: AudioView) => void
 }) {
   const [draft, setDraft] = useState<Draft | null>(null)
-  const [characters, setCharacters] = useState<ContextItem[]>([])
+  const characters = useCharacters(projectId)
   const [history, setHistory] = useState(false)
   const [checkOnly, setCheckOnly] = useState(false)
   const [page, setPage] = useState(0)
@@ -126,11 +127,6 @@ export default function TranscriptEditor({ episodeId, projectId, duration, playh
   const [voiceFileKey, setVoiceFileKey] = useState(0)
   useEffect(() => { setVoiceRanges([]); setVoiceFile(null) }, [episodeId])
   async function loadVoices() { setVoiceSamples(await api<VoiceSample[]>('/projects/' + projectId + '/voice-samples')) }
-  useEffect(() => {
-    api<ContextItem[]>('/projects/' + projectId + '/context')
-      .then(items => setCharacters(items.filter(item => item.kind === 'character')))
-      .catch(err => setError((err as Error).message))
-  }, [projectId])
   useEffect(() => { loadVoices().catch(err => setError((err as Error).message)) }, [projectId])
   useEpisodeEvents(change => { if (change.data && view === 'voices') void loadVoices().catch(err => setError((err as Error).message)) }, episodeId)
   useEffect(() => {

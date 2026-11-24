@@ -3,13 +3,13 @@ import { useEpisodeRevision } from './episodeEvents'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Bookmark, BookmarkMinus, CheckCircle2, ChevronDown, Info, Loader2, PencilLine, ScanFace, Trash2, UserPlus, UserX, XCircle } from 'lucide-react'
 import { api, type ContextItem, type Job } from './api'
-import { cachedCharacters, cachedReferences, chosenCharacter, invalidateReferences, loadCharacters, loadReferences, type CharacterReference } from './runCache'
+import { cachedCharacters, cachedReferences, chosenCharacter, invalidateReferences, loadCharacters, loadReferences, useCharacters, type CharacterReference } from './runCache'
 import { CharacterOptions } from './CharacterOptions'
 import { isCard, NEW_CARD } from './unregisteredView'
 import { ActionButton, Elapsed, Skeleton, StatusChip, StaleNote } from './RunUi'
 import type { CharacterSummary } from './runState'
 import { PoseDetailCard } from './PoseDetailCard'
-import { NewCharacterDialog, type NewCharacter, type NewCharacterResult } from './NewCharacterDialog'
+import { CharacterRegistrationDialog, type RegistrationResult } from './CharacterRegistrationDialog'
 import { BOX_COLORS } from './boxColors'
 import { PickLayer, PickMarker } from './BoxEditor'
 import { detectAt, NOTHING_FOUND, type Point } from './pointDetect'
@@ -30,10 +30,12 @@ const inFlightEdits = new Map<string, Promise<void>>()
 const editErrors = new Map<string, string>()
 let nextTemporaryBoxId = 0
 
-export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ cutId, cutStart, cutEnd, projectId, jobs, onStarted, onSummary, noCharacters = false, boundaryKey = '' }: { cutId: string; cutStart: number; cutEnd: number; projectId: string; jobs: Job[]; onStarted: () => Promise<void>; onSummary?: (summary: CharacterSummary | null) => void; noCharacters?: boolean; boundaryKey?: string }) {
+export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ episodeId, cutId, cutStart, cutEnd, projectId, jobs, onStarted, onSummary, noCharacters = false, boundaryKey = '' }: { episodeId: string; cutId: string; cutStart: number; cutEnd: number; projectId: string; jobs: Job[]; onStarted: () => Promise<void>; onSummary?: (summary: CharacterSummary | null) => void; noCharacters?: boolean; boundaryKey?: string }) {
   const [run, setRun] = useState<DetectionRun | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [characters, setCharacters] = useState<ContextItem[]>(() => cachedCharacters(projectId) ?? [])
+  const currentCharacters = useCharacters(projectId)
+  useEffect(() => { setCharacters(currentCharacters) }, [currentCharacters])
   const [references, setReferences] = useState<CharacterReference[]>(() => cachedReferences(projectId) ?? [])
   // The pictures load only once the collapsed references list is opened: every cut showed this panel, so all of them
   // were downloaded each time a cut was opened.
@@ -140,16 +142,19 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     enqueueEdit(async () => { await api(`/character-detections/${savedId(detectionId)}`, { method: 'PUT', body: JSON.stringify({ character_context_id: characterId }) }) })
   }
   /** Creates a character from a box in the edit queue, so it waits for earlier edits and a just-drawn box's id. A refusal goes back to the dialog. */
-  function createCharacter(detectionId: string, input: NewCharacter) {
-    return new Promise<NewCharacterResult>((resolve, reject) => {
+  function createCharacter(detectionId: string, body: FormData) {
+    return new Promise<RegistrationResult>((resolve, reject) => {
       enqueueEdit(async () => {
-        let result: NewCharacterResult
-        try { result = await api<NewCharacterResult>(`/character-detections/${savedId(detectionId)}/new-character`, { method: 'POST', body: JSON.stringify(input) }) } catch (reason) { reject(reason); return }
+        let result: RegistrationResult
+        try {
+          const draft = JSON.parse(String(body.get('draft')))
+          body.set('draft', JSON.stringify({ ...draft, detection_id: savedId(detectionId) }))
+          result = await api<RegistrationResult>(`/projects/${projectId}/character-registration`, { method: 'POST', body })
+        } catch (reason) { reject(reason); return }
         const character = result.character
         setRun(value => value && { ...value, detections: value.detections.map(item => item.id === detectionId ? { ...item, character_context_id: character.id, character_name: character.title, label_source: 'manual', match_reason: null, gallery_status: null, gallery_note: null } : item) })
-        setCharacters(items => [...items, character])
+        setCharacters(items => items.some(item => item.id === character.id) ? items : [...items, character])
         resolve(result)
-        void loadCharacters(projectId).then(setCharacters).catch(() => {})
         void onStarted()
       })
     })
@@ -396,15 +401,16 @@ export const CharacterDetectionPanel = memo(function CharacterDetectionPanel({ c
     })}</div>}
     {!!references.length && <details className="group rounded-lg border hairline" onToggle={event => setReferencesOpen(event.currentTarget.open)}><summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-semibold text-[#c3aeff]"><Bookmark size={13} aria-hidden />Project character references <StatusChip tone="blue">{references.length}</StatusChip><ChevronDown size={14} className="ml-auto transition-transform group-open:rotate-180" aria-hidden /></summary>{referencesOpen && <div className="grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 xl:grid-cols-4">{references.map(ref => <div key={ref.id} className="rounded-lg border hairline bg-[#1e2430] p-2"><img src={`/api/character-references/${ref.id}/image`} alt={`Reference of ${ref.character_name}`} loading="lazy" decoding="async" className="h-24 w-full rounded bg-black object-contain" /><div className="mt-1 flex items-center justify-between gap-1 text-xs"><span className="truncate" title={ref.character_name}>{ref.character_name}</span><ActionButton compact variant="danger" icon={<Trash2 size={12} />} disabled={working || !!saving} onClick={() => void action(() => api(`/character-references/${ref.id}`, { method: 'DELETE' }), true)} title="Remove this reference" aria-label={`Remove reference for ${ref.character_name}`} /></div></div>)}</div>}</details>}
     {adding && run && (() => {
-      const index = run.detections.filter(item => item.position === 'first').findIndex(item => item.id === adding)
       const person = run.detections.find(item => item.id === adding)
       const frame = person && run.frames.find(item => item.position === person.position)
       if (!person || !frame) return null
-      return <NewCharacterDialog projectId={projectId} box={person.box} frameUrl={`/api/character-detection-runs/${run.id}/frame/${frame.position}`} imageSize={frame.image_size} boxNumber={index + 1} onCreate={input => createCharacter(person.id, input)} onClose={() => setAdding(null)} />
+      return <CharacterRegistrationDialog projectId={projectId} episodeId={episodeId} time={frame.time}
+        original={{ url: `/api/character-detection-runs/${run.id}/frame/${frame.position}`, size: frame.image_size, box: person.box }}
+        saveFromBox={body => createCharacter(person.id, body)} onClose={() => setAdding(null)} />
     })()}
     <details className="group text-[11px] text-[#929aa9]"><summary className="inline-flex cursor-pointer items-center gap-1.5 hover:text-[#c3aeff]"><Info size={13} aria-hidden />How matching works</summary>
       <ul className="mt-2 list-disc space-y-1 pl-5 leading-5">
-        <li>Pick a character for each box, or choose Add new character to create one from the box. Qwen then writes the character's look and outfit from that box into its Details.</li>
+        <li>Pick a character for each box, or choose Add new character to create one from the box. Use Save and describe from box to also write a visual description into Details.</li>
         <li>Every box you label or confirm becomes a matching example for the whole project. Tiny or unidentifiable boxes (a hand, a strand of hair) are left out of matching but keep their label for analysis.</li>
         <li>Automatic matches stay unverified until you queue this cut. Queuing treats named boxes as verified, so correct or clear them first.</li>
         <li>Single-cut frame analysis receives up to four reference images; keyframe analysis receives the names and boxes.</li>

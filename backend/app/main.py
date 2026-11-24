@@ -101,6 +101,9 @@ from .visual_models_api import router as visual_models_router
 app.include_router(visual_models_router)
 from .point_detect_api import first_frame_spec, router as point_detect_router
 app.include_router(point_detect_router)
+from . import character_registration, web_search_api
+app.include_router(character_registration.router)
+app.include_router(web_search_api.router)
 from .review_report import CUT_FLAGS, router as review_router
 app.include_router(review_router)
 from .cut_needs import router as cut_needs_router
@@ -327,9 +330,7 @@ class AssignVoiceInput(BaseModel):
     character_context_id: str = Field(min_length=1, description="The character who speaks it.")
 
 
-class VoiceRange(BaseModel):
-    start_time: float = Field(ge=0, allow_inf_nan=False)
-    end_time: float = Field(gt=0, allow_inf_nan=False)
+VoiceRange = audio_ranges.VoiceRange
 
 
 class VoiceSampleInput(BaseModel):
@@ -523,6 +524,8 @@ def delete_context(context_id: str):
         structured_results.invalidate_context(conn, item['project_id'], item['episode_id'])
     for sample in samples:
         media.voice_reference_path(item['project_id'], sample['id']).unlink(missing_ok=True)
+    from . import registration_images
+    registration_images.unlink(registration_images.thumbnail(item["project_id"], context_id))
     return {"ok": True}
 
 
@@ -1155,12 +1158,14 @@ def list_episode_subtitles(episode_id: str, history: bool = False):
 
 
 @app.get("/api/projects/{project_id}/voice-samples", responses={200: {"model": list[VoiceSample]}})
-def list_voice_samples(project_id: str):
+def list_voice_samples(project_id: str, character_context_id: str | None = None):
     """List character voice references in the project and whether their audio is available."""
     require_project(project_id)
-    samples = db.all_rows("""SELECT v.id,v.character_context_id,v.episode_id,v.start_time,v.end_time,v.ranges_json,v.source_filename,v.model_id,v.created_at,
+    character_filter = ' AND v.character_context_id=?' if character_context_id else ''
+    args = (project_id, character_context_id) if character_context_id else (project_id,)
+    samples = db.all_rows(f"""SELECT v.id,v.character_context_id,v.episode_id,v.start_time,v.end_time,v.ranges_json,v.source_filename,v.model_id,v.created_at,
         e.title AS episode_title FROM character_voice_samples v JOIN context_items c ON c.id=v.character_context_id
-        LEFT JOIN episodes e ON e.id=v.episode_id WHERE c.project_id=? ORDER BY v.created_at DESC""", (project_id,))
+        LEFT JOIN episodes e ON e.id=v.episode_id WHERE c.project_id=?{character_filter} ORDER BY v.created_at DESC""", args)
     for sample in samples:
         sample['ranges'] = json.loads(sample.pop('ranges_json')) if sample['ranges_json'] else ([] if sample['source_filename'] else [{'start_time': sample['start_time'], 'end_time': sample['end_time']}])
         sample['preview_available'] = media.voice_reference_path(project_id, sample['id']).is_file() or bool(sample['episode_id'] and sample['ranges'] and (media.episode_dir(project_id, sample['episode_id']) / 'audio.wav').is_file())
@@ -3219,6 +3224,7 @@ async def get_cut_frame(cut_id: str, position: Literal["first", "last"], request
 
 
 app.include_router(external_router)
+
 
 static_dir = Path(os.environ.get("STATIC_DIR", Path(__file__).resolve().parent.parent / "static"))
 if static_dir.is_dir():

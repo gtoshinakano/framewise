@@ -1,11 +1,18 @@
-"""Episode ranges excluded from speech processing."""
+"""Episode audio ranges and the interval shape used by voice samples."""
 import hashlib
 import json
 import tempfile
 import uuid
 from pathlib import Path
 
+from pydantic import BaseModel, Field
+
 from . import db, media
+
+
+class VoiceRange(BaseModel):
+    start_time: float = Field(ge=0, allow_inf_nan=False)
+    end_time: float = Field(gt=0, allow_inf_nan=False)
 
 
 def rows(conn, episode_id, *, user_only=False):

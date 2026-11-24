@@ -915,7 +915,7 @@ def answer_target(conn, escalation_id, *, frames, tier='human', run_id=None, not
     return {'decisions': [d for d in done if d], 'resolved': True}
 
 
-def create_character(conn, detection_id, request):
+def create_character(conn, detection_id, request, *, character_id=None, describe=True):
     """Create a project character, label this box with it (the person's own label) and queue its profile description.
 
     Shared by ``POST /api/character-detections/{id}/new-character`` and the inbox's answer to an unknown person.
@@ -936,7 +936,7 @@ def create_character(conn, detection_id, request):
         WHERE j.episode_id=? AND j.pipeline='character_profile' AND j.status IN ('queued','running')
         AND json_extract(j.payload_json,'$.detection_id')=? AND json_extract(j.payload_json,'$.creation')=json(?) LIMIT 1""",
                             (detection_id, row['episode_id'], detection_id, json.dumps(request, ensure_ascii=False))).fetchone()
-    if existing:
+    if existing and character_id is None:
         character = dict(conn.execute('SELECT * FROM context_items WHERE id=?', (existing['character_id'],)).fetchone())
         return {'character': character, 'job_id': existing['id']}
     # Sequences link subjects to records by name, so two characters must not share one.
@@ -944,12 +944,14 @@ def create_character(conn, detection_id, request):
         raise Refused("Names of the form 'Unregistered N' are reserved for Unregistered cards", 400)
     if conn.execute("SELECT 1 FROM context_items WHERE project_id=? AND kind='character' AND lower(trim(title))=lower(?)", (row['project_id'], title)).fetchone():
         raise Refused(f'A character named “{title}” already exists in this project', 409)
-    character_id = str(uuid.uuid4())
+    character_id = character_id or str(uuid.uuid4())
     conn.execute("INSERT INTO context_items (id,project_id,episode_id,kind,title,content,is_main) VALUES (?,?,?,'character',?,?,?)",
                  (character_id, row['project_id'], row['episode_id'] if request['episode_only'] else None, title, request['content'], int(request['is_main'])))
     conn.execute("UPDATE character_detections SET character_context_id=?,label_source='manual',match_reason=NULL,match_model_id=NULL,match_model_revision=NULL,gallery_status=NULL,gallery_note=NULL WHERE id=?", (character_id, detection_id))
     structured_results.opening_box_edited(conn, row['run_id'], row['position'])
     structured_results.invalidate_context(conn, row['project_id'], row['episode_id'] if request['episode_only'] else None)
+    if not describe:
+        return {'character': dict(conn.execute('SELECT * FROM context_items WHERE id=?', (character_id,)).fetchone()), 'job_id': None}
     from . import visual_models
     payload = {'detection_id': detection_id, 'character_context_id': character_id, 'cut_id': row['cut_id'], 'creation': request,
                'models': visual_models.snapshot(conn, ('character_profile',))}
