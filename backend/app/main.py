@@ -5,6 +5,7 @@ import json
 import math
 import mimetypes
 import os
+import tempfile
 import re
 import shutil
 import time
@@ -3229,6 +3230,32 @@ async def get_cut_frame(cut_id: str, position: Literal["first", "last"], request
     first, last = media.cut_frame_times(cut['start_time'], cut['end_time'])
     timestamp = saved if saved is not None else first if position == 'first' else last
     return await rendered_frame({'source': source, 'time': timestamp, 'start': cut['start_time'], 'end': cut['end_time'], 'width': 480, 'last': position == 'last' and saved is None, 'seek_tolerance': .000002, 'probe_padding': 1 if position == 'last' and saved is None else 0}, target, episode['id'], request)
+
+
+@app.get("/api/cuts/{cut_id}/clip", response_class=Response,
+         responses={200: {"content": {"video/mp4": {"schema": {"type": "string", "format": "binary"}}}, "description": "The cut's own frames and audio"},
+                    404: {"description": "Cut or source video not found"}})
+async def download_cut_clip(cut_id: str):
+    """Download exactly this cut (no frame of a neighbouring cut) as an MP4, cut from the original video."""
+    cut = db.one("SELECT * FROM cuts WHERE id=?", (cut_id,))
+    if not cut:
+        raise HTTPException(404, "Cut not found")
+    episode = require_episode(cut["episode_id"])
+    path = media.episode_dir(episode["project_id"], episode["id"])
+    source = path / f"original{episode['original_ext']}"
+    if not source.is_file():
+        source = path / 'proxy.mp4'
+    if not source.is_file():
+        raise HTTPException(404, "The source video is unavailable")
+    fd, name = tempfile.mkstemp(suffix='.mp4', prefix='cut-clip-')
+    os.close(fd)
+    output = Path(name)
+    try:
+        await asyncio.to_thread(media.export_cut, source, output, cut['start_time'], cut['end_time'])
+    except (RuntimeError, ValueError) as exc:
+        output.unlink(missing_ok=True)
+        raise HTTPException(500, f"Could not cut the clip: {str(exc)[-300:]}")
+    return FileResponse(output, media_type='video/mp4', filename=f"cut-{cut['cut_index'] + 1}.mp4", background=BackgroundTask(output.unlink, missing_ok=True))
 
 
 app.include_router(external_router)

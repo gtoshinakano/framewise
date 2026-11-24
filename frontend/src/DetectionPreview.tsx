@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { FrameImage } from './FrameImage'
-import { Download, Eye, EyeOff, ScanEye, X } from 'lucide-react'
+import { Download, Eye, Film, EyeOff, ScanEye, X } from 'lucide-react'
 import { cutFrameUrl, type AnalysisResult, type Cut } from './api'
 
 type Detection = { type: string; coords: number[] }
@@ -72,6 +72,7 @@ export function FrameTools({ cut, results, frameVersion, onPreview }: { cut: Cut
   return <div className="absolute right-2 top-2 z-10 flex gap-0.5 rounded-md bg-black/70 p-0.5">
     <button type="button" onClick={onPreview} className={button} title="Preview analyzed frames and detections" aria-label="Preview analyzed frames and detections"><ScanEye size={15} aria-hidden /></button>
     <a href={target.href} download={target.filename} className={button} title="Download analyzed frame" aria-label="Download analyzed frame"><Download size={15} aria-hidden /></a>
+    {cut.active && <a href={`/api/cuts/${cut.id}/clip`} download={`cut-${cut.cut_index + 1}.mp4`} className={button} title="Download video of this cut (only its own frames, with audio; preparing it can take a moment)" aria-label="Download video"><Film size={15} aria-hidden /></a>}
   </div>
 }
 

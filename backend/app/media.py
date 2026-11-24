@@ -382,6 +382,43 @@ def cut_clip(source: Path, output: Path, start: float, end: float, height: int =
          '-vf', f"scale=w=-2:h='min(ih,{height})'", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(output)], timeout)
 
 
+def video_frame_rate(source: Path) -> tuple[float, str]:
+    """(seconds one frame of the first video stream lasts, its rate as a fraction); (0, '') when unknown."""
+    try:
+        data = json.loads(run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate,r_frame_rate', '-of', 'json', str(source)], timeout=30).stdout)
+        stream = data['streams'][0]
+        for key in ('avg_frame_rate', 'r_frame_rate'):
+            num, _, den = str(stream.get(key) or '0/1').partition('/')
+            rate = float(num) / float(den or 1)
+            if rate > 0:
+                return 1 / rate, f'{num}/{den or 1}'
+    except (KeyError, IndexError, ValueError, ZeroDivisionError, TypeError):
+        pass
+    return 0.0, ''
+
+
+def export_cut(source: Path, output: Path, start: float, end: float, timeout: float | None = 900):
+    """The exact frames of the cut ``[start, end)`` with its audio, re-encoded as MP4.
+
+    ``start`` is the presentation time of the cut's first frame and ``end`` that of the next cut's first frame, so the
+    video is trimmed half a frame early on both sides: that keeps every frame of the cut and none of its neighbours,
+    whatever the key-frame spacing or rounding of the stored times. Audio is trimmed at the exact times.
+    """
+    if end <= start:
+        raise ValueError('The cut interval is empty')
+    frame, rate = video_frame_rate(source)
+    frame = frame or min(0.04, (end - start) / 2)
+    half = frame / 2
+    seek = max(0.0, start - 2.0)
+    lo, hi = start - seek, end - seek
+    run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', f'{seek:.6f}', '-i', str(source),
+         '-map', '0:v:0', '-map', '0:a:0?',
+         '-vf', f'trim=start={max(0.0, lo - half):.6f}:end={hi - half:.6f},setpts=PTS-STARTPTS' + (f',fps={rate}' if rate else ''),  # fps: the MP4 muxer drops the last frame of a trimmed stream otherwise
+         '-af', f'atrim=start={lo:.6f}:end={hi:.6f},asetpts=PTS-STARTPTS',
+         '-c:v', 'libx264', '-preset', 'fast', '-crf', '17', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+         '-movflags', '+faststart', str(output)], timeout)
+
+
 def write_wav_ranges(audio: Path, ranges: list[dict], target):
     """The ranges of a WAV (episode seconds) one after another, written to a path or a binary file object. Raises ValueError for a range outside the audio."""
     with wave.open(str(audio), 'rb') as source, wave.open(target if not isinstance(target, Path) else str(target), 'wb') as out:
