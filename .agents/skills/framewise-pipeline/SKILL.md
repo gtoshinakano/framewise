@@ -58,7 +58,7 @@ server needs a rebuild, tell the user to do it on chopper.
 
 ## Run it
 
-Preferred: `scripts/fw drive EP` (add `--language Japanese` if setup asks for the subtitle language). It queues the next
+Preferred: `scripts/fw drive EP` (subtitles are optional: setup never asks for their language). It queues the next
 step, waits for the queue, and repeats until it reaches a checkpoint or the end. It needs no model calls while it waits,
 so start it in the background and read its output when it exits. It can run for hours.
 

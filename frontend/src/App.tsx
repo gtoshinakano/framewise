@@ -39,7 +39,7 @@ import { InboxDrawer } from './InboxDrawer'
 import { elsewhereText, mineCount, type InboxCounts } from './inboxView'
 import type { QueueSummary } from './queueView'
 import { EpisodeSettingsDialog } from './EpisodeSettingsDialog'
-import { PrepareEpisodeDialog } from './PrepareEpisodeDialog'
+import { RunMultipleDialog } from './RunMultipleDialog'
 import { IconButton } from './EditorUi'
 import { useCutEdits } from './useCutEdits'
 import { useEditorShortcuts } from './useEditorShortcuts'
@@ -264,7 +264,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const [outfitsOpen, setOutfitsOpen] = useState(false)
   const [autopilotOpen, setAutopilotOpen] = useState(false)
   const [audioRange, setAudioRange] = useState<(Pick<EpisodeAudioRange, 'start_time' | 'end_time' | 'kind'> & { id?: string }) | null>(null)
-  const [prepareOpen, setPrepareOpen] = useState(false)
+  const [runMultiple, setRunMultiple] = useState<false | { stage?: 'prepare' }>(false)
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
   // The queue drawer, opened at the top or at Needs attention.
   const [queueOpen, setQueueOpen] = useState<false | 'top' | 'attention'>(false)
@@ -502,7 +502,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
     catch (reason) { fail(reason) }
     finally { setCapturing(false) }
   }
-  useEditorShortcuts(!!episode && !registration && !capturing && !analysisOpen && !sequenceOpen && !settingsOpen && !glossaryOpen && !outfitsOpen && !matcherOpen && !autopilotOpen && !inboxOpen && !audioRange && !prepareOpen && !queueOpen, {
+  useEditorShortcuts(!!episode && !registration && !capturing && !analysisOpen && !sequenceOpen && !settingsOpen && !glossaryOpen && !outfitsOpen && !matcherOpen && !autopilotOpen && !inboxOpen && !audioRange && !runMultiple && !queueOpen, {
     playPause: togglePlay, split, undo, redo, previous: () => step(-1), next: () => step(1),
     nextNeeding: () => { if (!episode) return; const next = nextNeedingAction(episode.cuts, selectedId, cutFilters.active, needs); if (next) selectCut(next) },
     clearSelection: range ? () => setRangeToId(null) : undefined,
@@ -526,7 +526,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
     <EditorHeader projectId={episode?.project_id} projectTitle={project?.title} episodeTitle={episode?.title} status={episode?.status || 'queued'} stage={episode?.stage}
       hasCuts={!!episode?.cuts.length} mediaBlocked={mediaRequest ? 'Queuing…' : ''} characterBlock={characterBlock} onCharacterStep={step => void queueCharacterStep(step)}
       onDetectCuts={() => void run('hardcuts')} onPrepare={() => void run('prepare')}
-      onPrepareEpisode={() => setPrepareOpen(true)}
+      onRunMultiple={stage => setRunMultiple({ stage })}
       queue={queueSummary} running={jobs.some(job => job.status === 'running')} onOpenQueue={focus => setQueueOpen(focus || 'top')}
       inbox={{ mine: mineCount(inboxCounts, id), elsewhere: elsewhereText(inboxCounts, id) }} onOpenInbox={() => setInboxOpen(true)}
       onOpenSettings={() => setSettingsOpen(true)} onOpenGlossary={() => setGlossaryOpen(true)} onOpenOutfits={() => setOutfitsOpen(true)} onOpenMatcher={() => setMatcherOpen(true)} onEditCharacter={() => setRegistration('edit')} onOpenAutopilot={() => setAutopilotOpen(true)} onDeleteEpisode={() => void remove()} />
@@ -555,7 +555,7 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
           onCopy={text => { void navigator.clipboard?.writeText(text).then(() => toast({ message: `Copied ${text}`, duration: 2000 })).catch(() => {}) }} />
           : <div className="p-8 text-center"><div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[#282438] text-[#bca7ff]"><Scissors size={21} /></div><h2 className="text-sm font-semibold">Select a cut</h2><p className="muted mt-2 text-xs leading-5">Choose a segment in the timeline or the cut list to see its notes, frames and timing.</p></div>
         : activeTab === 'chunk' ? <ChunkInspector chunk={selectedChunk} onPlay={playRange} onSave={saveChunk} />
-        : activeTab === 'audio' ? <TranscriptEditor transcriptStale={episode.transcript_stale_reason} attributionStale={episode.speaker_attribution_stale_reason} hasAudio={episode.has_audio} subtitleLanguage={episode.subtitle_language} subtitleRun={episode.subtitles.run} jobs={jobs} episodeId={id} projectId={episode.project_id} duration={duration} playhead={playhead} segments={transcript} selectedId={selectedTranscriptId} onSelect={setSelectedTranscriptId} onSaved={refresh} playRange={playRange} audioSelection={audioSelection} onAudioSelection={selectAudio} view={audioView} onViewChange={setAudioView} />
+        : activeTab === 'audio' ? <TranscriptEditor hasAudio={episode.has_audio} subtitleLanguage={episode.subtitle_language} subtitleRun={episode.subtitles.run} jobs={jobs} episodeId={id} projectId={episode.project_id} duration={duration} playhead={playhead} segments={transcript} selectedId={selectedTranscriptId} onSelect={setSelectedTranscriptId} onSaved={refresh} playRange={playRange} audioSelection={audioSelection} onAudioSelection={selectAudio} view={audioView} onViewChange={setAudioView} />
         : <SequencePanel episodeId={id} cuts={episode.cuts} selectedCut={selected} draft={sequenceDraft} sequences={sequences} onChanged={refresh} onOpen={setSequenceOpen} />}
       </aside>
       <nav className="editor-rail" aria-label="Inspector">
@@ -590,8 +590,8 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
     {episode && autopilotOpen && <AutopilotProfileDialog projectId={episode.project_id} onClose={() => setAutopilotOpen(false)} />}
     {episode && audioRange && <AudioRangeDialog episodeId={id} initial={audioRange} duration={duration} playhead={playhead} onClose={() => setAudioRange(null)} onSaved={refresh} />}
     {episode && settingsOpen && <EpisodeSettingsDialog episode={episode} initial={episode.settings} onSave={saveSettings} onDelete={() => void remove()} onClose={closeSettings} />}
-    {episode && prepareOpen && <PrepareEpisodeDialog episodeId={id} savedLanguage={episode.subtitle_language} onClose={() => setPrepareOpen(false)}
-      onQueued={queued => { setPrepareOpen(false); if (queued) setQueueOpen('top'); toast({ message: queued ? 'Episode preparation queued.' : 'Episode preparation is already complete.' }); void refresh() }} />}
+    {episode && runMultiple && <RunMultipleDialog episodeId={id} cuts={episode.cuts} subtitleLanguage={episode.subtitle_language} initialStage={runMultiple.stage}
+      onClose={() => setRunMultiple(false)} onOpenInbox={() => setInboxOpen(true)} onChanged={() => { void refresh(); loadInboxCounts() }} />}
   </div></EpisodeEventsContext.Provider>
 }
 

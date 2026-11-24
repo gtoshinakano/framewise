@@ -1,4 +1,4 @@
-"""Autopilot M2: the missed-cut checker (scores, verdicts, the job, splits, questions, answers and undo)."""
+"""Autopilot M2: the missed-cut checker (scores, verdicts, the job, splits, undo). It never asks (HARNESS.md D37)."""
 import json
 import shutil
 import subprocess
@@ -132,9 +132,13 @@ class JobTest(unittest.TestCase):
         self.assertEqual(job['status'], 'done', job['error'])
         return job_id, checked
 
-    def test_splits_the_sure_peaks_asks_about_the_rest_and_skips_cuts_with_analysis_off(self):
-        _, checked = self.run_job({0: {'verdict': 'apply', 'split_at': [1.5, 2.5], 'grey': []},
-                                   4: {'verdict': 'grey', 'split_at': [], 'grey': [6.0]}})
+    def result(self, job_id):
+        with db.connect() as conn:
+            return json.loads(conn.execute('SELECT payload_json FROM jobs WHERE id=?', (job_id,)).fetchone()[0])['result']
+
+    def test_splits_the_sure_peaks_counts_the_rest_and_skips_cuts_with_analysis_off(self):
+        job_id, checked = self.run_job({0: {'verdict': 'apply', 'split_at': [1.5, 2.5], 'grey': []},
+                                        4: {'verdict': 'grey', 'split_at': [], 'grey': [6.0]}})
         self.assertEqual([call.args[3] for call in checked.call_args_list], [0, 4])  # c3 has analysis off
         cuts = self.active()
         self.assertEqual([(start, end) for _, _, start, end in cuts], [(0, 1.5), (1.5, 2.5), (2.5, 4), (4, 8), (8, 12)])
@@ -148,16 +152,18 @@ class JobTest(unittest.TestCase):
         self.assertEqual([row['action'] for row in edits], ['split', 'split'])
         self.assertTrue(previews)
         self.assertEqual(checks, {'c1': 'apply', 'c2': 'grey'})
-        questions = self.client.get('/api/episodes/e/escalations', params={'reviewer': 'claude'}).json()['items']
-        self.assertEqual([(item['kind'], item['evidence']['time'], item['evidence']['strip'].split('?')[0]) for item in questions],
-                         [('missed_cut', 6.0, '/api/cuts/c2/missed-cut-strip')])
+        # The doubtful peak is only counted: no question for Claude or the person, nothing holds a cut
+        self.assertEqual(self.client.get('/api/episodes/e/escalations').json()['items'], [])
+        result = self.result(job_id)
+        self.assertEqual((result['split'], result['doubtful'], result['split_cuts']), (2, 1, ['c1', [row for row in cuts if row[2] == 1.5][0][0]]))
         report = self.client.get('/api/episodes/e/missed-cuts').json()
         self.assertEqual(len(report['splits']), 2)
         self.assertEqual(report['counts']['analysis_off'], 1)
-        # A second run skips cuts it already checked with these boundaries and never asks the same peak twice.
+        self.assertNotIn('questions', report)
+        # A second run skips cuts it already checked with these boundaries
         _, checked = self.run_job({4: {'verdict': 'grey', 'split_at': [], 'grey': [6.0]}})
         self.assertEqual(sorted(call.args[3] for call in checked.call_args_list), [0, 1.5, 2.5])  # the split pieces have new bounds
-        self.assertEqual(len(self.client.get('/api/episodes/e/escalations').json()['items']), 1)
+        self.assertEqual(self.client.get('/api/episodes/e/escalations').json()['items'], [])
 
     def test_undo_merges_the_pieces_back_and_refuses_after_a_person_changed_them(self):
         self.run_job({0: {'verdict': 'apply', 'split_at': [1.5, 2.5], 'grey': []}})
@@ -187,46 +193,29 @@ class JobTest(unittest.TestCase):
         skips = [call.kwargs.get('skip') for call in checked.call_args_list]
         self.assertTrue(skips and all(2.0 in skip for skip in skips))
 
-    def test_splitting_the_cut_by_hand_closes_its_question(self):
-        self.run_job({4: {'verdict': 'grey', 'split_at': [], 'grey': [6.0]}})
-        self.assertEqual(len(self.client.get('/api/episodes/e/escalations').json()['items']), 1)
-        self.assertEqual(self.client.post('/api/cuts/c2/split', json={'time': 6.0}).status_code, 200)
-        self.assertEqual(self.client.get('/api/episodes/e/escalations').json()['items'], [])
+    def test_a_peak_asked_about_before_d37_is_never_split(self):
         with db.connect() as conn:
-            self.assertEqual(conn.execute("SELECT status FROM agent_escalations WHERE kind='missed_cut'").fetchone()[0], 'resolved')
+            conn.execute("""INSERT INTO agent_escalations(id,episode_id,kind,group_key,question,evidence_json,status)
+                VALUES ('old','e','missed_cut','peak:6.000','?','{"time": 6.0}','dismissed')""")
+        _, checked = self.run_job({})
+        self.assertTrue(all(6.0 in call.kwargs.get('skip') for call in checked.call_args_list))
 
-    def test_sequenced_cuts_and_ask_mode_go_to_a_person(self):
+    def test_sequenced_cuts_are_never_split_and_ask_reads_as_apply(self):
         with db.connect() as conn:
             conn.execute("""INSERT INTO sequences(id,episode_id,title,first_cut_id,last_cut_id,cuts_json,start_time,end_time)
                 VALUES ('s','e','S','c2','c2','[{"id":"c2"}]',4,8)""")
-        self.run_job({0: {'verdict': 'apply', 'split_at': [2.0], 'grey': []}, 4: {'verdict': 'apply', 'split_at': [6.0], 'grey': [7.0]}})
+        job_id, _ = self.run_job({0: {'verdict': 'apply', 'split_at': [2.0], 'grey': []}, 4: {'verdict': 'apply', 'split_at': [6.0], 'grey': [7.0]}})
         self.assertEqual([(start, end) for _, _, start, end in self.active()][:3], [(0, 2.0), (2.0, 4), (4, 8)])
-        people = self.client.get('/api/episodes/e/escalations', params={'reviewer': 'human'}).json()['items']
-        self.assertEqual(sorted(item['evidence']['time'] for item in people), [6.0, 7.0])
-        self.assertEqual(self.client.get('/api/episodes/e/escalations', params={'reviewer': 'claude'}).json()['items'], [])
-        claude_try = self.client.post(f"/api/escalations/{people[0]['id']}/missed-cut", json={'answer': 'split', 'tier': 'claude'})
-        self.assertEqual(claude_try.status_code, 409)
-        self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'missed_cuts': 'ask'}}})
+        self.assertEqual(self.client.get('/api/episodes/e/escalations').json()['items'], [])
+        result = self.result(job_id)
+        self.assertEqual((result['split'], result['in_sequence'], result['doubtful']), (1, 1, 1))
+        saved = self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'missed_cuts': 'ask'}}}).json()
+        self.assertEqual(saved['profile']['modes']['missed_cuts'], 'apply')  # the checker never asks
         self.run_job({2.0: {'verdict': 'apply', 'split_at': [3.0], 'grey': []}})
-        self.assertNotIn(3.0, [start for _, _, start, _ in self.active()])
+        self.assertIn(3.0, [start for _, _, start, _ in self.active()])
+        self.assertEqual(self.client.post('/api/escalations/x/missed-cut', json={'answer': 'split'}).status_code, 404)  # no answer route
         self.client.put('/api/projects/p/autopilot-profile', json={'profile': {'modes': {'missed_cuts': 'off'}}})
         self.assertIsNone(self.client.post('/api/episodes/e/missed-cuts', json={}).json()['job_id'])
-
-    def test_answers_split_close_or_hand_to_the_person(self):
-        self.run_job({0: {'verdict': 'grey', 'split_at': [], 'grey': [1.0, 2.0, 3.0]}})
-        items = {item['evidence']['time']: item['id'] for item in self.client.get('/api/episodes/e/escalations').json()['items']}
-        split = self.client.post(f'/api/escalations/{items[1.0]}/missed-cut', json={'answer': 'split', 'tier': 'claude'}).json()
-        self.assertEqual(split['status'], 'resolved')
-        with db.connect() as conn:
-            self.assertEqual(conn.execute('SELECT tier FROM agent_decisions WHERE id=?', (split['decision_id'],)).fetchone()[0], 'claude')
-        self.assertIn(1.0, [start for _, _, start, _ in self.active()])
-        self.assertEqual(self.client.post(f'/api/escalations/{items[2.0]}/missed-cut', json={'answer': 'no_cut', 'tier': 'claude'}).json()['status'], 'resolved')
-        handed = self.client.post(f'/api/escalations/{items[3.0]}/missed-cut', json={'answer': 'unsure', 'tier': 'claude', 'note': 'a dissolve?'}).json()
-        self.assertEqual(handed['status'], 'handed_to_person')
-        open_items = self.client.get('/api/episodes/e/escalations').json()['items']
-        self.assertEqual([(item['reviewer'], item['evidence']['claude_note']) for item in open_items], [('human', 'a dissolve?')])
-        self.assertEqual(self.client.post(f'/api/escalations/{items[1.0]}/missed-cut', json={'answer': 'split'}).status_code, 409)  # closed
-        self.assertEqual(self.client.post('/api/escalations/missing/missed-cut', json={'answer': 'split'}).status_code, 404)
         self.assertIs(agent_log.UNDO_KINDS['missed_cuts'], missed_cuts.undo_split)
 
     def test_queue_waits_for_cut_detection_and_is_registered(self):

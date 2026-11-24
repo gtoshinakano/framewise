@@ -245,7 +245,7 @@ function QuestionCard({ item, focused, working, onFocus, onChoose, onOpen, onBox
       <li key={box.id}><label className={`flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 ${rejected.has(box.id) ? 'border-[#63363e] text-[#ffb6bc] line-through' : 'hairline'}`}>
         <input type="checkbox" checked={!rejected.has(box.id)} onChange={() => setRejected(current => { const next = new Set(current); if (next.has(box.id)) next.delete(box.id); else next.add(box.id); return next })} />
         B{index + 1} · cut {box.cut}</label></li>)}</ul>}
-    {sheet && <details className="mt-1.5" open={focused && (item.kind === 'missed_cut' || item.kind === 'box_label' || item.kind === 'new_person')}>
+    {sheet && <details className="mt-1.5" open={focused && (item.kind === 'box_label' || item.kind === 'new_person')}>
       <summary className="cursor-pointer text-[#c3aeff]"><ImageIcon size={12} className="mr-1 inline" aria-hidden />Sheet</summary>
       <img src={`/api${sheet}`} alt={`Sheet for: ${item.question}`} loading="lazy" className="mt-1 max-w-full rounded border hairline" />
     </details>}

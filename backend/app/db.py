@@ -269,6 +269,25 @@ def init_db():
             finished_at TEXT
         );
         CREATE INDEX IF NOT EXISTS agent_runs_episode_idx ON agent_runs(episode_id,started_at);
+        -- Run Multiple (batch_runs.py, HARNESS.md D37): one server-side run of a stage (prepare, prepare_cuts, evaluate) that
+        -- queues its steps one after another and keeps, per step, what it queued and what it found. agent_run_id is the
+        -- provenance of what the stage's resolvers applied. At most one running row per episode.
+        CREATE TABLE IF NOT EXISTS batch_runs (
+            id TEXT PRIMARY KEY,
+            episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+            stage TEXT NOT NULL CHECK(stage IN ('prepare','prepare_cuts','evaluate')),
+            status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','finished','failed','cancelled')),
+            agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+            options_json TEXT NOT NULL DEFAULT '{}',
+            steps_json TEXT NOT NULL DEFAULT '[]',
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS batch_runs_episode_idx ON batch_runs(episode_id,created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS batch_runs_running_idx ON batch_runs(episode_id) WHERE status='running';
         CREATE TABLE IF NOT EXISTS agent_decisions (
             id TEXT PRIMARY KEY,
             run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
@@ -878,6 +897,19 @@ def init_db():
                 resolution_json='{"why": "review questions are answered in the cut dialog, not in the inbox"}'
                 WHERE kind='review_question' AND status='open'""")
             db.execute("INSERT INTO app_flags(name) VALUES ('inbox-no-review-questions')")
+        # 2026-11-24 (D37): missed cuts and lines across a hard cut are never asked, automatic audio work and subtitles never
+        # make anything stale. Close the questions and clear the marks the old rules left. "Transcript changed" marks stay:
+        # the person's own edits leave the same reason, so the two causes cannot be told apart.
+        if not db.execute("SELECT 1 FROM app_flags WHERE name='prep-flags-cleanup-v1'").fetchone():
+            db.execute("""UPDATE agent_escalations SET status='dismissed',resolved_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,
+                resolution_json='{"why": "missed cuts and lines across a hard cut are no longer asked (D37)"}'
+                WHERE kind IN ('missed_cut','line_split') AND status='open'""")
+            db.execute("""UPDATE episodes SET transcript_stale_reason=NULL,speaker_attribution_stale_reason=NULL
+                WHERE transcript_stale_reason IS NOT NULL OR speaker_attribution_stale_reason IS NOT NULL""")
+            db.execute("UPDATE subtitle_runs SET stale_reason=NULL WHERE stale_reason IS NOT NULL")
+            for table in ('analysis_results', 'cut_review_drafts', 'sequence_results'):
+                db.execute(f"UPDATE {table} SET stale_reason=NULL WHERE stale_reason='Episode subtitles changed'")
+            db.execute("INSERT INTO app_flags(name) VALUES ('prep-flags-cleanup-v1')")
         db.commit()
 
 

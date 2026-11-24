@@ -69,12 +69,10 @@ export type InboxCounts = { episodes: { episode_id: string; title: string; proje
 
 /** The order questions appear in: the order of an episode's flow (a cut change first). Review questions are never inbox
  * items: they are answered in the cut dialog (docs/autopilot/HARNESS.md D32). */
-export const KIND_ORDER = ['failed_run', 'missed_cut', 'line_split', 'voice', 'new_person', 'box_label', 'target_frame']
+export const KIND_ORDER = ['failed_run', 'voice', 'new_person', 'box_label', 'target_frame']
 
 export const KIND_LABEL: Record<string, string> = {
   failed_run: 'Failed runs',
-  missed_cut: 'Missed hard cuts',
-  line_split: 'Lines across a hard cut',
   voice: 'Unknown voices',
   new_person: 'Unknown people',
   box_label: 'Box names',
@@ -135,16 +133,6 @@ export function choicesFor(item: Escalation): Choice[] {
   const id = item.id
   const evidence = item.evidence ?? {}
   switch (item.kind) {
-    case 'missed_cut':
-      return [
-        { key: 'split', label: 'Split here', tone: 'primary', proposed: item.proposal?.answer === 'split', request: post(id, 'missed-cut', { answer: 'split' }) },
-        { key: 'no_cut', label: 'No cut', request: post(id, 'missed-cut', { answer: 'no_cut' }) },
-      ]
-    case 'line_split':
-      return [
-        { key: 'apply', label: 'Apply', tone: 'primary', proposed: true, request: post(id, 'line-split', { answer: 'apply' }) },
-        { key: 'leave', label: 'Leave the line', request: post(id, 'line-split', { answer: 'leave' }) },
-      ]
     case 'voice': {
       const proposed = item.proposal?.character_context_id
       const candidates: { id: string; name: string }[] = evidence.candidates ?? []
@@ -200,8 +188,6 @@ export function choicesFor(item: Escalation): Choice[] {
 
 /** A sheet image the question has, if any (relative to /api). */
 export function sheetPath(item: Escalation): string | null {
-  const evidence = item.evidence ?? {}
-  if (item.kind === 'missed_cut' && evidence.strip) return String(evidence.strip).replace(/^\/api/, '')
   if (item.kind === 'voice') return `/escalations/${item.id}/voice-sheet`
   if (item.kind === 'box_label' || item.kind === 'new_person') return `/escalations/${item.id}/box-sheet`
   if (item.kind === 'target_frame') return `/escalations/${item.id}/target-sheet`

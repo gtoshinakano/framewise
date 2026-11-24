@@ -6,9 +6,9 @@ const entry = (people = [], steps = [], claude = []) => ({ steps, people: people
 const cut = (index, start, end, overrides = {}) => ({ id: `c${index + 1}`, cut_index: index, active: true, analysis_enabled: true, start_time: start, end_time: end, ...overrides })
 
 test('the first need follows the flow order and the focus keys', () => {
-  const needs = entry(['decisions', 'voice', 'missed_cut'])
-  assert.equal(firstNeed(needs).key, 'missed_cut')
-  assert.equal(firstNeed(needs, new Set(['decisions', 'voice'])).key, 'voice')
+  const needs = entry(['decisions', 'failed_run', 'voice'])
+  assert.equal(firstNeed(needs).key, 'voice')
+  assert.equal(firstNeed(needs, new Set(['decisions', 'failed_run'])).key, 'decisions')
   assert.equal(firstNeed(needs, new Set(['target_frames'])), undefined)
   assert.equal(firstNeed(undefined), undefined)
 })
@@ -17,7 +17,8 @@ test('each need has a place in the analysis dialog', () => {
   assert.deepEqual(placeForNeed('target_frames'), { tab: 'run', section: 'targets', anchor: 'targets' })
   assert.deepEqual(placeForNeed('box_names'), { tab: 'run', section: 'characters', anchor: 'characters' })
   assert.equal(placeForNeed('decisions').anchor, 'decisions')
-  assert.equal(placeForNeed('missed_cut').anchor, 'other-decisions')
+  assert.equal(placeForNeed('failed_run').anchor, 'other-decisions')
+  assert.equal(placeForNeed('voice').anchor, 'voices')
   assert.equal(placeForNeed('failed_run').tab, 'results')
 })
 

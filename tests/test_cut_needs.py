@@ -18,18 +18,19 @@ class CutNeedsTest(unittest.TestCase):
     def people(self, cuts, cut_id):
         return {item['key']: item['count'] for item in cuts[cut_id]['people']}
 
-    def test_a_low_confidence_speaker_is_its_own_need_until_the_person_confirms_it(self):
+    def test_line_state_is_never_a_need_and_confirming_speakers_keeps_the_lines(self):
         with db.connect() as conn:
             conn.execute("INSERT INTO context_items(id,project_id,kind,title,content) VALUES ('who','p','character','Who','')")
             conn.execute("UPDATE transcript_segments SET character_context_id='who',confidence='low',speaker_source='qwen' WHERE episode_id='e' AND superseded_by IS NULL AND deleted=0")
+            conn.execute("UPDATE agent_escalations SET status='resolved' WHERE kind='voice'")
             lines = [dict(row) for row in conn.execute("SELECT * FROM transcript_segments WHERE episode_id='e' AND character_context_id IS NOT NULL AND superseded_by IS NULL AND deleted=0")]
         self.assertTrue(lines)
-        unsure = lambda: sum(self.people(self.needs(), cut).get('speaker_unsure', 0) for cut in ('c1', 'c2', 'c3', 'c4'))
-        self.assertGreaterEqual(unsure(), 1)
+        # Low-confidence speakers are asked once, by Prepare's voice question; with no open question nothing flags them (D37)
+        keys = {item['key'] for cut in self.needs().values() for item in cut['people']}
+        self.assertFalse({'voice', 'speaker_unsure', 'lines_to_check'} & keys)
         answer = self.client.post('/api/episodes/e/transcript/confirm-speakers', json={'segment_ids': [line['id'] for line in lines] + ['missing']}).json()
         self.assertEqual(answer['confirmed'], len(lines))
         self.assertEqual(answer['skipped'], ['missing'])
-        self.assertEqual(unsure(), 0)
         with db.connect() as conn:
             now = [dict(row) for row in conn.execute("SELECT * FROM transcript_segments WHERE episode_id='e' AND character_context_id IS NOT NULL AND superseded_by IS NULL AND deleted=0")]
         self.assertEqual(sorted((row['text'], row['start_time'], row['character_context_id']) for row in now),
@@ -41,10 +42,10 @@ class CutNeedsTest(unittest.TestCase):
 
     def test_gates_checks_and_steps_by_cut(self):
         cuts = self.needs()
-        # The low line without a speaker counts once, as a voice, not also as a line to check.
+        # A voice is a need through its open question: one per voice and cut, whatever the number of lines
         self.assertEqual(self.people(cuts, 'c1'), {'box_names': 1, 'voice': 1})
         self.assertEqual(self.people(cuts, 'c2'), {'target_frames': 2})
-        self.assertEqual(self.people(cuts, 'c3'), {'voice': 2, 'decisions': 2, 'picture_check': 1})
+        self.assertEqual(self.people(cuts, 'c3'), {'voice': 1, 'decisions': 2, 'picture_check': 1})
         self.assertEqual(self.people(cuts, 'c4'), {})
         self.assertIn('first_frame', cuts['c1']['steps'])
         self.assertIn('beats', cuts['c2']['steps'])
@@ -53,13 +54,14 @@ class CutNeedsTest(unittest.TestCase):
 
     def test_escalations_and_answers(self):
         with db.connect() as conn:
-            human = agent_log.escalate(conn, episode_id='e', kind='missed_cut', group_key='m', question='Cut?', cut_ids=['c4'])
+            human = agent_log.escalate(conn, episode_id='e', kind='target_frame', group_key='t', question='Right?', cut_ids=['c4'])
+            agent_log.escalate(conn, episode_id='e', kind='missed_cut', group_key='m', question='Cut?', cut_ids=['c4'])  # left from before D37
             agent_log.escalate(conn, episode_id='e', kind='box_label', group_key='b', question='Ann?', cut_ids=['c1'])
             claude = agent_log.escalate(conn, episode_id='e', kind='review_question', group_key='q', question='Smile?', cut_ids=['c3'], reviewer='claude')
             agent_log.record(conn, episode_id='e', cut_id='c2', kind='box_names', target_table='character_detections', target_id='d2',
                              before={}, after={}, tier='claude')
         cuts = self.needs()
-        self.assertEqual(cuts['c4']['people'], [{'key': 'missed_cut', 'count': 1, 'escalation_ids': [human]}])
+        self.assertEqual(cuts['c4']['people'], [{'key': 'target_frames', 'count': 1, 'escalation_ids': [human]}])
         # The escalation restates the unlabeled box the report already counted.
         self.assertEqual(self.people(cuts, 'c1')['box_names'], 1)
         # Open questions that wait for Claude are Claude's, not the person's.

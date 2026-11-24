@@ -4,7 +4,7 @@ import { Plus, Trash2, X } from 'lucide-react'
 import { api, type ContextItem } from './api'
 import { IconButton, SegmentedControl, Switch } from './EditorUi'
 import {
-  addPair, MODE_OPTIONS, orderCharacters, RELEVANCE_OPTIONS, relevanceOf, removePair, sameProfile, statText, TOPIC_HELP, UNSURE_OPTIONS,
+  addPair, modeOf, modesFor, orderCharacters, RELEVANCE_OPTIONS, relevanceOf, removePair, sameProfile, statText, TOPIC_HELP, UNSURE_OPTIONS,
   withRelevance, type AutopilotProfile, type ProfileResponse, type WhenUnsure,
 } from './autopilotView'
 
@@ -73,7 +73,7 @@ export function AutopilotProfileDialog({ projectId, onClose }: { projectId: stri
       <ul className="divide-y divide-[#333945] rounded-lg border hairline">{Object.entries(data.decisions).map(([key, label]) =>
         <li key={key} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs">
           <span>{label}</span>
-          <SegmentedControl label={label} value={draft.modes[key] ?? 'apply'} options={MODE_OPTIONS}
+          <SegmentedControl label={label} value={modeOf(key, draft.modes[key])} options={modesFor(key)}
             onChange={mode => change({ ...draft, modes: { ...draft.modes, [key]: mode } })} />
         </li>)}
       </ul>

@@ -21,7 +21,7 @@ def report(**changes):
     base = {'episode': {'id': EPISODE['id'], 'subtitle_language': 'Japanese'},
             'setup': {'media': True, 'cuts': True, 'transcript': True, 'subtitles': True, 'boxes': True},
             'gates': {'first_frame': [], 'target_frames': [], 'voices': [], 'decisions': []},
-            'checks': {'speaker_attribution_stale': None},
+            'checks': {},
             'progress': {'cuts': 5, 'enabled': 4, 'boxes_missing': [], 'target_missing': [], 'visual_missing': [], 'beats_missing': [],
                          'consistency_missing': [], 'summary_missing': []},
             'failures': []}
@@ -60,7 +60,7 @@ class FakeApi:
 
 
 def flags(**values):
-    return argparse.Namespace(**{'redo': False, 'save': False, 'language': None, 'replace_manual': False, 'json': False,
+    return argparse.Namespace(**{'redo': False, 'save': False, 'language': None, 'json': False,
                                  'episode': 'Episode 1', 'latest': False, 'range': 'all', **values})
 
 
@@ -116,14 +116,15 @@ class StepTest(unittest.TestCase):
 
     def test_transcribe_range_covers_the_cuts(self):
         self.assertEqual(self.step('transcribe', '2-3'),
-                         [('/api/episodes/ep-1111-2222/transcribe-range', {}, {'start_time': 4.0, 'end_time': 8.0, 'replace_manual': False})])
+                         [('/api/episodes/ep-1111-2222/transcribe-range', {}, {'start_time': 4.0, 'end_time': 8.0})])  # never replaces your lines
         self.assertEqual(self.step('transcribe')[0][0], '/api/episodes/ep-1111-2222/transcribe')
 
     def test_whole_episode_steps_refuse_a_range(self):
         api = FakeApi()
         with self.assertRaises(fw.Failure):
             fw.cmd_step(api, flags(step='setup', range='1-3'))
-        self.assertEqual(self.step('setup'), [('/api/episodes/ep-1111-2222/prepare', {}, {'language': 'Japanese'})])
+        self.assertEqual(self.step('setup', language='Japanese'), [('/api/episodes/ep-1111-2222/prepare', {}, {'language': 'Japanese'})])
+        self.assertEqual(self.step('setup'), [('/api/episodes/ep-1111-2222/prepare', {}, {})])  # subtitles are optional (D37)
 
     def test_a_server_without_ranges_is_refused(self):
         api = FakeApi()
@@ -143,14 +144,11 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(fw.plan(report(), {'running': [{'label': 'Visual', 'status': 'running'}], 'waiting_total': 0})['action'], 'busy')
         self.assertEqual(fw.plan(report(failures=[{'id': 'j'}]), IDLE)['gate'], 'failures')
 
-    def test_setup_needs_a_language(self):
+    def test_setup_never_waits_for_the_optional_subtitles(self):
         missing = report(setup__subtitles=False, episode={'id': 'e', 'subtitle_language': None})
-        self.assertEqual(fw.plan(missing, IDLE)['gate'], 'language')
-        self.assertEqual(fw.plan(missing, IDLE, 'Japanese'), {'action': 'run', 'step': 'setup', 'language': 'Japanese', 'detail': 'missing: subtitles'})
-
-    def test_speaker_attribution_runs_again_unless_it_left_the_reason_itself(self):
-        self.assertEqual(fw.plan(report(checks__speaker_attribution_stale='Name glossary changed'), IDLE)['step'], 'speakers')
-        self.assertEqual(fw.plan(report(checks__speaker_attribution_stale=fw.UNANSWERED_ATTRIBUTION), IDLE)['action'], 'done')
+        self.assertEqual(fw.plan(missing, IDLE)['action'], 'done')
+        missing = report(setup__boxes=False, episode={'id': 'e', 'subtitle_language': None})
+        self.assertEqual(fw.plan(missing, IDLE), {'action': 'run', 'step': 'setup', 'language': None, 'detail': 'missing: boxes'})
 
     def test_order_of_steps_and_checkpoints(self):
         decision = lambda **changes: fw.plan(report(**changes), IDLE)  # noqa: E731
@@ -282,16 +280,13 @@ class AnalysisStatusTest(unittest.TestCase):
     def test_people_and_checks(self):
         gates = {'first_frame': [{'cut': 4, 'cut_id': 'c4', 'unlabeled_boxes': 1}], 'target_frames': [], 'decisions': [{'cut': 5, 'draft': False}],
                  'voices': [{'speaker_label': None, 'lines': 2, 'first_time': 1.0}]}
-        checks = {'speaker_attribution_stale': 'Glossary changed', 'stale_results': [{'cut': 2, 'title': 'x', 'reason': 'y'}, {'cut': 2, 'title': 'z', 'reason': 'y'}],
-                  'lines_to_check': {'count': 3, 'lines': []}}
+        checks = {'stale_results': [{'cut': 2, 'title': 'x', 'reason': 'y'}, {'cut': 2, 'title': 'z', 'reason': 'y'}]}
         status = fw.analysis_status(report(progress=PROGRESS, gates=gates, checks=checks))
         self.assertEqual([(item['key'], item['cuts']) for item in status['person']],
                          [('first_frame', [4]), ('decisions', [5]), ('voices', [])])
         self.assertIn('(no label) (2 lines)', status['person'][2]['text'])
         look = {item['key']: item for item in status['look']}
         self.assertEqual(look['stale_results']['cuts'], [2])
-        self.assertIn('3 transcript line(s)', look['lines_to_check']['text'])
-        self.assertIn('Glossary changed', look['speaker_attribution_stale']['text'])
 
     def test_analysis_command_prints_the_needs_and_the_links(self):
         api = FakeApi(report(progress=PROGRESS))

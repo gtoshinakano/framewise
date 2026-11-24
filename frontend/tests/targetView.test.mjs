@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_TARGET_BOXES, boxesInFrame, canDraw, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, slotChip, slotName, targetQueueMessage, unknownSlots } from '../src/targetView.ts'
+import { MAX_TARGET_BOXES, boxesInFrame, canDraw, frameNeedsReview, framesPerSlot, isJobActive, mergeTargets, slotChip, slotName, unknownSlots } from '../src/targetView.ts'
 
 const slot = (number, overrides = {}) => ({ slot: number, origin: 'first_frame', character_context_id: null, character_name: null, label_source: null, ...overrides })
 const box = (id, frame, slotNumber, source = 'auto') => ({ id, frame_ordinal: frame, slot: slotNumber, box: [0, 0, 10, 10], source })
@@ -50,17 +50,6 @@ test('job status stays visible while the controls are available', () => {
   assert.equal(isJobActive({ id: 'j', status: 'running', stage: '', error: null }), true)
   assert.equal(isJobActive({ id: 'j', status: 'done', stage: '', error: null }), false)
   assert.equal(isJobActive(null), false)
-})
-
-test('a batch queue says what it did and which cuts were left out', () => {
-  const none = { not_evaluated: [], analysis_disabled: [], no_characters: [], up_to_date: [], already_queued: [] }
-  assert.deepEqual(targetQueueMessage({ queued: 3, skipped: { ...none, not_evaluated: [2, 5], up_to_date: [1] } }, 1), {
-    tone: 'success', lines: ['Target-frame characters queued for 3 cuts.', 'Not evaluated yet, evaluate them first: cut 2, 5.', 'Already detected: cut 1.'] })
-  const later = targetQueueMessage({ queued: 1, skipped: none }, 4)
-  assert.equal(later.lines[0], 'Target-frame characters queued for 1 cut from cut 4.')
-  const nothing = targetQueueMessage({ queued: 0, skipped: { ...none, no_characters: Array.from({ length: 10 }, (_, i) => i + 1) } }, 1)
-  assert.equal(nothing.tone, 'warning')
-  assert.equal(nothing.lines[1], 'Marked as having no characters: cut 1, 2, 3, 4, 5, 6, 7, 8 and 2 more.')
 })
 
 test('a colour can be merged into any other, except when it is a separate person in the first frame', () => {

@@ -5,8 +5,9 @@ import { useToast } from './Toasts'
 import { answerEscalation } from './inboxActions'
 import { choicesFor, kindLabel, sheetPath, type Choice, type Escalation } from './inboxView'
 
-/** Questions about this cut that nothing else in the analysis dialog answers: a hard cut the agent may have missed, a line across a hard cut, a failed run. */
-export const OTHER_KINDS = new Set(['missed_cut', 'line_split', 'failed_run'])
+/** Questions about this cut that nothing else in the analysis dialog answers: a failed run. (Missed cuts and lines across a
+ * hard cut are never asked since HARNESS.md D37.) */
+export const OTHER_KINDS = new Set(['failed_run'])
 
 /** "Other decisions for this cut", in the Your answers column: the Inbox's one-click answers for those questions. */
 export function CutEscalations({ escalations, onChanged }: { escalations: Escalation[]; onChanged: () => void }) {

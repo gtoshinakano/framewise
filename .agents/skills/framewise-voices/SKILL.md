@@ -10,7 +10,7 @@ the autopilot (`docs/autopilot/HARNESS.md` M5; rules and replay numbers in `docs
 
 ```
 scripts/fw agent start EP --agent claude-code --purpose "voices"   # groups the changes and the Claude budget (prints RUN)
-scripts/fw voices run EP --run RUN          # one audio-worker job: scores the voices, applies, asks; then: fw wait EP --jobs JOB
+scripts/fw voices run EP --run RUN          # one audio-worker job: scores the voices and applies (never asks); then: fw wait EP --jobs JOB
 scripts/fw voices report EP                 # open voices, what it gave to whom (undo ids), the voice questions with cut links
 scripts/fw voices sheet QUESTION_ID         # three frames over each sample phrase, one JPEG (voice-ID.jpg)
 scripts/fw voices answer QUESTION_ID "Mai" --tier claude --run RUN --note "her mouth moves in P1-P3"
@@ -55,8 +55,10 @@ it `left_unknown`: nothing flags those lines again (voices gate, cut needs, held
 attribution never asks about them. Settling the voice in the app (Unknown voices block, a line's character select or its
 "Don't ask again") closes the question by itself.
 
-A voice is asked **once** (HARNESS.md D29): open lines are lines with no speaker and low-confidence guesses nobody
-decided, both in the same question per voice. When speaker attribution said "other" for a phrase and its cut has exactly
+A voice is asked **once** (HARNESS.md D29, D37): open lines are lines with no speaker and low-confidence guesses nobody
+decided, both in the same question per voice. **Only Prepare's run asks** (`fw prepare EP` queues the resolver with
+`ask`); `fw voices run`, a re-transcription or any later run applies what two signals agree on and only counts the rest
+(`left_unasked` in the report). An agent's speaker marks nothing stale; the person's answer does. When speaker attribution said "other" for a phrase and its cut has exactly
 one Unregistered card boxed, the resolver gives the phrase to that card itself (tier `rules`, undoable).
 
 ## Final report: the links to open

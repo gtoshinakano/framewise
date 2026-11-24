@@ -130,8 +130,10 @@ class JobTest(unittest.TestCase):
                    UNION ALL SELECT s.id,s.parent_id FROM transcript_segments s JOIN up ON s.id=up.parent_id) SELECT id FROM up WHERE parent_id IS NULL),t.id) AS text_id,
                    t.character_context_id,t.speaker_source,t.origin FROM transcript_segments t WHERE t.episode_id='e' AND t.superseded_by IS NULL AND t.deleted=0""")}
 
-    def run_job(self, body=None):
-        job_id = self.client.post('/api/episodes/e/voice-decisions', json=body or {'attribution': False}).json()['job_id']
+    def run_job(self, ask=True):
+        """Queue and run the resolver. ``ask``: queued as Prepare queues it, the only run that may open questions (D37)."""
+        with db.connect() as conn:
+            job_id = vr.queue(conn, 'e', attribution=False, ask=ask)
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='running',lease_owner='test',lease_until=? WHERE id=?", (time.time() + 60, job_id))
         vr.process(job_id, 'test')
@@ -157,7 +159,7 @@ class JobTest(unittest.TestCase):
         with db.connect() as conn:
             stale = conn.execute("SELECT stale_reason FROM analysis_results WHERE id='cs2'").fetchone()[0]
             decision = conn.execute("SELECT * FROM agent_decisions WHERE kind='voices'").fetchone()
-        self.assertEqual(stale, 'Speaker changed')
+        self.assertIsNone(stale)  # an agent's speaker marks nothing stale (D37)
         self.assertEqual((decision['tier'], decision['cut_id']), ('local', 'c1'))
         self.assertIn('picture + voice', decision['summary'])
 
@@ -171,12 +173,25 @@ class JobTest(unittest.TestCase):
 
         # The person settles SPEAKER_01 in the app itself: its question closes on its own.
         self.client.post('/api/episodes/e/transcript/assign-voice', json={'speaker_label': 'SPEAKER_01', 'character_context_id': 'tomoe'})
+        with db.connect() as conn:  # the person's own answer does
+            self.assertTrue(conn.execute("SELECT stale_reason FROM analysis_results WHERE id='cs2'").fetchone()[0])
         open_keys = {item['group_key'] for item in self.client.get('/api/episodes/e/voice-decisions').json()['questions']}
         self.assertNotIn('voice:SPEAKER_01', open_keys)
         self.assertEqual(self.client.post(f"/api/escalations/{questions['voice:SPEAKER_07']['id']}/voice", json={'choice': 'leave'}).json()['status'], 'left_unknown')
         self.run_job()  # a voice the person left unknown is never asked again
         open_keys = {item['group_key'] for item in self.client.get('/api/episodes/e/voice-decisions').json()['questions']}
         self.assertNotIn('voice:SPEAKER_07', open_keys)
+
+    def test_only_the_run_prepare_queues_asks(self):
+        result = self.run_job(ask=False)  # a later run (a re-transcription, fw voices run) applies and counts the rest
+        self.assertGreaterEqual(result['left_unasked'], 1)
+        self.assertEqual(self.client.get('/api/episodes/e/voice-decisions').json()['questions'], [])
+        self.assertEqual(self.speakers()['a1'][0], 'mai')  # what two signals agree on is still applied
+        with db.connect() as conn:
+            self.assertFalse(json.loads(conn.execute("SELECT payload_json FROM jobs WHERE pipeline='voice_resolver'").fetchone()[0])['ask'])
+        queued = self.client.post('/api/episodes/e/voice-decisions', json={}).json()['job_id']  # fw voices run never asks either
+        with db.connect() as conn:
+            self.assertFalse(json.loads(conn.execute('SELECT payload_json FROM jobs WHERE id=?', (queued,)).fetchone()[0])['ask'])
 
     def test_undo_and_a_person_override(self):
         self.run_job()

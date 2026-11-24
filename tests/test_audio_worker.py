@@ -244,12 +244,13 @@ class RangeRerunTests(AudioWorkerCase):
         self.assertEqual(db.one('SELECT status,stage FROM jobs WHERE id=?', (job,))['stage'], 'Complete · 1 new, 1 replaced, 1 edited by hand kept')
         self.assertEqual(db.one('SELECT status FROM jobs WHERE id=?', (job,))['status'], 'done')
 
-    def test_replace_manual_also_replaces_hand_edited_lines_but_keeps_history(self):
+    def test_hand_edited_lines_are_kept_even_by_an_old_request_to_replace_them(self):
+        # Before D37 a range could replace the person's lines; a job queued then keeps them now, like every other run
         job, _clipped = self.run_range(replace_manual=True)
         current = self.current()
-        self.assertEqual(sorted(row['text'].strip() for row in current.values()), ['After', 'Before', 'Hello.', 'there'])
-        self.assertIsNotNone(db.one("SELECT superseded_by FROM transcript_segments WHERE id='hand'")['superseded_by'])
-        self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job,))['stage'], 'Complete · 2 new, 2 replaced')
+        self.assertEqual(current['hand']['text'], 'Mine')
+        self.assertIsNone(db.one("SELECT superseded_by FROM transcript_segments WHERE id='hand'")['superseded_by'])
+        self.assertEqual(db.one('SELECT stage FROM jobs WHERE id=?', (job,))['stage'], 'Complete · 1 new, 1 replaced, 1 edited by hand kept')
 
     def test_range_restarts_and_preserves_a_revision_made_while_running(self):
         job_id = worker.enqueue('e', 'transcribe', {'range': {'start_time': 4, 'end_time': 8}, 'replace_manual': True})

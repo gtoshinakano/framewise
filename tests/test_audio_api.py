@@ -60,19 +60,21 @@ class AudioApiTests(unittest.TestCase):
         with db.connect() as conn:
             conn.execute("UPDATE episodes SET has_audio=1 WHERE id='e'")
         self.assertEqual(db.one('SELECT COUNT(*) AS n FROM jobs')['n'], 0)
-        response = self.client.post(endpoint, json={'start_time': 2, 'end_time': 10.1, 'replace_manual': True})
+        # A re-transcription never replaces the person's lines, so there is no option to (D37)
+        self.assertEqual(self.client.post(endpoint, json={'start_time': 2, 'end_time': 10.1, 'replace_manual': True}).status_code, 422)
+        response = self.client.post(endpoint, json={'start_time': 2, 'end_time': 10.1})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual((response.json()['start_time'], response.json()['end_time']), (2, 10))
         job = db.one('SELECT * FROM jobs WHERE id=?', (response.json()['job_id'],))
         payload = json.loads(job['payload_json'])
-        self.assertEqual((job['pipeline'], payload['range'], payload['replace_manual']), ('transcribe', {'start_time': 2, 'end_time': 10}, True))
+        self.assertEqual((job['pipeline'], payload['range']), ('transcribe', {'start_time': 2, 'end_time': 10}))
+        self.assertNotIn('replace_manual', payload)
         # An identical range reuses its job, and a different range can wait in the queue.
-        self.assertEqual(self.client.post(endpoint, json={'start_time': 2, 'end_time': 10.1, 'replace_manual': True}).json()['job_id'], job['id'])
+        self.assertEqual(self.client.post(endpoint, json={'start_time': 2, 'end_time': 10.1}).json()['job_id'], job['id'])
         response = self.client.post(endpoint, json={'start_time': 1, 'end_time': 3})
         self.assertEqual(response.status_code, 200)
         self.assertNotEqual(response.json()['job_id'], job['id'])
         self.assertEqual(self.client.post('/api/jobs/' + job['id'] + '/cancel').status_code, 200)
-        self.assertFalse(json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (response.json()['job_id'],))['payload_json'])['replace_manual'])
 
     def test_multiple_ranges_and_upload_validation(self):
         endpoint = '/api/episodes/e/voice-samples'
@@ -247,8 +249,8 @@ class AudioApiTests(unittest.TestCase):
         self.assertEqual(current.status_code, 200)
         self.assertEqual([(row['source'], row['start_time']) for row in current.json()], [('user', 2)])
         self.assertEqual(self.client.delete(f"{path}/{current.json()[0]['id']}").json(), [])
-        self.assertEqual(db.one("SELECT transcript_stale_reason FROM episodes WHERE id='e'")['transcript_stale_reason'],
-                         'Excluded audio ranges changed')
+        # Editing a range never marks the transcript stale: transcription runs once (D37)
+        self.assertIsNone(db.one("SELECT transcript_stale_reason FROM episodes WHERE id='e'")['transcript_stale_reason'])
         self.assertEqual(len(db.all_rows("SELECT 1 FROM episode_audio_ranges WHERE source='user' AND suppressed=1")), 1)
 
     def test_glossary_changes_are_scoped_to_the_project(self):

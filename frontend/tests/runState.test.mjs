@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { activeRunFor, batchCounts, cutStepStates, preflight } from '../src/runState.ts'
+import { activeRunFor, cutStepStates, preflight } from '../src/runState.ts'
 
 const job = (over = {}) => ({ id: 'j1', pipeline: 'analyze', status: 'queued', stage: 'Queued', stages: null, cuts: [{ id: 'c1', completed: false }], ...over })
 const result = (type, extra = {}) => ({ title: 'x', superseded_by: null, settings: { structured_type: type }, ...extra })
@@ -42,11 +42,6 @@ test('preflight explains what is blocking or risky', () => {
   assert.equal(texts.length, 5)
   assert.equal(texts[0].level, 'error')
   assert.match(texts.find(item => /unverified/.test(item.text)).text, /^2 automatic labels are unverified/)
-})
-
-test('batch counts include only active, enabled cuts from here', () => {
-  const cuts = [0, 1, 2, 3].map(index => ({ active: true, cut_index: index, analysis_enabled: index !== 2 })).concat([{ active: false, cut_index: -1, analysis_enabled: true }])
-  assert.deepEqual(batchCounts(cuts, { cut_index: 1 }), { from: 2, all: 3 })
 })
 
 test('a batch message becomes lines and warns when cuts were held back', async () => {

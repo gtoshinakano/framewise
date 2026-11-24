@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Captions } from 'lucide-react'
 import { api, type EpisodeSubtitles, type Job, type SubtitleLine, type SubtitleRun } from './api'
-import { StaleChip } from './RunUi'
 
 export const SUBTITLE_LANGUAGES = ['Portuguese', 'Brazilian Portuguese', 'English', 'Spanish', 'French', 'German', 'Italian', 'Japanese', 'Korean', 'Chinese', 'Russian', 'Arabic', 'Hindi', 'Turkish', 'Indonesian']
 const PAGE = 40
@@ -69,7 +68,6 @@ export default function SubtitlePanel({ episodeId, ready, savedLanguage, run, jo
     {error && <p role="alert" className="text-xs text-[#ff9fa7]">{error}</p>}
     {run && <div className="space-y-1 text-[11px]">
       <p><strong>{run.line_count ?? lines.length} lines</strong> in {run.language}{run.finished_at ? ` · ${new Date(run.finished_at.replace(' ', 'T') + 'Z').toLocaleString()}` : ''}</p>
-      {run.stale_reason && <StaleChip reason={run.stale_reason} />}
       {typeof run.band?.top === 'number' && typeof run.band?.bottom === 'number' && <p className="muted">Subtitle strip at {(run.band.top * 100).toFixed(0)}–{(run.band.bottom * 100).toFixed(0)}% of the frame height{run.band.source === 'default' ? ' (no strip was detected, so the lower third was used)' : ''}.</p>}
       {run.diagnostics?.warning && <p role="alert" className="text-[#f2c879]">{run.diagnostics.warning}</p>}
       <button type="button" className="text-[#e89aab] hover:underline" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? 'Hide lines' : 'Review lines'}</button>

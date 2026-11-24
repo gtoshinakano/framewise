@@ -7,7 +7,7 @@ about HTTP: failures are `LineEditError` with the status the route should answer
 import json
 import uuid
 
-from . import structured_results, subtitle_store
+from . import structured_results
 from .transcript_parts import aligned_words, join_text
 
 MAX_MERGE = 50
@@ -42,7 +42,6 @@ def _current(conn, segment_id):
 
 def _invalidate(conn, episode_id, start, end):
     structured_results.invalidate_transcript(conn, episode_id, start, end)
-    subtitle_store.invalidate_probes(conn, episode_id)
 
 
 def merge(conn, episode_id, segment_ids, text, speaker_label, character_context_id):
@@ -72,11 +71,12 @@ def merge(conn, episode_id, segment_ids, text, speaker_label, character_context_
     return new_id
 
 
-def split(conn, segment_id, at, left_text, right_text, origin='manual_edit'):
+def split(conn, segment_id, at, left_text, right_text, origin='manual_edit', stale=True):
     """Two lines meeting at `at`; the original is superseded by the left one. Returns (left id, right id).
 
     ``origin`` is the revisions' origin: a person's split is ``manual_edit``; the autopilot's line splitter keeps the
-    source line's own origin (``line_splits.py``)."""
+    source line's own origin (``line_splits.py``). ``stale``: a person's split marks the overlapping cuts' text results
+    stale; the automatic splitter's never does (HARNESS.md D37)."""
     row = _current(conn, segment_id)
     if not row['start_time'] < at < row['end_time']:
         raise LineEditError(400, 'Split inside the line')
@@ -96,5 +96,6 @@ def split(conn, segment_id, at, left_text, right_text, origin='manual_edit'):
     _insert(conn, row, left_id, start=row['start_time'], end=at, text=left_text, words=left_words, **common)
     _insert(conn, row, right_id, start=at, end=row['end_time'], text=right_text, words=right_words, **common)
     conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (left_id, row['id']))
-    _invalidate(conn, row['episode_id'], row['start_time'], row['end_time'])
+    if stale:
+        _invalidate(conn, row['episode_id'], row['start_time'], row['end_time'])
     return left_id, right_id

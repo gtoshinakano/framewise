@@ -6,16 +6,15 @@ const item = (kind, extra = {}) => ({ id: `${kind}-1`, episode_id: 'e', run_id: 
   created_at: '', updated_at: '', cut_ids: ['c1'], options: [], proposal: null, evidence: {}, ...extra })
 
 test('questions are grouped in the order of the episode flow', () => {
-  const items = [item('target_frame'), item('mystery'), item('missed_cut'), item('voice'), item('box_label')]
-  assert.deepEqual(groupByKind(items).map(group => group.kind), ['missed_cut', 'voice', 'box_label', 'target_frame', 'mystery'])
-  assert.deepEqual(flatOrder(items).map(entry => entry.kind), ['missed_cut', 'voice', 'box_label', 'target_frame', 'mystery'])
+  const items = [item('target_frame'), item('mystery'), item('failed_run'), item('voice'), item('box_label')]
+  assert.deepEqual(groupByKind(items).map(group => group.kind), ['failed_run', 'voice', 'box_label', 'target_frame', 'mystery'])
+  assert.deepEqual(flatOrder(items).map(entry => entry.kind), ['failed_run', 'voice', 'box_label', 'target_frame', 'mystery'])
   assert.equal(groupByKind([item('mystery_kind')])[0].label, 'Mystery kind')
 })
 
 test('one-click answers per kind carry the request the backend expects', () => {
-  const split = choicesFor(item('missed_cut', { proposal: { answer: 'split' } }))
-  assert.equal(split[0].proposed, true)
-  assert.deepEqual(split[0].request, { path: '/escalations/missed_cut-1/missed-cut', body: { answer: 'split' } })
+  // Missed cuts and lines across a hard cut are never asked any more (D37): an old one only closes
+  assert.deepEqual(choicesFor(item('missed_cut')).map(choice => choice.close), ['resolved', 'dismissed'])
   const voice = choicesFor(item('voice', { proposal: { character_context_id: 'mai' }, evidence: { candidates: [{ id: 'mai', name: 'Mai' }, { id: 'rio', name: 'Rio' }] } }))
   assert.deepEqual(voice.map(choice => choice.label), ['Mai', 'Rio', 'New Unregistered', 'New character', 'Leave unknown'])
   assert.equal(voice[0].proposed, true)
@@ -38,7 +37,7 @@ test('one-click answers per kind carry the request the backend expects', () => {
 })
 
 test('sheets and places', () => {
-  assert.equal(sheetPath(item('missed_cut', { evidence: { strip: '/api/cuts/c1/missed-cut-strip?time=1.5' } })), '/cuts/c1/missed-cut-strip?time=1.5')
+  assert.equal(sheetPath(item('missed_cut', { evidence: { strip: '/api/cuts/c1/missed-cut-strip?time=1.5' } })), null)
   assert.equal(sheetPath(item('box_label')), '/escalations/box_label-1/box-sheet')
   assert.equal(sheetPath(item('failed_run')), null)
   assert.deepEqual(placeFor('target_frame'), { tab: 'run', section: 'targets' })

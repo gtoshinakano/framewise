@@ -4,7 +4,7 @@ import logging
 import uuid
 from bisect import bisect_right
 
-from . import audio_lines, db, job_inputs, name_glossary, speaker_prompt, structured_results, subtitle_store, transcript_names, worker
+from . import audio_lines, db, job_inputs, name_glossary, speaker_prompt, subtitle_store, transcript_names, worker
 
 log = logging.getLogger(__name__)
 
@@ -41,14 +41,8 @@ def inputs(conn, job):
 
 
 def invalidate(conn, job):
-    span = json.loads(job['payload_json']).get('range') or {}
-    structured_results.invalidate_transcript(conn, job['episode_id'], span.get('start_time', 0), span.get('end_time'))
-
-
-def mark_stale(conn, episode_id, reason):
-    conn.execute("""UPDATE episodes SET speaker_attribution_stale_reason=?
-        WHERE id=? AND EXISTS(SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='speaker_attribution' AND status='done')""",
-                 (reason, episode_id, episode_id))
+    """Speaker attribution marks nothing stale (HARNESS.md D37): it only fills in model lines nobody decided, and the
+    results built on the transcript keep their state until the person changes a line themselves."""
 
 
 def insert(conn, episode_id, *, span=None, dependencies=()):
@@ -220,12 +214,6 @@ def process(job_id, owner):
                 evidence['attribution_models'] = models
                 revise(conn, episode_id, job_id, row, text, speaker, source, confidence, evidence)
                 updated += 1
-            if updated:
-                invalidate(conn, job)
-            if not payload.get('range') and not failed_windows:
-                conn.execute('UPDATE episodes SET speaker_attribution_stale_reason=NULL WHERE id=?', (episode_id,))
-            if failed_windows:
-                conn.execute("UPDATE episodes SET speaker_attribution_stale_reason='Some lines could not be attributed' WHERE id=?", (episode_id,))
             stage = f'Complete · {len(speakers)} attributed, {len(fixes)} spelling fixes'
             if failed_windows:
                 stage += f', {len(failed_windows)} unanswered windows'

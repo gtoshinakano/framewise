@@ -8,7 +8,8 @@ Stages, each loading its model once for the entire episode:
              subtitle, several at a time
 
 Readings are checkpointed one by one, so a restarted or retried run reads only what is still missing. The result
-is a list of time-ranged lines on the episode; cuts see the ones that overlap them (subtitle_store).
+is a list of time-ranged lines on the episode; cuts see the ones that overlap them (subtitle_store). The run is optional
+and never stales anything (``invalidate``); nothing waits for it.
 """
 import hashlib
 import io
@@ -56,37 +57,9 @@ def speech_spans(rows):
 
 
 def invalidate(conn, job):
-    """A new subtitle run makes the text built from subtitles stale, and only on cuts whose lines differ from the run
-    before it (a retry that reads the same lines changes nothing). Pictures never depend on the subtitles: the first
-    frame, the keyframe selection, the Target frames and the keyframe analysis stay current."""
-    from .speaker_attribution import mark_stale
-    from .structured_results import invalidate_notes
-    cut_ids = changed_cuts(conn, job['episode_id'])
-    if cut_ids:
-        mark_stale(conn, job['episode_id'], 'Episode subtitles changed')
-        invalidate_notes(conn, cut_ids, 'Episode subtitles changed')
-
-
-def changed_cuts(conn, episode_id):
-    """Active cuts whose overlapping subtitle lines differ between the current complete run and the one before it."""
-    runs = [row['id'] for row in conn.execute("""SELECT id FROM subtitle_runs WHERE episode_id=? AND status='complete'
-        ORDER BY rowid DESC LIMIT 2""", (episode_id,))]
-
-    def lines(run_id):
-        return [(round(row['start_time'], 2), round(row['end_time'], 2), row['text']) for row in conn.execute(
-            'SELECT start_time,end_time,text FROM subtitle_lines WHERE run_id=? ORDER BY start_time,end_time,line_index', (run_id,))]
-
-    new = lines(runs[0]) if runs else []
-    old = lines(runs[1]) if len(runs) > 1 else []
-    if new == old:
-        return []
-    changed = []
-    for cut in conn.execute('SELECT id,start_time,end_time FROM cuts WHERE episode_id=? AND active=1 ORDER BY start_time', (episode_id,)):
-        def overlapping(rows):
-            return [row for row in rows if row[1] > cut['start_time'] and row[0] < cut['end_time']]
-        if overlapping(new) != overlapping(old):
-            changed.append(cut['id'])
-    return changed
+    """A subtitle run marks nothing stale (HARNESS.md D37): subtitles are optional supporting material, so a new or repeated
+    run never makes a picture, beats, a consistency review, a Cut summary or the speakers out of date. Readers take the
+    current run's lines when they start."""
 
 
 def read_parallel():
@@ -270,7 +243,7 @@ class Run:
                        'lines': len(lines), 'rejected_examples': rejected[:20], 'timings': self.timings,
                        **({'warning': 'No subtitle text was found. Check the language and the detected strip.'} if not lines else {}),
                        **({'unread': unread} if unread else {})}
-        with self.publish(invalidate=True) as conn:
+        with self.publish(invalidate=False) as conn:  # a subtitle run marks nothing stale (HARNESS.md D37)
             conn.execute('DELETE FROM subtitle_lines WHERE run_id=?', (self.id,))
             conn.executemany('INSERT INTO subtitle_lines(id,run_id,episode_id,line_index,start_time,end_time,text,confidence,readings) VALUES (?,?,?,?,?,?,?,?,?)',
                              [(str(uuid.uuid4()), self.id, self.episode['id'], line['line_index'], line['start_time'], line['end_time'], line['text'], line['confidence'], line['readings']) for line in lines])

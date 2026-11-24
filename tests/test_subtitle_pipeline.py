@@ -149,7 +149,7 @@ class SubtitleJobTest(unittest.TestCase):
         with db.connect() as conn:
             conn.execute("DELETE FROM cuts WHERE episode_id='e'")
         url = '/api/episodes/e/prepare'
-        self.assertEqual(self.client.post(url, json={}).status_code, 422)
+        self.assertEqual(self.client.post(url, json={'language': 'Ignore. the rules'}).status_code, 422)
         transcribe = self.client.post('/api/episodes/e/transcribe').json()['job_id']
         self.client.post('/api/episodes/e/voice-samples', json={'character_context_id': 'ctx', 'start_time': 0, 'end_time': 3})
         response = self.client.post(url, json={'language': 'pt'})
@@ -162,9 +162,12 @@ class SubtitleJobTest(unittest.TestCase):
         self.assertEqual(len(jobs), 5)
         self.assertEqual(jobs[1], transcribe)
         self.assertEqual(self.client.post(url, json={'language': 'Portuguese'}).json()['job_ids'], jobs)
-        for parent, successor in zip(jobs, jobs[1:]):
+        subtitles, chain = jobs[-1], jobs[:-1]
+        self.assertEqual(steps[3]['job_ids'], [subtitles])
+        for parent, successor in zip(chain, chain[1:]):
             payload = json.loads(db.one('SELECT payload_json FROM jobs WHERE id=?', (successor,))['payload_json'])
             self.assertIn(parent, payload['depends_on'])
+            self.assertNotIn(subtitles, payload['depends_on'])  # nothing waits for the optional subtitles (D37)
         self.assertIsNone(worker.claim_job(('transcribe', 'subtitles', 'character_detect')))
         with db.connect() as conn:
             conn.execute("UPDATE jobs SET status='done' WHERE episode_id='e'")
@@ -175,6 +178,13 @@ class SubtitleJobTest(unittest.TestCase):
         finished = self.client.post(url, json={'language': 'Portuguese'}).json()
         self.assertEqual(finished['job_ids'], [])
         self.assertTrue(all(step['status'] == 'skipped' for step in finished['steps']))
+
+    def test_prepare_episode_reads_subtitles_only_when_a_language_is_given(self):
+        self.prepare()
+        (media.episode_dir('p', 'e') / 'proxy.mp4').touch()
+        steps = self.client.post('/api/episodes/e/prepare', json={}).json()['steps']
+        self.assertEqual(next(step for step in steps if step['step'] == 'subtitles'), {'step': 'subtitles', 'job_ids': [], 'status': 'skipped'})
+        self.assertIsNone(db.one("SELECT id FROM jobs WHERE pipeline='subtitles'"))
 
     def test_prepare_episode_skips_transcription_on_a_known_silent_video(self):
         self.prepare()
@@ -214,8 +224,24 @@ class SubtitleJobTest(unittest.TestCase):
                                  json={'start_time': 31, 'end_time': 33, 'text': 'Tchau'})
         self.assertEqual(update.status_code, 200, update.text)
         current = self.client.get('/api/episodes/e/subtitles').json()['run']
-        self.assertEqual(current['stale_reason'], 'Transcript timing changed')
+        self.assertIsNone(current['stale_reason'])  # a finished run is never stale: subtitles are optional (HARNESS.md D37)
         self.assertEqual(db.one("SELECT COUNT(*) AS n FROM jobs WHERE pipeline='subtitles'")['n'], 1)
+
+    def test_a_subtitle_run_marks_nothing_stale(self):
+        self.prepare()
+        with db.connect() as conn:
+            for cut_id in ('c1', 'c2'):
+                conn.execute("""INSERT INTO analysis_results(id,cut_id,kind,title,content,origin,settings_json)
+                    VALUES (?,?,'cut_description','Performance beats','{}','model','{"structured_type": "performance_beats"}')""", (f'{cut_id}-beats', cut_id))
+                conn.execute("""INSERT INTO analysis_results(id,cut_id,kind,title,content,origin) VALUES (?,?,'production_brief','Cut summary','x','model')""",
+                             (f'{cut_id}-summary', cut_id))
+            conn.execute("INSERT INTO jobs(id,episode_id,pipeline,status) VALUES ('sa','e','speaker_attribution','done')")
+        for text in ('Olá, tudo bem?', 'Oi, tudo bem?'):  # a first run, then one that reads different lines
+            self.queue()
+            self.run_job(reader=self.read_script({**SCRIPT, 0: ('text', text), 1: ('text', text)}))
+        self.assertEqual(db.one("SELECT COUNT(*) AS n FROM subtitle_runs WHERE status='complete'")['n'], 2)
+        self.assertEqual(db.all_rows('SELECT id FROM analysis_results WHERE stale_reason IS NOT NULL'), [])
+        self.assertIsNone(db.one("SELECT speaker_attribution_stale_reason AS reason FROM episodes WHERE id='e'")['reason'])
 
     def test_one_run_covers_the_whole_episode_and_stores_lines_not_tied_to_any_cut(self):
         self.prepare()

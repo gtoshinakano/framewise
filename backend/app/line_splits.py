@@ -16,18 +16,20 @@ aligner's word slots) and the level of ``audio.wav`` around it (``sequence_timel
 * **leave**: no pause near the cut (a phrase bleeding into the next cut is acceptable: the user moves it while building a
   sequence), no word timings, or text that does not follow them.
 
-The job (pipeline ``line_splits``, CPU, media lane) plans every crossing line of the episode, applies the plans in its
-publish transaction (a piece that still crosses another cut is planned again), and logs each change as an agent decision
-of kind ``line_splits`` whose undo restores the original line while the pieces are unchanged. Pieces keep the source
-line's ``origin`` (the words are still the model's or the user's: re-transcription and speaker attribution treat them as
-before); provenance is the decision. Lines inside a sequence's range are left alone (editing them would make the user's
-confirmed dialogue stale) and reported.
+The job (pipeline ``line_splits``, CPU, media lane) runs once, in Prepare. It plans every crossing line of the episode,
+applies the plans in its publish transaction (a piece that still crosses another cut is planned again), and logs each
+change as an agent decision of kind ``line_splits`` whose undo restores the original line while the pieces are unchanged.
+It never asks and never flags (HARNESS.md D37): a line it leaves is reported in its counts only. Applying a change marks
+nothing stale (automatic audio work never does); the person's undo does. Pieces keep the source line's ``origin`` (the
+words are still the model's or the user's: re-transcription and speaker attribution treat them as before); provenance is
+the decision. Lines inside a sequence's range are left alone (editing them would make the user's confirmed dialogue
+stale) and reported.
 """
 import difflib
 import json
 import uuid
 
-from . import agent_log, db, job_inputs, line_edit, media, sequence_timeline, structured_results, subtitle_store, transcript_parts, worker
+from . import agent_log, db, job_inputs, line_edit, media, sequence_timeline, structured_results, transcript_parts, worker
 
 KIND = 'line_splits'
 CROSS = 0.15          # seconds a line must last on both sides of a cut to cross it (HARNESS.md section 3)
@@ -233,12 +235,7 @@ def inputs(conn, job):
 
 
 def invalidate(conn, job):
-    """Each change marks the cuts its line touches stale itself (``_invalidate``)."""
-
-
-def _invalidate(conn, episode_id, start, end):
-    structured_results.invalidate_transcript(conn, episode_id, start, end)
-    subtitle_store.invalidate_probes(conn, episode_id)
+    """Automatic splits and trims mark nothing stale (HARNESS.md D37); only the person's undo does (``undo``)."""
 
 
 PERSON_ORIGINS = ('manual_edit', 'assistant_edit')
@@ -246,8 +243,8 @@ PERSON_ORIGINS = ('manual_edit', 'assistant_edit')
 
 def settled_lines(conn, episode_id):
     """Ids of lines the person already settled, so the splitter never touches them or their later revisions again (the
-    person's last word, HARNESS.md D32): a split or trim of the agent that was undone or overridden, and a question the
-    person answered or dismissed ("Leave it")."""
+    person's last word, HARNESS.md D32): a split or trim of the agent that was undone or overridden, and a question asked
+    before D37 that was answered or dismissed ("Leave it")."""
     found = {row[0] for row in conn.execute("""SELECT target_id FROM agent_decisions WHERE episode_id=? AND kind=?
         AND (undone_at IS NOT NULL OR overridden_at IS NOT NULL)""", (episode_id, KIND))}
     found |= {row[0][len('line:'):] for row in conn.execute("""SELECT group_key FROM agent_escalations WHERE episode_id=? AND kind='line_split'
@@ -264,23 +261,6 @@ def _settled(row, settled, parents):
         seen.add(current)
         current = parents.get(current)
     return False
-
-
-def open_crossings(conn, episode_id):
-    """``[(row, hard cut)]`` of the current lines the splitter would still plan (crossing a cut, outside every sequence,
-    not edited or settled by the person). Reads no audio: the dry run of ``stage_targets``."""
-    starts = cut_starts(conn, episode_id)
-    sequences = sequence_ranges(conn, episode_id)
-    settled = settled_lines(conn, episode_id)
-    parents = dict(conn.execute('SELECT id,parent_id FROM transcript_segments WHERE episode_id=? AND parent_id IS NOT NULL',
-                                (episode_id,)).fetchall()) if settled else {}
-    found = []
-    for row in current_lines(conn, episode_id):
-        crossed = crossings(row, starts)
-        if (crossed and row.get('origin') not in PERSON_ORIGINS and not (settled and _settled(row, settled, parents))
-                and not any(row['start_time'] < end and row['end_time'] > start for start, end in sequences)):
-            found.append((row, crossed[0]))
-    return found
 
 
 def plan_episode(conn, episode_id, lines=None, envelope_for=None):
@@ -330,7 +310,6 @@ def _trim(conn, row, start, end):
                  (new_id, row['episode_id'], start, end, row['text'], row['speaker_label'], row['character_context_id'], row['origin'],
                   row['model_id'], row['job_id'], row['id'], row['words_json'], row['speaker_source'], row['confidence'], row['evidence_json']))
     conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (new_id, row['id']))
-    _invalidate(conn, row['episode_id'], row['start_time'], row['end_time'])
     return new_id
 
 
@@ -346,7 +325,7 @@ def apply_plan(conn, row, cut, plan, *, run_id=None, tier='rules'):
     before = {key: row[key] for key in ('id', 'start_time', 'end_time', 'text')}
     owner = _cut_for(conn, episode_id, cut)
     if plan['action'] == 'split':
-        left_id, right_id = line_edit.split(conn, row['id'], plan['at'], plan['left'], plan['right'], origin=row['origin'])
+        left_id, right_id = line_edit.split(conn, row['id'], plan['at'], plan['left'], plan['right'], origin=row['origin'], stale=False)
         after = {'rows': [{'id': left_id, 'start_time': row['start_time'], 'end_time': plan['at'], 'text': plan['left']},
                           {'id': right_id, 'start_time': plan['at'], 'end_time': row['end_time'], 'text': plan['right']}]}
         summary = f"Split the line at {plan['at']:.2f}s ({plan['why']}): \"{plan['left'][-20:]}\" | \"{plan['right'][:20]}\""
@@ -362,27 +341,10 @@ def apply_plan(conn, row, cut, plan, *, run_id=None, tier='rules'):
     return made
 
 
-def close_settled(conn, episode_id):
-    """Close open line-split questions the person settled in the editor: the line was edited, split, merged or deleted, or
-    it no longer crosses a hard cut."""
-    starts = None
-    closed = 0
-    for item in agent_log.escalations(conn, episode_id, 'open', kind='line_split'):
-        line_id = item['group_key'][len('line:'):] if item['group_key'].startswith('line:') else None
-        row = conn.execute('SELECT * FROM transcript_segments WHERE id=?', (line_id,)).fetchone() if line_id else None
-        if row is None or row['superseded_by'] or row['deleted']:
-            closed += agent_log.close_escalation(conn, item['id'], 'resolved', {'by': 'settled elsewhere', 'why': 'the line was edited'})
-            continue
-        starts = starts if starts is not None else cut_starts(conn, episode_id)
-        if not crossings(dict(row), starts):
-            closed += agent_log.close_escalation(conn, item['id'], 'resolved', {'by': 'settled elsewhere', 'why': 'the line no longer crosses a hard cut'})
-    return closed
-
-
 def publish(conn, episode_id, payload):
     """Plan and apply every crossing (pieces that still cross another cut are planned again). Returns the outcome counts."""
-    policy, run_id = payload.get('policy') or {'mode': 'apply'}, payload.get('run_id')
-    counts = {'split': 0, 'trim': 0, 'leave': 0, 'asked': 0, 'in_sequence': 0, 'by_person': 0}
+    run_id = payload.get('run_id')
+    counts = {'split': 0, 'trim': 0, 'leave': 0, 'in_sequence': 0, 'by_person': 0}
     reasons = {}
     lines, fresh = current_lines(conn, episode_id), None
     for _ in range(MAX_PASSES):
@@ -393,14 +355,6 @@ def publish(conn, episode_id, payload):
                     counts['in_sequence' if plan.get('sequence') else 'by_person' if plan.get('person') else 'leave'] += 1
                     reason = plan['why'].split(':')[0]
                     reasons[reason] = reasons.get(reason, 0) + 1
-                continue
-            if policy['mode'] == 'ask':
-                owner = _cut_for(conn, episode_id, cut)
-                agent_log.escalate(conn, episode_id=episode_id, kind='line_split', group_key=f"line:{row['id']}",
-                                   question=f"Line \"{row['text'][:60]}\" ({row['start_time']:.2f}-{row['end_time']:.2f}s) runs across the hard cut at "
-                                            f"{cut:.2f}s. {plan['action'].capitalize()} it? ({plan['why']})",
-                                   cut_ids=[owner['id']] if owner else [], options=['Apply', 'Leave it'], proposal=plan, run_id=run_id)
-                counts['asked'] += 1
                 continue
             made += apply_plan(conn, row, cut, plan, run_id=run_id)
             counts[plan['action']] += 1
@@ -425,7 +379,7 @@ def process(job_id, owner):
     with snapshot.publish(invalidate=False) as conn:
         counts = publish(conn, job['episode_id'], payload)
         stage = f"Complete · {counts['split']} split, {counts['trim']} trimmed, {counts['leave']} left as bleed" + (
-            f", {counts['asked']} asked" if counts['asked'] else '') + (f", {counts['in_sequence']} in sequences" if counts['in_sequence'] else '')
+            f", {counts['in_sequence']} in sequences" if counts['in_sequence'] else '')
         payload['result'] = counts
         conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,payload_json=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                      (stage, json.dumps(payload), job_id))
@@ -459,7 +413,7 @@ def undo(conn, decision):
                   original['words_json'], original['speaker_source'], original['confidence'], original['evidence_json']))
     for piece in pieces:
         conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (restored, piece['id']))
-    _invalidate(conn, original['episode_id'], original['start_time'], original['end_time'])
+    structured_results.invalidate_transcript(conn, original['episode_id'], original['start_time'], original['end_time'])  # the person's undo
 
 
 agent_log.UNDO_KINDS[KIND] = undo

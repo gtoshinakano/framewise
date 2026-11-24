@@ -170,7 +170,8 @@ def enqueue_in(conn, episode_id, pipeline, extra=None, *, retry_of=None):
         deps.extend(pending_jobs(conn, episode_id, ('transcribe',)))
     if pipeline == 'keyframes':
         targets = None if payload.get('all_cuts') else [ref['id'] for ref in job_kinds.KINDS[pipeline].cuts(payload)]
-        deps.extend(pending_jobs(conn, episode_id, ('hardcuts', 'subtitles'), targets))
+        # Never the subtitles: they are optional and nothing waits for them (HARNESS.md D37)
+        deps.extend(pending_jobs(conn, episode_id, ('hardcuts',), targets))
     if deps:
         payload['depends_on'] = list(dict.fromkeys(deps))
     job_id = insert_job(conn, episode_id, pipeline, payload, retry_of=retry_of)

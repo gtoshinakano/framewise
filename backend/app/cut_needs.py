@@ -11,25 +11,14 @@ from . import agent_log, cut_readiness, db, review_report
 
 router = APIRouter(prefix='/api')
 
-# The editor's order of an episode's flow (frontend/src/cutNeeds.ts NEED_ORDER).
-PEOPLE = ('missed_cut', 'line_split', 'voice', 'speaker_unsure', 'box_names', 'target_frames', 'decisions', 'picture_check', 'lines_to_check', 'failed_run')
+# The editor's order of an episode's flow (frontend/src/cutNeedsView.ts NEED_ORDER). Missed cuts and lines across a hard
+# cut are never a need, and a voice is one only while its question is open (HARNESS.md D37).
+PEOPLE = ('voice', 'box_names', 'target_frames', 'decisions', 'picture_check', 'failed_run')
 # Escalation kind -> the person's need it stands for.
-ESCALATION_NEED = {'missed_cut': 'missed_cut', 'line_split': 'line_split', 'voice': 'voice', 'box_label': 'box_names',
-                   'new_person': 'box_names', 'target_frame': 'target_frames', 'review_question': 'decisions', 'failed_run': 'failed_run'}
+ESCALATION_NEED = {'voice': 'voice', 'box_label': 'box_names', 'new_person': 'box_names', 'target_frame': 'target_frames',
+                   'review_question': 'decisions', 'failed_run': 'failed_run'}
 STEPS = (('boxes', 'boxes_missing'), ('target', 'target_missing'), ('first_frame', 'first_frame_missing'), ('keyframes', 'keyframes_missing'),
          ('beats', 'beats_missing'), ('consistency', 'consistency_missing'), ('summary', 'summary_missing'))
-
-
-def _lines_by_cut(conn, episode_id, cuts, where):
-    """How many current transcript lines matching ``where`` overlap each cut."""
-    counts = {}
-    rows = conn.execute(f"""SELECT start_time,end_time FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND deleted=0
-        AND {where} ORDER BY start_time""", (episode_id,)).fetchall()
-    for line in rows:
-        for cut in cuts:
-            if line['end_time'] > cut['start_time'] and line['start_time'] < cut['end_time']:
-                counts[cut['id']] = counts.get(cut['id'], 0) + 1
-    return counts
 
 
 def needs(conn, episode_id):
@@ -69,23 +58,12 @@ def needs(conn, episode_id):
         person(item['cut_id'], 'picture_check', len(item['checks']))
     off = {cut_id for cut_id, entry in entries.items() if entry['analysis_off']}
     analysed = [cut for cut in cuts if cut['id'] not in off]
-    # Each line is counted once (cut_readiness.speaker_open): no character -> voice, a low character nobody decided ->
-    # speaker_unsure (both hold beats back), a medium one nobody decided -> lines_to_check. A line the person left as it
-    # is (left_unknown) is none of them.
-    open_sql = cut_readiness.open_speaker_sql()
-    decided = ','.join(f"'{value}'" for value in cut_readiness.DECIDED_SPEAKERS)
-    for cut_id, count in _lines_by_cut(conn, episode_id, analysed, f'character_context_id IS NULL AND {open_sql}').items():
-        person(cut_id, 'voice', count)
-    for cut_id, count in _lines_by_cut(conn, episode_id, analysed, f'character_context_id IS NOT NULL AND {open_sql}').items():
-        person(cut_id, 'speaker_unsure', count)
-    for cut_id, count in _lines_by_cut(conn, episode_id, analysed, f"character_context_id IS NOT NULL AND confidence='medium' AND COALESCE(speaker_source,'') NOT IN ({decided})").items():
-        person(cut_id, 'lines_to_check', count)
 
     claude_keys = {}
     for item in agent_log.escalations(conn, episode_id, 'open', limit=5000):
         key = ESCALATION_NEED.get(item['kind'])
         for cut_id in cut_readiness.escalation_cuts(conn, item, analysed):
-            if cut_id not in entries:
+            if cut_id not in entries or cut_id in off:  # a cut left out of the analysis needs nothing
                 continue
             if item['reviewer'] == 'claude':
                 entries[cut_id]['claude'].append({'kind': item['kind'], 'escalation_id': item['id']})
@@ -93,19 +71,10 @@ def needs(conn, episode_id):
                     claude_keys.setdefault(cut_id, set()).add(key)
             elif key:
                 # An escalation restates a gate the report already counted (unlabeled boxes, open questions): link it, count it once.
-                # A voice question also covers the cut's unsure speakers.
-                people = entries[cut_id]['people']
-                if key == 'voice' and key not in people and 'speaker_unsure' in people:
-                    person(cut_id, 'speaker_unsure', 0, item['id'])
-                elif key in people:
-                    person(cut_id, key, 0, item['id'])
-                else:
-                    person(cut_id, key, 1, item['id'])
+                person(cut_id, key, 0 if key in entries[cut_id]['people'] else 1, item['id'])
     for cut_id, keys in claude_keys.items():
         for key in keys:
             entries[cut_id]['people'].pop(key, None)
-            if key == 'voice':
-                entries[cut_id]['people'].pop('speaker_unsure', None)
 
     for row in conn.execute("""SELECT cut_id,GROUP_CONCAT(DISTINCT tier) AS tiers FROM agent_decisions WHERE episode_id=? AND undone_at IS NULL
                                AND cut_id IS NOT NULL GROUP BY cut_id""", (episode_id,)):

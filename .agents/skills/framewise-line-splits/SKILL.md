@@ -6,7 +6,7 @@ description: "Split Framewise transcript lines that run across a hard cut at the
 # Framewise: lines across hard cuts
 
 Work from the repository root with `scripts/fw` (HTTP only, `FRAMEWISE_URL`, default `http://chopper.local:8080`). Part of
-the autopilot (`docs/autopilot/HARNESS.md` M3; rules and replay numbers in `docs/autopilot/M3.md`).
+the autopilot (`docs/autopilot/HARNESS.md` M3 and D37; rules and replay numbers in `docs/autopilot/M3.md`).
 
 ```
 scripts/fw line-splits EP              # preview: what it would split or trim, with the texts and cut links (read-only)
@@ -24,8 +24,9 @@ scripts/fw agent undo RUN                      # put back everything the run cha
 - **Trim** a line whose part across the cut is only silence (the aligner's padding) to where the voice stops or starts.
 - **Leave** a line with no usable pause (a phrase bleeding into the next cut is acceptable; the user moves it while building
   a sequence), lines without word timings (episodes transcribed before 2026-11-20), and lines inside a sequence.
-- Pieces keep the source line's origin; each change is an agent decision of kind `line_splits`. The Autopilot profile's
-  *Split lines that run across a hard cut* mode can switch it to *Ask me* (one question per line) or *Off*.
+- Pieces keep the source line's origin; each change is an agent decision of kind `line_splits`. It **never asks** and
+  marks nothing stale (D37); only the person's undo does. The Autopilot profile's *Split lines that run across a hard
+  cut* mode is Apply or Off. A line it leaves is no flag anywhere: Prepare runs it once (`fw prepare EP`).
 
 ## Before running it
 

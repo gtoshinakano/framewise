@@ -101,7 +101,7 @@ class DiagnoseTriageTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/cuts/c3/why?step=nope').status_code, 422)
         self.assertEqual(self.client.get('/api/cuts/missing/why').status_code, 404)
 
-    def test_health_ranks_failures_first_and_finds_lines_across_cuts(self):
+    def test_health_ranks_failures_first_and_never_flags_lines_across_cuts(self):
         with db.connect() as conn:
             failed(conn, 'performance_beats', {'cut_id': 'c2'}, 'This cut has no keyframe analysis; run Keyframes first')
         data = self.client.get('/api/episodes/e/health').json()
@@ -109,8 +109,8 @@ class DiagnoseTriageTest(unittest.TestCase):
         self.assertEqual(data['cuts'][0]['problems'][0]['kind'], 'failed')
         self.assertEqual(data['cuts'][0]['problems'][0]['cause'], 'prerequisite_missing')
         kinds = {cut['cut']: [problem['kind'] for problem in cut['problems']] for cut in data['cuts']}
-        self.assertIn('line_crossing', kinds[2])
-        self.assertIn('line_crossing', kinds[3])
+        # A line across a hard cut is not a problem: the line splitter handled what it could in Prepare (D37)
+        self.assertFalse(any('line_crossing' in found for found in kinds.values()))
         self.assertIn('stale', kinds[1])
         self.assertIn('stale', kinds[4])
         self.assertIn('missing', kinds[3])

@@ -1,33 +1,23 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowLeft, ArrowRight, ChevronsRight, Drama, GalleryHorizontal, Image as ImageIcon, Layers, Play, RotateCcw, Save } from 'lucide-react'
+import { ArrowLeft, ArrowRight, GalleryHorizontal, Image as ImageIcon, Play, RotateCcw, Save } from 'lucide-react'
 import { api, type AnalysisConfig, type AnalysisResult, type Cut, type Job, type VisualStage } from './api'
 import { CharacterDetectionPanel } from './CharacterDetectionPanel'
 import { TargetFrames, useTargetDetections, useTargetSelection } from './TargetFrames'
 import type { RunSection } from './cutRoute'
-import { isJobActive, targetQueueMessage, unknownSlots, type TargetQueueResult } from './targetView'
+import { unknownSlots } from './targetView'
 import { FrameImage } from './FrameImage'
-import { ANSWERS_BATCH_REASONS, CHAIN_BATCH_REASONS, SUMMARY_BATCH_REASONS, batchQueueMessage, type BatchQueueResult as TextBatchResult } from './batchQueueMessage'
 import { ActionButton, Elapsed, NoticeStrip, Skeleton, StateChip, StatusChip, WarningLine, type Notice } from './RunUi'
 import { cachedConfig, cachedProjectId, loadConfig, loadProjectId, prefetchConfigs, storeConfig } from './runCache'
-import { STEP_LABELS, VISUAL_STEPS, activeRunFor, batchCounts, cutStepStates, preflight, queueNotice, type CharacterSummary, type StageRow, type StepKey, type StepState } from './runState'
+import { STEP_LABELS, VISUAL_STEPS, activeRunFor, cutStepStates, preflight, queueNotice, type CharacterSummary, type StageRow, type StepKey, type StepState } from './runState'
 
-type BatchQueueResult = { queued: number }
 type Optimistic = Partial<Record<StepKey, StepState>>
-type RunKind = 'cut' | 'next' | 'batch' | 'from-here' | 'redo-all'
+type RunKind = 'cut' | 'next'
 
 const STAGE_BUTTONS: { stage: VisualStage; label: string; icon: ReactNode; hint: string }[] = [
   { stage: 'initial_frame', label: 'Initial frame', icon: <ImageIcon size={13} />, hint: 'Describe only the first frame: the still image, with each character\'s look, pose, expression and emotion' },
   { stage: 'keyframe_analysis', label: 'Keyframes', icon: <GalleryHorizontal size={13} />, hint: 'Analyze only what changes between the keyframes: each character\'s state per frame, body changes measured from keypoints, the camera measured from the background. Selects the keyframes first if the cut has none; uses the first-frame names, or the Target frames names when they are current. Its performance beats are written afterwards' },
 ]
-
-/** One state for a group of steps: anything running or queued wins, then failures, then complete or not run. */
-function overall(states: StepState[]): StepState {
-  if (states.includes('running')) return 'running'
-  if (states.includes('queued')) return 'queued'
-  if (states.includes('failed')) return 'failed'
-  return states.every(state => state === 'done') ? 'done' : 'none'
-}
 
 type Props = {
   jobs: Job[]; cut: Cut; cuts: Cut[]; episodeId: string; busy: boolean; enabled: boolean
@@ -110,21 +100,12 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
     const base = cutStepStates(results, stages, jobs, cutId)
     return Object.fromEntries((Object.keys(base) as StepKey[]).map(key => [key, optimistic[key] && base[key] !== 'running' ? optimistic[key] : base[key]])) as Record<StepKey, StepState>
   }, [results, stages, jobs, cutId, optimistic])
-  const counts = useMemo(() => batchCounts(cuts, cut), [cuts, cut])
   const warnings = useMemo(() => preflight({ hasPrerequisites: busy, enabled, characters }), [busy, enabled, characters])
 
   const boundaryDirty = Object.values(boundaryDraft).some(draft => draft && draft.index !== draft.original)
   const settingsReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : !enabled ? 'Analysis is disabled for this cut' : !config ? 'Settings are still loading' : ''
-  const batchReason = boundaryDirty ? 'Save or discard the boundary preview first' : characters?.saving ? 'Character edits are still saving' : pending ? 'Another action is being queued' : !config ? 'Settings are still loading' : ''
-  const textReason = pending ? 'Another action is being queued' : !cut.active ? 'Only active cuts can be queued' : ''
-  const consistencyReason = pending ? 'Another action is being queued' : !enabled ? 'Analysis is disabled for this cut' : ''
-  const targetBatchReason = pending ? 'Another action is being queued' : ''
-  const targetCutReason = targetBatchReason || (!cut.active ? 'Only active cuts can be queued' : '')
-  const targetJob = targetPeople.data?.job
   const targetRun = targetPeople.data?.run && !targetPeople.data.run.stale ? targetPeople.data.run : null
-  const targetState: StepState = isJobActive(targetJob) ? (targetJob!.status as StepState) : targetJob?.status === 'failed' ? 'failed' : targetRun ? 'done' : 'none'
   const targetUnknown = unknownSlots(targetRun).length
-  const allTextReason = pending ? 'Another action is being queued' : ''
   const nextReason = settingsReason || (!onNext ? 'This is the last cut' : '')
   const precedingCut = cuts.find(item => item.cut_index === cut.cut_index - 1)
   const followingCut = cuts.find(item => item.cut_index === cut.cut_index + 1)
@@ -212,66 +193,16 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
     } catch (err) { setNotice({ tone: 'error', lines: [(err as Error).message] }) } finally { setPending(null) }
   }
 
+  // Many cuts at once are Run Multiple's (the editor header): it shows what will run and which cuts wait for you first.
   const queueVisual = (kind: RunKind) => perform(`visual-${kind}`, async () => {
-    const url = kind === 'batch' ? `/episodes/${episodeId}/visual-analysis`
-      : kind === 'redo-all' ? `/episodes/${episodeId}/visual-analysis?only_missing=false`
-      : kind === 'from-here' ? `/episodes/${episodeId}/visual-analysis?from_cut=${cut.cut_index + 1}&characters_resolved=true`
-      : `/cuts/${cutId}/analyze`
-    const result = await api<BatchQueueResult>(url, { method: 'POST' })
-    return kind === 'redo-all' ? `Visual analysis re-run queued for ${result.queued ?? 0} cuts.`
-      : kind === 'batch' ? `Visual analysis queued for ${result.queued ?? 0} cuts. Current stages will be skipped when it starts.`
-      : kind === 'from-here' ? `Visual analysis queued from cut ${cut.cut_index + 1}. Character readiness is checked when it starts.` : 'Visual analysis queued for this cut.'
-  }, { settings: true, steps: kind === 'cut' || kind === 'next' ? [...VISUAL_STEPS] : [], afterQueued: kind === 'next' ? onNext : undefined })
+    await api(`/cuts/${cutId}/analyze`, { method: 'POST' })
+    return 'Visual analysis queued for this cut.'
+  }, { settings: true, steps: [...VISUAL_STEPS], afterQueued: kind === 'next' ? onNext : undefined })
 
   const queueStage = (stage: VisualStage) => perform(`stage-${stage}`, async () => {
     await api(`/cuts/${cutId}/analysis-stages/run`, { method: 'POST', body: JSON.stringify({ stage }) })
     return `${STEP_LABELS[stage]} analysis queued for this cut.`
   }, { settings: true, steps: [stage] })
-
-  const queueBeats = () => perform('beats-cut', async () => {
-    await api(`/cuts/${cutId}/performance-beats`, { method: 'POST' })
-    return 'Performance beats queued for this cut.'
-  }, { steps: ['beats'] })
-
-  const queueConsistency = () => perform('consistency-cut', async () => {
-    await api(`/cuts/${cutId}/consistency-summary`, { method: 'POST' })
-    return 'Consistency summary queued for this cut.'
-  }, { steps: ['consistency'] })
-
-  const queueConsistencyFromHere = () => perform('consistency-from', async () => {
-    const result = await api<TextBatchResult>(`/episodes/${episodeId}/consistency-summaries?from_cut=${cut.cut_index + 1}`, { method: 'POST' })
-    return batchQueueMessage('Consistency summary', cut.cut_index + 1, result, {})
-  })
-
-  const queueTextFromHere = (kind: 'answers' | 'summaries') => perform(`${kind}-from`, async () => {
-    const first = cut.cut_index + 1
-    const result = await api<TextBatchResult>(`/episodes/${episodeId}/${kind === 'answers' ? 'review-answers' : 'cut-summaries'}?from_cut=${first}`, { method: 'POST' })
-    return kind === 'answers'
-      ? batchQueueMessage('Production decisions draft', first, result, ANSWERS_BATCH_REASONS)
-      : batchQueueMessage('Cut summary', first, result, SUMMARY_BATCH_REASONS, 'they already have a Cut summary')
-  })
-
-  const queueTextChain = () => perform('chain-from', async () => {
-    const first = cut.cut_index + 1
-    const result = await api<TextBatchResult>(`/episodes/${episodeId}/text-chain?from_cut=${first}`, { method: 'POST' })
-    return batchQueueMessage('Consistency summary, decisions and Cut summary', first, result, CHAIN_BATCH_REASONS, 'they keep their existing Cut summary')
-  })
-
-  const queueAllText = () => perform('text-all', async () => {
-    const settings = await api<Pick<AnalysisConfig, 'text_provider' | 'local_thinking' | 'openrouter_model'>>('/text-generation-settings')
-    const result = await api<{ cuts_queued: number; skipped: number; deferred?: boolean }>(`/episodes/${episodeId}/text-processing`, { method: 'POST', body: JSON.stringify(settings) })
-    if (result.deferred) return 'Text processing queued after media preparation or cut detection.'
-    return `Text processing queued for ${result.cuts_queued} cuts. ${result.skipped} still need evidence.`
-  })
-
-  const queueTargets = (kind: 'cut' | 'from-here' | 'all') => perform(`targets-${kind}`, async () => {
-    if (kind === 'cut') {
-      await api(`/cuts/${cutId}/target-detection`, { method: 'POST' })
-      return 'Target-frame characters queued for this cut.'
-    }
-    const first = kind === 'from-here' ? cut.cut_index + 1 : 1
-    return targetQueueMessage(await api<TargetQueueResult>(`/episodes/${episodeId}/target-detection${kind === 'from-here' ? `?from_cut=${first}` : ''}`, { method: 'POST' }), first)
-  }, { afterQueued: () => void targetPeople.reload() })
 
   async function saveSettings() {
     if (!config || pending) return
@@ -280,13 +211,7 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
     catch (err) { setNotice({ tone: 'error', lines: [(err as Error).message] }) } finally { setPending(null) }
   }
 
-  const cell = (reason: string, node: (disabled: boolean, title: string) => ReactNode) => node(!!reason, reason)
-  const none = <span className="muted" aria-label="Not available here" title="Not available here. This action is on the Results tab.">—</span>
-  const row = (label: string, hint: string, state: StepState, thisCut: ReactNode, fromHere: ReactNode, all: ReactNode) => <tr className="border-t hairline">
-    <th scope="row" className="py-2 pr-2 text-left align-middle font-normal"><span className="block font-semibold text-[#e8ebf1]">{label}</span><span className="muted block text-[11px] leading-4">{hint}</span><span className="mt-1 block"><StateChip state={state} /></span></th>
-    <td className="px-1 py-2 text-center align-middle">{thisCut}</td><td className="px-1 py-2 text-center align-middle">{fromHere}</td><td className="px-1 py-2 text-center align-middle">{all}</td></tr>
   const isPending = (key: string) => pending === key
-  const batchLabel = (count: number) => `${count} ${count === 1 ? 'cut' : 'cuts'}`
 
   return <div className="space-y-4">
     {/* Run card: the actions people reach for first stay visible while the rest scrolls. */}
@@ -324,45 +249,6 @@ export default memo(function AnalysisControls({ cut, cuts, episodeId, busy, enab
       <div className="flex gap-2"><ActionButton compact icon={<Save size={13} />} disabled={!boundaryDirty || boundaryBusy || !!boundaryLoading} pending={movingBoundary} onClick={() => void saveBoundaries()}>Save boundaries</ActionButton><ActionButton compact disabled={!boundaryDirty || boundaryBusy || !!boundaryLoading} onClick={() => { setBoundaryDraft({}); boundaryBase.current = null; setBoundaryError('') }}>Discard</ActionButton></div>
       {boundaryLoading && <p role="status" className="muted text-xs">Loading nearby frames…</p>}
       {boundaryError && <p role="alert" className="text-xs text-[#ff9fa7]">{boundaryError}</p>}
-    </section>
-
-    {/* Batch actions: what each button does is stated by its column and row, not by a long label. */}
-    <section aria-label="Queue more" className="rounded-xl border hairline bg-[#171c25] p-3">
-      <h3 className="mb-1 flex items-center gap-2 text-sm font-semibold"><Layers size={15} className="text-[#b496ff]" aria-hidden /> Queue more</h3>
-      <table className="w-full text-xs">
-        <thead><tr className="muted text-[10px] uppercase tracking-wider"><th className="w-[38%] pb-1.5 text-left font-semibold">Step</th><th className="pb-1.5 font-semibold">This cut</th><th className="pb-1.5 font-semibold" title="This cut and every later cut">From cut {cut.cut_index + 1}</th><th className="pb-1.5 font-semibold">Whole episode</th></tr></thead>
-        <tbody>
-          {row('Visual analysis', 'First frame + keyframes', overall(VISUAL_STEPS.map(key => steps[key])),
-            cell(settingsReason, (disabled, title) => <ActionButton compact icon={<Play size={13} />} pending={isPending('visual-cut')} disabled={disabled} title={title || 'Queue visual analysis for this cut'} onClick={() => void queueVisual('cut')}>Run</ActionButton>),
-            cell(batchReason || (!cut.active ? 'Only active cuts can be queued' : ''), (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('visual-from-here')} disabled={disabled} title={title || `Queue this cut and every later cut whose characters are settled (marked as no characters, or every box named). Cuts with unknown or undetected characters are skipped and listed. Up to ${batchLabel(counts.from)}.`} onClick={() => void queueVisual('from-here')}>{batchLabel(counts.from)}</ActionButton>),
-            cell(batchReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('visual-batch')} disabled={disabled} title={title || `Queue visual analysis for all ${batchLabel(counts.all)}; completed ones are skipped`} onClick={() => void queueVisual('batch')}>All {counts.all}</ActionButton>))}
-          {row('Performance beats', 'Written after the keyframes', steps.beats,
-            cell(consistencyReason, (disabled, title) => <ActionButton compact icon={<Drama size={13} />} pending={isPending('beats-cut')} disabled={disabled} title={title || 'Queue performance beats from keyframe analysis'} onClick={() => void queueBeats()}>Run</ActionButton>),
-            none, none)}
-          {row('Consistency summary', 'Needs the first frame and beats', steps.consistency,
-            cell(consistencyReason, (disabled, title) => <ActionButton compact icon={<Play size={13} />} pending={isPending('consistency-cut')} disabled={disabled} title={title || 'Queue a consistency summary for this cut'} onClick={() => void queueConsistency()}>Run</ActionButton>),
-            cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('consistency-from')} disabled={disabled} title={title || 'Queue for this cut and every later enabled cut. Nothing is queued unless each already has its initial frame and current performance beats (cuts analysed before keyframes: their video analysis).'} onClick={() => void queueConsistencyFromHere()}>{batchLabel(counts.from)}</ActionButton>),
-            none)}
-          {row('Production decisions', 'Drafts review answers', 'none',
-            none,
-            cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('answers-from')} disabled={disabled} title={title || "Draft and save answers to each later cut's human review and suggested checks. Cuts without a consistency summary or anything to decide are skipped and listed; answers you edit while a draft waits are not overwritten."} onClick={() => void queueTextFromHere('answers')}>{batchLabel(counts.from)}</ActionButton>),
-            none)}
-          {row('Cut summary', 'Needs consistency + decisions', steps.summary,
-            none,
-            cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('summaries-from')} disabled={disabled} title={title || 'Queue a Cut summary for this cut and every later cut that has a consistency summary but no summary yet. Cuts whose decisions are still being drafted are skipped and listed.'} onClick={() => void queueTextFromHere('summaries')}>{batchLabel(counts.from)}</ActionButton>),
-            cell(allTextReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('text-all')} disabled={disabled} title={title || 'All text steps: queue a consistency summary and then a Cut summary for every ready cut'} onClick={() => void queueAllText()}>All text</ActionButton>))}
-          {row('Target-frame characters', 'Needs evaluated frames', targetState,
-            cell(targetCutReason, (disabled, title) => <ActionButton compact icon={<Play size={13} />} pending={isPending('targets-cut')} disabled={disabled} title={title || 'Find and order the people on this cut’s evaluated frames. Run it again to keep your names and boxes and redo the rest.'} onClick={() => void queueTargets('cut')}>Run</ActionButton>),
-            cell(targetBatchReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('targets-from-here')} disabled={disabled} title={title || 'Queue this cut and every later enabled cut. Missing frames are evaluated first, and current detections are reused. Cuts marked as having no characters or with analysis disabled are skipped and listed.'} onClick={() => void queueTargets('from-here')}>{batchLabel(counts.from)}</ActionButton>),
-            cell(targetBatchReason, (disabled, title) => <ActionButton compact icon={<Layers size={13} />} pending={isPending('targets-all')} disabled={disabled} title={title || 'Queue enabled cuts. Missing target frames are evaluated first'} onClick={() => void queueTargets('all')}>All {counts.all}</ActionButton>))}
-          {row('All three text steps', 'Runs in order, each waits for the last', 'none',
-            none,
-            cell(textReason, (disabled, title) => <ActionButton compact icon={<ChevronsRight size={13} />} pending={isPending('chain-from')} disabled={disabled} title={title || 'For this cut and every later ready cut, queue a consistency summary, then production-decision answers, then a Cut summary. Pending prerequisites are reused, and missing or stale performance beats are written first. Existing Cut summaries are kept. Cuts without enough visual evidence are skipped and listed.'} onClick={() => void queueTextChain()}>{batchLabel(counts.from)}</ActionButton>),
-            none)}
-        </tbody>
-      </table>
-      <p className="muted mt-1 text-[11px]">Queue visual analysis first. Text steps work from its results.</p>
-      <ActionButton compact className="mt-2" icon={<RotateCcw size={13} />} pending={isPending('visual-redo-all')} disabled={!!batchReason} title={batchReason || `Queue first-frame and keyframe analysis again for all ${batchLabel(counts.all)}, even those already complete. Existing results stay in history as earlier revisions.`} onClick={() => { if (window.confirm(`Re-run visual analysis for all ${batchLabel(counts.all)}, including cuts already analysed?`)) void queueVisual('redo-all') }}>Re-run all visual analysis</ActionButton>
     </section>
 
     {/* Context for the models. */}

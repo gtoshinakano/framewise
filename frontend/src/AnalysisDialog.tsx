@@ -203,7 +203,7 @@ const AnalysisDialogContent = memo(function AnalysisDialogContent({ cut, cuts, n
         {proxyReady
           ? <div className="mx-auto w-full max-w-sm shrink-0 lg:max-w-none"><PlayerSlot className="aspect-video"><PlayheadReadout start={cut.start_time} end={cut.end_time} /><FrameTools cut={cut} results={results} frameVersion={frameVersion} onPreview={() => setFramesOpen(true)} /></PlayerSlot></div>
           : <div className="relative aspect-video shrink-0 overflow-hidden rounded-xl border hairline bg-black"><div className="muted flex h-full items-center justify-center text-xs">Run Prepare to create the video preview.</div></div>}
-        <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} canPlay={proxyReady} projectId={projectId} episodeId={episodeId} onChanged={onStarted} marks={{ voice: hasNeed(needs, 'voice'), lines: hasNeed(needs, 'lines_to_check') || hasNeed(needs, 'speaker_unsure') }} />
+        <CutAudioPreview cut={cut} waveform={waveform} transcript={transcript} hasAudio={hasAudio} preparing={preparingAudio} video={video} canPlay={proxyReady} projectId={projectId} episodeId={episodeId} onChanged={onStarted} marks={{ voice: hasNeed(needs, 'voice') }} />
       </div>
       <div ref={setCharactersTarget} className={tab === 'run' ? 'scrollbar min-h-0 lg:overflow-y-auto lg:pr-1' : 'hidden'} />
       <div ref={resultsColumn} onScroll={pinTop} className={`scrollbar flex flex-col gap-3 ${tab === 'run' ? 'lg:min-h-0 lg:overflow-y-auto lg:pr-1' : 'min-h-0 lg:overflow-hidden'}`}>

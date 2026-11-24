@@ -54,25 +54,6 @@ export function slotChip(slot: TargetSlot): SlotChip {
 
 export const isJobActive = (job: TargetJob | null | undefined) => job?.status === 'queued' || job?.status === 'running'
 
-export type TargetQueueResult = { queued: number; deferred?: boolean; skipped: Partial<Record<'not_evaluated' | 'analysis_disabled' | 'no_characters' | 'up_to_date' | 'already_queued', number[]>> }
-
-const cutList = (numbers: number[]) => numbers.slice(0, 8).join(', ') + (numbers.length > 8 ? ` and ${numbers.length - 8} more` : '')
-
-/** What a batch queue did, and which cuts were left out and why (cut numbers as the editor shows them). */
-export function targetQueueMessage(result: TargetQueueResult, firstCut: number): { tone: 'success' | 'warning'; lines: string[] } {
-  if (result.deferred) return { tone: 'success', lines: ['Target-frame characters queued after media preparation or cut detection.'] }
-  const skipped = result.skipped
-  const lines = [result.queued
-    ? `Target-frame characters queued for ${result.queued} ${result.queued === 1 ? 'cut' : 'cuts'}${firstCut > 1 ? ` from cut ${firstCut}` : ''}.`
-    : 'Nothing was queued.']
-  const reasons: [number[] | undefined, string][] = [
-    [skipped.not_evaluated, 'Not evaluated yet, evaluate them first'], [skipped.up_to_date, 'Already detected'], [skipped.already_queued, 'Already queued'],
-    [skipped.no_characters, 'Marked as having no characters'], [skipped.analysis_disabled, 'Analysis disabled'],
-  ]
-  for (const [numbers, text] of reasons) if (numbers?.length) lines.push(`${text}: cut ${cutList(numbers)}.`)
-  return { tone: result.queued ? 'success' : 'warning', lines }
-}
-
 /**
  * The colours a colour can be merged into when it is really another person: every other colour, unless it has a
  * box on the mirrored first frame, where the user already told the people apart.

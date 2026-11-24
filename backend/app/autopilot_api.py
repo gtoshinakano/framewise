@@ -159,8 +159,8 @@ def apply_triage(episode_id: str, body: TriageApply):
 # --- stage targets (HARNESS.md D31) ------------------------------------------------------------------------------------
 
 @router.get('/api/episodes/{episode_id}/targets', summary='Per stage and step: the cuts it would run on now, and the cuts held for a person')
-def stage_target_cuts(episode_id: str, stage: Literal['prepare', 'prepare_cuts', 'lines', 'evaluate', 'results'] | None = None, from_cut: int | None = None, to_cut: int | None = None):
-    """The dry run of the stage commands (``fw prepare|prepare-cuts|lines|evaluate|results --dry-run``, ``fw targets``)."""
+def stage_target_cuts(episode_id: str, stage: Literal['prepare', 'prepare_cuts', 'evaluate', 'results'] | None = None, from_cut: int | None = None, to_cut: int | None = None):
+    """Every stage's target cuts (``fw targets``; Run Multiple previews them through ``/batch-runs/preview``)."""
     with db.connect() as conn:
         conn.execute('BEGIN')
         require_episode(conn, episode_id)

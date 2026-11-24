@@ -17,8 +17,8 @@
     scripts/fw diagnose "Episode 6" 100-200      # per cut, what is wrong and why, worst cuts first, with links
     scripts/fw why "Episode 6" 142 --step summary  # the chain of prerequisites down to the first broken one
     scripts/fw triage "Episode 6" --go --run RUN_ID  # apply the fix rules to failed runs (logged, undoable)
-    scripts/fw missed-cuts check "Episode 6"     # find hard cuts the detection missed; split the sure ones, ask about the rest
-    scripts/fw missed-cuts report "Episode 6"    # what it split (undo ids) and the open questions with their pictures
+    scripts/fw missed-cuts check "Episode 6"     # find hard cuts the detection missed; split the sure ones, count the rest
+    scripts/fw missed-cuts report "Episode 6"    # what it split (undo ids) and the cuts it was unsure of
     scripts/fw line-splits "Episode 6"           # what the line splitter would do with lines across hard cuts; add run to apply it
     scripts/fw review-decisions run "Episode 6"  # the agent answers the consistency review questions it can, asks about the rest
     scripts/fw review-decisions report "Episode 6"  # what it answered (undo ids), the questions for Claude or you, trust per topic
@@ -26,10 +26,9 @@
     scripts/fw voices report "Episode 6"         # open voices, what it gave to whom (undo ids), the voice questions with links
     scripts/fw cast run "Episode 6"              # name boxes, unbox duplicates and background, group unknown people, settle target frames
     scripts/fw cast report "Episode 6"           # what it applied (undo ids), the questions with box and target-frame sheets
-    scripts/fw prepare "Episode 6" --language Japanese  # once: cuts, audio, subtitles, boxes, target frames, resolvers; then stop
+    scripts/fw prepare "Episode 6"               # once: cuts, audio, boxes, target frames, resolvers (--subtitles L to read them too)
     scripts/fw targets "Episode 6"               # every stage's dry run: target cuts per step, cuts held for you and why
     scripts/fw prepare-cuts "Episode 6"          # boxes and target frames for cuts that changed after Prepare
-    scripts/fw lines "Episode 6"                 # the line checker and splitter
     scripts/fw evaluate "Episode 6" --dry-run    # visual, beats, consistency: only target cuts (missing or stale, settled)
     scripts/fw results "Episode 6"               # answers and Cut summaries, when the Autopilot profile turns them on
     scripts/fw digest "Episode 6" --run RUN_ID   # what agents applied and what is left for the person, with links
@@ -40,6 +39,9 @@ on the LAN, and nothing on the machine it runs from needs rebuilding or restarti
 It queues, waits, retries, dismisses, cancels and reads. It never edits labels, boxes, transcript text, answers,
 dialogue or sequences itself, and never restarts containers; the autopilot's resolvers (missed-cuts, line-splits,
 review-decisions, voices, cast) change cuts, lines, answers, speakers, box labels and target-frame reviews in the server, each change logged as an undoable agent decision.
+
+prepare, prepare-cuts and evaluate are Run Multiple runs (the editor's Run Multiple dialog): the server carries them out
+step by step (backend/app/batch_runs.py); fw starts one, follows it and prints what each step did and found.
 
 Exit codes: 0 ok or done, 1 error, 2 blocked on a person, 3 busy (work is queued or running).
 """
@@ -58,7 +60,6 @@ OK, ERROR, BLOCKED, BUSY = 0, 1, 2, 3
 DEFAULT_URL = 'http://chopper.local:8080'
 POLL_SECONDS = 15
 # speaker_attribution leaves this reason itself when some windows went unanswered; running it again would not settle it.
-UNANSWERED_ATTRIBUTION = 'Some lines could not be attributed'
 FINISHED = ('done', 'failed', 'cancelled')
 
 
@@ -329,21 +330,27 @@ def language_for(api, episode, args):
     return language
 
 
+def setup_body(args):
+    """Setup reads the burned-in subtitles only when a language is given: they are optional (HARNESS.md D37)."""
+    return {'language': args.language} if getattr(args, 'language', None) else {}
+
+
 def transcribe(api, episode, span, args):
     if span == (None, None):
         return api.post(f"/api/episodes/{episode['id']}/transcribe")
     selected = in_range(cuts(api, episode['id']), span)
     if not selected:
         raise Failure(f'no active cut in {range_text(span)}')
-    body = {'start_time': selected[0]['start_time'], 'end_time': selected[-1]['end_time'], 'replace_manual': args.replace_manual}
+    # a re-transcription never replaces a line you edited (HARNESS.md D37)
+    body = {'start_time': selected[0]['start_time'], 'end_time': selected[-1]['end_time']}
     return api.post(f"/api/episodes/{episode['id']}/transcribe-range", body=body)
 
 
 not_redo = lambda args: not args.redo  # noqa: E731
 
 STEPS = {
-    'setup': (whole(lambda api, episode, args: api.post(f"/api/episodes/{episode['id']}/prepare", body={'language': language_for(api, episode, args)})),
-              'media, cut detection, transcription, subtitles, boxes and recognition (skips what is done)'),
+    'setup': (whole(lambda api, episode, args: api.post(f"/api/episodes/{episode['id']}/prepare", body=setup_body(args))),
+              'media, cut detection, transcription, boxes and recognition (skips what is done); --language also reads the subtitles'),
     'boxes': (batch('/api/episodes/{id}/character-boxes'), 'first-frame boxes for cuts without a current detection'),
     'recognize': (lambda api, episode, span, args: batch('/api/episodes/{id}/character-detection-rerun' if args.redo
                                                          else '/api/episodes/{id}/character-detection')(api, episode, span, args),
@@ -491,16 +498,11 @@ def plan(report, queue_state, language=None):
     if report['failures']:
         return {'action': 'blocked', 'gate': 'failures', 'items': report['failures'],
                 'detail': f"{len(report['failures'])} failed run(s) need a decision: fw failures, then fw retry ID or fw dismiss ID"}
-    setup, progress, gates, checks = report['setup'], report['progress'], report['gates'], report['checks']
-    if not all(setup.values()):
-        language = language or report['episode'].get('subtitle_language')
-        missing = [name for name, done in setup.items() if not done]
-        if not language:
-            return {'action': 'blocked', 'gate': 'language', 'detail': f"setup needs the subtitle language ({', '.join(missing)} missing): add --language"}
+    setup, progress, gates = report['setup'], report['progress'], report['gates']
+    missing = [name for name, done in setup.items() if not done and name != 'subtitles']  # subtitles are optional (D37)
+    if missing:
         return {'action': 'run', 'step': 'setup', 'language': language, 'detail': f"missing: {', '.join(missing)}"}
-    stale = checks.get('speaker_attribution_stale')
-    if stale and stale != UNANSWERED_ATTRIBUTION:
-        return {'action': 'run', 'step': 'speakers', 'detail': f'speaker attribution is stale: {stale}'}
+
     def run(step, numbers):
         return {'action': 'run', 'step': step, 'cuts': numbers, 'detail': f'cuts {numbers_text(numbers)}'}
 
@@ -535,7 +537,7 @@ def execute(api, episode, decision, args):
     step = decision['step']
     numbers = decision.get('cuts') or []
     if step == 'setup':
-        return api.post(f"/api/episodes/{episode['id']}/prepare", body={'language': decision['language']})
+        return api.post(f"/api/episodes/{episode['id']}/prepare", body={'language': decision['language']} if decision.get('language') else {})
     if step == 'speakers':
         return api.post(f"/api/episodes/{episode['id']}/speaker-attribution")
     if step in ('beats', 'answers'):
@@ -551,7 +553,7 @@ def execute(api, episode, decision, args):
                     errors.append({'cut': cut['cut_index'] + 1, 'error': str(exc)})
         return {'queued': len(ids), 'job_ids': ids, 'errors': errors}
     span = (min(numbers), max(numbers)) if numbers else (None, None)
-    flags = argparse.Namespace(redo=False, save=False, language=None, replace_manual=False)
+    flags = argparse.Namespace(redo=False, save=False, language=None)
     return run_step(api, episode, step, span, flags)
 
 
@@ -660,34 +662,31 @@ def cmd_drive(api, args):
         wait_queue(api, episode['id'], 0)
 
 
-# --- the stages (docs/autopilot/HARNESS.md D31) -------------------------------------------------------------------
+# --- the stages (docs/autopilot/HARNESS.md D31, D37) --------------------------------------------------------------
 #
 # Prepare runs once; Evaluate and Results run on their target cuts only (missing or stale, inputs settled, no open inbox
-# item). Every step runs at most once per command, so nothing is re-run in a loop. The server computes the targets
-# (GET /api/episodes/{id}/targets, stage_targets.py); fw only orders the steps, queues them, waits and reports.
+# item). prepare, prepare-cuts and evaluate are Run Multiple runs carried out by the server (backend/app/batch_runs.py,
+# the editor's Run Multiple dialog): fw starts one, follows it and prints what each step did and found. results still
+# runs here: every step at most once per command, the targets computed by the server (GET /api/episodes/{id}/targets).
 
 # Resolvers the stages run; each is idempotent (it acts only on what is still open).
 RESOLVERS = {
-    'missed_cuts': ('/api/episodes/{id}/missed-cuts', 'missed_cuts', 'hard cuts the detection missed (M2)'),
-    'line_splits': ('/api/episodes/{id}/line-splits', 'line_splits', 'lines across a hard cut (M3)'),
-    'voices': ('/api/episodes/{id}/voice-decisions', 'voices', 'unknown voices (M5)'),
-    'cast': ('/api/episodes/{id}/character-decisions', 'box_names', 'box names, unknown people, target frames (M6)'),
     'review_decisions': ('/api/episodes/{id}/review-decisions', 'review_answers', 'review questions (M4)'),
     'triage': ('/api/episodes/{id}/triage', 'failed_runs', 'failed runs with a fix rule (M1)'),
 }
 FIXABLE = ('requeue', 'rerun', 'dismiss', 'prerequisite')
-VISUAL_CHUNK = 16  # cuts per visual job: beats of a finished chunk start while the next chunk runs; a failure costs one chunk
-STAGES = {'prepare': 'prepare', 'prepare-cuts': 'prepare_cuts', 'lines': 'lines', 'evaluate': 'evaluate', 'results': 'results'}
+STAGES = {'prepare': 'prepare', 'prepare-cuts': 'prepare_cuts', 'evaluate': 'evaluate', 'results': 'results'}
+BATCH_STAGES = ('prepare', 'prepare-cuts', 'evaluate')
 EVALUATE_STEPS = ('visual', 'beats', 'consistency')
-# What each stage runs next, in order (stage_next)
 STAGE_HELP = {
-    'prepare': 'once per episode: media, hard cuts, missed-cut check, transcription, subtitles, line splits, voices, boxes and '
-               'recognition, target frames on every cut, the cast resolver; then it stops for the person',
+    'prepare': 'once per episode: media, hard cuts, missed-cut check, transcription and speakers, line splits, voices, boxes and '
+               'recognition, target frames on every cut, the cast resolver (--subtitles L also reads the burned-in subtitles); then it stops',
     'prepare-cuts': 'boxes, recognition and target frames for cuts whose boundaries or first-frame boxes changed after Prepare',
-    'lines': 'the line checker and splitter: lines across a hard cut, split at a pause',
-    'evaluate': 'visual analysis, performance beats and the consistency review, each only for its target cuts',
+    'evaluate': 'visual analysis, performance beats and the consistency review, each only for its target cuts; cuts waiting for you are skipped and listed',
     'results': '"Your answers" and Cut summaries for their target cuts, when the Autopilot profile turns them on',
 }
+STEP_MARKS = {'will_run': '→', 'done': '✓', 'off': '–', 'skipped': '–', 'pending': '○', 'starting': '●', 'running': '●',
+              'failed': '✗', 'cancelled': '✗'}
 
 
 def stage_data(api, episode, stage=None, span=(None, None)):
@@ -696,56 +695,15 @@ def stage_data(api, episode, stage=None, span=(None, None)):
 
 
 def _cuts_of(step):
-    return [item['cut'] for item in (step or {}).get('targets') or []]
+    return [item['cut'] for item in (step or {}).get('targets') or step.get('cuts') or []] if step else []
 
 
-def stage_next(stage, data, done, only=None):
-    """The next step of ``stage`` from its targets (``stage_data``), or None. Pure. ``done``: the steps this command already
-    ran (each runs at most once); ``only``: evaluate's one step. Returns {step, cuts?, detail}."""
+def stage_next(stage, data, done):
+    """The next step of the results stage from its targets (``stage_data``), or None. Pure. ``done``: the steps this
+    command already ran (each runs at most once). Returns {step, cuts?, detail}."""
     def run(step, cuts=None, detail=None):
         return {'step': step, **({'cuts': cuts} if cuts is not None else {}), 'detail': detail or (f'cuts {numbers_text(cuts)}' if cuts else '')}
 
-    if stage == 'prepare':
-        steps = {item['step']: item for item in data['prepare']['steps']}
-        if 'setup' not in done and not all(steps[name]['done'] for name in ('media', 'hardcuts', 'transcribe', 'subtitles', 'boxes')):
-            missing = [name for name in ('media', 'hardcuts', 'transcribe', 'subtitles', 'boxes') if not steps[name]['done']]
-            return run('setup', detail=f"queues {', '.join(missing)}")
-        order = (('missed_cuts', 'missed_cuts'), ('boxes', None), ('line_splits', 'line_splits'), ('voices', 'voice_resolver'),
-                 ('target-frames', 'target_frames'), ('cast', 'character_decisions'))
-        for step, key in order:
-            if step in done:
-                continue
-            if step == 'boxes':
-                if cuts := _cuts_of(steps['boxes']):
-                    return run('boxes', cuts)
-                continue
-            if step == 'target-frames':
-                if cuts := _cuts_of(steps['target_frames']):
-                    return run('target-frames', cuts)
-                continue
-            if not steps[key]['done'] and steps[key].get('mode') != 'off':
-                return run(step, detail=RESOLVERS[step][2])
-        return None
-    if stage == 'prepare_cuts':
-        section = data['prepare_cuts']
-        if 'boxes' not in done and (cuts := _cuts_of(section['boxes'])):
-            return run('boxes', cuts)
-        if 'target-frames' not in done and (cuts := _cuts_of(section['target_frames'])):
-            return run('target-frames', cuts)
-        if 'cast' not in done and done & {'boxes', 'target-frames'}:
-            return run('cast', detail=RESOLVERS['cast'][2])
-        return None
-    if stage == 'lines':
-        section = data['lines']
-        if 'line_splits' not in done and section['targets'] and section.get('mode') != 'off':
-            return run('line_splits', detail=f"{len(section['targets'])} line(s) across a hard cut")
-        return None
-    if stage == 'evaluate':
-        for step in EVALUATE_STEPS:
-            if step not in done and (only is None or only == step) and (cuts := _cuts_of(data['evaluate'][step])):
-                # --only visual: saving the keyframes queues no beats either (beats=off); otherwise beats follow ready cuts
-                return {**run(step, cuts), **({'beats': 'off'} if only == 'visual' else {})}
-        return None
     if stage == 'results':
         section = data['results']
         if 'review_decisions' not in done and section['answers']['mode'] != 'off' and section['answers']['targets']:
@@ -756,60 +714,24 @@ def stage_next(stage, data, done, only=None):
     raise Failure(f'unknown stage {stage}')
 
 
-def stage_execute(api, episode, action, run_id, language=None):
-    """Queue what ``stage_next`` chose; returns the job ids. Cut lists go per contiguous run (so held cuts between them
-    are never swept into a batch) or per cut."""
+def stage_execute(api, episode, action, run_id):
+    """Queue what ``stage_next`` chose; returns the job ids."""
     step, numbers = action['step'], action.get('cuts') or []
-    if step == 'setup':
-        language = language or episode.get('subtitle_language')
-        if not language:
-            raise Failure('Prepare needs the subtitle language: add --language')
-        return job_ids(api.post(f"/api/episodes/{episode['id']}/prepare", body={'language': language}))
     if step in RESOLVERS:
         result = api.post(RESOLVERS[step][0].format(id=episode['id']), body={'run_id': run_id})
         return job_ids(result) or (['(applied)'] if step == 'triage' and (result.get('applied') or result.get('items')) else [])
-    if step == 'visual':
-        # one job per chunk of contiguous cuts; only the stages that are missing or stale run (only_missing), and saving a
-        # cut's keyframes queues its beats only when the cut is ready (beats=when_ready), so beats overlap later chunks
-        ids = []
-        for first, last in runs_of(numbers):
-            for start in range(first, last + 1, VISUAL_CHUNK):
-                params = {'from_cut': start, 'to_cut': min(last, start + VISUAL_CHUNK - 1), 'only_missing': True, 'beats': action.get('beats', 'when_ready')}
-                ids += job_ids(api.post(f"/api/episodes/{episode['id']}/visual-analysis", params))
-        return ids
-    if step in ('beats', 'consistency', 'summary'):
+    if step == 'summary':
         by_number, ids = cut_numbers(api, episode), []
         for number in numbers:
             cut = by_number.get(number)
             if not cut:
                 continue
             try:
-                if step == 'beats':
-                    ids += job_ids(api.post(f"/api/cuts/{cut['id']}/performance-beats"))
-                elif step == 'consistency':
-                    ids += job_ids(api.post(f"/api/cuts/{cut['id']}/consistency-summary"))
-                else:
-                    ids += job_ids(api.post(f"/api/cuts/{cut['id']}/regenerate-summary", body={'mode': 'regenerate'}))
+                ids += job_ids(api.post(f"/api/cuts/{cut['id']}/regenerate-summary", body={'mode': 'regenerate'}))
             except Failure as exc:
                 print(f"  cut {number}: {exc}", flush=True)
         return ids
-    name = {'boxes': 'characters', 'target-frames': 'target-frames'}[step]
-    ids = []
-    for first, last in runs_of(numbers):
-        flags = argparse.Namespace(redo=False, save=False, language=None, replace_manual=False)
-        ids += job_ids(run_step(api, episode, name, (first, last), flags))
-    return ids
-
-
-def runs_of(numbers):
-    """[(first, last)] of consecutive cut numbers."""
-    spans = []
-    for number in sorted(set(numbers)):
-        if spans and number == spans[-1][1] + 1:
-            spans[-1][1] = number
-        else:
-            spans.append([number, number])
-    return [tuple(span) for span in spans]
+    raise Failure(f'unknown step {step}')
 
 
 CLAUDE_POLL_SECONDS = 120
@@ -882,17 +804,26 @@ def _targets_line(name, step):
     return line
 
 
+def step_line(step):
+    """One step of a Run Multiple preview or run: its mark, label, and what it will do or did."""
+    text = step.get('summary') or step.get('detail') or ''
+    progress = step.get('progress')
+    if step['state'] == 'running' and progress and progress['total']:
+        text += f" ({progress['finished']}/{progress['total']} jobs" + (f", {progress['failed']} failed" if progress['failed'] else '') + ')'
+    cuts = [item['cut'] for item in step.get('cuts') or []]
+    if cuts and step['state'] in ('will_run', 'pending', 'starting', 'running'):
+        text += f" · cuts {numbers_text(cuts)}"
+    return f"  {STEP_MARKS.get(step['state'], '?')} {step['label']}" + (f": {text}" if text else '')
+
+
 def stage_text(api, episode, stage, data):
-    """The dry run of one stage: what each step would run on now and what waits for the person."""
+    """The dry run of one stage from ``/targets``: what each step would run on now and what waits for the person."""
     lines, held = [], {}
     if stage == 'prepare':
         section = data['prepare']
         done = section['done']
-        lines.append('PREPARE' + (f" · finished {done['finished_at']} (run {done['id'][:8]}); it never runs again" if done else ' · not run yet'))
-        for item in section['steps']:
-            state = 'done' if item['done'] else ('off in the profile' if item.get('mode') == 'off' else 'to do')
-            extra = f" ({len(item['targets'])} cut(s): {numbers_text(_cuts_of(item))})" if item.get('targets') else ''
-            lines.append(f"  {item['step']}: {state}{extra}")
+        lines.append('PREPARE' + (f" · finished {done['finished_at']}; it never runs again" if done else ' · not run yet'))
+        lines += [step_line(item) for item in section['steps']]
     elif stage == 'prepare_cuts':
         lines.append('PREPARE CUTS (cuts changed after Prepare)')
         for name, step in data['prepare_cuts'].items():
@@ -901,12 +832,6 @@ def stage_text(api, episode, stage, data):
                 for item in step['targets'][:LINK_LIMIT]:
                     if item.get('reason'):
                         lines.append(f"    - cut {item['cut']}: {item['reason']}")
-    elif stage == 'lines':
-        section = data['lines']
-        lines.append(f"LINES · {len(section['targets'])} line(s) across a hard cut the splitter would still look at"
-                     + (f" [profile: {section['mode']}]" if section.get('mode') != 'apply' else ''))
-        for item in section['targets'][:LINK_LIMIT]:
-            lines.append(f"  - cut {item['cut']}: {item['start_time']:.2f}-{item['end_time']:.2f}s \"{item['text']}\"")
     elif stage == 'evaluate':
         lines.append('EVALUATE')
         for name in EVALUATE_STEPS:
@@ -948,22 +873,86 @@ def _wait(api, episode, started, timeout, claude_seen):
     return True, announce_claude(api, episode, claude_seen)
 
 
+def batch_options(args, stage):
+    """The Run Multiple options of a stage command: Prepare's optional subtitles, Evaluate's range and single step."""
+    if stage == 'prepare':
+        return {'subtitles': args.subtitles} if args.subtitles else {}
+    if stage == 'evaluate':
+        span = parse_range(args.range)
+        return {key: value for key, value in (('from_cut', span[0]), ('to_cut', span[1]), ('only', args.only)) if value is not None}
+    return {}
+
+
+def preview_lines(api, episode, stage, preview):
+    lines = [f"{stage.upper().replace('-', ' ')} · " + ('ready to run' if preview['available'] else preview['reason'])]
+    lines += [step_line(step) for step in preview['steps']]
+    held = {}
+    if stage == 'evaluate':
+        lines.append(f"{preview['cuts']} cut(s) will be evaluated")
+        for item in preview.get('held') or []:
+            held.setdefault(item['step'], []).append(item)
+    return lines + handoff_lines(api, episode, held, 'run fw evaluate EP again'), held
+
+
+def cmd_batch_stage(api, args):
+    """prepare, prepare-cuts or evaluate as a Run Multiple run: the server carries the steps out; fw follows it."""
+    episode = find_episode(api, args.episode, args.latest)
+    stage, key = args.stage, STAGES[args.stage]
+    options = batch_options(args, stage)
+    query = {'stage': key, **{name: value for name, value in options.items()}}
+    preview = api.get(f"/api/episodes/{episode['id']}/batch-runs/preview", query)
+    if args.dry_run or not preview['available']:
+        lines, held = preview_lines(api, episode, stage, preview)
+        emit(args, preview, '\n'.join(lines) + ('\n(dry run: nothing started)' if args.dry_run else ''))
+        if args.dry_run or (stage == 'prepare' and preview.get('prepared')):
+            return OK
+        return BUSY if 'going on' in preview['reason'] else BLOCKED
+    body = {'stage': key, **({'subtitles': {'language': options['subtitles']}} if options.get('subtitles') else {}),
+            **{name: value for name, value in options.items() if name != 'subtitles'}}
+    run = api.post(f"/api/episodes/{episode['id']}/batch-runs", body=body)
+    print(f"{stage} on {episode['project']} / {episode['title']} ({episode['id']}), run {run['id']}", flush=True)
+    print(STAGE_HELP[stage], flush=True)
+    started, shown = time.time(), {}
+    while True:
+        for step in run['steps']:
+            line = step_line(step)
+            if shown.get(step['step']) != (step['state'], step.get('summary')) and step['state'] not in ('pending',):
+                shown[step['step']] = (step['state'], step.get('summary'))
+                print(time.strftime('%H:%M:%S'), line.strip(), flush=True)
+        if run['status'] != 'running':
+            break
+        if args.timeout and time.time() - started > args.timeout:
+            print(f"stopped waiting: the run goes on in the server (Run Multiple in the editor, or fw {stage} EP --dry-run)")
+            return BUSY
+        time.sleep(POLL_SECONDS)
+        run = api.get(f"/api/batch-runs/{run['id']}")
+    summary = run.get('summary') or {}
+    lines = ['', f"{stage} {run['status']}" + (f": {run['error']}" if run.get('error') else '')]
+    lines += [step_line(step) for step in run['steps']]
+    lines.append(_inbox_line(summary.get('inbox')))
+    held = {}
+    for item in summary.get('held') or []:
+        held.setdefault(item['step'], []).append(item)
+    lines += handoff_lines(api, episode, held, 'run fw evaluate EP again')
+    print('\n'.join(lines))
+    if run['status'] != 'finished':
+        return ERROR
+    people = any(item.get('human') for item in (summary.get('inbox') or {}).values())
+    return BLOCKED if people or held else OK
+
+
 def cmd_stage(api, args):
-    """Run one stage (prepare, prepare-cuts, lines, evaluate, results) on its target cuts, each step at most once, waiting
-    between steps; --dry-run prints the targets. Exit 0 done, 2 something waits for the person, 3 stopped while busy."""
+    """Run one stage on its target cuts. prepare, prepare-cuts and evaluate are server-side runs (``cmd_batch_stage``);
+    results runs here, each step at most once, waiting between steps; --dry-run prints the targets. Exit 0 done, 2
+    something waits for the person, 3 stopped while busy."""
+    if args.stage in BATCH_STAGES:
+        return cmd_batch_stage(api, args)
     episode = find_episode(api, args.episode, args.latest)
     stage, key = args.stage, STAGES[args.stage]
     span = parse_range(args.range) if getattr(args, 'range', None) else (None, None)
-    only = getattr(args, 'only', None)
     data = stage_data(api, episode, key, span)
-    then = f"run `fw {stage} EP` again" if stage != 'prepare' else 'run `fw prepare-cuts EP` and `fw evaluate EP`'
-    if stage == 'prepare' and data['prepare']['done']:
-        lines, held = stage_report(api, episode, stage, data, then)
-        lines.append('Prepare ran once already and never runs again. Next: fw prepare-cuts EP (cuts you split, merged or re-boxed), '
-                     'fw lines EP (lines across cuts), fw evaluate EP (analysis of the settled cuts); fw targets EP lists them all.')
-        emit(args, data, '\n'.join(lines))
-        return BLOCKED if any(item.get('human') for item in (data.get('inbox') or {}).values()) else OK
-    if stage == 'results' and data['results']['answers']['mode'] == 'off' and data['results']['summary']['mode'] != 'apply':
+    then = f"run `fw {stage} EP` again"
+    if data['results']['answers']['mode'] == 'off' and data['results']['summary']['mode'] != 'apply':
         lines, _ = stage_report(api, episode, stage, data, then)
         lines.append('"Your answers" and Cut summaries are off in the Autopilot profile (episode menu → Autopilot profile): '
                      'turn on review answers and/or Cut summaries, then run fw results EP again.')
@@ -971,15 +960,10 @@ def cmd_stage(api, args):
         return OK
     if args.dry_run:
         lines, held = stage_report(api, episode, stage, data, then)
-        action = stage_next(key, data, set(), only)
+        action = stage_next(key, data, set())
         lines.insert(0, f"next: {action['step']} · {action['detail']}" if action else 'next: nothing to run')
         emit(args, data, '\n'.join(lines) + '\n(dry run: nothing queued)')
         return OK
-    if stage == 'prepare' and not (args.language or episode.get('subtitle_language') or data['episode'].get('subtitle_language')):
-        steps = {item['step']: item for item in data['prepare']['steps']}
-        if not steps['subtitles']['done']:
-            raise Failure('Prepare reads the burned-in subtitles: add --language (e.g. --language Japanese)')
-    episode = {**episode, 'subtitle_language': episode.get('subtitle_language') or data['episode'].get('subtitle_language')}
     run_id = args.run or api.post(f"/api/episodes/{episode['id']}/agent-runs", body={'agent': args.agent, 'purpose': key}).get('id')
     print(f"{stage} on {episode['project']} / {episode['title']} ({episode['id']}), agent run {run_id}", flush=True)
     print(STAGE_HELP[stage], flush=True)
@@ -995,11 +979,11 @@ def cmd_stage(api, args):
             if _triage(api, episode, run_id):
                 continue
         data = stage_data(api, episode, key, span)
-        action = stage_next(key, data, done, only)
+        action = stage_next(key, data, done)
         if action is None:
             break
         print(time.strftime('%H:%M:%S'), f"{action['step']} · {action['detail']}", flush=True)
-        ids = stage_execute(api, episode, action, run_id, args.language)
+        ids = stage_execute(api, episode, action, run_id)
         done.add(action['step'])
         counts[action['step']] = len(action.get('cuts') or []) or 1
         if ids and ids != ['(applied)']:
@@ -1044,11 +1028,10 @@ def cmd_targets(api, args):
 
 
 def cmd_autopilot(api, args):
-    """Replaced by the stages (HARNESS.md D31)."""
-    print('fw autopilot was replaced by three stages you start yourself (docs/autopilot/HARNESS.md D31):\n'
-          '  fw prepare EP --language L   once: cuts, audio, subtitles, boxes, recognition, target frames, then stop\n'
+    """Replaced by the stages (HARNESS.md D31, D37)."""
+    print('fw autopilot was replaced by the stages you start yourself (docs/autopilot/HARNESS.md D31, D37; Run Multiple in the editor):\n'
+          '  fw prepare EP                once: cuts, audio, boxes, recognition, target frames, then stop (--subtitles L reads them too)\n'
           '  fw prepare-cuts EP           cuts whose boundaries or first-frame boxes changed\n'
-          '  fw lines EP                  lines across a hard cut\n'
           '  fw evaluate EP               visual analysis, beats, consistency for the target cuts\n'
           '  fw results EP                answers and Cut summaries (when the profile turns them on)\n'
           '  fw targets EP                what each of them would run on now (add --dry-run to any of them)', file=sys.stderr)
@@ -1207,7 +1190,7 @@ def review_text(api, episode, report):
     section('Target frames to review (Target frames tab):', rows(gates['target_frames'], 'target-frames', lambda item: ', '.join(
         [f"frame {frame['ordinal']} {'/'.join(frame['flags'])}" for frame in item['frames']]
         + ([f"{item['unnamed_people']} unnamed person(s)"] if item['unnamed_people'] else []))))
-    section('Unknown voices (Results → Spoken words → Unknown voices; the link opens the cut of the first line):', [
+    section('Voice questions in the Inbox, asked once by Prepare (the link opens the cut of the first line):', [
         (None, f"voice {voice['speaker_label'] or '(no label)'} · {voice['lines']} line(s), first at {voice['first_time']}s",
          url_at_time(api, episode, voice['first_time'])) for voice in gates['voices']])
     section('Review questions to answer (Results → Your answers):', rows(gates['decisions'], 'analysis', lambda item: f"{item['questions']} question(s)"
@@ -1223,15 +1206,8 @@ def review_text(api, episode, report):
     section('Places where the pictures contradict the stored analysis:', [
         (item['cut'], f"picture {check['picture']} contradicts \"{check['claim']}\" ({check['character']})", url_for_number(api, episode, item['cut'], 'analysis'))
         for item in checks['picture_contradictions'] for check in item['checks']])
-    if checks['lines_to_check']['count']:
-        lines.append(f"Transcript lines with a medium or low speaker confidence (Audio → Lines to check): {checks['lines_to_check']['count']}")
-        lines += [f"  - {line['start_time']}s {line['speaker_label'] or ''}: {url_at_time(api, episode, line['start_time']) or '(no link)'}"
-                  for line in checks['lines_to_check'].get('lines', [])[:LINK_LIMIT]]
     for item in checks['sequences_unconfirmed']:
         lines.append(f"Sequence {item['title'] or item['id']}: dialogue not confirmed (Sequences → Dialogue): {ui_link(api, episode)}")
-    for key, label in (('speaker_attribution_stale', 'Speaker attribution'), ('transcript_stale', 'Transcript')):
-        if checks.get(key):
-            lines.append(f"{label} is stale: {checks[key]}")
     if len(lines) == start:
         lines.append('  none')
     if report['failures']:
@@ -1317,12 +1293,6 @@ def analysis_status(report):
         if cuts_:
             look.append({'key': key, 'text': text, 'cuts': sorted(set(cuts_)),
                          'place': 'characters' if key in ('auto_labels', 'no_boxes') else 'analysis'})
-    lines_to_check = (checks.get('lines_to_check') or {}).get('count')
-    if lines_to_check:
-        look.append({'key': 'lines_to_check', 'text': f'{lines_to_check} transcript line(s) with a medium or low speaker confidence (Audio → Lines to check)', 'cuts': []})
-    for key, text in (('speaker_attribution_stale', 'Speaker attribution is stale'), ('transcript_stale', 'The transcript is stale')):
-        if checks.get(key):
-            look.append({'key': key, 'text': f'{text}: {checks[key]}', 'cuts': []})
     for item in checks.get('sequences_unconfirmed') or []:
         look.append({'key': 'sequence', 'text': f"Sequence {item.get('title') or item['id']}: dialogue not confirmed", 'cuts': []})
     return {'steps': steps, 'person': person, 'look': look}
@@ -1653,63 +1623,36 @@ def cmd_triage(api, args):
 
 # --- missed hard cuts (docs/autopilot/HARNESS.md M2) -------------------------------------------------------------
 
-ANSWER_WORDS = {'split': 'split', 'no-cut': 'no_cut', 'no_cut': 'no_cut', 'unsure': 'unsure'}
-
-
 def cmd_missed_cuts(api, args):
-    if args.action in ('check', 'report'):
-        episode = find_episode(api, args.target, args.latest)
-        span = parse_range(args.extra)
-        if args.action == 'check':
-            result = api.post(f"/api/episodes/{episode['id']}/missed-cuts", body={'from_cut': span[0], 'to_cut': span[1], 'redo': args.redo, 'run_id': args.run})
-            emit(args, result, result.get('detail') or (f"queued the missed-cut check of {range_text(span)}: {result['job_id']}\n"
-                                                        f"wait with: fw wait {episode['id'][:8]} --jobs {result['job_id']}" if result.get('job_id') else ''))
-            return OK
-        data = api.get(f"/api/episodes/{episode['id']}/missed-cuts", {'from_cut': span[0], 'to_cut': span[1]})
-        if args.json:
-            emit(args, data, '')
-            return OK
-        counts = data['counts']
-        lines = [f"{episode['project']} / {episode['title']} · {range_text(span)}: " + ', '.join(f"{name.replace('_', ' ')} {count}" for name, count in counts.items())]
-        splits = [item for item in data['splits'] if not item['undone_at']]
-        if splits:
-            lines.append(f"SPLIT BY THE AGENT ({len(splits)}; undo one with fw agent undo ID --decision):")
-            for item in splits:
-                left = (item['after'] or {}).get('left') or {}
-                link = cut_url(api, episode, left['id']) if left.get('id') else ''
-                lines.append(f"  - {item['summary']} [{item['tier']}]{' (changed by a person since)' if item['overridden_at'] else ''}  id {item['id']}\n    {link}")
-        if data['questions']:
-            lines.append(f"QUESTIONS ({len(data['questions'])}; answer with fw missed-cuts answer ID split|no-cut|unsure):")
-            for item in data['questions']:
-                evidence = item['evidence'] or {}
-                lines.append(f"  - [{'Claude' if item['reviewer'] == 'claude' else 'person'}] {item['question']}  id {item['id']}")
-                lines.append(f"    picture: {api.url}{evidence.get('strip', '')}")
-                if evidence.get('cut_id'):
-                    lines.append(f"    cut: {cut_url(api, episode, evidence['cut_id'])}")
-        print('\n'.join(lines))
-        return BLOCKED if data['questions'] else OK
-    if not args.target:
-        raise Failure(f'fw missed-cuts {args.action} needs an escalation id (fw missed-cuts report EP lists them)')
-    if args.action == 'strip':
-        question = api.get(f'/api/escalations/{quote(args.target)}')
-        evidence = question.get('evidence') or {}
-        if question.get('kind') != 'missed_cut' or not evidence.get('strip'):
-            raise Failure(f'{args.target} is not a missed-cut question')
-        image = api.raw(evidence['strip'].split('?')[0], {'time': evidence['time']})
-        out = args.out or f"missed-cut-{args.target[:8]}.jpg"
-        with open(out, 'wb') as handle:
-            handle.write(image)
-        emit(args, {'file': out, 'question': question['question']}, f"{out}\n{question['question']}")
+    """check queues the checker (it splits the peaks it is sure of and only counts the rest: HARNESS.md D37); report lists
+    what it split and the cuts it was unsure of. It never asks anything."""
+    episode = find_episode(api, args.target, args.latest)
+    span = parse_range(args.extra)
+    if args.action == 'check':
+        result = api.post(f"/api/episodes/{episode['id']}/missed-cuts", body={'from_cut': span[0], 'to_cut': span[1], 'redo': args.redo, 'run_id': args.run})
+        emit(args, result, result.get('detail') or (f"queued the missed-cut check of {range_text(span)}: {result['job_id']}\n"
+                                                    f"wait with: fw wait {episode['id'][:8]} --jobs {result['job_id']}" if result.get('job_id') else ''))
         return OK
-    if args.action == 'answer':
-        reply = ANSWER_WORDS.get((args.extra or '').lower())
-        if not reply:
-            raise Failure('answer split, no-cut or unsure')
-        result = api.post(f'/api/escalations/{quote(args.target)}/missed-cut', body={'answer': reply, 'tier': args.tier, 'run_id': args.run, 'note': args.note})
-        emit(args, result, {'resolved': 'answered' + (f"; split (decision {result['decision_id']})" if result.get('decision_id') else ''),
-                            'handed_to_person': 'handed to the person', 'open': 'left open'}.get(result.get('status'), str(result)))
+    data = api.get(f"/api/episodes/{episode['id']}/missed-cuts", {'from_cut': span[0], 'to_cut': span[1]})
+    if args.json:
+        emit(args, data, '')
         return OK
-    raise Failure(f'unknown action {args.action!r}')
+    counts = data['counts']
+    lines = [f"{episode['project']} / {episode['title']} · {range_text(span)}: " + ', '.join(f"{name.replace('_', ' ')} {count}" for name, count in counts.items())]
+    splits = [item for item in data['splits'] if not item['undone_at']]
+    if splits:
+        lines.append(f"SPLIT BY THE AGENT ({len(splits)}; undo one with fw agent undo ID --decision):")
+        for item in splits:
+            left = (item['after'] or {}).get('left') or {}
+            link = cut_url(api, episode, left['id']) if left.get('id') else ''
+            lines.append(f"  - {item['summary']} [{item['tier']}]{' (changed by a person since)' if item['overridden_at'] else ''}  id {item['id']}\n    {link}")
+    unsure = [item for item in data.get('cuts') or [] if item.get('grey')]
+    if unsure:
+        lines.append(f"UNSURE, LEFT AS THEY ARE ({len(unsure)} cut(s); split them in the editor if you see a cut):")
+        for item in unsure:
+            lines.append(f"  - cut {item['cut']} at {', '.join(f'{moment:.2f}s' for moment in item['grey'])}\n    {cut_url(api, episode, item['cut_id'])}")
+    print('\n'.join(lines))
+    return OK
 
 
 # --- lines across hard cuts (docs/autopilot/HARNESS.md M3) -------------------------------------------------------
@@ -2071,7 +2014,6 @@ def parser():
         command.add_argument('--redo', action='store_true', help='also cuts that already have it (where the step supports it)')
         command.add_argument('--save', action='store_true', help='answers: save the drafts as your answers instead of suggestions')
         command.add_argument('--language', help='subtitle language for setup/subtitles (default: the episode setting)')
-        command.add_argument('--replace-manual', action='store_true', help='transcribe: also replace lines you edited by hand')
 
     sub.add_parser('health', parents=[common], help='is the server up').set_defaults(func=cmd_health)
     command = sub.add_parser('episodes', parents=[common], help='list episodes')
@@ -2127,9 +2069,9 @@ def parser():
     command.add_argument('--proposal', help="JSON: the agent's own answer")
     command.add_argument('--evidence', help='JSON: why it asks')
     command.add_argument('--run', help='the agent run that asks')
-    command = episode_command('diagnose', cmd_diagnose, 'per cut, what is wrong and why, worst cuts first (failed, stale, contradictions, missing, lines across cuts)', rng=True)
+    command = episode_command('diagnose', cmd_diagnose, 'per cut, what is wrong and why, worst cuts first (failed, stale, contradictions, missing)', rng=True)
     command.add_argument('--limit', type=int, default=30, help='how many cuts to list (default 30)')
-    command.add_argument('--kind', choices=('failed', 'stale', 'contradiction', 'person', 'missing', 'line_crossing', 'auto_labels', 'no_boxes'),
+    command.add_argument('--kind', choices=('failed', 'stale', 'contradiction', 'person', 'missing', 'auto_labels', 'no_boxes'),
                          help='only cuts with this kind of problem')
     command = episode_command('why', cmd_why, "why one cut's step is not done: its prerequisites down to the first broken one")
     command.add_argument('number', nargs='?', help='cut number as shown in the editor')
@@ -2138,16 +2080,13 @@ def parser():
     command = episode_command('triage', cmd_triage, 'classify failed runs and the fix rule for each; --go applies them as agent decisions (exit 2 asked a person, 3 waiting)')
     command.add_argument('--go', action='store_true', help='apply the fixes (otherwise only print the plan)')
     command.add_argument('--run', help='the agent run the fixes belong to (fw agent start)')
-    command = sub.add_parser('missed-cuts', parents=[common], help='hard cuts the detection missed: check EP [RANGE], report EP [RANGE], strip ID, answer ID split|no-cut|unsure')
-    command.add_argument('action', choices=('check', 'report', 'strip', 'answer'))
-    command.add_argument('target', nargs='?', help='episode (check, report) or question id (strip, answer)')
-    command.add_argument('extra', nargs='?', help='check/report: the cut range; answer: split, no-cut or unsure')
+    command = sub.add_parser('missed-cuts', parents=[common], help='hard cuts the detection missed: check EP [RANGE], report EP [RANGE]')
+    command.add_argument('action', choices=('check', 'report'))
+    command.add_argument('target', nargs='?', help='the episode')
+    command.add_argument('extra', nargs='?', help='the cut range')
     command.add_argument('--latest', action='store_true', help='the newest episode')
     command.add_argument('--redo', action='store_true', help='check: also cuts already checked with these boundaries')
     command.add_argument('--run', help='the agent run (fw agent start)')
-    command.add_argument('--tier', default='human', choices=('claude', 'human'), help='answer: who answers (claude = the second reviewer)')
-    command.add_argument('--note', help='answer: why (kept with the question)')
-    command.add_argument('--out', help='strip: file to write (default missed-cut-ID.jpg)')
     command.set_defaults(func=cmd_missed_cuts)
     command = episode_command('line-splits', cmd_line_splits, 'transcript lines across hard cuts: preview what the splitter would do, or run it')
     command.add_argument('action', nargs='?', default='preview', choices=('preview', 'run'))
@@ -2199,16 +2138,19 @@ def parser():
     command.add_argument('--out', help='sheet: file to write')
     command.set_defaults(func=cmd_characters, range=None)
     for stage, help_text in STAGE_HELP.items():
-        command = episode_command(stage, cmd_stage, help_text, rng=stage not in ('prepare', 'lines'))
+        command = episode_command(stage, cmd_stage, help_text, rng=stage in ('evaluate', 'results'))
         command.set_defaults(stage=stage)
-        command.add_argument('--run', help='an agent run to add to (default: start one)')
-        command.add_argument('--agent', default='fw', help='the agent name recorded on the run')
         command.add_argument('--timeout', type=int, default=0, help='stop waiting after this many seconds (exit 3; 0: no limit)')
-        command.add_argument('--language', help='prepare: the subtitle language (default: the episode setting)')
+        if stage == 'results':
+            command.add_argument('--run', help='an agent run to add to (default: start one)')
+            command.add_argument('--agent', default='fw', help='the agent name recorded on the run')
+        if stage == 'prepare':
+            command.add_argument('--subtitles', '--language', dest='subtitles',
+                                 help='also read the burned-in subtitles in this language (optional; nothing waits for them)')
         if stage == 'evaluate':
             command.add_argument('--only', choices=EVALUATE_STEPS, help='run only this step (visual: no beats are queued after it)')
     episode_command('targets', cmd_targets, 'the dry run of every stage: target cuts per step, cuts held for you and why, the inbox', rng=True)
-    command = sub.add_parser('autopilot', help='replaced by prepare, prepare-cuts, lines, evaluate and results')
+    command = sub.add_parser('autopilot', help='replaced by prepare, prepare-cuts, evaluate and results')
     command.add_argument('rest', nargs=argparse.REMAINDER)
     command.set_defaults(func=cmd_autopilot)
     command = sub.add_parser('digest', parents=[common], help='what agents did and what is left, with the links to open')

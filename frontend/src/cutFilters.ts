@@ -21,17 +21,13 @@ const enabled = (cut: Cut) => cut.active && cut.analysis_enabled
 const expectsCharacters = (cut: Cut) => enabled(cut) && !cut.no_characters
 
 const NEED_LOOK: Record<NeedKey, { color: string; hint: string; fallback?: (cut: Cut) => boolean }> = {
-  missed_cut: { color: '#ff9f6e', hint: 'The agent found a possible hard cut inside this cut and asks you whether to split it' },
-  line_split: { color: '#f7b2d9', hint: 'A transcript line crosses this cut\'s hard cut and the agent asks how to divide it' },
-  voice: { color: '#f0c979', hint: 'Spoken lines in this cut have no character, or the agent asks who a voice is' },
-  speaker_unsure: { color: '#e8b04a', hint: 'A line has a low-confidence speaker nobody confirmed: the autopilot holds this cut\'s beats until you set or confirm it' },
+  voice: { color: '#f0c979', hint: 'Prepare asked who a voice heard in this cut is (once, in the Inbox); its beats wait for the answer' },
   box_names: { color: '#4cc9f0', hint: 'A first-frame box has no character, or the agent asks who a person is',
     fallback: cut => expectsCharacters(cut) && !!cut.has_boxes && !!cut.has_unlabeled_boxes },
   target_frames: { color: '#e2709c', hint: 'Target frames are flagged for review or show an unnamed person',
     fallback: cut => expectsCharacters(cut) && !!cut.has_unlabeled_target_boxes },
   decisions: { color: '#f0a64a', hint: 'The consistency review asks questions that have no answer saved since it was written' },
   picture_check: { color: '#ff7a8a', hint: 'A picture of the cut contradicts what the analysis says' },
-  lines_to_check: { color: '#d9c27a', hint: 'The speaker of a line was attributed with medium or low confidence' },
   failed_run: { color: '#ff6b6b', hint: 'A failed run on this cut waits for you to retry or dismiss it' },
 }
 
@@ -82,6 +78,8 @@ export function matchesAnyFilter(cut: Cut, active: ReadonlySet<CutFilterKey>, ne
 const STORAGE_KEY = 'timeline-cut-filters'
 
 // Filters that were folded into the "Needs you" group keep a saved selection.
+// Filters that were renamed map to their new key; removed ones (missed_cut, line_split, speaker_unsure, lines_to_check: never
+// a need since HARNESS.md D37) are dropped because no filter has their key any more.
 const RENAMED: Record<string, CutFilterKey> = { unknown_characters: 'box_names', unknown_target_characters: 'target_frames' }
 
 /** Reads what was saved: the current `{keys, display}` object or the older plain list of keys. */

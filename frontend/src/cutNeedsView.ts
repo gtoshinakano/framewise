@@ -4,7 +4,8 @@
 import type { Cut } from './api'
 import type { DialogTab, RunSection } from './cutRoute'
 
-export type NeedKey = 'missed_cut' | 'line_split' | 'voice' | 'speaker_unsure' | 'box_names' | 'target_frames' | 'decisions' | 'picture_check' | 'lines_to_check' | 'failed_run'
+// Missed cuts and lines across a hard cut are never a need, and a voice is one only while its question is open (HARNESS.md D37).
+export type NeedKey = 'voice' | 'box_names' | 'target_frames' | 'decisions' | 'picture_check' | 'failed_run'
 export type StepKey = 'boxes' | 'target' | 'first_frame' | 'keyframes' | 'beats' | 'consistency' | 'summary'
 export type PersonNeed = { key: NeedKey; count: number; escalation_ids: string[] }
 export type CutNeeds = { steps: StepKey[]; people: PersonNeed[]; claude: { kind: string; escalation_id: string }[]; answered_by: string[]; analysis_off: boolean; stale?: { title: string; reason: string }[] }
@@ -13,18 +14,14 @@ export type NeedsMap = ReadonlyMap<string, CutNeeds>
 export const EMPTY_NEEDS: NeedsMap = new Map()
 
 /** The order of an episode's flow (backend cut_needs.PEOPLE): a cut change first, the review answers late. */
-export const NEED_ORDER: NeedKey[] = ['missed_cut', 'line_split', 'voice', 'speaker_unsure', 'box_names', 'target_frames', 'decisions', 'picture_check', 'lines_to_check', 'failed_run']
+export const NEED_ORDER: NeedKey[] = ['voice', 'box_names', 'target_frames', 'decisions', 'picture_check', 'failed_run']
 
 export const NEED_LABEL: Record<NeedKey, string> = {
-  missed_cut: 'Possible missed cut',
-  line_split: 'Line across a hard cut',
   voice: 'Unknown voice',
-  speaker_unsure: 'Speaker unsure',
   box_names: 'Name the boxes',
   target_frames: 'Target frames to check',
   decisions: 'Review questions',
   picture_check: 'Picture disagrees',
-  lines_to_check: 'Lines to check',
   failed_run: 'Failed run',
 }
 
@@ -51,8 +48,6 @@ export function placeForNeed(key: NeedKey): NeedPlace {
     case 'decisions': return { tab: 'results', anchor: 'decisions' }
     case 'picture_check': return { tab: 'results', anchor: 'picture-check' }
     case 'voice': return { tab: 'results', anchor: 'voices' }
-    case 'speaker_unsure':
-    case 'lines_to_check': return { tab: 'results', anchor: 'lines' }
     default: return { tab: 'results', anchor: 'other-decisions' }
   }
 }

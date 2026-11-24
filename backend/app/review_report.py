@@ -9,7 +9,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from . import anime_bulk, cut_readiness, db, media, review_decisions, runs, sequence_store, subtitle_store
+from . import agent_log, anime_bulk, cut_readiness, db, media, review_decisions, runs, sequence_store, subtitle_store
 
 router = APIRouter(prefix='/api')
 
@@ -38,9 +38,6 @@ CUT_FLAGS = """EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a
         -- created_at made SQLite read every candidate job's row past its payload_json, megabytes per cut.
         COALESCE((SELECT j.status='failed' FROM analysis_job_cuts jc JOIN jobs j ON j.id=jc.job_id WHERE jc.cut_id=c.id ORDER BY j.rowid DESC LIMIT 1),0) AS last_job_failed"""
 
-LISTED_LINES = 20
-
-
 def _has(structured_type):
     return f"""EXISTS(SELECT 1 FROM analysis_results a WHERE a.cut_id=c.id AND a.superseded_by IS NULL
                AND json_extract(a.settings_json,'$.structured_type')='{structured_type}')"""
@@ -56,6 +53,7 @@ def _loads(text, default):
 
 
 def _setup(conn, episode):
+    """Which setup steps are done. ``subtitles`` is information only: they are optional and nothing waits for them (D37)."""
     folder = media.episode_dir(episode['project_id'], episode['id'])
     subtitles = subtitle_store.current_run(episode['id'], conn)
     transcribed = episode['has_audio'] == 0 or bool(conn.execute("""SELECT 1 FROM jobs WHERE episode_id=? AND pipeline='transcribe'
@@ -63,7 +61,7 @@ def _setup(conn, episode):
     return {'media': bool(episode['duration']) and (folder / 'proxy.mp4').is_file(),
             'cuts': bool(conn.execute('SELECT 1 FROM cuts WHERE episode_id=? AND active=1 LIMIT 1', (episode['id'],)).fetchone()),
             'transcript': transcribed,
-            'subtitles': bool(subtitles) and not subtitles.get('stale_reason'),
+            'subtitles': bool(subtitles),
             'boxes': not anime_bulk.eligible_cuts(conn, episode['id'], 'full')}
 
 
@@ -95,26 +93,18 @@ def _consistency(conn, cut_id):
 
 
 def _voices(conn, episode_id, start, end):
-    # An unknown voice is asked once: lines the person left as they are no longer count (cut_readiness.speaker_open).
-    rows = conn.execute(f"""SELECT speaker_label,COUNT(*) AS lines,MIN(start_time) AS first_time FROM transcript_segments
-        WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND character_context_id IS NULL
-        AND COALESCE(speaker_source,'')<>'{cut_readiness.LEFT_UNKNOWN}'
-        AND (? IS NULL OR end_time>?) AND (? IS NULL OR start_time<?)
-        GROUP BY speaker_label ORDER BY lines DESC, first_time""", (episode_id, start, start, end, end)).fetchall()
-    return [{'speaker_label': row['speaker_label'], 'lines': row['lines'], 'first_time': round(row['first_time'], 2)} for row in rows]
-
-
-def _lines_to_check(conn, episode_id, start, end):
-    # frontend/src/TranscriptEditor.tsx needsCheck: unsure lines nobody decided, other than the ones a voice question asks
-    # about already (no character: the voices gate), so one line is flagged once.
-    decided = ','.join(f"'{value}'" for value in cut_readiness.DECIDED_SPEAKERS)
-    rows = conn.execute(f"""SELECT start_time,speaker_label,confidence,text FROM transcript_segments
-        WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND confidence IN ('medium','low')
-        AND character_context_id IS NOT NULL AND COALESCE(speaker_source,'') NOT IN ({decided})
-        AND (? IS NULL OR end_time>?) AND (? IS NULL OR start_time<?) ORDER BY start_time""", (episode_id, start, start, end, end)).fetchall()
-    return {'count': len(rows),
-            'lines': [{'start_time': round(row['start_time'], 2), 'speaker_label': row['speaker_label'], 'confidence': row['confidence'],
-                       'text': row['text'][:80]} for row in rows[:LISTED_LINES]]}
+    """The open voice questions, one per voice: raised once, by Prepare's voice resolver (HARNESS.md D29, D37). Line state
+    alone is never a gate, so a re-transcription or a later attribution adds nothing here."""
+    found = []
+    for item in agent_log.escalations(conn, episode_id, 'open', kind='voice', limit=5000):
+        evidence = item['evidence'] or {}
+        ids = list(evidence.get('line_ids') or [])
+        lines = conn.execute(f"SELECT start_time,end_time FROM transcript_segments WHERE id IN ({','.join('?' for _ in ids)})", ids).fetchall() if ids else []
+        if start is not None and not any(line['end_time'] > start and line['start_time'] < end for line in lines):
+            continue
+        found.append({'speaker_label': evidence.get('voice_label'), 'lines': len(ids), 'reviewer': item['reviewer'], 'escalation_id': item['id'],
+                      'first_time': round(min((line['start_time'] for line in lines), default=0.0), 2)})
+    return sorted(found, key=lambda item: (-item['lines'], item['first_time']))
 
 
 def _sequences(conn, episode_id):
@@ -139,7 +129,6 @@ def report(conn, episode_id, from_cut=None, to_cut=None):
     if to_cut is not None and to_cut < (from_cut or 1):
         raise HTTPException(422, 'to_cut must not be before from_cut')
     episode = dict(episode)
-    readiness_episode = cut_readiness.episode_speech(episode)
     first, last = max(0, (from_cut or 1) - 1), (to_cut - 1 if to_cut is not None else None)
     cuts = [dict(row) for row in conn.execute(f"""SELECT c.id,c.cut_index,c.start_time,c.end_time,c.analysis_enabled,c.no_characters,
         {CUT_FLAGS},
@@ -210,7 +199,7 @@ def report(conn, episode_id, from_cut=None, to_cut=None):
     enabled = [cut for cut in cuts if cut['analysis_enabled']]
     inbox = cut_readiness.inbox(conn, episode_id, enabled)
     for cut in enabled:
-        ready = cut_readiness.for_cut(conn, episode, cut, readiness_episode, inbox.get(cut['id'], set()))
+        ready = cut_readiness.for_cut(conn, episode, cut, inbox.get(cut['id'], set()))
         for step, reasons in ready['held'].items():
             if reasons:
                 progress['held'][step].append({'cut': cut['cut_index'] + 1, 'cut_id': cut['id'], 'reasons': reasons})
@@ -218,10 +207,7 @@ def report(conn, episode_id, from_cut=None, to_cut=None):
     start, end = (cuts[0]['start_time'], cuts[-1]['end_time']) if ranged and cuts else (None, None)
     if not ranged or cuts:
         gates['voices'] = _voices(conn, episode_id, start, end)
-    checks['lines_to_check'] = _lines_to_check(conn, episode_id, start, end) if not ranged or cuts else {'count': 0, 'lines': []}
     checks['sequences_unconfirmed'] = _sequences(conn, episode_id)
-    checks['speaker_attribution_stale'] = episode.get('speaker_attribution_stale_reason')
-    checks['transcript_stale'] = episode.get('transcript_stale_reason')
     return {'episode': {'id': episode['id'], 'project_id': episode['project_id'], 'title': episode['title'],
                         'subtitle_language': episode.get('subtitle_language'), 'has_audio': episode['has_audio']},
             'range': {'from_cut': first + 1, 'to_cut': to_cut} if ranged else None,

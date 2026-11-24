@@ -211,13 +211,13 @@ def escalate(conn, *, episode_id, kind, group_key, question, cut_ids=(), options
 
 
 def settle(conn, episode_id):
-    """Close every open question the person already settled outside the inbox (a box named in the cut dialog, a line split
-    by hand, a run retried...): each kind's own rule. Call it in the transaction of an edit; cheap when nothing is open."""
+    """Close every open question the person already settled outside the inbox (a box named in the cut dialog, a voice given
+    in the line editor, a run retried...): each kind's own rule. Call it in the transaction of an edit; cheap when nothing is open."""
     if not episode_id or not conn.execute("SELECT 1 FROM agent_escalations WHERE episode_id=? AND status='open' LIMIT 1", (episode_id,)).fetchone():
         return 0
-    from . import character_decisions, line_splits, missed_cuts, review_decisions, triage, voice_resolver
-    return sum(rule(conn, episode_id) for rule in (missed_cuts.close_settled, line_splits.close_settled, voice_resolver.close_settled,
-                                                    character_decisions.close_settled, triage.settle, review_decisions.close_settled))
+    from . import character_decisions, review_decisions, triage, voice_resolver
+    return sum(rule(conn, episode_id) for rule in (voice_resolver.close_settled, character_decisions.close_settled, triage.settle,
+                                                    review_decisions.close_settled))
 
 
 def escalation_view(row):

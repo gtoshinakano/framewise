@@ -1,10 +1,9 @@
 """Routes of the missed-cut checker (M2, ``missed_cuts.py``) and the line splitter (M3, ``line_splits.py``), docs/autopilot/HARNESS.md.
 
-Queue a check, read what it found, fetch the strip a reviewer looks at, and answer a question (Claude as the second
-reviewer, or the person). The split itself happens in the job's transaction or in the answer's, never over HTTP elsewhere.
+Queue a check, read what it found and fetch the strip around a peak. Neither raises a question (HARNESS.md D37): the
+checker splits only the peaks it is sure of, in the job's transaction, and the line splitter applies or leaves each line.
 """
 import json
-from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -20,13 +19,6 @@ class MissedCutCheck(BaseModel):
     to_cut: int | None = Field(default=None, ge=1)
     redo: bool = False
     run_id: str | None = None
-
-
-class MissedCutAnswer(BaseModel):
-    answer: Literal['split', 'no_cut', 'unsure']
-    tier: Literal['claude', 'human'] = 'human'
-    run_id: str | None = None
-    note: str | None = Field(default=None, max_length=1000)
 
 
 @router.post('/api/episodes/{episode_id}/missed-cuts', summary='Queue a check for hard cuts the detection missed')
@@ -50,7 +42,7 @@ def queue_missed_cut_check(episode_id: str, body: MissedCutCheck):
     return {'job_id': job_id, 'job_ids': [job_id]}
 
 
-@router.get('/api/episodes/{episode_id}/missed-cuts', summary="What the checker found: per cut its verdict, the splits applied and the open questions")
+@router.get('/api/episodes/{episode_id}/missed-cuts', summary="What the checker found: per cut its verdict and the splits applied")
 def missed_cut_report(episode_id: str, from_cut: int | None = None, to_cut: int | None = None):
     with db.connect() as conn:
         if not conn.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
@@ -75,8 +67,7 @@ def missed_cut_report(episode_id: str, from_cut: int | None = None, to_cut: int 
                 result = json.loads(row['result_json'])
                 items.append({'cut': row['cut_index'] + 1, 'cut_id': row['id'], 'verdict': row['verdict'], 'split_at': result['split_at'], 'grey': result['grey']})
         splits = agent_log.decisions(conn, episode_id=episode_id, kind=missed_cuts.KIND, limit=500)
-        questions = agent_log.escalations(conn, episode_id, 'open', missed_cuts.ESCALATION)
-        return {'counts': counts, 'cuts': items, 'splits': splits, 'questions': questions}
+        return {'counts': counts, 'cuts': items, 'splits': splits}
 
 
 @router.get('/api/cuts/{cut_id}/missed-cut-strip', summary='Two frames before and two after a moment, with a red bar between them (JPEG)')
@@ -93,27 +84,6 @@ def missed_cut_strip(cut_id: str, time: float):
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return Response(data, media_type='image/jpeg', headers={'Cache-Control': 'no-cache'})
-
-
-@router.post('/api/escalations/{escalation_id}/missed-cut', summary='Answer a missed-cut question: split, no_cut or unsure')
-def answer_missed_cut(escalation_id: str, body: MissedCutAnswer):
-    from . import cut_previews
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        try:
-            outcome = missed_cuts.answer(conn, escalation_id, body.answer, body.tier, body.run_id, body.note)
-        except KeyError:
-            raise HTTPException(404, 'Escalation not found') from None
-        except missed_cuts.Refused as exc:
-            raise HTTPException(409, str(exc)) from exc
-        cancelled = []
-        if outcome['changed']:
-            row = conn.execute('SELECT episode_id FROM agent_escalations WHERE id=?', (escalation_id,)).fetchone()
-            episode = conn.execute('SELECT * FROM episodes WHERE id=?', (row['episode_id'],)).fetchone()
-            cancelled = cut_previews.after_timeline_edit(conn, episode, set(outcome['changed']))
-    worker.after_cancel(cancelled)
-    worker.wake_event.set()
-    return outcome
 
 
 # --- line splits at hard cuts (M3, line_splits.py) ----------------------------------------------------------------
@@ -157,33 +127,3 @@ def preview_line_splits(episode_id: str):
                           **{key: plan.get(key) for key in ('action', 'why', 'at', 'left', 'right', 'start', 'end')}})
         applied = agent_log.decisions(conn, episode_id=episode_id, kind=line_splits.KIND, limit=1000)
         return {'counts': counts, 'lines': items, 'applied': applied}
-
-
-class LineSplitAnswer(BaseModel):
-    answer: Literal['apply', 'leave']
-    run_id: str | None = None
-    note: str | None = Field(default=None, max_length=1000)
-
-
-@router.post('/api/escalations/{escalation_id}/line-split', summary="Answer a line-split question (asked when the profile says Ask me): apply the plan or leave the line")
-def answer_line_split(escalation_id: str, body: LineSplitAnswer):
-    with db.connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute("SELECT * FROM agent_escalations WHERE id=? AND kind='line_split'", (escalation_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, 'Escalation not found')
-        if row['status'] != 'open':
-            raise HTTPException(409, 'This question is already closed')
-        line_id = row['group_key'].split(':', 1)[1]
-        if body.answer == 'leave':
-            agent_log.close_escalation(conn, escalation_id, 'resolved', {'answer': 'leave', 'note': body.note})
-            return {'status': 'left'}
-        line = conn.execute('SELECT * FROM transcript_segments WHERE id=? AND superseded_by IS NULL AND deleted=0', (line_id,)).fetchone()
-        planned = [item for item in line_splits.plan_episode(conn, row['episode_id'], [dict(line)]) if item[2]['action'] != 'leave'] if line else []
-        if not planned:
-            agent_log.close_escalation(conn, escalation_id, 'dismissed', {'why': 'the line changed or no longer crosses a cut'})
-            return {'status': 'outdated'}
-        source, cut, plan = planned[0]
-        made = line_splits.apply_plan(conn, source, cut, plan, run_id=body.run_id, tier='human')
-        agent_log.close_escalation(conn, escalation_id, 'resolved', {'answer': 'apply', 'rows': made, 'note': body.note})
-        return {'status': 'applied', 'rows': made}

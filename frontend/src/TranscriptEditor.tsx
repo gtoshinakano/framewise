@@ -89,7 +89,7 @@ function SegmentEditor({ draft, setDraft, characters, duration, playhead, busy, 
   </div>
 }
 
-export default function TranscriptEditor({ episodeId, projectId, duration, playhead, segments, selectedId, onSelect, onSaved, playRange, hasAudio, transcriptStale, attributionStale, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection, view, onViewChange }: {
+export default function TranscriptEditor({ episodeId, projectId, duration, playhead, segments, selectedId, onSelect, onSaved, playRange, hasAudio, subtitleLanguage, subtitleRun, jobs, audioSelection, onAudioSelection, view, onViewChange }: {
   episodeId: string
   projectId: string
   duration: number
@@ -100,8 +100,6 @@ export default function TranscriptEditor({ episodeId, projectId, duration, playh
   onSaved: () => Promise<void>
   playRange: (start: number, end: number) => void
   hasAudio: boolean
-  transcriptStale: string | null
-  attributionStale: string | null
   subtitleLanguage: string | null
   subtitleRun: SubtitleRun | null
   jobs: Job[]
@@ -228,10 +226,6 @@ export default function TranscriptEditor({ episodeId, projectId, duration, playh
       ]} />
     </div>
     {error && <p role="alert" className="mx-4 mt-3 flex items-start justify-between gap-2 text-xs text-[#ff9fa7]">{error}<button onClick={() => setError('')} aria-label="Dismiss"><X size={13} /></button></p>}
-    {(transcriptStale || attributionStale) && <div className="is-stale space-y-1 border-b px-4 py-2 text-xs text-[#f2a877]">
-      {transcriptStale && <div className="flex flex-wrap items-center justify-between gap-1"><span>{transcriptStale}</span><button type="button" className="btn btn-quiet !py-1 !text-xs" disabled={busy || !!transcribing} onClick={() => void queueAudio('/transcribe')}>Transcribe again</button></div>}
-      {attributionStale && <div className="flex flex-wrap items-center justify-between gap-1"><span>{attributionStale}</span><button type="button" className="btn btn-quiet !py-1 !text-xs" disabled={busy || attributing} onClick={() => void queueAudio('/speaker-attribution')}>Attribute speakers again</button></div>}
-    </div>}
     <div className="scrollbar min-h-0 flex-1 overflow-y-auto">
       {view === 'lines' && <div className="p-4">
         <div className="mb-3 flex items-center justify-between gap-2">

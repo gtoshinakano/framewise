@@ -1,5 +1,5 @@
 import { WebSearchSources } from './WebSearchSources'
-import { AlertTriangle, BookOpen, Bot, Inbox, Shirt, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
+import { AlertTriangle, BookOpen, Bot, Inbox, Shirt, BoxSelect, ChevronDown, ChevronRight, Clapperboard, FolderOpen, Layers, ListChecks, LoaderCircle, MoreHorizontal, RefreshCw, RotateCcw, ScanFace, Scissors, Settings2, Trash2, UserSearch, Users } from 'lucide-react'
 import { LocalModelControl } from './LocalModelControl'
 import { VisualEngineControl } from './VisualEngineControl'
 import { Menu, type MenuEntry } from './Popover'
@@ -10,7 +10,7 @@ export type CharacterStep = 'character-boxes' | 'character-detection' | 'charact
 const go = (path: string) => { window.location.hash = path }
 
 /** The episode editor's top bar: where you are, the episode-wide actions grouped in menus, and the queue. */
-export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onPrepareEpisode, queue, running, onOpenQueue, inbox, onOpenInbox, onOpenSettings, onOpenGlossary, onOpenOutfits, onOpenMatcher, onEditCharacter, onOpenAutopilot, onDeleteEpisode }: {
+export function EditorHeader({ projectId, projectTitle, episodeTitle, status, stage, hasCuts, mediaBlocked, characterBlock, onCharacterStep, onDetectCuts, onPrepare, onRunMultiple, queue, running, onOpenQueue, inbox, onOpenInbox, onOpenSettings, onOpenGlossary, onOpenOutfits, onOpenMatcher, onEditCharacter, onOpenAutopilot, onDeleteEpisode }: {
   projectId?: string
   projectTitle?: string
   episodeTitle?: string
@@ -24,7 +24,8 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
   onCharacterStep: (step: CharacterStep) => void
   onDetectCuts: () => void
   onPrepare: () => void
-  onPrepareEpisode: () => void
+  /** Open Run Multiple (the batch stages: Prepare, Update changed cuts, Evaluate), on Prepare when asked. */
+  onRunMultiple: (stage?: 'prepare') => void
   /** The episode's queue counter (backend runs.summary); null until the first status response. */
   queue: QueueSummary | null
   /** Anything of this episode running, GPU or media work. */
@@ -55,7 +56,7 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
     { key: 'outfits', icon: Shirt, title: 'Outfits…', hint: 'What each character wears, shared by every episode. The Sequence director fills it.', disabled: !projectId, onSelect: onOpenOutfits },
   ]
   const cutItems: MenuEntry[] = [
-    ...(hasCuts ? [{ key: 'prepare-episode', icon: ListChecks, title: 'Prepare episode…', onSelect: onPrepareEpisode }] : []),
+    { key: 'prepare-episode', icon: Layers, title: 'Prepare episode…', hint: 'Run Multiple → Prepare: what it will run, once per episode.', onSelect: () => onRunMultiple('prepare') },
     { key: 'redetect', icon: Scissors, tone: hasCuts ? 'caution' : undefined, title: hasCuts ? 'Redetect all cuts…' : 'Detect hard cuts',
       hint: hasCuts ? 'Notes stay on matching cuts. Earlier cut edits can no longer be undone.' : undefined, disabled: !!mediaBlocked, disabledReason: mediaBlocked, onSelect: onDetectCuts },
     { key: 'prepare', icon: RefreshCw, title: 'Rebuild preview & waveform', hint: 'Creates the preview video, frames, audio and waveform again (Prepare).', disabled: !!mediaBlocked, disabledReason: mediaBlocked, onSelect: onPrepare },
@@ -80,10 +81,11 @@ export function EditorHeader({ projectId, projectTitle, episodeTitle, status, st
       <Menu label="Character detection" items={characterItems} align="end" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md icon-btn-text" title="Character detection"><Users size={16} className="text-[#7bdcb2]" aria-hidden /><span className="hidden lg:inline">Characters</span><ChevronDown size={13} aria-hidden /></button>} />
       {hasCuts
         ? <Menu label="Cuts and media" items={cutItems} align="end" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md icon-btn-text" title="Cuts and media"><Scissors size={16} className="text-[#bca7ff]" aria-hidden /><span className="hidden lg:inline">Cuts</span><ChevronDown size={13} aria-hidden /></button>} />
-        : <>
-          <button type="button" onClick={onPrepareEpisode} className="icon-btn icon-btn-md icon-btn-text tone-primary"><ListChecks size={16} aria-hidden /><span>Prepare episode</span></button>
-          <Menu label="Media" items={cutItems} align="end" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md" aria-label="Media actions" title="Media actions"><ChevronDown size={14} aria-hidden /></button>} />
-        </>}
+        : <Menu label="Media" items={cutItems} align="end" trigger={props => <button type="button" {...props} className="icon-btn icon-btn-md" aria-label="Media actions" title="Media actions"><ChevronDown size={14} aria-hidden /></button>} />}
+      <button type="button" onClick={() => onRunMultiple(hasCuts ? undefined : 'prepare')} className={`icon-btn icon-btn-md icon-btn-text ${hasCuts ? '' : 'tone-primary'}`}
+        title="Run Multiple: Prepare once, update changed cuts, evaluate the cuts that need it. See what will run before it runs.">
+        <Layers size={16} className={hasCuts ? 'text-[#b496ff]' : undefined} aria-hidden /><span>Run Multiple</span>
+      </button>
       <span className="mx-1 hidden h-5 w-px bg-[#333945] sm:block" aria-hidden />
       <button type="button" onClick={() => onOpenQueue()} className="icon-btn icon-btn-md icon-btn-text" title={counterTitle(queue)} aria-label={`Queue and history. ${counterTitle(queue)}`}>
         {running || queue?.busy ? <LoaderCircle size={16} className="animate-spin text-[#f5c678] motion-reduce:animate-none" aria-hidden /> : <ListChecks size={16} aria-hidden />}

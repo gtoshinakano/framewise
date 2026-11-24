@@ -53,9 +53,17 @@ async def lifespan(_app: FastAPI):
             await asyncio.sleep(30)
             frame_cache.clear_expired()
     cleaner = asyncio.create_task(clear_cache_periodically())
+    from . import batch_runs
+    async def advance_batch_runs():
+        # Run Multiple: each running run takes its next step once its jobs are over (batch_runs.tick)
+        while True:
+            await asyncio.sleep(batch_runs.TICK_SECONDS)
+            await asyncio.to_thread(batch_runs.tick)
+    advancer = asyncio.create_task(advance_batch_runs())
     try:
         yield
     finally:
+        advancer.cancel()
         cleaner.cancel()
         worker.stop_worker()
 
@@ -108,6 +116,8 @@ from .review_report import CUT_FLAGS, router as review_router
 app.include_router(review_router)
 from .cut_needs import router as cut_needs_router
 app.include_router(cut_needs_router)
+from .batch_runs_api import router as batch_runs_router
+app.include_router(batch_runs_router)
 app.mount("/api/swagger-assets", StaticFiles(directory=Path(__file__).parent / "swagger-ui"), name="swagger-assets")
 
 
@@ -349,7 +359,6 @@ class TranscribeRangeInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     start_time: float = Field(ge=0, allow_inf_nan=False, description="Start of the audio to transcribe again, in seconds.")
     end_time: float = Field(gt=0, allow_inf_nan=False, description="End of the audio to transcribe again, in seconds.")
-    replace_manual: bool = Field(default=False, description="Also replace segments that were edited or added by hand inside the interval. By default only untouched model output is replaced.")
 
 
 class ContextInput(BaseModel):
@@ -1020,8 +1029,9 @@ def transcribe_episode_range(episode_id: str, body: TranscribeRangeInput):
     """Queue transcription and speaker identification again for one interval of the audio.
 
     Only the interval changes: its untouched model segments get a deletion revision and the
-    new segments are appended, so the earlier text stays in history. Speakers in the interval
-    are named after the labels the neighbouring speech already uses.
+    new segments are appended, so the earlier text stays in history. Lines the person edited are
+    always kept, and nothing is marked stale. Speakers in the interval are named after the labels
+    the neighbouring speech already uses.
     """
     with db.connect() as conn:
         episode = audio_episode_for_queue(conn, episode_id)
@@ -1031,8 +1041,7 @@ def transcribe_episode_range(episode_id: str, body: TranscribeRangeInput):
         start, end = body.start_time, min(body.end_time, duration) if duration else body.end_time
         if end - start < audio_worker.MIN_RANGE_SECONDS:
             raise HTTPException(400, f'Select at least {audio_worker.MIN_RANGE_SECONDS:g} seconds of audio')
-        job_id = worker.enqueue_in(conn, episode_id, 'transcribe',
-                                  {'range': {'start_time': start, 'end_time': end}, 'replace_manual': body.replace_manual})
+        job_id = worker.enqueue_in(conn, episode_id, 'transcribe', {'range': {'start_time': start, 'end_time': end}})
     worker.wake_event.set()
     return {"job_id": job_id, "start_time": start, "end_time": end}
 
@@ -1088,14 +1097,23 @@ def queue_subtitles(conn, episode_id, language, depends_on=(), accept_unread=Fal
     return job_id
 
 
+class PrepareInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    language: str | None = Field(default=None, min_length=2, max_length=60,
+                                 description="Language of the burned-in subtitles. Optional: subtitles are read only when it is given.")
+
+
 @app.post('/api/episodes/{episode_id}/prepare')
-def prepare_episode(episode_id: str, body: SubtitleRunInput):
-    """Queue the episode's remaining setup steps in their input order."""
+def prepare_episode(episode_id: str, body: PrepareInput):
+    """Queue the episode's remaining setup steps in their input order. Burned-in subtitles are optional supporting material
+    (HARNESS.md D37): they are read only when a language is given, and nothing waits for them."""
     from . import anime_bulk, subtitle_reader
-    try:
-        language = subtitle_reader.resolve_language(body.language)['name']
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    language = None
+    if body.language:
+        try:
+            language = subtitle_reader.resolve_language(body.language)['name']
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -1134,9 +1152,10 @@ def prepare_episode(episode_id: str, body: SubtitleRunInput):
 
         subtitles = subtitle_store.current_run(episode_id, conn)
         subtitle_jobs = []
-        if not subtitles or subtitles['language'] != language or subtitles.get('stale_reason') or audio_jobs:
+        if language and (not subtitles or subtitles['language'] != language or audio_jobs):
+            # Never a prerequisite of the later steps: nothing waits for subtitles
             subtitle_jobs = [queue_subtitles(conn, episode_id, language, depends_on)]
-        record('subtitles', subtitle_jobs)
+        steps.append({'step': 'subtitles', 'job_ids': subtitle_jobs, 'status': 'queued' if subtitle_jobs else 'skipped'})
 
         for phase in ('boxes', 'recognize'):
             # Pending boundary replacement may produce additional cuts. The dispatcher
@@ -1147,7 +1166,7 @@ def prepare_episode(episode_id: str, body: SubtitleRunInput):
             record(phase, queued)
         worker.sync_episode_status(conn, episode_id)
     worker.wake_event.set()
-    return {'steps': steps, 'job_ids': depends_on}
+    return {'steps': steps, 'job_ids': depends_on + subtitle_jobs}
 
 
 @app.get("/api/episodes/{episode_id}/subtitles", responses={200: {"model": EpisodeSubtitles}})
@@ -1306,11 +1325,6 @@ def get_name_glossary(project_id: str):
         return name_glossary.rows(conn, project_id)
 
 
-def glossary_changed(conn, project_id):
-    for episode in conn.execute('SELECT id FROM episodes WHERE project_id=?', (project_id,)).fetchall():
-        speaker_attribution.mark_stale(conn, episode['id'], 'Name glossary changed')
-
-
 def save_glossary_entry(project_id, body, entry_id=None):
     require_project(project_id)
     spelling, reading = body.spelling.strip(), body.reading.strip()
@@ -1335,7 +1349,6 @@ def save_glossary_entry(project_id, body, entry_id=None):
                     VALUES (?,?,?,?,?,?)""", (*values, str(uuid.uuid4()), project_id))
         except sqlite3.IntegrityError as exc:
             raise HTTPException(409, 'This glossary entry already exists.') from exc
-        glossary_changed(conn, project_id)
         return name_glossary.rows(conn, project_id)
 
 
@@ -1355,7 +1368,6 @@ def delete_glossary_entry(project_id: str, entry_id: str):
         cursor = conn.execute('DELETE FROM project_name_glossary WHERE id=? AND project_id=?', (entry_id, project_id))
         if not cursor.rowcount:
             raise HTTPException(404, 'Glossary entry not found')
-        glossary_changed(conn, project_id)
         return name_glossary.rows(conn, project_id)
 
 
@@ -1364,7 +1376,7 @@ def rerun_speaker_attribution(episode_id: str):
     require_episode(episode_id)
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        dependencies = worker.pending_jobs(conn, episode_id, ('transcribe', 'subtitles'))
+        dependencies = worker.pending_jobs(conn, episode_id, ('transcribe',))
         return {'job_id': speaker_attribution.insert(conn, episode_id, dependencies=dependencies)}
 
 
@@ -1421,7 +1433,6 @@ def create_transcript_segment(episode_id: str, body: TranscriptInput):
         conn.execute("INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,character_context_id,speaker_source) VALUES (?,?,?,?,?,?,?,'manual')",
                      (segment_id, episode_id, body.start_time, body.end_time, body.text, body.speaker_label, body.character_context_id))
         structured_results.invalidate_transcript(conn, episode_id, body.start_time, body.end_time)
-        subtitle_store.invalidate_probes(conn, episode_id)
         agent_log.settle(conn, episode_id)
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (segment_id,)))
 
@@ -1454,8 +1465,6 @@ def update_transcript_segment(segment_id: str, body: TranscriptInput):
         structured_results.invalidate_transcript(conn, episode['id'], segment['start_time'], segment['end_time'])
         if (segment['start_time'], segment['end_time']) != (body.start_time, body.end_time):
             structured_results.invalidate_transcript(conn, episode['id'], body.start_time, body.end_time)
-        if metadata[0] != segment['words_json'] or (segment['start_time'], segment['end_time']) != (body.start_time, body.end_time):
-            subtitle_store.invalidate_probes(conn, episode['id'])
     return serialize_transcript(db.one("SELECT * FROM transcript_segments WHERE id=?", (new_id,)))
 
 
@@ -1499,7 +1508,6 @@ def delete_transcript_segment(segment_id: str):
         conn.execute("UPDATE transcript_segments SET superseded_by=? WHERE id=?", (new_id, segment_id))
         agent_log.note_override(conn, 'transcript_segments', segment_id)
         structured_results.invalidate_transcript(conn, old['episode_id'], old['start_time'], old['end_time'])
-        subtitle_store.invalidate_probes(conn, old['episode_id'])
         agent_log.settle(conn, old['episode_id'])
     return {"ok": True}
 

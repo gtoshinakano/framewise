@@ -3,7 +3,8 @@
 Read-only. Three views over facts that are already stored:
 
 * ``health``: per cut, a ranked list of problems in one sentence each (failed steps, stale results, picture contradictions,
-  lines that run across the cut, checkpoints for a person, the next missing step), worst cuts first.
+  checkpoints for a person, the next missing step), worst cuts first. A line that runs across a hard cut is not a problem
+  (the line splitter handled what it could in Prepare; HARNESS.md D37).
 * ``why``: for one cut and one step, the chain of prerequisites down to the first broken link, e.g.
   "Consistency review failed ← Performance beats are older than the keyframe analysis (redone 2026-11-20)".
 * ``triage``: every failed run nobody has dealt with (``runs.attention_rows``), classified by cause (``classify``) with the fix
@@ -13,7 +14,6 @@ A cut's analysis is modelled as eight steps in the editor's order (``STEPS``); e
 ``off`` (analysis switched off), ``running``/``queued``, ``failed``, ``missing``, ``stale``, ``person`` (a checkpoint for a
 person) or ``ok``. Nothing here is an approval status, and nothing is saved.
 """
-import bisect
 import json
 import re
 import time
@@ -35,9 +35,7 @@ FW_STEP = {'boxes': 'boxes', 'target_frames': 'target-frames', 'first_frame': 'v
 STAGE_STEPS = {'initial_frame': 'first_frame', 'keyframe_analysis': 'keyframes', 'video_analysis': 'keyframes'}
 
 # Problem weights: a cut's score is the sum, cuts are listed by their worst problem first.
-SEVERITY = {'failed': 100, 'stale': 60, 'contradiction': 50, 'person': 40, 'missing': 30, 'line_crossing': 20,
-            'auto_labels': 10, 'no_boxes': 10}
-CROSSING = 0.15  # a line runs across a hard cut when it lasts more than this on both sides (HARNESS.md section 3)
+SEVERITY = {'failed': 100, 'stale': 60, 'contradiction': 50, 'person': 40, 'missing': 30, 'auto_labels': 10, 'no_boxes': 10}
 ERROR_CHARS = 240
 
 # --- failure causes and their fix rules ------------------------------------------------------------------------------
@@ -390,25 +388,8 @@ def why(conn, cut_id, step=None):
 
 # --- per-cut health --------------------------------------------------------------------------------------------------
 
-def crossing_lines(conn, episode_id, cuts):
-    """{cut id: [{start, end, text, edge}]} of current transcript lines that run across the cut's start or end."""
-    lines = conn.execute("""SELECT start_time,end_time,text FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL
-        AND deleted=0 AND end_time-start_time>? ORDER BY start_time""", (episode_id, 2 * CROSSING)).fetchall()
-    starts = [line['start_time'] for line in lines]
-    longest = max((line['end_time'] - line['start_time'] for line in lines), default=0)
-    found = {}
-    for cut in cuts:
-        for edge, at in (('start', cut['start_time']), ('end', cut['end_time'])):
-            for line in lines[bisect.bisect_left(starts, at - longest):bisect.bisect_left(starts, at - CROSSING)]:
-                if line['end_time'] > at + CROSSING:
-                    found.setdefault(cut['id'], []).append({'start': round(line['start_time'], 2), 'end': round(line['end_time'], 2),
-                                                            'edge': edge, 'at': round(at, 3), 'text': line['text'][:60]})
-    return found
-
-
 def health(conn, episode_id, from_cut=None, to_cut=None):
     facts = Facts(conn, episode_id, from_cut, to_cut)
-    crossing = crossing_lines(conn, episode_id, facts.cuts)
     listed, counts = [], {}
     for cut in facts.cuts:
         number = cut['cut_index'] + 1
@@ -440,10 +421,6 @@ def health(conn, episode_id, from_cut=None, to_cut=None):
             reason = '' if root['step'] == first_missing else f" ← {LABELS[root['step']]}: {root['text']}"
             add('missing', f"Needs {LABELS[first_missing].lower()}{reason}", step=first_missing, place=PLACES[first_missing],
                 root=root['step'], fix=fix_for(root, number))
-        if lines := crossing.get(cut['id']):
-            edges = sorted({line['edge'] for line in lines})
-            add('line_crossing', f"{len(lines)} transcript line(s) run across the cut's {' and '.join(edges)}"
-                + f" (first: {lines[0]['start']}–{lines[0]['end']}s \"{lines[0]['text']}\")", place='analysis', lines=lines[:5])
         if labels := facts.auto_labels.get(number):
             add('auto_labels', f"{labels} automatic label(s) not confirmed", place='characters')
         if number in facts.no_boxes:
@@ -461,17 +438,12 @@ def health(conn, episode_id, from_cut=None, to_cut=None):
 
 def episode_problems(facts):
     report, items = facts.report, []
-    missing = [name for name, done in report['setup'].items() if not done]
+    missing = [name for name, done in report['setup'].items() if not done and name != 'subtitles']  # subtitles are optional
     if missing:
         items.append({'kind': 'setup', 'text': f"Setup is incomplete: {', '.join(missing)}", 'command': 'fw setup EP'})
     for voice in report['gates'].get('voices') or []:
-        items.append({'kind': 'voice', 'text': f"Voice {voice['speaker_label'] or '(no label)'}: {voice['lines']} line(s) without a character",
-                      'first_time': voice['first_time'], 'command': 'fw voices run EP'})
-    checks = report['checks']
-    if checks.get('speaker_attribution_stale'):
-        items.append({'kind': 'stale', 'text': f"Speaker attribution is stale: {checks['speaker_attribution_stale']}", 'command': 'fw speakers EP'})
-    if checks.get('transcript_stale'):
-        items.append({'kind': 'stale', 'text': f"The transcript is stale: {checks['transcript_stale']}"})
+        items.append({'kind': 'voice', 'text': f"Voice {voice['speaker_label'] or '(no label)'}: {voice['lines']} line(s) asked in the inbox",
+                      'first_time': voice['first_time'], 'command': 'fw inbox EP'})
     for item in facts.attention:
         if not item['cut_ids'] and not item['obsolete']:
             row = item['row']

@@ -1,4 +1,4 @@
-import type { AnalysisResult, Cut, Job } from './api'
+import type { AnalysisResult, Job } from './api'
 
 export type StepKey = 'initial_frame' | 'keyframe_analysis' | 'beats' | 'consistency' | 'summary'
 export type StepState = 'none' | 'queued' | 'running' | 'done' | 'failed'
@@ -71,12 +71,6 @@ export function preflight(input: { hasPrerequisites: boolean; enabled: boolean; 
   if (people && people.autoUnverified > 0) out.push({ level: 'warn', text: `${people.autoUnverified} automatic ${people.autoUnverified === 1 ? 'label is' : 'labels are'} unverified. Queuing treats named boxes as verified, so confirm or correct them first.` })
   if (people && people.unknown > 0) out.push({ level: 'info', text: `${people.unknown} ${people.unknown === 1 ? 'box has' : 'boxes have'} no character name.` })
   return out
-}
-
-/** How many cuts a "from this cut" and an "all cuts" batch can reach. */
-export function batchCounts(cuts: Pick<Cut, 'active' | 'cut_index' | 'analysis_enabled'>[], cut: Pick<Cut, 'cut_index'>) {
-  const active = cuts.filter(item => item.active)
-  return { from: active.filter(item => item.cut_index >= cut.cut_index && item.analysis_enabled).length, all: active.filter(item => item.analysis_enabled).length }
 }
 
 export function stateTone(state: StepState): 'green' | 'purple' | 'amber' | 'red' | 'grey' {

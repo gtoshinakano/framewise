@@ -24,7 +24,7 @@ export type Job = { actions?: JobActions; cuts: JobCut[]; id: string; pipeline: 
 // `revision`: the episode's event counters when the status was read (episodeEvents.ts).
 export type EpisodeStatus = { status: string; stage: string; error: string | null; job_id: string | null; job_status: string | null; queue: QueueSummary; revision?: Revisions | null }
 export type EpisodeSummary = { id: string; title: string; status: string; stage: string; error: string | null; duration: number | null; created_at: string }
-export type Episode = EpisodeSummary & { audio_ranges: EpisodeAudioRange[]; transcript_stale_reason: string | null; speaker_attribution_stale_reason: string | null; project_id: string; original_filename: string; width: number | null; height: number | null; has_audio: boolean; proxy_ready: boolean; settings: Settings; subtitle_language: string | null; subtitles: { language: string | null; run: SubtitleRun | null }; cuts: Cut[]; archived_cuts: Cut[]; chunks: Chunk[]; jobs: Job[]; cut_history?: CutHistory }
+export type Episode = EpisodeSummary & { audio_ranges: EpisodeAudioRange[]; project_id: string; original_filename: string; width: number | null; height: number | null; has_audio: boolean; proxy_ready: boolean; settings: Settings; subtitle_language: string | null; subtitles: { language: string | null; run: SubtitleRun | null }; cuts: Cut[]; archived_cuts: Cut[]; chunks: Chunk[]; jobs: Job[]; cut_history?: CutHistory }
 // The latest cut edit Undo would reverse and the one Redo would apply again (backend cut_history.py).
 export type CutEditEntry = { id: string; label: string; action: string; created_at: string }
 export type CutHistory = { undo: CutEditEntry | null; redo: CutEditEntry | null }

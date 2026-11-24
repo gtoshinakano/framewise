@@ -1,42 +1,42 @@
-"""The target cuts of each autopilot stage, read for the stage commands and their dry runs (docs/autopilot/HARNESS.md D31).
+"""The target cuts of each stage, read by Run Multiple (``batch_runs``) and ``scripts/fw`` (docs/autopilot/HARNESS.md D31, D37).
 
-Read-only and free of FastAPI. An episode goes through three stages, each started by the person (``scripts/fw``):
+Read-only and free of FastAPI. An episode goes through these stages, each started by the person:
 
-* **prepare** runs once: media, hard cuts, the missed-cut check, transcription and speakers, subtitles, line splits,
-  voices, first-frame boxes and recognition, target frames on every cut, the cast resolver. It is done once an agent run
-  with purpose ``prepare`` finished; after that it never runs again and only ``prepare_cuts`` and ``lines`` touch its work.
+* **prepare** runs once: media, hard cuts, the missed-cut check, transcription and speakers, subtitles (optional), line
+  splits, voices, first-frame boxes and recognition, target frames on every cut, the cast resolver. Its steps are planned by
+  ``batch_runs`` (this module reports them). It is done once a Run Multiple Prepare finished (or, before D37, an agent run
+  with purpose ``prepare``); after that it never runs again and only ``prepare_cuts`` touches its work.
 * **prepare_cuts**: cuts whose boundaries changed after Prepare (no first-frame detection of their current boundaries) and
   cuts whose Target frames run is missing or stale (selection changed, frames added, first-frame boxes changed).
-* **lines**: current lines across a hard cut that the line splitter would still plan (``line_splits.open_crossings``).
 * **evaluate**: visual analysis, beats and the consistency review, each for its *targets*: a result missing or stale, and
   the cut's inputs settled with no open inbox item (``cut_readiness``, ``progress.held`` of ``review_report``).
-* **results**: "Your answers" (the M4 agent) and Cut summaries, only when the profile turns them on.
+* **results**: "Your answers" (the M4 agent) and Cut summaries, only when the profile turns them on (``fw results``).
 
 Each step gives ``targets`` ([{cut, cut_id, why: missing|stale, reason}]) and ``held`` ([{cut, cut_id, reasons}]: cuts that
 need the step but wait for the person or for Claude). Nothing is queued or saved here.
 """
-from . import agent_log, autopilot_profile, line_splits, review_report, target_characters
+from . import agent_log, autopilot_profile, review_report, target_characters
 
-STAGES = ('prepare', 'prepare_cuts', 'lines', 'evaluate', 'results')
+STAGES = ('prepare', 'prepare_cuts', 'evaluate', 'results')
 # Stale result titles by the evaluate/results step that makes them again; titles the flow no longer makes (last frame,
 # subtitle OCR) are left alone.
 STALE_TITLES = {'visual': ('Initial frame description', 'Keyframe analysis', 'Video analysis'), 'beats': ('Performance beats',),
                 'consistency': ('Consistency summary',), 'summary': ('Cut summary',)}
 STALE_ORDER = ('visual', 'beats', 'consistency', 'summary')
-# The resolvers of Prepare, with the profile kind that switches each one off
-PREPARE_RESOLVERS = (('missed_cuts', 'missed_cuts'), ('line_splits', 'line_splits'), ('voice_resolver', 'voices'),
-                     ('character_decisions', 'box_names'))
 LISTED_REASONS = 3
 
 
 def prepare_run(conn, episode_id):
-    """The finished Prepare run of the episode, or None."""
-    row = conn.execute("""SELECT id,started_at,finished_at,summary_json FROM agent_runs WHERE episode_id=? AND purpose='prepare'
+    """The finished Prepare of the episode: a Run Multiple run, else (before D37) an ``fw`` agent run with purpose ``prepare``.
+    None when Prepare never finished (a failed or cancelled run does not count)."""
+    row = conn.execute("""SELECT id,created_at AS started_at,finished_at FROM batch_runs WHERE episode_id=? AND stage='prepare'
+        AND status='finished' ORDER BY rowid DESC LIMIT 1""", (episode_id,)).fetchone()
+    row = row or conn.execute("""SELECT id,started_at,finished_at FROM agent_runs WHERE episode_id=? AND purpose='prepare'
         AND status='finished' ORDER BY rowid DESC LIMIT 1""", (episode_id,)).fetchone()
     return {'id': row['id'], 'started_at': row['started_at'], 'finished_at': row['finished_at']} if row else None
 
 
-def _cuts(conn, episode_id, from_cut=None, to_cut=None):
+def cut_rows(conn, episode_id, from_cut=None, to_cut=None):
     first, last = max(0, (from_cut or 1) - 1), (to_cut - 1 if to_cut is not None else None)
     return [dict(row) for row in conn.execute("""SELECT c.id,c.episode_id,c.cut_index,c.start_time,c.end_time,c.analysis_enabled,c.no_characters,
         (SELECT r.phase FROM character_detection_runs r WHERE r.cut_id=c.id AND r.cut_start=c.start_time AND r.cut_end=c.end_time
@@ -48,10 +48,6 @@ def _cuts(conn, episode_id, from_cut=None, to_cut=None):
 
 def _item(cut, why, reason=None):
     return {'cut': cut['cut_index'] + 1, 'cut_id': cut['id'], 'why': why, **({'reason': reason} if reason else {})}
-
-
-def _job_done(conn, episode_id, pipeline):
-    return bool(conn.execute("SELECT 1 FROM jobs WHERE episode_id=? AND pipeline=? AND status='done' LIMIT 1", (episode_id, pipeline)).fetchone())
 
 
 def _mode(profile, kind):
@@ -74,21 +70,12 @@ def target_frames(conn, cuts):
     return found
 
 
-def _prepare(conn, episode_id, report, cuts, profile):
-    setup = report['setup']
-    enabled = [cut for cut in cuts if cut['analysis_enabled']]
-    boxes = [_item(cut, 'missing') for cut in enabled if not cut['no_characters'] and cut['detection_phase'] != 'complete']
-    targets = target_frames(conn, cuts)
-    steps = [{'step': 'media', 'done': setup['media']}, {'step': 'hardcuts', 'done': setup['cuts']}]
-    resolvers = dict(PREPARE_RESOLVERS)
-    steps.append({'step': 'missed_cuts', 'done': _job_done(conn, episode_id, 'missed_cuts'), 'mode': _mode(profile, resolvers['missed_cuts'])})
-    steps += [{'step': 'transcribe', 'done': setup['transcript']}, {'step': 'subtitles', 'done': setup['subtitles']}]
-    for pipeline, kind in PREPARE_RESOLVERS[1:3]:
-        steps.append({'step': pipeline, 'done': _job_done(conn, episode_id, pipeline), 'mode': _mode(profile, kind)})
-    steps.append({'step': 'boxes', 'done': setup['boxes'] and not boxes, 'targets': boxes})
-    steps.append({'step': 'target_frames', 'done': not targets, 'targets': targets})
-    steps.append({'step': 'character_decisions', 'done': _job_done(conn, episode_id, 'character_decisions'), 'mode': _mode(profile, 'box_names')})
-    return {'done': prepare_run(conn, episode_id), 'steps': steps}
+def _prepare(conn, episode_id):
+    """Prepare's steps as Run Multiple plans them (``batch_runs.preview``), and whether it is done."""
+    from . import batch_runs
+    plan = batch_runs.preview(conn, episode_id, 'prepare')
+    return {'done': plan['prepared'], 'steps': [{key: step.get(key) for key in ('step', 'label', 'state', 'detail', 'cuts') if key in step}
+                                                for step in plan['steps']]}
 
 
 def _held(report, step, numbers, by_number):
@@ -169,24 +156,16 @@ def targets(conn, episode_id, stage=None, from_cut=None, to_cut=None):
         raise ValueError(f"stage must be one of {', '.join(STAGES)}")
     report = review_report.report(conn, episode_id, from_cut, to_cut)
     profile = autopilot_profile.profile_for(conn, episode_id)
-    cuts = _cuts(conn, episode_id, from_cut, to_cut)
+    cuts = cut_rows(conn, episode_id, from_cut, to_cut)
     by_number = {cut['cut_index'] + 1: cut for cut in cuts}
     wanted = [stage] if stage else list(STAGES)
     out = {'episode': report['episode'], 'range': report['range'], 'inbox': inbox_counts(conn, episode_id), 'failures': len(report['failures'])}
     if 'prepare' in wanted:
-        out['prepare'] = _prepare(conn, episode_id, report, cuts, profile)
+        out['prepare'] = _prepare(conn, episode_id)
     if 'prepare_cuts' in wanted:
         enabled = [cut for cut in cuts if cut['analysis_enabled'] and not cut['no_characters']]
         out['prepare_cuts'] = {'boxes': {'targets': [_item(cut, 'missing') for cut in enabled if cut['detection_phase'] != 'complete']},
                                'target_frames': {'targets': target_frames(conn, cuts)}}
-    if 'lines' in wanted:
-        crossing = []
-        for row, hard_cut in line_splits.open_crossings(conn, episode_id):
-            cut = next((item for item in cuts if item['start_time'] <= hard_cut < item['end_time']), None)
-            if cut:
-                crossing.append({'cut': cut['cut_index'] + 1, 'cut_id': cut['id'], 'line_id': row['id'], 'start_time': row['start_time'],
-                                 'end_time': row['end_time'], 'text': row['text'][:80], 'hard_cut': hard_cut})
-        out['lines'] = {'targets': crossing, 'mode': _mode(profile, 'line_splits')}
     if 'evaluate' in wanted or 'results' in wanted:
         evaluate, upstream = _evaluate(report, by_number)
         if 'evaluate' in wanted:

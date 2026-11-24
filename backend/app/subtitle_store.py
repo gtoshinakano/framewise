@@ -31,12 +31,6 @@ def serialize_run(row, with_prompt=False):
     return run
 
 
-def invalidate_probes(conn, episode_id):
-    conn.execute("""UPDATE subtitle_runs SET stale_reason='Transcript timing changed' WHERE id=(
-        SELECT id FROM subtitle_runs WHERE episode_id=? AND status='complete' ORDER BY rowid DESC LIMIT 1)""",
-        (episode_id,))
-
-
 def current_run(episode_id, conn=None):
     """The latest completed run of the episode, or None."""
     if conn is None:

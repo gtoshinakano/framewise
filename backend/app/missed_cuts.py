@@ -12,18 +12,19 @@ lower threshold (``POST /api/cuts/{id}/detect-hardcuts``). This module does that
 3. **Pictures** (``picture_features``): the frames on each side of the peak. A good ORB + RANSAC fit between them
    (``keyframe_camera.camera_estimate``) means the same shot moved (pan, zoom, shake), not a new one; a near-white or
    near-black frame at the peak is a flash or a fade; the grey-level histogram correlation says how alike they look.
-4. **Verdict** (``verdict``): ``apply`` (split it), ``grey`` (a second reviewer looks at a two-frame strip) or ``reject``,
-   with thresholds measured by the replay (``autopilot/replay/missed_cuts.py``).
+4. **Verdict** (``verdict``): ``apply`` (split it), ``grey`` (not sure) or ``reject``, with thresholds measured by the
+   replay (``autopilot/replay/missed_cuts.py``).
 5. **Split** (``split_at``): exactly at the peak frame, like the editor's Split, never through a lower detection
    threshold: a threshold splits at every frame above it, so one strong motion frame elsewhere in the cut would block
    (or wrongly add) splits. It is a ``cut_history`` edit (the editor's Undo works) and an agent decision of kind
    ``missed_cuts``; ``undo_split`` merges the two pieces back while they are exactly as the split left them.
 
-The job (``process``, pipeline ``missed_cuts``, CPU, media lane) stores one ``missed_cut_checks`` row per cut, splits the
-``apply`` peaks in its publish transaction, and opens one ``missed_cut`` escalation per grey peak, for Claude first
-(``reviewer='claude'``, with a strip image at ``/api/cuts/{id}/missed-cut-strip``) when the profile allows it. Cuts with
-analysis switched off are skipped (the opening and ending, which the user leaves alone); a cut that belongs to a sequence
-is never split by the agent: its peaks go to a person. ``answer`` applies Claude's or the person's answer.
+The job (``process``, pipeline ``missed_cuts``, CPU, media lane) runs once per episode, in Prepare (HARNESS.md D37). It
+stores one ``missed_cut_checks`` row per cut and splits the ``apply`` peaks in its publish transaction. Nothing else is a
+flag: grey peaks and peaks in a cut that belongs to a sequence (never split by the agent) are only counted in the job's
+result (``doubtful``, ``in_sequence``) for the run summary; the person fixes missed cuts in the editor. Cuts with analysis
+switched off are skipped (the opening and ending, which the user leaves alone). Missed-cut questions asked before D37
+(``agent_escalations`` of kind ``missed_cut``) are still read by ``asked_times`` so their peaks are never split.
 """
 import hashlib
 import json
@@ -39,7 +40,7 @@ EDGE = 0.15            # media.detect_cuts_* never split this close to a cut's e
 FLOOR = 0.10           # lowest scene score worth a look (the user's re-detections went down to 0.11)
 NEIGHBOURS = 12        # frames on each side that a peak must stand out from (half a second at 24 fps)
 WIDTH = 640            # frames are compared at this width
-SLIVER = 0.5           # a split leaving a piece shorter than this is asked about, never applied
+SLIVER = 0.5           # a split leaving a piece shorter than this is never applied (counted as doubtful)
 VERSION = 2            # of the scoring; a check made by another version is redone
 
 # Verdict thresholds (tuned with autopilot/replay/missed_cuts.py; see docs/autopilot/M2.md).
@@ -309,12 +310,11 @@ def check_cut(proxy: Path, times, scores, start: float, end: float, size=None, s
             'peaks': [slim(peak) for peak in peaks if peak['verdict'] != 'reject' or peak['score'] >= GREY['score']][:8], 'version': VERSION}
 
 
-# --- the job: check, split, ask --------------------------------------------------------------------------------------
+# --- the job: check and split ----------------------------------------------------------------------------------------
 
 KIND = 'missed_cuts'          # agent_decisions.kind and the Autopilot profile's decision kind
-ESCALATION = 'missed_cut'     # agent_escalations.kind, one per grey peak
+ESCALATION = 'missed_cut'     # agent_escalations.kind of the questions asked before HARNESS.md D37 (read by asked_times)
 TOLERANCE = 1e-6
-PEAK_MATCH = 0.06             # a boundary this close to a peak is that peak (check_cut's skip window)
 
 
 def proxy_path(conn, episode_id) -> Path:
@@ -337,8 +337,8 @@ def sequenced_cuts(conn, episode_id) -> set[str]:
 
 
 def asked_times(conn, episode_id) -> list[float]:
-    """Peaks already settled once: put to a reviewer (open, answered or dismissed) or split by the agent (kept, undone or
-    merged back by the person). Never asked or split again: the person's last word stands (HARNESS.md D31)."""
+    """Peaks already settled once: put to a reviewer before D37 (open, answered or dismissed) or split by the agent (kept,
+    undone or merged back by the person). Never split again: the person's last word stands (HARNESS.md D32)."""
     asked = [row[0] for row in conn.execute("""SELECT json_extract(evidence_json,'$.time') FROM agent_escalations
         WHERE episode_id=? AND kind=? AND json_extract(evidence_json,'$.time') IS NOT NULL""", (episode_id, ESCALATION))]
     split = [row[0] for row in conn.execute("""SELECT json_extract(after_json,'$.left.end_time') FROM agent_decisions
@@ -423,31 +423,13 @@ def split_at(conn, episode_id, moment, *, tier, run_id=None, evidence=None, labe
     return decision, [cut['id'], new_id]
 
 
-def _question(number, moment, peak):
-    picture = peak.get('picture') or {}
-    return (f"Is there a hard cut in cut {number} at {cut_history.timecode(moment)}? Scene score {peak['score']:.2f}, "
-            f"{peak['isolation']:.1f}x its neighbours; {peak.get('why') or 'the checker is not sure'}. "
-            f"The strip shows two frames before the red bar and two after it"
-            + (f" (correlation {picture['correlation']:.2f})" if picture.get('correlation') is not None else '') + '.')
-
-
-def escalate_peak(conn, episode_id, cut, peak, *, reviewer, run_id=None, propose_split=False, reason=''):
-    moment = peak['time']
-    number = cut['cut_index'] + 1
-    evidence = {'cut_id': cut['id'], 'time': moment, 'score': peak['score'], 'isolation': peak['isolation'], 'why': peak.get('why'),
-                'picture': peak.get('picture'), 'strip': f"/api/cuts/{cut['id']}/missed-cut-strip?time={moment:.6f}", 'reason': reason}
-    return agent_log.escalate(conn, episode_id=episode_id, kind=ESCALATION, group_key=f'peak:{moment:.3f}',
-                              question=_question(number, moment, peak) + (f' {reason}' if reason else ''), cut_ids=[cut['id']],
-                              options=['Split here', 'No cut'], proposal={'answer': 'split'} if propose_split else None,
-                              evidence=evidence, run_id=run_id, reviewer=reviewer)
-
-
 def publish(conn, job, episode, data, results):
-    """Save the checks, apply the splits, ask about the rest. Returns counts and the cuts whose previews change."""
+    """Save the checks and apply the sure splits; doubtful peaks are only counted (no question, no flag: HARNESS.md D37).
+    Returns counts and the cuts whose previews change."""
     payload = json.loads(job['payload_json'])
-    policy, run_id = payload.get('policy') or {'mode': 'apply', 'claude': True}, payload.get('run_id')
+    run_id = payload.get('run_id')
     sequenced = set(data['sequenced'])
-    counts = {'checked': len(results), 'split': 0, 'asked_claude': 0, 'asked_person': 0}
+    counts = {'checked': len(results), 'split': 0, 'doubtful': 0, 'in_sequence': 0, 'split_cuts': []}
     changed = set()
     proxy_key = data['proxy']
     for cut_id, start, end, result in results:
@@ -457,32 +439,21 @@ def publish(conn, job, episode, data, results):
             job_id=excluded.job_id,checked_at=CURRENT_TIMESTAMP""",
                      (cut_id, episode['id'], start, end, VERSION, proxy_key, result['verdict'], json.dumps(result), job['id']))
         peaks = {peak['time']: peak for peak in result['peaks']}
-        in_sequence = cut_id in sequenced
+        counts['doubtful'] += len(result['grey'])
+        if cut_id in sequenced:  # never split by the agent: its confirmed dialogue and shots would turn stale
+            counts['in_sequence'] += len(result['split_at'])
+            continue
         for moment in result['split_at']:
             peak = peaks.get(moment) or {'time': moment, 'score': 0, 'isolation': 0}
             cut = _covering(conn, episode['id'], moment)
             if cut is None:
-                continue
-            if in_sequence or policy['mode'] == 'ask':
-                reason = 'This cut belongs to a sequence, so a person decides.' if in_sequence else 'The Autopilot profile asks before splitting.'
-                escalate_peak(conn, episode['id'], cut, peak, reviewer='human', run_id=run_id, propose_split=True, reason=reason)
-                counts['asked_person'] += 1
                 continue
             evidence = {key: peak.get(key) for key in ('time', 'score', 'isolation', 'why', 'picture')}
             decision, ids = split_at(conn, episode['id'], moment, tier='rules', run_id=run_id, evidence=evidence)
             if decision:
                 changed.update(ids)
                 counts['split'] += 1
-        for moment in result['grey']:
-            cut = _covering(conn, episode['id'], moment)
-            if cut is None:
-                continue
-            misplaced = (peaks.get(moment) or {}).get('misplaced_edge')
-            claude = policy.get('claude') and not in_sequence and not misplaced
-            escalate_peak(conn, episode['id'], cut, peaks.get(moment) or {'time': moment, 'score': 0, 'isolation': 0},
-                          reviewer='claude' if claude else 'human', run_id=run_id,
-                          reason='' if not in_sequence else 'This cut belongs to a sequence, so a person decides.')
-            counts['asked_claude' if claude else 'asked_person'] += 1
+                counts['split_cuts'].append(cut['id'])
     return counts, changed
 
 
@@ -523,7 +494,7 @@ def process(job_id, owner):
             raise RuntimeError('Media preparation or full hard-cut detection is pending; check again after it')
         counts, changed = publish(conn, job, episode, data, results)
         cancelled = cut_previews.after_timeline_edit(conn, episode, changed) if changed else []
-        stage = (f"Complete · {counts['split']} split, {counts['asked_claude']} for Claude, {counts['asked_person']} for a person"
+        stage = (f"Complete · {counts['split']} split, {counts['doubtful']} doubtful left alone"
                  f" · {len(results)} checked, {len(data['cuts']) - len(results)} unchanged or off")
         payload['result'] = counts
         conn.execute("UPDATE jobs SET status='done',stage=?,error=NULL,payload_json=?,lease_owner=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -533,72 +504,7 @@ def process(job_id, owner):
     worker.wake_event.set()
 
 
-def close_settled(conn, episode_id):
-    """Close open missed-cut questions the person settled in the editor: a boundary now sits at the peak (resolved), or the
-    cut the question is about was split, merged or deleted another way (dismissed: their edit is the last word)."""
-    closed = 0
-    for item in agent_log.escalations(conn, episode_id, 'open', kind=ESCALATION):
-        moment = (item['evidence'] or {}).get('time')
-        if moment is None:
-            continue
-        if conn.execute('SELECT 1 FROM cuts WHERE episode_id=? AND active=1 AND ABS(start_time-?)<=? LIMIT 1',
-                        (episode_id, moment, PEAK_MATCH)).fetchone():
-            closed += agent_log.close_escalation(conn, item['id'], 'resolved', {'by': 'settled elsewhere', 'why': 'a hard cut now sits there'})
-        elif item['cut_ids'] and not conn.execute(f"SELECT 1 FROM cuts WHERE active=1 AND id IN ({','.join('?' for _ in item['cut_ids'])}) LIMIT 1",
-                                                  item['cut_ids']).fetchone():
-            closed += agent_log.close_escalation(conn, item['id'], 'dismissed', {'by': 'settled elsewhere', 'why': 'the cut was changed by hand'})
-    return closed
-
-
-# --- answers and undo ------------------------------------------------------------------------------------------------
-
-ANSWERS = ('split', 'no_cut', 'unsure')
-
-
-class Refused(Exception):
-    """The answer cannot be applied (the message says why)."""
-
-
-def answer(conn, escalation_id, reply, tier, run_id=None, note=None):
-    """Apply Claude's or the person's answer to one missed-cut question. Returns ``{status, decision_id?, changed}``."""
-    if reply not in ANSWERS:
-        raise Refused(f"answer must be one of {', '.join(ANSWERS)}")
-    if tier not in ('claude', 'human'):
-        raise Refused('tier must be claude or human')
-    row = conn.execute('SELECT * FROM agent_escalations WHERE id=?', (escalation_id,)).fetchone()
-    if row is None:
-        raise KeyError(escalation_id)
-    if row['kind'] != ESCALATION:
-        raise Refused('This is not a missed-cut question')
-    if row['status'] != 'open':
-        raise Refused('This question is already closed')
-    if tier == 'claude' and row['reviewer'] != 'claude':
-        raise Refused('This question waits for a person')
-    evidence = json.loads(row['evidence_json'] or '{}')
-    episode_id, moment = row['episode_id'], float(evidence['time'])
-    resolution = {'answer': reply, 'by': tier, **({'note': str(note)[:1000]} if note else {})}
-    if reply == 'unsure':
-        if tier == 'claude':
-            agent_log.hand_to_person(conn, escalation_id, note)
-            return {'status': 'handed_to_person', 'changed': []}
-        return {'status': 'open', 'changed': []}
-    if reply == 'no_cut':
-        agent_log.close_escalation(conn, escalation_id, 'resolved', resolution)
-        return {'status': 'resolved', 'changed': []}
-    cut = _covering(conn, episode_id, moment)
-    if cut is None or not cut['start_time'] + EDGE < moment < cut['end_time'] - EDGE:
-        agent_log.close_escalation(conn, escalation_id, 'resolved', {**resolution, 'applied': 'already a boundary'})
-        return {'status': 'resolved', 'changed': []}
-    if tier == 'claude' and cut['id'] in sequenced_cuts(conn, episode_id):
-        raise Refused('This cut belongs to a sequence: a person decides')
-    if cut_history.busy(conn, episode_id):
-        raise Refused('Wait for media preparation or full hard-cut detection to finish')
-    decision, changed = split_at(conn, episode_id, moment, tier=tier, run_id=run_id or row['run_id'],
-                                 evidence={key: evidence.get(key) for key in ('time', 'score', 'isolation', 'why', 'picture')} | {'escalation_id': escalation_id},
-                                 label_prefix='Split after review')
-    agent_log.close_escalation(conn, escalation_id, 'resolved', {**resolution, 'decision_id': decision})
-    return {'status': 'resolved', 'decision_id': decision, 'changed': changed}
-
+# --- undo ------------------------------------------------------------------------------------------------------------
 
 def undo_split(conn, decision):
     """Merge the two pieces of an agent split back, while both are exactly as the split left them."""

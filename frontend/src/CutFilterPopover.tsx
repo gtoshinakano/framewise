@@ -1,4 +1,4 @@
-import { AudioLines, Bot, BoxSelect, CircleAlert, ClipboardCheck, Eye, EyeOff, FileText, Filter, ImageOff, MessageCircleQuestion, ScanEye, ScanFace, Scissors, SplitSquareHorizontal, Timer, TriangleAlert, UserRound, UserRoundCheck, X, type LucideIcon } from 'lucide-react'
+import { AudioLines, Bot, BoxSelect, ClipboardCheck, Eye, EyeOff, FileText, Filter, ImageOff, MessageCircleQuestion, ScanEye, ScanFace, Timer, TriangleAlert, UserRound, UserRoundCheck, X, type LucideIcon } from 'lucide-react'
 import type { Cut } from './api'
 import { CUT_FILTERS, groupFilters, matchesAnyFilter, type CutFilterKey, type FilterDisplay } from './cutFilters'
 import { EMPTY_NEEDS, type NeedsMap } from './cutNeedsView'
@@ -7,8 +7,8 @@ import { Popover } from './Popover'
 
 /** Icons per filter. A filter added later without an entry here gets the generic filter icon. */
 const FILTER_ICONS: Partial<Record<CutFilterKey, LucideIcon>> = {
-  missed_cut: Scissors, line_split: SplitSquareHorizontal, voice: AudioLines, speaker_unsure: CircleAlert, box_names: UserRound, target_frames: ScanFace, decisions: MessageCircleQuestion,
-  picture_check: ImageOff, lines_to_check: CircleAlert, failed_run: TriangleAlert, claude_pending: Bot, agent_answered: UserRoundCheck,
+  voice: AudioLines, box_names: UserRound, target_frames: ScanFace, decisions: MessageCircleQuestion,
+  picture_check: ImageOff, failed_run: TriangleAlert, claude_pending: Bot, agent_answered: UserRoundCheck,
   needs_analysis: ScanEye, no_boxes: BoxSelect, needs_consistency: ClipboardCheck, needs_summary: FileText, job_failed: TriangleAlert, long_cut: Timer,
 }
 export const filterIcon = (key: CutFilterKey) => FILTER_ICONS[key] || Filter

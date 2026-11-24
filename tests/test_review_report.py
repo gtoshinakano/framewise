@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app import db, media
+from app import agent_log, db, media
 from app.main import app
 
 
@@ -58,7 +58,12 @@ class ReviewReportTest(unittest.TestCase):
             result(conn, 'b4', 'c4', 'performance_beats', {'based_on': {'keyframe_analysis': 'k4'}}, stale='Keyframes edited', title='Performance beats')
             conn.execute("""INSERT INTO transcript_segments(id,episode_id,start_time,end_time,text,speaker_label,confidence) VALUES
                 ('l1','e',0.5,1,'Hi','SPEAKER_00','low'),('l2','e',4.5,5,'Yes','SPEAKER_01',NULL),('l3','e',5,5.5,'No','SPEAKER_01',NULL)""")
-            conn.execute("UPDATE episodes SET speaker_attribution_stale_reason='Name glossary changed' WHERE id='e'")
+            conn.execute("UPDATE episodes SET speaker_attribution_stale_reason='Name glossary changed' WHERE id='e'")  # no longer read (D37)
+            # Voices wait for the person only through the questions Prepare's voice resolver opened (D37)
+            agent_log.escalate(conn, episode_id='e', kind='voice', group_key='voice:SPEAKER_01', question='?', cut_ids=['c3'],
+                               evidence={'voice_label': 'SPEAKER_01', 'line_ids': ['l2', 'l3']})
+            agent_log.escalate(conn, episode_id='e', kind='voice', group_key='voice:SPEAKER_00', question='?', cut_ids=['c1'],
+                               evidence={'voice_label': 'SPEAKER_00', 'line_ids': ['l1']})
 
     def tearDown(self):
         db.DATA_DIR, db.DB_PATH, media.DATA_DIR = self.old
@@ -79,9 +84,8 @@ class ReviewReportTest(unittest.TestCase):
         self.assertEqual(checks['auto_labels'], [{'cut': 2, 'cut_id': 'c2', 'labels': 1}])
         self.assertEqual(checks['picture_contradictions'][0]['checks'], [{'character': 'Ann', 'picture': 'F1', 'claim': 'smiles'}])
         self.assertEqual([(item['cut'], item['reason']) for item in checks['stale_results']], [(3, 'Keyframes changed'), (4, 'Keyframes edited')])
-        # l1 has no speaker: it is a voice, so it is not also a line to check (one line, one flag)
-        self.assertEqual(checks['lines_to_check']['count'], 0)
-        self.assertEqual(checks['speaker_attribution_stale'], 'Name glossary changed')
+        # Line state and the old episode stale marks are not checks any more: only the voice questions are (D37)
+        self.assertFalse({'lines_to_check', 'speaker_attribution_stale', 'transcript_stale'} & set(checks))
         self.assertEqual(progress['boxes_missing'], [4])
         self.assertEqual(progress['target_missing'], [1, 3])
         self.assertEqual(progress['visual_missing'], [1])
@@ -106,6 +110,7 @@ class ReviewReportTest(unittest.TestCase):
             conn.execute("UPDATE target_slots SET character_context_id='ann' WHERE run_id='t2'")
             conn.execute("UPDATE target_detection_runs SET frames_json='[]' WHERE id='t2'")
             conn.execute("UPDATE transcript_segments SET character_context_id='ann'")
+            conn.execute("UPDATE agent_escalations SET status='resolved' WHERE kind='voice'")
             conn.execute("INSERT INTO cut_brief_instructions(cut_id,content,updated_at) VALUES ('c3','- Smile: yes','2026-11-20 11:00:00')")
         report = self.get()
         self.assertEqual(report['gates'], {'first_frame': [], 'target_frames': [], 'voices': [], 'decisions': []})

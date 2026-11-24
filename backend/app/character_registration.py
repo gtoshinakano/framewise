@@ -241,9 +241,7 @@ def save_registration(project_id: str, draft: str = Form(), thumbnail: UploadFil
             else:
                 profile_job = insert_character(conn, project_id, character_id, body, title, scope)
 
-            if reconcile(conn, project_id, character_id, previous['glossary'] if previous else [], body.glossary, 'glossary'):
-                from .main import glossary_changed
-                glossary_changed(conn, project_id)
+            reconcile(conn, project_id, character_id, previous['glossary'] if previous else [], body.glossary, 'glossary')
             reconcile(conn, project_id, character_id, previous['outfits'] if previous else [], body.outfits, 'outfits')
             jobs, deleted = save_voices(conn, project_id, character_id, body)
             if image:

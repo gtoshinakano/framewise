@@ -42,10 +42,10 @@ Cut numbers are the ones the editor shows (they start at 1). RANGE: `100-120`, `
 | write the Cut summaries | `scripts/fw summary EP RANGE` |
 | rewrite the cut summary for the entire episode | `scripts/fw summary EP all --redo` |
 | review + answers + summary unattended | `scripts/fw text-chain EP RANGE` (only when asked for exactly this) |
-| transcribe cuts 10-12 again | `scripts/fw transcribe EP 10-12` (`--replace-manual` only if the user says hand edits may go) |
-| read the subtitles | `scripts/fw subtitles EP --language Japanese` (whole episode) |
+| transcribe cuts 10-12 again | `scripts/fw transcribe EP 10-12` (lines edited by hand always stay; nothing turns stale) |
+| read the subtitles | `scripts/fw subtitles EP --language Japanese` (whole episode; optional, nothing waits for them or turns stale) |
 | attribute speakers again | `scripts/fw speakers EP` (whole episode) |
-| set the episode up | `scripts/fw setup EP --language Japanese` (whole episode; skips finished steps) |
+| set the episode up | `scripts/fw setup EP` (whole episode; skips finished steps; `--language L` also reads the subtitles). Prefer `fw prepare EP` |
 
 Without `--redo`, cuts that already have the result are skipped. Use `--redo` only when the user says redo, rewrite,
 again, or all of them. When the request is unclear (which episode, which cuts, redo or not), run the command with

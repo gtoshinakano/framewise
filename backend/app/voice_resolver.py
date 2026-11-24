@@ -35,14 +35,17 @@ speaking, and no voice sample resembles it; never label-wide (one label may be s
 
 What is left becomes **one escalation per label** (unlabelled lines: one per cut), for Claude when the run's Claude budget
 lasts and a picture can settle it (whose mouth moves; ``voice_sheet`` tiles three frames per phrase), else for the person:
-always the person when no voice sample resembles the label (``NEW_VOICE``: it may be a new character). Answers come
-back through ``answer``; any answer of the person settles the lines for good, "Leave unknown" included (``leave``: they keep
-their speaker and say ``left_unknown``), so an unknown voice is asked once (HARNESS.md D29). Lines inside a sequence's range
-are left alone (the user's confirmed dialogue would turn stale).
+always the person when no voice sample resembles the label (``NEW_VOICE``: it may be a new character). Questions are raised
+**once**: only the run that Prepare queues asks (``payload.ask``, HARNESS.md D37); any later run (after a re-transcription,
+``fw voices run``) applies what two signals agree on and only counts the rest (``left_unasked``). Answers come back through
+``answer``; any answer of the person settles the lines for good, "Leave unknown" included (``leave``: they keep their
+speaker and say ``left_unknown``), so an unknown voice is asked once (HARNESS.md D29). Lines inside a sequence's range are
+left alone (the user's confirmed dialogue would turn stale).
 
 Every applied unit is one ``agent_decisions`` row of kind ``voices`` (target ``transcript_segments``); the revisions keep
-the source line's ``origin`` and say ``speaker_source='agent'`` (speaker attribution treats them as decided). Undo puts
-the lines back without a character while they still hold what the agent wrote.
+the source line's ``origin`` and say ``speaker_source='agent'`` (speaker attribution treats them as decided). An agent's or
+Claude's speaker marks nothing stale (automatic audio work never does); the person's answer and an undo do. Undo puts the
+lines back without a character while they still hold what the agent wrote.
 """
 import json
 import re
@@ -522,7 +525,7 @@ def assign(conn, episode_id, line_ids, character, *, speaker_source='agent', man
         conn.execute('UPDATE transcript_segments SET superseded_by=? WHERE id=?', (new_id, row['id']))
         made.append((row, new_id))
     changed = [row for row, _ in made if row['character_context_id'] != character]
-    if changed:
+    if changed and manual:  # only the person's answer stales the cuts' text results (HARNESS.md D37)
         structured_results.invalidate_transcript(conn, episode_id, min(row['start_time'] for row in changed), max(row['end_time'] for row in changed),
                                                  reason='Speaker changed')
     return made
@@ -805,12 +808,13 @@ def answer(conn, escalation_id, choice, character_context_id=None, tier='human',
 
 # --- the job ------------------------------------------------------------------------------------------------------------
 
-def queue(conn, episode_id, *, run_id=None, attribution=True):
-    """Queue the resolver after the transcript producers. None when the profile switched voices off."""
+def queue(conn, episode_id, *, run_id=None, attribution=True, ask=False):
+    """Queue the resolver after the transcript producers. None when the profile switched voices off. ``ask``: the run may
+    open questions; only Prepare's run does, so an unknown voice is asked once (HARNESS.md D37)."""
     policy = policy_for(conn, episode_id, run_id)
     if policy['mode'] == 'off':
         return None
-    payload = {'policy': policy, 'run_id': run_id, 'attribution': bool(attribution), 'version': VERSION}
+    payload = {'policy': policy, 'run_id': run_id, 'attribution': bool(attribution), 'version': VERSION, 'ask': bool(ask)}
     waits = worker.pending_jobs(conn, episode_id, ('prepare', 'hardcuts', 'missed_cuts', 'transcribe', 'line_splits', 'speaker_attribution'))
     if waits:
         payload['depends_on'] = waits
@@ -820,10 +824,11 @@ def queue(conn, episode_id, *, run_id=None, attribution=True):
 
 
 def publish(conn, job, payload, data, voice_scores=None, label_scores=None):
-    """Apply, escalate and report inside the job's publish transaction. Returns the outcome counts."""
+    """Apply, escalate (only when ``payload.ask``) and report inside the job's publish transaction. Returns the outcome counts."""
     episode_id = job['episode_id']
     policy = payload.get('policy') or policy_for(conn, episode_id, payload.get('run_id'))
     run_id = payload.get('run_id')
+    ask = bool(payload.get('ask'))
     names = {item['id']: item['title'] for item in data['characters']}
     settle_dismissed(conn, episode_id)
     close_settled(conn, episode_id)
@@ -832,6 +837,10 @@ def publish(conn, job, payload, data, voice_scores=None, label_scores=None):
     undone = set(data.get('undone_lines') or ())
     for unit in plan['applied']:
         if policy['mode'] == 'ask' or undone & set(unit['line_ids']):
+            if not ask:
+                counts['left_unasked'] += 1
+                counts['lines_unasked'] += len(unit['line_ids'])
+                continue
             wide = unit['scope'] in ('label', 'consensus') and bool(unit['label'])
             group = {'group_key': f"voice:{unit['label']}" if wide else f"voice::line:{unit['line_ids'][0]}", 'label': unit['label'], 'label_wide': wide,
                      'phrases': unit['phrases'], 'candidates': [unit['character']], 'why': f"the agent would give it to {names.get(unit['character'])} ({unit['why']})",
@@ -845,6 +854,10 @@ def publish(conn, job, payload, data, voice_scores=None, label_scores=None):
             counts['lines_applied'] += len(unit['line_ids'])
     budget = claude_budget(conn, episode_id, run_id, policy)
     for group in plan['asked']:
+        if not ask:
+            counts['left_unasked'] += 1
+            counts['lines_unasked'] += sum(len(item['line_ids']) for item in group['phrases'])
+            continue
         reviewer = 'human'
         if not group['new_voice'] and budget > 0 and has_picture(group, data):
             reviewer = 'claude'
@@ -962,7 +975,8 @@ def process(job_id, owner):
             counts['voice_scores'] = scored
             payload['result'] = counts
             stage = (f"Complete · {counts.get('lines_applied', 0)} lines given a character, "
-                     f"{counts.get('asked_claude', 0)} voices for Claude, {counts.get('asked_human', 0) + counts.get('asked_person', 0)} for you")
+                     f"{counts.get('asked_claude', 0)} voices for Claude, {counts.get('asked_human', 0) + counts.get('asked_person', 0)} for you"
+                     + (f", {counts['left_unasked']} left unasked" if counts.get('left_unasked') else ''))
             conn.execute("""UPDATE jobs SET status='done',stage=?,error=NULL,payload_json=?,lease_owner=NULL,lease_until=NULL,
                 updated_at=CURRENT_TIMESTAMP WHERE id=?""", (stage, json.dumps(payload), job_id))
             worker.sync_episode_status(conn, episode_id)

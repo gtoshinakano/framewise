@@ -24,7 +24,6 @@ export default function TranscribeRangePanel({ episodeId, duration, playhead, se
   jobs: Job[]
   onQueued: () => Promise<void>
 }) {
-  const [replaceManual, setReplaceManual] = useState(false)
   const [working, setWorking] = useState(false)
   const [error, setError] = useState('')
   const valid = !!selection && Number.isFinite(selection.start) && Number.isFinite(selection.end) && selection.start >= 0 && selection.end <= duration + 0.001 && selection.end - selection.start >= MIN_SECONDS
@@ -35,7 +34,6 @@ export default function TranscribeRangePanel({ episodeId, duration, playhead, se
   const failure = latest?.status === 'failed' ? latest.error : null
   const status = latest?.status === 'queued' ? 'Queued for the audio worker.' : latest?.status === 'running' ? latest.stage : latest?.status === 'done' && latest.stage !== 'Complete' ? `Last run: ${latest.stage}` : ''
   useEffect(() => { setError('') }, [selection?.start, selection?.end])
-  useEffect(() => { if (!byHand.length) setReplaceManual(false) }, [byHand.length])
   function edit(range: { start: number | null; end: number | null }) {
     const start = range.start ?? Math.round(playhead.time * 100) / 100
     onSelectionChange({ start, end: range.end ?? Math.min(duration, start + 10) })
@@ -44,7 +42,7 @@ export default function TranscribeRangePanel({ episodeId, duration, playhead, se
     if (!selection || !valid) return
     setWorking(true); setError('')
     try {
-      await api(`/episodes/${episodeId}/transcribe-range`, { method: 'POST', body: JSON.stringify({ start_time: selection.start, end_time: Math.min(selection.end, duration), replace_manual: replaceManual }) })
+      await api(`/episodes/${episodeId}/transcribe-range`, { method: 'POST', body: JSON.stringify({ start_time: selection.start, end_time: Math.min(selection.end, duration) }) })
       await onQueued()
     } catch (err) { setError((err as Error).message) }
     finally { setWorking(false) }
@@ -56,7 +54,7 @@ export default function TranscribeRangePanel({ episodeId, duration, playhead, se
     {!selection && <button type="button" className="btn btn-quiet w-full !py-1.5 !text-xs" disabled={!duration} onClick={() => edit({ start: null, end: null })}>Select 10 seconds from the playhead</button>}
     {selection && !valid && <p role="alert" className="text-[11px] text-[#ff9fa7]">Choose at least {MIN_SECONDS} seconds inside the video, with the end after the start.</p>}
     {selection && valid && <p className="text-[11px]" aria-live="polite">{lines.length} current {lines.length === 1 ? 'line' : 'lines'}{speakers ? ` · ${speakers} ${speakers === 1 ? 'speaker' : 'speakers'}` : ''}{byHand.length ? ` · ${byHand.length} edited by hand` : ''}</p>}
-    {byHand.length > 0 && <label className="flex items-start gap-2 text-[11px]"><input type="checkbox" className="mt-0.5" checked={replaceManual} onChange={event => setReplaceManual(event.target.checked)} /><span>Also replace the {byHand.length} {byHand.length === 1 ? 'line' : 'lines'} I edited by hand. Otherwise they are kept and the new text is not added over them.</span></label>}
+    {byHand.length > 0 && <p className="muted text-[11px]">The {byHand.length} {byHand.length === 1 ? 'line' : 'lines'} you edited by hand stay as they are; nothing is marked out of date.</p>}
     <div className="flex gap-2">
       <button type="button" className="btn btn-quiet !px-3 !py-2 !text-xs" disabled={!selection} onClick={() => onSelectionChange(null)}><X size={13} /> Clear</button>
       <button type="button" className="btn btn-primary flex-1 !py-2" disabled={working || !valid || !!reason} onClick={() => void run()}><RefreshCw size={14} /> Transcribe this part again</button>

@@ -1,22 +1,23 @@
-"""Whether a cut's inputs are settled enough for the next expensive step (docs/autopilot/HARNESS.md, D26).
+"""Whether a cut's inputs are settled enough for the next expensive step (docs/autopilot/HARNESS.md, D26 and D37).
 
 Read-only and free of FastAPI, so the inference worker can ask it too (``keyframe_analysis`` queues beats only for a ready
-cut when the job says ``beats: when_ready``). The autopilot runs a step only for cuts whose inputs pass:
+cut when the job says ``beats: when_ready``). Evaluate (``batch_runs``) runs a step only for cuts whose inputs pass:
 
 - visual analysis (first frame, keyframes) needs settled first-frame boxes and settled target frames;
-- performance beats also need a current visual analysis and settled speech;
+- performance beats also need a current visual analysis;
 - the consistency review also needs beats built from the current keyframes.
 
 A box label is settled when a person or an agent set it, or when the gallery match is strong (the label is the top
-candidate, its score at least ``STRONG_SCORE`` and ahead of the next character by ``STRONG_LEAD``). Speech is settled when
-every line overlapping the cut has a character and none of them is low confidence unless a person or an agent set its
-speaker, and the episode's transcript and speaker attribution are not stale. A line the person left as it is (``left_unknown``,
-the voice question's "Leave unknown" or the line editor's "Unknown – don't ask again") is settled with or without a character:
-an unknown speaker is asked once (HARNESS.md D29). ``speaker_open``/``open_speaker_sql`` are that one rule, shared by every
-surface that flags a speaker (review report, cut needs, the voice resolver). An open inbox item (for the person or for
-Claude) holds its cut from the step it is about onward (``INBOX_HOLDS``, HARNESS.md D32): a missed hard cut holds
-everything, a box or target-frame question visual analysis and after, a line split or a voice beats and after. Each failed
-check gives a short reason that the hand-off shows the person. Nothing here is an approval status, and nothing is saved.
+candidate, its score at least ``STRONG_SCORE`` and ahead of the next character by ``STRONG_LEAD``). Speech holds a cut only
+through a visible question: an open voice question in the inbox (raised once, by Prepare's voice resolver: HARNESS.md D37).
+Line state alone never holds a cut, so a re-transcription or a later speaker attribution cannot hold or flag anything
+again. An open inbox item (for the person or for Claude) holds its cut from the step it is about onward (``INBOX_HOLDS``,
+HARNESS.md D32): a box, person or target-frame question visual analysis and after, a voice beats and after. Each failed check
+gives a short reason that the Run Multiple dialog shows the person.
+
+``speaker_open``/``open_speaker_sql`` say whether a line's speaker is undecided (no character unless the person left it so,
+or a low-confidence character nobody decided: HARNESS.md D29). Only the voice resolver uses them, to choose the lines it
+works on. Nothing here is an approval status, and nothing is saved.
 """
 import json
 
@@ -24,15 +25,11 @@ STRONG_SCORE = 0.95
 STRONG_LEAD = 0.06
 LEFT_UNKNOWN = 'left_unknown'
 DECIDED_SPEAKERS = ('manual', 'agent', LEFT_UNKNOWN)
-OVERLAP = 0.1  # seconds a line must share with the cut to count as its speech
-# speaker_attribution's own marker for lines it could not attribute: those lines have no character, which is checked per line
-UNATTRIBUTED = 'Some lines could not be attributed'
 MAX_REASONS = 3
 STEPS = ('target_frames', 'visual', 'beats', 'consistency')
 # Escalation kind -> (the first step it holds, how the hand-off names it)
-INBOX_HOLDS = {'missed_cut': ('target_frames', 'a missed hard cut'), 'box_label': ('visual', 'box names'),
-               'new_person': ('visual', 'an unknown person'), 'target_frame': ('visual', 'target frames'),
-               'line_split': ('beats', 'a line across the hard cut'), 'voice': ('beats', 'an unknown voice')}
+INBOX_HOLDS = {'box_label': ('visual', 'box names'), 'new_person': ('visual', 'an unknown person'),
+               'target_frame': ('visual', 'target frames'), 'voice': ('beats', 'an unknown voice')}
 
 
 def _loads(text, default):
@@ -41,11 +38,6 @@ def _loads(text, default):
     except (TypeError, ValueError):
         return default
     return value if isinstance(value, type(default)) else default
-
-
-def clock(seconds):
-    minutes, rest = divmod(max(0.0, float(seconds)), 60)
-    return f'{int(minutes)}:{rest:04.1f}'
 
 
 def target_review(conn, cut, positions=False):
@@ -171,34 +163,6 @@ def open_speaker_sql(alias=''):
             f"({a}character_context_id IS NOT NULL AND {a}confidence='low' AND COALESCE({a}speaker_source,'') NOT IN ({decided})))")
 
 
-def episode_speech(episode):
-    if not episode or episode.get('has_audio') == 0:
-        return None
-    reasons = []
-    if episode.get('transcript_stale_reason'):
-        reasons.append(f"transcript stale ({episode['transcript_stale_reason']})")
-    stale = episode.get('speaker_attribution_stale_reason')
-    if stale and stale != UNATTRIBUTED:
-        reasons.append(f'speaker attribution stale ({stale})')
-    return reasons
-
-
-def _speech(conn, episode, cut, episode_reasons):
-    if episode_reasons is None:
-        return []
-    reasons = list(episode_reasons)
-    for row in conn.execute("""SELECT start_time,character_context_id,confidence,speaker_source FROM transcript_segments
-        WHERE episode_id=? AND superseded_by IS NULL AND deleted=0 AND MIN(end_time, ?) - MAX(start_time, ?) > ?
-        ORDER BY start_time""", (episode['id'], cut['end_time'], cut['start_time'], OVERLAP)):
-        if not speaker_open(row):
-            continue
-        if not row['character_context_id']:
-            reasons.append(f"line at {clock(row['start_time'])} has no speaker")
-        else:
-            reasons.append(f"line at {clock(row['start_time'])} has a low-confidence speaker")
-    return reasons
-
-
 def escalation_cuts(conn, item, cuts):
     """The cuts an escalation is about: its own ``cut_ids``, and for a voice question every cut its lines touch (it lists only
     a few sample cuts, but one answer settles all of them, so none of them should flag the same voice again)."""
@@ -229,11 +193,9 @@ def _inbox_reasons(kinds, step):
             if kind in (kinds or ()) and STEPS.index(first) <= STEPS.index(step)]
 
 
-def for_cut(conn, episode, cut, episode_reasons=False, inbox_kinds=None):
+def for_cut(conn, episode, cut, inbox_kinds=None):
     """Readiness of one active cut (a row with id, start_time, end_time, no_characters). ``inbox_kinds``: the open inbox items
     on the cut (``inbox``); None reads them."""
-    if episode_reasons is False:
-        episode_reasons = episode_speech(episode)
     if inbox_kinds is None:
         episode_id = cut.get('episode_id') or (episode or {}).get('id')
         inbox_kinds = inbox(conn, episode_id, [cut]).get(cut['id'], set()) if episode_id else set()
@@ -243,13 +205,12 @@ def for_cut(conn, episode, cut, episode_reasons=False, inbox_kinds=None):
         boxes, has_boxes = _boxes(conn, cut)
         targets = _targets(conn, cut, has_boxes) if not boxes else []
     visual, keyframes, video = _visual(conn, cut)
-    speech = _speech(conn, episode, cut, episode_reasons)
     beats = _beats(conn, cut, keyframes, video)
     held_target = _inbox_reasons(inbox_kinds, 'target_frames') + boxes
     held_visual = _inbox_reasons(inbox_kinds, 'visual') + boxes + targets
-    held_beats = _inbox_reasons(inbox_kinds, 'beats') + boxes + targets + visual + speech
-    held_consistency = _inbox_reasons(inbox_kinds, 'consistency') + boxes + targets + visual + speech + beats
-    return {'boxes': not boxes, 'target_frames': not targets, 'visual': not visual, 'speech': not speech, 'beats_current': not beats,
+    held_beats = _inbox_reasons(inbox_kinds, 'beats') + boxes + targets + visual
+    held_consistency = _inbox_reasons(inbox_kinds, 'consistency') + boxes + targets + visual + beats
+    return {'boxes': not boxes, 'target_frames': not targets, 'visual': not visual, 'beats_current': not beats,
             'inbox': sorted(inbox_kinds or ()), 'may_target_frames': not held_target,
             'may_visual': not held_visual, 'may_beats': not held_beats, 'may_consistency': not held_consistency,
             'held': {'target_frames': held_target[:MAX_REASONS], 'visual': held_visual[:MAX_REASONS], 'beats': held_beats[:MAX_REASONS],
@@ -260,9 +221,8 @@ def episode(conn, episode_id, cuts):
     """{cut id: readiness} for the given cut rows of one episode."""
     row = conn.execute('SELECT * FROM episodes WHERE id=?', (episode_id,)).fetchone()
     episode_row = dict(row) if row else None
-    episode_reasons = episode_speech(episode_row)
     held = inbox(conn, episode_id, cuts)
-    return {cut['id']: for_cut(conn, episode_row, cut, episode_reasons, held.get(cut['id'], set())) for cut in cuts}
+    return {cut['id']: for_cut(conn, episode_row, cut, held.get(cut['id'], set())) for cut in cuts}
 
 
 def cut(conn, cut_id):

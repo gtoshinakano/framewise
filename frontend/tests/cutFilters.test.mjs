@@ -65,20 +65,20 @@ test('every filter belongs to a group, listed in group order', () => {
   assert.deepEqual(groups.map(entry => entry.group), ['Needs you', 'Claude', 'Analysis', 'Characters', 'Text steps', 'Health', 'Length'])
   assert.equal(groups.flatMap(entry => entry.filters).length, CUT_FILTERS.length)
   assert.deepEqual(groups[0].filters.map(filter => filter.key),
-    ['missed_cut', 'line_split', 'voice', 'speaker_unsure', 'box_names', 'target_frames', 'decisions', 'picture_check', 'lines_to_check', 'failed_run'])
+    ['voice', 'box_names', 'target_frames', 'decisions', 'picture_check', 'failed_run'])  // missed cuts and lines are never a need (D37)
   assert.deepEqual(groups[1].filters.map(filter => filter.key), ['claude_pending', 'agent_answered'])
 })
 
 const needs = new Map([
   ['done', { steps: [], people: [], claude: [], answered_by: ['claude'], analysis_off: false }],
-  ['no-boxes', { steps: ['boxes'], people: [{ key: 'missed_cut', count: 1, escalation_ids: ['m'] }], claude: [], answered_by: [], analysis_off: false }],
+  ['no-boxes', { steps: ['boxes'], people: [{ key: 'voice', count: 1, escalation_ids: ['v'] }], claude: [], answered_by: [], analysis_off: false }],
   ['unknown', { steps: [], people: [{ key: 'box_names', count: 1, escalation_ids: [] }], claude: [], answered_by: [], analysis_off: false }],
   ['needs-summary', { steps: ['summary'], people: [{ key: 'decisions', count: 2, escalation_ids: [] }], claude: [{ kind: 'review_question', escalation_id: 'q' }], answered_by: [], analysis_off: false }],
 ])
 
 test('the Needs you and Claude filters read the per-cut needs', () => {
   const ids = key => cuts.filter(item => matchesAnyFilter(item, new Set([key]), needs)).map(c => c.id)
-  assert.deepEqual(ids('missed_cut'), ['no-boxes'])
+  assert.deepEqual(ids('voice'), ['no-boxes'])
   assert.deepEqual(ids('decisions'), ['needs-summary'])
   assert.deepEqual(ids('claude_pending'), ['needs-summary'])
   assert.deepEqual(ids('agent_answered'), ['done'])
@@ -103,6 +103,10 @@ test('the target-frame filter falls back to its flag, and leaves quiet or disabl
   assert.equal(matchesAnyFilter(cut('quiet', { no_characters: true, has_unlabeled_target_boxes: true }), new Set(['target_frames'])), false)
   assert.equal(matchesAnyFilter(cut('off', { analysis_enabled: false, has_unlabeled_target_boxes: true }), new Set(['target_frames'])), false)
   assert.equal(adjacentCut([cut('a'), unknown], cut('a'), 1, new Set(['target_frames'])).id, 'unknown-target')
+})
+
+test('filters of needs that no longer exist are dropped when read back', () => {
+  assert.deepEqual([...parseStoredFilters(JSON.stringify({ keys: ['missed_cut', 'line_split', 'speaker_unsure', 'lines_to_check', 'voice'] })).keys], ['voice'])
 })
 
 test('filters saved under their old names read back as the Needs you filters', () => {

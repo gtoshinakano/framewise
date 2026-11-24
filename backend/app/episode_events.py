@@ -36,6 +36,7 @@ EPISODE_TABLES = {
     'keyframe_results': ('(SELECT episode_id FROM cuts WHERE id={row}.cut_id)', 'data', None),
     'keyframe_edits': ('(SELECT episode_id FROM cuts WHERE id={row}.cut_id)', 'data', None),
     'character_voice_samples': ('episode_id', 'data', None),
+    'batch_runs': ('episode_id', 'jobs', None),
 }
 GLOBAL_TABLES = {
     'episodes': 'status,stage,error',
@@ -98,12 +99,12 @@ def init_schema(conn):
     for action, row in (('INSERT', 'NEW'), ('UPDATE', 'NEW'), ('DELETE', 'OLD')):
         _trigger(conn, f'episode_events_job_lifecycle_{action}', 'jobs', action, 'status',
                  _bump_local('data', f'id={row}.episode_id'))
-    _trigger(conn, 'episode_events_audio_stale', 'episodes', 'UPDATE', 'transcript_stale_reason,speaker_attribution_stale_reason',
-             _bump_local('data', 'id=NEW.id'))
+    # The episode's transcript and speaker-attribution stale reasons and a subtitle run's stale reason are no longer written
+    # (HARNESS.md D37): automatic audio work and subtitles never make anything stale.
+    conn.execute('DROP TRIGGER IF EXISTS episode_events_audio_stale')
+    conn.execute('DROP TRIGGER IF EXISTS episode_events_subtitle_stale')
     _trigger(conn, 'episode_events_stale', 'analysis_results', 'UPDATE', 'stale_reason',
              _bump_local('stale', 'id=(SELECT episode_id FROM cuts WHERE id=NEW.cut_id)'))
-    _trigger(conn, 'episode_events_subtitle_stale', 'subtitle_runs', 'UPDATE', 'stale_reason',
-             _bump_local('stale', 'id=NEW.episode_id'))
     _trigger(conn, 'episode_events_sequence_stale', 'sequence_results', 'UPDATE', 'stale_reason',
              _bump_local('stale', 'id=(SELECT episode_id FROM sequences WHERE id=NEW.sequence_id)'))
     _trigger(conn, 'episode_events_draft_stale', 'cut_review_drafts', 'UPDATE', 'stale_reason',

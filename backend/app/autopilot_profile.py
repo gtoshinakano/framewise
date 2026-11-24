@@ -35,6 +35,9 @@ DECISIONS = {
 # Off unless the user turns them on (D27): both build on the consistency review, which the person's fixes after the
 # analysis phase usually make stale, so running them during that phase wastes GPU time. For these two, ``ask`` acts as off.
 OFF_BY_DEFAULT = ('review_answers', 'cut_summaries')
+# Never asked (HARNESS.md D37): the missed-cut checker splits only what it is sure of and the line splitter applies or
+# leaves each line, so these two are Apply or Off; a stored or sent "ask" reads as apply.
+NEVER_ASK = ('missed_cuts', 'line_splits')
 TOPICS = consistency_summary.TOPICS
 WHEN_UNSURE = ('evidence', 'recommended', 'ask')
 RELEVANCE = ('auto', 'always', 'background')
@@ -75,7 +78,7 @@ def normalize(raw, character_ids):
         if key in DECISIONS:
             if mode not in MODES:
                 raise ProfileError(f'{DECISIONS[key]}: choose one of {", ".join(MODES)}')
-            profile['modes'][key] = mode
+            profile['modes'][key] = 'apply' if mode == 'ask' and key in NEVER_ASK else mode
     claude = raw.get('claude') or {}
     if 'enabled' in claude:
         profile['claude']['enabled'] = bool(claude['enabled'])

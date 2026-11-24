@@ -189,10 +189,8 @@ def inputs(conn, job):
 
 
 def invalidate(conn, job):
-    from .structured_results import invalidate_transcript
-    if job['pipeline'] == 'transcribe':
-        span = json.loads(job['payload_json']).get('range') or {}
-        invalidate_transcript(conn, job['episode_id'], span.get('start_time', 0), span.get('end_time'))
+    """Transcription marks nothing stale (HARNESS.md D37): it never replaces a line the person edited, and the results
+    built on the transcript keep their state until the person changes a line themselves."""
 
 
 def voice_references(snapshot, pipeline):
@@ -230,26 +228,14 @@ def voice_references(snapshot, pipeline):
     return refs
 
 
-def transcript_provenance(snapshot, manual_ids=None):
+def transcript_provenance(snapshot):
     return {'fingerprint': snapshot.stamp, 'source': snapshot.data['source'],
             'segment_ids': [row['id'] for row in snapshot.data['segments']],
-            'voice_reference_ids': [row['id'] for row in snapshot.data['references']],
-            'replaceable_manual_ids': manual_ids}
+            'voice_reference_ids': [row['id'] for row in snapshot.data['references']]}
 
 
 def protected_deletions(rows):
     return [(row['start_time'], row['end_time']) for row in rows if row['deleted'] and row['origin'] != 'model']
-
-
-def invalidate_subtitles_if_timing_changed(conn, episode_id, previously):
-    from .subtitle_store import invalidate_probes
-    from .transcript_parts import timings
-    current = conn.execute("""SELECT start_time,end_time,text,words_json FROM transcript_segments WHERE episode_id=?
-        AND superseded_by IS NULL AND deleted=0 ORDER BY start_time,end_time""", (episode_id,))
-    old = sorted(span for row in previously for span in timings(row))
-    new = sorted(span for row in current for span in timings(row))
-    if old != new:
-        invalidate_probes(conn, episode_id)
 
 
 def transcribe_episode(snapshot, payload, audio, temp):
@@ -267,14 +253,6 @@ def transcribe_episode(snapshot, payload, audio, temp):
             raise RuntimeError('The selected audio is too short to transcribe.')
     rows = snapshot.data['segments']
     current = [row for row in rows if not row['deleted']]
-    previous = json.loads(snapshot.job['input_json'] or '{}')
-    replace_manual = bool(span and payload.get('replace_manual') is True)
-    manual_ids = set(previous.get('replaceable_manual_ids') or [])
-    if replace_manual and 'replaceable_manual_ids' not in previous:
-        manual_ids = {row['id'] for row in current if row['origin'] != 'model'}
-        with snapshot.publish(invalidate=False) as conn:
-            conn.execute('UPDATE jobs SET input_json=? WHERE id=?',
-                         (json.dumps(transcript_provenance(snapshot, sorted(manual_ids))), job_id))
 
     ranges = [row for row in snapshot.data['ranges'] if not row['suppressed']]
     automatic = []
@@ -330,7 +308,7 @@ def transcribe_episode(snapshot, payload, audio, temp):
 
     names = reconcile_speakers(turns, current, {}, (start, end)) if span else {}
     model_id = f'{ASR} + {ALIGNER} + {DIARIZATION}'
-    provenance = {**transcript_provenance(snapshot, sorted(manual_ids)), 'model_ids': [ASR, ALIGNER, DIARIZATION],
+    provenance = {**transcript_provenance(snapshot), 'model_ids': [ASR, ALIGNER, DIARIZATION],
                   'ranges': mask, 'voice_threshold': line_voices.FIX_TOP, 'voice_gap': line_voices.FIX_GAP,
                   'pad_seconds': line_voices.PAD_REACH, 'minimum_clip_seconds': line_voices.MIN_CLIP}
 
@@ -340,12 +318,12 @@ def transcribe_episode(snapshot, payload, audio, temp):
     with snapshot.publish(on_changed=record) as conn:
         if not span:
             audio_ranges.replace_fingerprints(conn, episode_id, automatic)
-            conn.execute('UPDATE episodes SET transcript_stale_reason=NULL WHERE id=?', (episode_id,))
         replaced, kept = 0, 0
         protected = protected_deletions(rows)
         for old in current:
             inside = not span or start <= (old['start_time'] + old['end_time']) / 2 < end
-            can_replace = old['id'] in manual_ids or old['origin'] == 'model' and (old['model_id'] or '').startswith(ASR)
+            # Only untouched model output is replaced: a line the person edited (any other origin) always stays
+            can_replace = old['origin'] == 'model' and (old['model_id'] or '').startswith(ASR)
             if inside and can_replace:
                 tombstone = str(uuid.uuid4())
                 conn.execute("""INSERT INTO transcript_segments (id,episode_id,start_time,end_time,text,speaker_label,
@@ -382,7 +360,6 @@ def transcribe_episode(snapshot, payload, audio, temp):
         if open_lines or snapshot.data['glossary']:
             from .speaker_attribution import insert
             insert(conn, episode_id, span=span, dependencies=(job_id,))
-        invalidate_subtitles_if_timing_changed(conn, episode_id, current)
         record(conn)
         note = f', {kept} edited by hand kept' if kept else ''
         finish(conn, job_id, episode_id, f'Complete · {added} new, {replaced} replaced{note}')

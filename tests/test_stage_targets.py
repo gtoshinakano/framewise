@@ -1,4 +1,4 @@
-"""stage_targets (D31): the target cuts of each stage, and the cuts held for the person or Claude."""
+"""stage_targets (D31, D37): the target cuts of each stage, and the cuts held for the person or Claude."""
 import json
 import tempfile
 import unittest
@@ -76,12 +76,15 @@ class StageTargetsTest(unittest.TestCase):
         self.assertEqual(self.cuts(evaluate['consistency']), [])
 
     def test_an_open_inbox_item_holds_its_cut(self):
+        with db.connect() as conn:  # a line across a cut is never a hold any more (D37), a voice question is
+            agent_log.escalate(conn, episode_id='e', kind='line_split', group_key='line:x', question='?', cut_ids=['c4'])
+        self.assertEqual(self.cuts(self.get('evaluate')['evaluate']['beats']), [4])
         with db.connect() as conn:
-            agent_log.escalate(conn, episode_id='e', kind='line_split', group_key='line:x', question='?', cut_ids=['c4'], reviewer='claude')
+            agent_log.escalate(conn, episode_id='e', kind='voice', group_key='voice:S', question='?', cut_ids=['c4'], reviewer='claude')
         data = self.get('evaluate')
         self.assertEqual(self.cuts(data['evaluate']['beats']), [])
-        self.assertEqual(data['evaluate']['beats']['held'][0]['reasons'], ['inbox: a line across the hard cut'])
-        self.assertEqual(data['inbox'], {'line_split': {'human': 0, 'claude': 1}})
+        self.assertEqual(data['evaluate']['beats']['held'][0]['reasons'], ['inbox: an unknown voice'])
+        self.assertEqual(data['inbox']['voice'], {'human': 0, 'claude': 1})
 
     def test_results_list_cut_summaries_and_their_switch(self):
         results = self.get('results')['results']

@@ -1,4 +1,5 @@
-"""cut_readiness (D26): a step runs for a cut only once its inputs are settled; the reasons go to the person."""
+"""cut_readiness (D26, D37): a step runs for a cut only once its inputs are settled; the reasons go to the person. Speech
+holds a cut only through an open voice question, never through line state."""
 import json
 import tempfile
 import unittest
@@ -77,21 +78,17 @@ class CutReadinessTest(unittest.TestCase):
         self.assertEqual(ready['held']['visual'], ['target frame F2 flagged (low_match)'])
         self.assertEqual(ready['held']['target_frames'], [])   # target frames themselves may run: the boxes are settled
 
-    def test_speech_must_be_named_and_not_low_unless_a_person_set_it(self):
+    def test_line_state_alone_never_holds_a_cut_only_an_open_voice_question_does(self):
         self.sql("UPDATE character_detections SET label_source='manual' WHERE id='d1'")
-        self.assertTrue(self.ready()['may_beats'])   # c1's own line is high; the low line is c2's
-        ready = self.ready('c2')                      # c2 has no boxes at all
-        self.assertTrue(ready['may_visual'])
-        self.assertEqual(ready['held']['beats'], ['line at 0:02.2 has a low-confidence speaker'])
-        self.sql("UPDATE transcript_segments SET speaker_source='manual' WHERE id='l2'")
-        self.assertTrue(self.ready('c2')['speech'])
+        self.assertTrue(self.ready()['may_beats'])
+        self.assertTrue(self.ready('c2')['may_beats'])   # c2's low-confidence line is not a hold by itself
         self.sql("UPDATE transcript_segments SET character_context_id=NULL WHERE id='l2'")
-        self.assertEqual(self.ready('c2')['held']['beats'], ['line at 0:02.2 has no speaker'])
-        self.sql("UPDATE transcript_segments SET character_context_id='bob' WHERE id='l2'")
-        self.sql("UPDATE episodes SET speaker_attribution_stale_reason='Name glossary changed' WHERE id='e'")
-        self.assertEqual(self.ready('c2')['held']['beats'], ['speaker attribution stale (Name glossary changed)'])
-        self.sql(f"UPDATE episodes SET speaker_attribution_stale_reason='{cut_readiness.UNATTRIBUTED}' WHERE id='e'")
-        self.assertTrue(self.ready('c2')['speech'])
+        self.sql("UPDATE episodes SET speaker_attribution_stale_reason='Name glossary changed',transcript_stale_reason='x' WHERE id='e'")
+        self.assertTrue(self.ready('c2')['may_beats'])  # neither a line without a speaker nor the old episode marks hold it
+        with db.connect() as conn:
+            agent_log.escalate(conn, episode_id='e', kind='voice', group_key='voice:S', question='?', cut_ids=['c2'], evidence={'line_ids': ['l2']})
+        self.assertEqual(self.ready('c2')['held']['beats'], ['inbox: an unknown voice'])
+        self.assertTrue(self.ready('c2')['may_visual'])
 
     def test_beats_wait_for_current_visual_results_and_consistency_for_current_beats(self):
         self.sql("UPDATE character_detections SET label_source='manual' WHERE id='d1'")
@@ -119,18 +116,21 @@ class CutReadinessTest(unittest.TestCase):
         self.sql("UPDATE character_detections SET label_source='manual' WHERE id='d1'")
         self.assertTrue(self.ready()['may_consistency'])
         with db.connect() as conn:
-            split = agent_log.escalate(conn, episode_id='e', kind='line_split', group_key='line:l1', question='?', cut_ids=['c1'])
+            voice = agent_log.escalate(conn, episode_id='e', kind='voice', group_key='voice:A', question='?', cut_ids=['c1'], evidence={'line_ids': ['l1']})
         ready = self.ready()
         self.assertEqual((ready['may_visual'], ready['may_beats']), (True, False))
-        self.assertEqual(ready['held']['beats'], ['inbox: a line across the hard cut'])
+        self.assertEqual(ready['held']['beats'], ['inbox: an unknown voice'])
         with db.connect() as conn:
-            agent_log.escalate(conn, episode_id='e', kind='missed_cut', group_key='peak:1', question='?', cut_ids=['c1'], reviewer='claude')
+            agent_log.escalate(conn, episode_id='e', kind='box_label', group_key='box:d1', question='?', cut_ids=['c1'], reviewer='claude')
+            # missed cuts and lines across a hard cut are never asked any more, and an old open one holds nothing (D37)
+            agent_log.escalate(conn, episode_id='e', kind='missed_cut', group_key='peak:1', question='?', cut_ids=['c1'])
+            agent_log.escalate(conn, episode_id='e', kind='line_split', group_key='line:l1', question='?', cut_ids=['c1'])
         ready = self.ready()
-        self.assertFalse(ready['may_target_frames'])
-        self.assertEqual(ready['inbox'], ['line_split', 'missed_cut'])
+        self.assertEqual((ready['may_target_frames'], ready['may_visual']), (True, False))
+        self.assertEqual(ready['inbox'], ['box_label', 'voice'])
         with db.connect() as conn:
-            agent_log.close_escalation(conn, split, 'resolved')
-            conn.execute("UPDATE agent_escalations SET status='resolved' WHERE kind='missed_cut'")
+            agent_log.close_escalation(conn, voice, 'resolved')
+            conn.execute("UPDATE agent_escalations SET status='resolved' WHERE kind='box_label'")
         self.assertTrue(self.ready()['may_consistency'])
         with db.connect() as conn:  # a voice question holds every cut its lines touch
             agent_log.escalate(conn, episode_id='e', kind='voice', group_key='voice:S', question='?', cut_ids=['c1'], evidence={'line_ids': ['l2']})
@@ -143,7 +143,7 @@ class CutReadinessTest(unittest.TestCase):
     def test_the_review_report_lists_the_held_cuts_per_step(self):
         held = TestClient(app).get('/api/episodes/e/review').json()['progress']['held']
         self.assertEqual([item['cut'] for item in held['visual']], [1])
-        self.assertEqual([item['cut'] for item in held['beats']], [1, 2])
+        self.assertEqual([item['cut'] for item in held['beats']], [1])  # c2's low line alone holds nothing (D37)
         self.assertEqual(held['target_frames'][0]['reasons'], ['box 1 label not confirmed (Ann 0.97, lead 0.04)'])
 
     def test_keyframes_queue_beats_only_as_the_job_asks(self):
@@ -153,9 +153,9 @@ class CutReadinessTest(unittest.TestCase):
         with db.connect() as conn:
             self.assertTrue(keyframe_analysis.beats_wanted(conn, cut_run(None)))
             self.assertFalse(keyframe_analysis.beats_wanted(conn, cut_run('off')))
-            self.assertFalse(keyframe_analysis.beats_wanted(conn, cut_run('when_ready')))   # c2's low line
-            conn.execute("UPDATE transcript_segments SET confidence='medium' WHERE id='l2'")
-            self.assertTrue(keyframe_analysis.beats_wanted(conn, cut_run('when_ready')))
+            self.assertTrue(keyframe_analysis.beats_wanted(conn, cut_run('when_ready')))   # c2's low line alone holds nothing
+            agent_log.escalate(conn, episode_id='e', kind='voice', group_key='voice:S', question='?', cut_ids=['c2'], evidence={'line_ids': ['l2']})
+            self.assertFalse(keyframe_analysis.beats_wanted(conn, cut_run('when_ready')))  # its open voice question does
 
 
 class AutopilotFixesTest(unittest.TestCase):
@@ -179,7 +179,8 @@ class AutopilotFixesTest(unittest.TestCase):
                          (json.dumps({'modes': {'review_answers': 'apply', 'missed_cuts': 'ask'}}),))
             autopilot_profile.answers_and_summaries_off(conn)
             profile, _ = autopilot_profile.load(conn, 'p')
-            self.assertEqual((profile['modes']['review_answers'], profile['modes']['cut_summaries'], profile['modes']['missed_cuts']), ('off', 'off', 'ask'))
+            # missed cuts are never asked (D37): a stored "ask" reads as apply
+            self.assertEqual((profile['modes']['review_answers'], profile['modes']['cut_summaries'], profile['modes']['missed_cuts']), ('off', 'off', 'apply'))
             # the user turns them on again: kept
             autopilot_profile.save(conn, 'p', {**profile, 'modes': {**profile['modes'], 'cut_summaries': 'apply'}})
             self.assertEqual(autopilot_profile.load(conn, 'p')[0]['modes']['cut_summaries'], 'apply')

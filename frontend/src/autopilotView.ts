@@ -39,6 +39,17 @@ export const TOPIC_HELP: Record<string, { label: string; covers: string; example
 export const MODE_OPTIONS: { value: Mode; label: string }[] = [
   { value: 'apply', label: 'Apply' }, { value: 'ask', label: 'Ask me' }, { value: 'off', label: 'Off' },
 ]
+/** Decisions that never ask (backend autopilot_profile.NEVER_ASK): the missed-cut checker and the line splitter apply or leave. */
+export const NEVER_ASK = ['missed_cuts', 'line_splits']
+
+/** The modes one decision kind offers; a stored "ask" of a never-ask kind shows as Apply, as the server reads it. */
+export function modesFor(kind: string) {
+  return NEVER_ASK.includes(kind) ? MODE_OPTIONS.filter(option => option.value !== 'ask') : MODE_OPTIONS
+}
+
+export function modeOf(kind: string, mode: Mode | undefined): Mode {
+  return mode === 'ask' && NEVER_ASK.includes(kind) ? 'apply' : mode ?? 'apply'
+}
 export const UNSURE_OPTIONS: { value: WhenUnsure; label: string }[] = [
   { value: 'evidence', label: 'Follow the evidence' }, { value: 'recommended', label: 'Take the recommended option' }, { value: 'ask', label: 'Ask me' },
 ]

@@ -31,7 +31,6 @@ def add(conn, episode_id, start, end, kind):
     conn.execute("""INSERT INTO episode_audio_ranges(id,episode_id,start_time,end_time,kind,source)
         VALUES (?,?,?,?,?,'user')""", (str(uuid.uuid4()), episode_id, start, end, kind))
     hide_overlaps(conn, episode_id, start, end)
-    mark_stale(conn, episode_id)
 
 
 def hide_overlaps(conn, episode_id, start, end):
@@ -49,14 +48,7 @@ def remove(conn, episode_id, range_id):
         conn.execute("UPDATE episode_audio_ranges SET source='user',suppressed=1 WHERE id=?", (range_id,))
     else:
         conn.execute('DELETE FROM episode_audio_ranges WHERE id=?', (range_id,))
-    mark_stale(conn, episode_id)
     return True
-
-
-def mark_stale(conn, episode_id):
-    conn.execute("""UPDATE episodes SET transcript_stale_reason='Excluded audio ranges changed'
-        WHERE id=? AND EXISTS(SELECT 1 FROM transcript_segments WHERE episode_id=? AND superseded_by IS NULL AND deleted=0)""",
-                 (episode_id, episode_id))
 
 
 def audio_files(conn, project_id):
