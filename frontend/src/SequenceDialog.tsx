@@ -32,8 +32,8 @@ function CopyId({ id }: { id: string }) {
 }
 
 /** The sequence workspace: direct the range (bible and shot plan), review, write the shot prompts, and download. */
-export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onClose, onChanged }: {
-  sequenceId: string; episodeId: string; proxyReady: boolean; onClose: () => void; onChanged: () => void
+export default function SequenceDialog({ projectId, sequenceId, episodeId, proxyReady, onClose, onChanged }: {
+  projectId: string; sequenceId: string; episodeId: string; proxyReady: boolean; onClose: () => void; onChanged: () => void
 }) {
   const [detail, setDetail] = useState<SequenceDetail | null>(null)
   const [tab, setTab] = useState<Tab>('direction')
@@ -148,7 +148,7 @@ export default function SequenceDialog({ sequenceId, episodeId, proxyReady, onCl
 
       {!detail ? <div className="muted p-12 text-sm">Loading sequence…</div> : <>
         {assistantMounted && <CutAssistant sequence={{ id: sequenceId, label }} active={tab === 'assistant'} onResultsChanged={() => { void load(); onChanged() }} />}
-        {tab === 'dialogue' && <DialogueTab detail={detail} proxyReady={proxyReady} working={!!working} act={act} run={run} onContinue={() => setTab('direction')} />}
+        {tab === 'dialogue' && <DialogueTab projectId={projectId} detail={detail} proxyReady={proxyReady} working={!!working} act={act} run={run} onContinue={() => setTab('direction')} />}
         {tab === 'direction' && <DirectionTab detail={detail} working={!!working} act={act} run={run} onOpenShot={key => { setSelectedKey(key); setTab('shots') }} onOpenDialogue={() => setTab('dialogue')} />}
         {tab === 'shots' && <ShotsTab detail={detail} selected={selected} onSelect={setSelectedKey} proxyReady={proxyReady} working={!!working} act={act} run={run} onOpenAssistant={() => setTab('assistant')} />}
       </>}

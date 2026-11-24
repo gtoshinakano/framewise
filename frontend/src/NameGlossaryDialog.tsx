@@ -1,3 +1,4 @@
+import { CharacterSelect } from './CharacterSelect'
 import { useEffect, useRef, useState } from 'react'
 import { Pencil, Plus, Trash2, X } from 'lucide-react'
 import { api, type ContextItem } from './api'
@@ -53,10 +54,10 @@ export function NameGlossaryDialog({ projectId, onClose }: { projectId: string; 
           onChange={event => setDraft({ ...draft, spelling: event.target.value })} /></label>
         <label className="text-xs">Kana reading<input className="field mt-1" required maxLength={120} value={draft.reading}
           onChange={event => setDraft({ ...draft, reading: event.target.value })} /></label>
-        <label className="text-xs">Character<select className="field mt-1" value={draft.character_context_id || ''}
+        <label className="text-xs">Character<CharacterSelect aria-label="Character" projectId={characters[0]?.project_id} className="field mt-1" value={draft.character_context_id || ''}
           onChange={event => setDraft({ ...draft, character_context_id: event.target.value || null, part: event.target.value ? draft.part || 'family' : null })}>
           <option value="">Other proper noun</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
-        </select></label>
+        </CharacterSelect></label>
         {draft.character_context_id && <label className="text-xs">Name part<select className="field mt-1" value={draft.part || 'family'}
           onChange={event => setDraft({ ...draft, part: event.target.value as 'family' | 'given' })}>
           <option value="family">Family name</option><option value="given">Given name</option>

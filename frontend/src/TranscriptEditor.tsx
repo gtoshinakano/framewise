@@ -1,3 +1,4 @@
+import { CharacterSelect } from './CharacterSelect'
 import { useEpisodeEvents } from './episodeEvents'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { AudioLines, Captions, History, ListMusic, Mic, Play, Plus, RefreshCw, Save, Trash2, Wrench, X } from 'lucide-react'
@@ -73,9 +74,9 @@ function SegmentEditor({ draft, setDraft, characters, duration, playhead, busy, 
     <label className="block"><span className="label !mb-1 !text-[10px]">Speech or audio note</span><textarea className="field min-h-20 resize-y !py-2 text-sm" maxLength={20000} disabled={historical} value={draft.text} onChange={event => setDraft({ ...draft, text: event.target.value })} placeholder="What is heard?" autoFocus={!draft.id} /></label>
     <div className="grid grid-cols-2 gap-2">
       <label className="block"><span className="label !mb-1 !text-[10px]">Speaker label</span><input className="field !py-1.5 text-sm" maxLength={200} disabled={historical} value={draft.speaker_label} onChange={event => setDraft({ ...draft, speaker_label: event.target.value })} placeholder="e.g. Narrator" /></label>
-      <label className="block"><span className="label !mb-1 !text-[10px]">Character</span><select className="field !py-1.5 text-sm" disabled={historical} value={draft.character_context_id || ''} onChange={event => setDraft({ ...draft, character_context_id: event.target.value || null })}>
+      <label className="block"><span className="label !mb-1 !text-[10px]">Character</span><CharacterSelect aria-label="Character" projectId={characters[0]?.project_id} className="field !py-1.5 text-sm" disabled={historical} value={draft.character_context_id || ''} onChange={event => setDraft({ ...draft, character_context_id: event.target.value || null })}>
         <option value="">Unassigned</option><CharacterOptions characters={characters} allowNew={false} />
-      </select></label>
+      </CharacterSelect></label>
     </div>
     <div className="flex items-center gap-1.5">
       <IconButton icon={Play} label="Play this line" size="sm" disabled={draft.end_time <= draft.start_time} onClick={() => playRange(draft.start_time, draft.end_time)} />
@@ -281,7 +282,7 @@ export default function TranscriptEditor({ episodeId, projectId, duration, playh
       </>}
       {view === 'voices' && <div className="space-y-4 p-4">
         <p className="muted text-[11px] leading-4">A voice reference helps match speakers to characters across this project. Add excerpts of one speaker totalling 2–60 seconds, or upload a recording.</p>
-        <label className="block"><span className="label">Character</span><select className="field !py-2" value={voiceCharacter} onChange={event => setVoiceCharacter(event.target.value)}><option value="">Choose character</option>{registered(characters).map(character => <option key={character.id} value={character.id}>{character.title}</option>)}</select></label>
+        <label className="block"><span className="label">Character</span><CharacterSelect aria-label="Character" projectId={characters[0]?.project_id} className="field !py-2" value={voiceCharacter} onChange={event => setVoiceCharacter(event.target.value)}><option value="">Choose character</option>{registered(characters).map(character => <option key={character.id} value={character.id}>{character.title}</option>)}</CharacterSelect></label>
         <div className="rounded-lg border hairline p-3">
           <p className="mb-2 text-xs font-semibold">From this episode</p>
           <TimeRangeInput compact start={voiceStart} end={voiceEnd} min={0} max={duration} playhead={playhead} onChange={setVoiceRange} onPlay={hasAudio ? playRange : undefined} />

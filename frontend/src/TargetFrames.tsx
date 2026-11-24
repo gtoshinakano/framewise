@@ -1,3 +1,4 @@
+import { CharacterSelect } from './CharacterSelect'
 import { useEpisodeEvents } from './episodeEvents'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, ImageMinus, Loader2, PencilLine, ScanFace, Trash2, XCircle } from 'lucide-react'
@@ -260,8 +261,8 @@ export function TargetFrames({ cutId, selection, error, projectId, detections, o
           const joins = mergeTargets(live, slot.slot)
           return <div key={slot.slot} className="flex flex-wrap items-center gap-1.5 rounded-lg bg-[#1e2430] p-1.5 text-xs" style={{ borderLeft: `4px solid ${boxColor(slot.slot)}` }}>
             <span className="w-5 shrink-0 text-center font-semibold" style={{ color: boxColor(slot.slot) }}>{slot.slot + 1}</span>
-            <select aria-label={`Character for colour ${slot.slot + 1}`} className="field !w-auto min-w-32 flex-1 !px-2 !py-1.5 !text-xs" value={slot.character_context_id || ''} disabled={locked}
-              onChange={event => labelWith(slot.slot, event.target.value)}><option value="">Unknown</option><CharacterOptions characters={characters} /></select>
+            <CharacterSelect projectId={characters[0]?.project_id} aria-label={`Character for colour ${slot.slot + 1}`} className="field !w-auto min-w-32 flex-1 !px-2 !py-1.5 !text-xs" value={slot.character_context_id || ''} disabled={locked}
+              onChange={event => labelWith(slot.slot, event.target.value)}><option value="">Unknown</option><CharacterOptions characters={characters} /></CharacterSelect>
             <StatusChip tone={chip.tone} title={chip.title}>{chip.text}</StatusChip>
             {joins.length > 0 && <select aria-label={`Colour ${slot.slot + 1} is the same person as`} className="field !w-auto !px-2 !py-1.5 !text-xs" value="" disabled={locked}
               title="The detector took one person for two colours. Pick the colour they really are: all these boxes join it. Where both have a box in a frame, the one you drew or moved stays."

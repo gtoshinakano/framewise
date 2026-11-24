@@ -1,3 +1,4 @@
+import { CharacterSelect } from './CharacterSelect'
 import { useEffect, useRef, useState } from 'react'
 import { Pencil, Plus, Trash2, X } from 'lucide-react'
 import { api, type ContextItem } from './api'
@@ -53,10 +54,10 @@ export function OutfitsDialog({ projectId, onClose }: { projectId: string; onClo
     {error && <p role="alert" className="mb-3 text-xs text-[#ff9fa7]">{error}</p>}
     {draft ? <form className="mb-4 space-y-3 rounded-lg border hairline p-3" onSubmit={event => { event.preventDefault(); void save() }}>
       <div className="grid gap-2 sm:grid-cols-2">
-        <label className="text-xs">Character<select className="field mt-1" required value={draft.character_context_id}
+        <label className="text-xs">Character<CharacterSelect aria-label="Character" projectId={characters[0]?.project_id} className="field mt-1" required value={draft.character_context_id}
           onChange={event => setDraft({ ...draft, character_context_id: event.target.value })}>
           <option value="" disabled>Choose a character</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
-        </select></label>
+        </CharacterSelect></label>
         <label className="text-xs">Outfit name<input className="field mt-1" required maxLength={120} value={draft.name}
           onChange={event => setDraft({ ...draft, name: event.target.value })} /></label>
       </div>

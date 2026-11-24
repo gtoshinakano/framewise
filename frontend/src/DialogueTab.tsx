@@ -1,3 +1,4 @@
+import { CharacterSelect } from './CharacterSelect'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Check, Crosshair, LoaderCircle, Merge, Minus, Pause, Play, Plus, RefreshCw, Save, Scissors, Trash2, Undo2, WandSparkles, X } from 'lucide-react'
 import { applyVoice, changed, counts, diff, isNew, lineAt, mergeNext, nudge, payload, problemsById, sameContent, setEdge, setSpeaker, setText, speakerOptions, splitAt, visibleLines, type Filter } from './compilationView'
@@ -35,13 +36,13 @@ function TimeEdit({ label, value, onChange, onNudge, onPlayhead }: { label: stri
 }
 
 type RowProps = {
-  line: CompiledLine; selected: boolean; active: boolean; playing: boolean; colour: string; shotsInside: string; problems: string[]; duration: number; added: boolean
+  projectId: string; line: CompiledLine; selected: boolean; active: boolean; playing: boolean; colour: string; shotsInside: string; problems: string[]; duration: number; added: boolean
   options: { value: string; label: string }[]; characters: { id: string; name: string }[]
   onSelect: (id: string) => void; onPlay: (line: CompiledLine) => void; onEdit: (id: string, edit: (line: CompiledLine) => CompiledLine) => void
   onMerge: (id: string) => void; onSplit: (id: string) => void; onDelete: (id: string) => void; playhead: () => number
 }
 
-const Row = memo(function Row({ line, selected, active, playing, colour, shotsInside, problems, duration, added, options, characters, onSelect, onPlay, onEdit, onMerge, onSplit, onDelete, playhead }: RowProps) {
+const Row = memo(function Row({ projectId, line, selected, active, playing, colour, shotsInside, problems, duration, added, options, characters, onSelect, onPlay, onEdit, onMerge, onSplit, onDelete, playhead }: RowProps) {
   const edited = changed(line)
   const marks = edited ? diff(line.original_text, line.text) : []
   const border = active ? 'border-[#e0a96d] bg-[#2a2319]' : selected ? 'border-[#7d6542] bg-[#1d222c]' : 'border-[#2f3643] bg-[#161b24]'
@@ -67,9 +68,9 @@ const Row = memo(function Row({ line, selected, active, playing, colour, shotsIn
     </div>
     <div className="mt-2 grid gap-3 md:grid-cols-[13rem_minmax(0,1fr)]">
       <div className="space-y-2">
-        <select className="field !py-1.5 !text-xs" aria-label={`Speaker of ${line.id}`} value={line.character || ''} onChange={event => onEdit(line.id, item => setSpeaker(item, event.target.value || null, characters))}>
+        <CharacterSelect imageIds={Object.fromEntries(characters.map(person => [person.name, person.id]))} projectId={projectId} className="field !py-1.5 !text-xs" aria-label={`Speaker of ${line.id}`} value={line.character || ''} onChange={event => onEdit(line.id, item => setSpeaker(item, event.target.value || null, characters))}>
           {options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
+        </CharacterSelect>
       </div>
       <div className="min-w-0 space-y-1.5">
         <textarea lang="ja" className="field resize-y !py-1.5 text-[13px] leading-6" rows={Math.max(2, Math.ceil(line.text.length / 40))} aria-label={`Words of ${line.id}`} value={line.text} onChange={event => onEdit(line.id, item => setText(item, event.target.value))} />
@@ -132,8 +133,8 @@ function PlayheadClock({ origin }: { origin: number }) {
 }
 
 /** Review and correct the dialogue Qwen compiled from the transcript, the subtitles and the pictures; Direction starts from the saved result. */
-export default function DialogueTab({ detail, working, act, run, onContinue, proxyReady }: {
-  detail: SequenceDetail; working: boolean; act: Act; run: Run; onContinue: () => void; proxyReady: boolean
+export default function DialogueTab({ projectId, detail, working, act, run, onContinue, proxyReady }: {
+  projectId: string; detail: SequenceDetail; working: boolean; act: Act; run: Run; onContinue: () => void; proxyReady: boolean
 }) {
   const view = detail.compilation
   const info = detail.sequence
@@ -301,9 +302,9 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
         <p className="muted mb-3 text-[11px] leading-5">Decide who owns each voice once; it is applied to every line of that voice, and the bible keeps your decision.</p>
         {voices.length ? <ul className="space-y-2">{voices.map(({ label, voice, count }) => <li key={label} className="flex items-center gap-2">
           <span className="min-w-0 flex-1"><span className="block truncate font-mono text-[11px]">{label}</span><span className="muted text-[10px]">{count} line{count === 1 ? '' : 's'}{voice?.reason ? ` · ${voice.reason}` : ''}</span></span>
-          <select className="field !w-36 !py-1 !text-xs" aria-label={`Character for ${label}`} value={voice?.character || ''} onChange={event => setDraft(current => current && applyVoice(current, label, event.target.value || null, characters))}>
+          <CharacterSelect imageIds={Object.fromEntries(characters.map(person => [person.name, person.id]))} projectId={projectId} className="field !w-36 !py-1 !text-xs" aria-label={`Character for ${label}`} value={voice?.character || ''} onChange={event => setDraft(current => current && applyVoice(current, label, event.target.value || null, characters))}>
             {options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select></li>)}</ul> : <p className="muted text-xs">No voice labels in this range.</p>}
+          </CharacterSelect></li>)}</ul> : <p className="muted text-xs">No voice labels in this range.</p>}
       </section>}
       {view.subtitles.length > 0 && <details className="rounded-xl border hairline bg-[#1b202a] text-xs"><summary className="cursor-pointer px-4 py-3 font-semibold text-[#aeb5c1] hover:text-white">Subtitles read from the picture ({view.subtitles.length})</summary>
         <ul className="scrollbar max-h-64 space-y-1 overflow-y-auto border-t hairline p-3">{view.subtitles.map(sub => <li key={sub.id}>
@@ -346,7 +347,7 @@ export default function DialogueTab({ detail, working, act, run, onContinue, pro
         </div>
           : <>
             <ol className="scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto p-3" aria-label="Dialogue lines" inert={working}>
-              {shown.map(line => <Row key={line.id} line={line} selected={selected === line.id} active={activeId === line.id} playing={!paused && playingId === line.id}
+              {shown.map(line => <Row projectId={projectId} key={line.id} line={line} selected={selected === line.id} active={activeId === line.id} playing={!paused && playingId === line.id}
                 colour={colours.get(line.id) ?? lineColour(0)} shotsInside={inside.get(line.id) ?? ''} problems={problems[line.id] || []} duration={duration} added={isNew(line, newFrom)} options={options} characters={characters}
                 onSelect={setSelected} onPlay={play} onEdit={edit} onMerge={merge} onSplit={split} onDelete={remove} playhead={playhead} />)}
               {!shown.length && <li className="muted p-6 text-center text-sm">{lines.length ? 'No line matches this filter.' : 'Nobody speaks in this range.'}</li>}

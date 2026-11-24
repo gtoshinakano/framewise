@@ -1,3 +1,4 @@
+import { CharacterSelect } from './CharacterSelect'
 import { useEffect, useRef, useState } from 'react'
 import { Plus, Trash2, X } from 'lucide-react'
 import { api, type ContextItem } from './api'
@@ -128,10 +129,10 @@ export function AutopilotProfileDialog({ projectId, onClose }: { projectId: stri
         </li>)}
       </ul>}
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        {[0, 1].map(side => <select key={side} className="field w-48 text-xs" aria-label={side ? 'Second character' : 'First character'} value={pair[side]}
+        {[0, 1].map(side => <CharacterSelect projectId={characters[0]?.project_id} key={side} className="field w-48 text-xs" aria-label={side ? 'Second character' : 'First character'} value={pair[side]}
           onChange={event => setPair(side ? [pair[0], event.target.value] : [event.target.value, pair[1]])}>
           <option value="">Choose a character</option>{characters.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
-        </select>)}
+        </CharacterSelect>)}
         <IconButton icon={Plus} label="Add this pair" text="Add pair" size="sm" disabled={!pair[0] || !pair[1] || pair[0] === pair[1]}
           onClick={() => { change({ ...draft, look_alikes: addPair(draft.look_alikes, pair[0], pair[1]) }); setPair(['', '']) }} />
       </div>

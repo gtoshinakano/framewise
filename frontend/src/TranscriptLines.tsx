@@ -1,3 +1,4 @@
+import { CharacterSelect } from './CharacterSelect'
 import { useEffect, useMemo, useRef, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { Check, Merge, Plus, Scissors, Trash2, X } from 'lucide-react'
 import type { ContextItem, Cut, TranscriptSegment } from './api'
@@ -112,7 +113,7 @@ export function TranscriptLines({ cut, lines, characters, names, selected, onSel
     else if (event.key === 'Escape') onSelect([])
   }
   const speakerSelect = (value: string | null, label: string, onChange: (id: string | null) => void, unassignedStyle: boolean, onLeave?: () => void) =>
-    <select aria-label={label} disabled={busy} value={value || ''} onChange={event => {
+    <CharacterSelect projectId={characters[0]?.project_id} aria-label={label} disabled={busy} value={value || ''} onChange={event => {
       const chosen = event.target.value
       if (chosen === LEAVE) onLeave?.()
       else if (chosen === NEW_CARD) void newCard?.().then(id => { if (id) onChange(id) })
@@ -121,7 +122,7 @@ export function TranscriptLines({ cut, lines, characters, names, selected, onSel
       className={`field shrink-0 !w-[6.2rem] !rounded-md !py-0.5 !text-[10px] ${unassignedStyle ? '!border-[#6d5526] !text-[#f0c979]' : ''}`}>
       <option value="">Unassigned</option><CharacterOptions characters={characters} allowNew={!!newCard} />
       {onLeave && <option value={LEAVE}>Don't ask again (keep as it is)</option>}
-    </select>
+    </CharacterSelect>
 
   function draftRow() {
     if (!draft) return null
