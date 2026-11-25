@@ -52,6 +52,21 @@ export function placeForNeed(key: NeedKey): NeedPlace {
   }
 }
 
+type Place = { tab: DialogTab; section?: RunSection }
+
+/** The same place of the analysis dialog: the section counts only on the Run tab. */
+export function samePlace(a: Place, b: Place) {
+  return a.tab === b.tab && (a.tab !== 'run' || a.section === b.section)
+}
+
+/** Whether the analysis dialog, open at `current`, stays at `wanted` when it moves to a cut with these needs without being
+ *  opened again: arriving moves it to the cut's first need, so only when that need is settled at `wanted` (or there is none). */
+export function staysAt(needs: CutNeeds | undefined, focusKeys: ReadonlySet<NeedKey> | null, wanted: Place, current: Place) {
+  if (!samePlace(wanted, current)) return false
+  const need = firstNeed(needs, focusKeys)
+  return !need || samePlace(placeForNeed(need.key), wanted)
+}
+
 export function hasNeed(needs: CutNeeds | undefined, key: NeedKey) {
   return !!needs?.people.some(item => item.key === key)
 }

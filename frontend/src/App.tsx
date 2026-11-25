@@ -9,7 +9,7 @@ import Storage from './Storage'
 import AnalysisDialog from './AnalysisDialog'
 import { adjacentCut, isNeedKey, nextNeedingAction, useCutFilters } from './cutFilters'
 import { useCutNeeds } from './cutNeeds'
-import { firstNeed, NEED_ORDER, placeForNeed, type NeedKey } from './cutNeedsView'
+import { firstNeed, NEED_ORDER, placeForNeed, staysAt, type NeedKey } from './cutNeedsView'
 import { RangeInspector } from './RangeInspector'
 import { analysisQueueStates } from './analysisQueueStates'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
@@ -40,6 +40,7 @@ import { elsewhereText, mineCount, type InboxCounts } from './inboxView'
 import type { QueueSummary } from './queueView'
 import { EpisodeSettingsDialog } from './EpisodeSettingsDialog'
 import { RunMultipleDialog } from './RunMultipleDialog'
+import { WaitingForYou } from './WaitingForYou'
 import { IconButton } from './EditorUi'
 import { useCutEdits } from './useCutEdits'
 import { useEditorShortcuts } from './useEditorShortcuts'
@@ -265,6 +266,8 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
   const [autopilotOpen, setAutopilotOpen] = useState(false)
   const [audioRange, setAudioRange] = useState<(Pick<EpisodeAudioRange, 'start_time' | 'end_time' | 'kind'> & { id?: string }) | null>(null)
   const [runMultiple, setRunMultiple] = useState<false | { stage?: 'prepare' }>(false)
+  // Run Multiple's "Waiting for you" list, floating over the editor (WaitingForYou.tsx); stays open between visits.
+  const [waitingOpen, setWaitingOpen] = usePref('editor.waitingForYou', false)
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
   // The queue drawer, opened at the top or at Needs attention.
   const [queueOpen, setQueueOpen] = useState<false | 'top' | 'attention'>(false)
@@ -388,6 +391,17 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
     setAnalysisOpen(true)
   })
   const openCutAnalysis = useEvent((cut: Cut) => { selectCut(cut, true); setActiveTab('cut'); openAnalysis(cut) })
+  // The floating Waiting-for-you list opens a cut where its hold is settled. An open dialog is opened again (like a link that
+  // names another place) when it is elsewhere or when arriving would move it to another of the cut's needs.
+  const openCutAt = useEvent((cutId: string, tab: DialogTab, section?: RunSection) => {
+    const cut = episode?.cuts.find(item => item.id === cutId)
+    if (!cut) { toast({ tone: 'error', message: 'That cut no longer exists.' }); return }
+    const place = { tab, section: section ?? dialogPlace.section }
+    if (analysisOpen && !staysAt(needs.get(cut.id), focusKeys, place, dialogPlace)) setDialogKey(key => key + 1)
+    setDialogPlace(place)
+    selectCut(cut, true); setActiveTab('cut')
+    setAnalysisOpen(true)
+  })
   const selectCut = useEvent((cut: Cut, keepAnalysisOpen = false) => { setRangeToId(null); if (!keepAnalysisOpen) setAnalysisOpen(false); video.current?.pause(); setSelectedId(cut.id); setActiveTab(current => current === 'sequences' ? current : 'cut'); seek(cut.first_frame_time) })
   const navigateCut = useEvent((cut: Cut) => selectCut(cut, true))
   const extendSelection = useEvent((cut: Cut) => {
@@ -591,7 +605,9 @@ function Editor({ id, route }: { id: string; route: EditorRoute }) {
     {episode && audioRange && <AudioRangeDialog episodeId={id} initial={audioRange} duration={duration} playhead={playhead} onClose={() => setAudioRange(null)} onSaved={refresh} />}
     {episode && settingsOpen && <EpisodeSettingsDialog episode={episode} initial={episode.settings} onSave={saveSettings} onDelete={() => void remove()} onClose={closeSettings} />}
     {episode && runMultiple && <RunMultipleDialog episodeId={id} cuts={episode.cuts} subtitleLanguage={episode.subtitle_language} initialStage={runMultiple.stage}
-      onClose={() => setRunMultiple(false)} onOpenInbox={() => setInboxOpen(true)} onChanged={() => { void refresh(); loadInboxCounts() }} />}
+      onClose={() => setRunMultiple(false)} onOpenInbox={() => setInboxOpen(true)} onChanged={() => { void refresh(); loadInboxCounts() }}
+      onFloatHeld={() => { setWaitingOpen(true); setRunMultiple(false) }} />}
+    {episode && waitingOpen && <WaitingForYou episodeId={id} currentCutId={selectedId} onOpenCut={openCutAt} onClose={() => setWaitingOpen(false)} />}
   </div></EpisodeEventsContext.Provider>
 }
 

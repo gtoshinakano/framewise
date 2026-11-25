@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  cutNumbers, defaultStage, evaluateCounts, groupHeld, humanInbox, inboxText, progressText, reasonGroup, shownRun, startButton, stepLinks, stepText, stepTone,
+  clampFloat, cutNumbers, defaultStage, evaluateCounts, groupHeld, humanInbox, inboxText, progressText, reasonGroup, shownRun, startButton, stepLinks, stepText, stepTone,
 } from '../src/runMultipleView.ts'
 import { modeOf, modesFor } from '../src/autopilotView.ts'
 
@@ -83,4 +83,12 @@ test('missed cuts and line splits only apply or are off: a stored "ask" reads as
   assert.equal(modeOf('line_splits', 'ask'), 'apply')
   assert.equal(modeOf('voices', 'ask'), 'ask')
   assert.equal(modeOf('voices', undefined), 'apply')
+})
+
+test('the floating list stays inside the window', () => {
+  const viewport = { width: 1000, height: 800 }, size = { width: 300, height: 200 }
+  assert.deepEqual(clampFloat({ x: 100.4, y: 50 }, size, viewport), { x: 100, y: 50 })
+  assert.deepEqual(clampFloat({ x: 900, y: 700 }, size, viewport), { x: 692, y: 592 })
+  assert.deepEqual(clampFloat({ x: -40, y: -10 }, size, viewport), { x: 8, y: 8 })
+  assert.deepEqual(clampFloat({ x: 500, y: 500 }, { width: 300, height: 900 }, viewport), { x: 500, y: 8 })   // taller than the window: the header stays
 })

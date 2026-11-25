@@ -153,6 +153,17 @@ export function humanInbox(inbox: InboxCount | undefined) {
   return Object.values(inbox ?? {}).reduce((total, counts) => total + (counts.human || 0), 0)
 }
 
+// The floating Waiting-for-you list (WaitingForYou.tsx): where it sits on the screen.
+export type FloatPlace = { x: number; y: number }
+type Size = { width: number; height: number }
+
+/** The panel's top-left kept inside the window by `margin`; a panel taller or wider than the window keeps its header on screen. */
+export function clampFloat(place: FloatPlace, size: Size, viewport: Size, margin = 8): FloatPlace {
+  const x = Math.max(margin, Math.min(place.x, viewport.width - size.width - margin))
+  const y = Math.max(margin, Math.min(place.y, viewport.height - size.height - margin))
+  return { x: Math.round(x), y: Math.round(y) }
+}
+
 /** The stage the dialog opens on: a running run's, else Prepare until it ran, else Evaluate. */
 export function defaultStage(runs: BatchRun[], prepared: boolean, wanted?: StageKey): StageKey {
   const running = runs.find(run => run.status === 'running')

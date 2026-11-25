@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { answerFor, firstNeed, minutesSeconds, placeForNeed, rangeSummary, toNeedsMap } from '../src/cutNeedsView.ts'
+import { answerFor, firstNeed, minutesSeconds, placeForNeed, rangeSummary, samePlace, staysAt, toNeedsMap } from '../src/cutNeedsView.ts'
 
 const entry = (people = [], steps = [], claude = []) => ({ steps, people: people.map(key => ({ key, count: 1, escalation_ids: [] })), claude, answered_by: [], analysis_off: false })
 const cut = (index, start, end, overrides = {}) => ({ id: `c${index + 1}`, cut_index: index, active: true, analysis_enabled: true, start_time: start, end_time: end, ...overrides })
@@ -58,4 +58,16 @@ test('a review question shows the latest agent answer that wrote it', () => {
   assert.equal(answer.note, 'checked F2')
   assert.equal(answerFor(decisions.slice(0, 1), 'q1').note, '')
   assert.equal(answerFor(decisions, 'q2'), null)
+})
+
+test('an open dialog stays where a link points only when the cut\'s first need is settled there', () => {
+  const results = { tab: 'results', section: 'targets' }, characters = { tab: 'run', section: 'characters' }, targets = { tab: 'run', section: 'targets' }
+  assert.equal(samePlace(results, { tab: 'results' }), true)   // the section counts only on the Run tab
+  assert.equal(samePlace(characters, targets), false)
+  assert.equal(staysAt(entry(['box_names']), null, characters, characters), true)
+  assert.equal(staysAt(entry(['voice', 'box_names']), null, characters, characters), false)   // arriving would move it to the voice
+  assert.equal(staysAt(entry(['voice', 'box_names']), new Set(['box_names']), characters, characters), true)
+  assert.equal(staysAt(entry(), null, characters, characters), true)   // nothing to move to
+  assert.equal(staysAt(undefined, null, { tab: 'results' }, results), true)
+  assert.equal(staysAt(entry(['target_frames']), null, targets, characters), false)   // another place: open it again
 })
